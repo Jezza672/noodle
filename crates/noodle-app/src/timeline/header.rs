@@ -157,7 +157,8 @@ pub fn colour_menu(ui: &mut egui::Ui, current: Option<u8>) -> Option<Option<u8>>
                     egui::StrokeKind::Outside,
                 );
             }
-            response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, *name));
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, *name));
             if response.on_hover_text(*name).clicked() {
                 picked = Some(Some(slot as u8));
             }
@@ -317,7 +318,10 @@ pub fn show(
             lane.left() + 12.0,
             lane.top() + if name_only { 1.0 } else { 5.0 },
         ),
-        Pos2::new(lane.right() - 6.0, lane.bottom() - if name_only { 1.0 } else { 4.0 }),
+        Pos2::new(
+            lane.right() - 6.0,
+            lane.bottom() - if name_only { 1.0 } else { 4.0 },
+        ),
     );
     let mut child = ui.new_child(
         UiBuilder::new()

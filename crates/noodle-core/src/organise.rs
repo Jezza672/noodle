@@ -141,7 +141,8 @@ impl Organisation {
     }
 
     fn drop_empty_folders(&mut self) {
-        let used: std::collections::BTreeSet<FolderId> = self.membership.values().copied().collect();
+        let used: std::collections::BTreeSet<FolderId> =
+            self.membership.values().copied().collect();
         self.folders.retain(|id, _| used.contains(id));
     }
 

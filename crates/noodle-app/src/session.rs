@@ -3840,11 +3840,7 @@ mod tests {
             }),
             Edit::Apply(Command::AddClip {
                 id: clip,
-                clip: noodle_core::Clip::midi(
-                    track,
-                    noodle_core::Tick(0),
-                    noodle_core::Tick(3840),
-                ),
+                clip: noodle_core::Clip::midi(track, noodle_core::Tick(0), noodle_core::Tick(3840)),
             }),
         ]);
         assert!(session.save_template("Band"));
@@ -3861,7 +3857,13 @@ mod tests {
         session.edit([Edit::Apply(Command::RemoveNode { id: osc })]);
         let again = Session::new(Nodes::all());
         let text = std::fs::read_to_string(&path).unwrap();
-        assert!(Project::from_ron(&text).unwrap().graph().node(osc).is_some());
+        assert!(
+            Project::from_ron(&text)
+                .unwrap()
+                .graph()
+                .node(osc)
+                .is_some()
+        );
         drop(again);
         // And saving the template again does not reach a project made from it.
         let before = session.project().clone();

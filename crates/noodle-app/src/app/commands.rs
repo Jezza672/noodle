@@ -54,10 +54,28 @@ const fn entry(
 }
 
 pub static ENTRIES: &[Entry] = &[
-    entry("file.new", "New Project", Action::New, chord(CMD, Key::N), true),
-    entry("file.open", "Open Project…", Action::Open, chord(CMD, Key::O), true),
+    entry(
+        "file.new",
+        "New Project",
+        Action::New,
+        chord(CMD, Key::N),
+        true,
+    ),
+    entry(
+        "file.open",
+        "Open Project…",
+        Action::Open,
+        chord(CMD, Key::O),
+        true,
+    ),
     entry("file.save", "Save", Action::Save, chord(CMD, Key::S), true),
-    entry("file.save_as", "Save As…", Action::SaveAs, chord(CMD_SHIFT, Key::S), true),
+    entry(
+        "file.save_as",
+        "Save As…",
+        Action::SaveAs,
+        chord(CMD_SHIFT, Key::S),
+        true,
+    ),
     entry(
         "file.save_template",
         "Save as Project Template…",
@@ -65,8 +83,20 @@ pub static ENTRIES: &[Entry] = &[
         None,
         false,
     ),
-    entry("file.import", "Import Audio…", Action::ImportAudio, None, false),
-    entry("file.export", "Export Audio…", Action::ExportAudio, None, false),
+    entry(
+        "file.import",
+        "Import Audio…",
+        Action::ImportAudio,
+        None,
+        false,
+    ),
+    entry(
+        "file.export",
+        "Export Audio…",
+        Action::ExportAudio,
+        None,
+        false,
+    ),
     entry(
         "file.settings",
         "Audio Settings…",
@@ -75,10 +105,34 @@ pub static ENTRIES: &[Entry] = &[
         true,
     ),
     entry("edit.undo", "Undo", Action::Undo, chord(CMD, Key::Z), true),
-    entry("edit.redo", "Redo", Action::Redo, chord(CMD_SHIFT, Key::Z), true),
-    entry("edit.cut", "Cut", Action::Clips(ClipAction::Cut), chord(CMD, Key::X), false),
-    entry("edit.copy", "Copy", Action::Clips(ClipAction::Copy), chord(CMD, Key::C), false),
-    entry("edit.paste", "Paste", Action::Clips(ClipAction::Paste), chord(CMD, Key::V), false),
+    entry(
+        "edit.redo",
+        "Redo",
+        Action::Redo,
+        chord(CMD_SHIFT, Key::Z),
+        true,
+    ),
+    entry(
+        "edit.cut",
+        "Cut",
+        Action::Clips(ClipAction::Cut),
+        chord(CMD, Key::X),
+        false,
+    ),
+    entry(
+        "edit.copy",
+        "Copy",
+        Action::Clips(ClipAction::Copy),
+        chord(CMD, Key::C),
+        false,
+    ),
+    entry(
+        "edit.paste",
+        "Paste",
+        Action::Clips(ClipAction::Paste),
+        chord(CMD, Key::V),
+        false,
+    ),
     entry(
         "edit.duplicate",
         "Duplicate",
@@ -100,22 +154,112 @@ pub static ENTRIES: &[Entry] = &[
         chord(CMD, Key::L),
         false,
     ),
-    entry("view.fit", "Fit Graph", Action::FitGraph, chord(NONE, Key::F), false),
-    entry("view.palette", "Command Palette…", Action::OpenPalette, chord(CMD, Key::K), true),
-    entry("view.mixer", "Show or Hide Mixer", Action::ToggleMixer, None, false),
-    entry("view.scope", "Show or Hide Scope", Action::ToggleScope, None, false),
-    entry("view.outputs", "Show or Hide Outputs", Action::ToggleOutputs, None, false),
-    entry("view.plugins", "Show or Hide Plugins", Action::TogglePlugins, None, false),
-    entry("view.cache", "Show or Hide Playback Cache", Action::ToggleCache, None, false),
-    entry("view.cpu", "Show or Hide CPU Meters", Action::ToggleCpu, None, false),
-    entry("view.tempo_lane", "Show or Hide Tempo Lane", Action::ToggleTempoLane, None, false),
-    entry("tracks.fold", "Fold All Folders", Action::FoldFolders(true), None, false),
-    entry("tracks.unfold", "Unfold All Folders", Action::FoldFolders(false), None, false),
-    entry("transport.play", "Play or Stop", Action::TogglePlayback, chord(NONE, Key::Space), true),
+    entry(
+        "view.fit",
+        "Fit Graph",
+        Action::FitGraph,
+        chord(NONE, Key::F),
+        false,
+    ),
+    entry(
+        "view.palette",
+        "Command Palette…",
+        Action::OpenPalette,
+        chord(CMD, Key::K),
+        true,
+    ),
+    entry(
+        "view.mixer",
+        "Show or Hide Mixer",
+        Action::ToggleMixer,
+        None,
+        false,
+    ),
+    entry(
+        "view.scope",
+        "Show or Hide Scope",
+        Action::ToggleScope,
+        None,
+        false,
+    ),
+    entry(
+        "view.outputs",
+        "Show or Hide Outputs",
+        Action::ToggleOutputs,
+        None,
+        false,
+    ),
+    entry(
+        "view.plugins",
+        "Show or Hide Plugins",
+        Action::TogglePlugins,
+        None,
+        false,
+    ),
+    entry(
+        "view.cache",
+        "Show or Hide Playback Cache",
+        Action::ToggleCache,
+        None,
+        false,
+    ),
+    entry(
+        "view.cpu",
+        "Show or Hide CPU Meters",
+        Action::ToggleCpu,
+        None,
+        false,
+    ),
+    entry(
+        "view.tempo_lane",
+        "Show or Hide Tempo Lane",
+        Action::ToggleTempoLane,
+        None,
+        false,
+    ),
+    entry(
+        "tracks.fold",
+        "Fold All Folders",
+        Action::FoldFolders(true),
+        None,
+        false,
+    ),
+    entry(
+        "tracks.unfold",
+        "Unfold All Folders",
+        Action::FoldFolders(false),
+        None,
+        false,
+    ),
+    entry(
+        "transport.play",
+        "Play or Stop",
+        Action::TogglePlayback,
+        chord(NONE, Key::Space),
+        true,
+    ),
     entry("transport.rewind", "Rewind", Action::Rewind, None, false),
-    entry("transport.record", "Record", Action::ToggleRecord, None, false),
-    entry("transport.metronome", "Metronome", Action::ToggleMetronome, None, false),
-    entry("transport.engine", "Audio Engine On or Off", Action::ToggleEngine, None, false),
+    entry(
+        "transport.record",
+        "Record",
+        Action::ToggleRecord,
+        None,
+        false,
+    ),
+    entry(
+        "transport.metronome",
+        "Metronome",
+        Action::ToggleMetronome,
+        None,
+        false,
+    ),
+    entry(
+        "transport.engine",
+        "Audio Engine On or Off",
+        Action::ToggleEngine,
+        None,
+        false,
+    ),
     entry(
         "keyboard.midi",
         "Computer Keyboard as MIDI",
@@ -239,11 +383,13 @@ impl Keymap {
             .filter(|e| self.is_changed(e) || e.global)
             .filter_map(|e| Some((self.chord(e)?, e)))
             .collect();
-        let weight = |m: Modifiers| usize::from(m.command) + usize::from(m.alt) + usize::from(m.shift);
+        let weight =
+            |m: Modifiers| usize::from(m.command) + usize::from(m.alt) + usize::from(m.shift);
         bound.sort_by_key(|(c, _)| std::cmp::Reverse(weight(c.modifiers)));
         bound
     }
 
+    #[cfg(test)]
     pub fn find(&self, id: &str) -> Option<&'static Entry> {
         ENTRIES.iter().find(|e| e.id == id)
     }
@@ -258,7 +404,11 @@ pub fn score(query: &str, name: &str) -> Option<usize> {
     for letter in query.to_lowercase().chars().filter(|c| !c.is_whitespace()) {
         let found = name[at..].find(letter)?;
         let start_of_word = at + found == 0 || !name[..at + found].ends_with(char::is_alphanumeric);
-        cost += if found == 0 || start_of_word { 0 } else { 1 + found };
+        cost += if found == 0 || start_of_word {
+            0
+        } else {
+            1 + found
+        };
         at += found + letter.len_utf8();
     }
     Some(cost)
@@ -403,9 +553,17 @@ impl Palette {
         egui::Modal::new(egui::Id::new("command palette")).show(ctx, |ui| {
             ui.set_width(420.0);
             ui.horizontal(|ui| {
-                ui.heading(if self.keys { "Keyboard shortcuts" } else { "Commands" });
+                ui.heading(if self.keys {
+                    "Keyboard shortcuts"
+                } else {
+                    "Commands"
+                });
                 ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-                    let label = if self.keys { "Back to commands" } else { "Edit shortcuts" };
+                    let label = if self.keys {
+                        "Back to commands"
+                    } else {
+                        "Edit shortcuts"
+                    };
                     if ui.button(label).clicked() {
                         self.keys = !self.keys;
                         self.capturing = None;
@@ -463,7 +621,14 @@ impl Palette {
     }
 
     /// One row of the list of keys: the key, and buttons to change it.
-    fn key_row(&mut self, ui: &mut egui::Ui, row: &Row<'_>, shown: &str, keymap: &mut Keymap, out: &mut Out) {
+    fn key_row(
+        &mut self,
+        ui: &mut egui::Ui,
+        row: &Row<'_>,
+        shown: &str,
+        keymap: &mut Keymap,
+        out: &mut Out,
+    ) {
         let Some(entry) = row.id else {
             return;
         };
@@ -526,7 +691,9 @@ mod tests {
         assert_eq!(score("zzz", "Fold All Folders"), None);
         assert!(score("save", "Save").unwrap() < score("save", "Open Project…").unwrap_or(99));
         // A word that starts with the letters beats a scatter of them.
-        assert!(score("mix", "Show or Hide Mixer") < score("mix", "Computer Keyboard as MIDI Extra"));
+        assert!(
+            score("mix", "Show or Hide Mixer") < score("mix", "Computer Keyboard as MIDI Extra")
+        );
     }
 
     #[test]
@@ -559,8 +726,14 @@ mod tests {
         keymap.bind("view.mixer", Some(KeyboardShortcut::new(CMD, Key::M)));
         let global = keymap.global();
         assert!(global.iter().any(|(_, e)| e.id == "view.mixer"));
-        let redo = global.iter().position(|(_, e)| e.id == "edit.redo").unwrap();
-        let undo = global.iter().position(|(_, e)| e.id == "edit.undo").unwrap();
+        let redo = global
+            .iter()
+            .position(|(_, e)| e.id == "edit.redo")
+            .unwrap();
+        let undo = global
+            .iter()
+            .position(|(_, e)| e.id == "edit.undo")
+            .unwrap();
         assert!(redo < undo);
         // Cut is handled by the arrangement, so it is not caught here until
         // the user binds it.

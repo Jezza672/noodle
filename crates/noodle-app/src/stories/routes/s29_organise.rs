@@ -93,7 +93,10 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
     if folded.len() != 1 || org.membership.len() < 2 {
         return Err("there is not one folded folder of two tracks".into());
     }
-    let template = p.project_dir().join("templates").join(format!("{TEMPLATE}.ron"));
+    let template = p
+        .project_dir()
+        .join("templates")
+        .join(format!("{TEMPLATE}.ron"));
     if !template.exists() {
         return Err("the template was not saved".into());
     }

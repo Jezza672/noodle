@@ -480,9 +480,12 @@ pub(crate) fn tracks(project: &Project) -> Vec<NodeId> {
         match org.folder_of(group_of(project, track)) {
             Some(folder) if org.folders.contains_key(&folder) => {
                 if placed.insert(folder) {
-                    together.extend(tracks.iter().copied().filter(|&t| {
-                        org.folder_of(group_of(project, t)) == Some(folder)
-                    }));
+                    together.extend(
+                        tracks
+                            .iter()
+                            .copied()
+                            .filter(|&t| org.folder_of(group_of(project, t)) == Some(folder)),
+                    );
                 }
             }
             _ => together.push(track),
@@ -2845,7 +2848,10 @@ fn draw_headers(
             state.selected.clear();
             state.automation.deselect();
         }
-        if let Some(controls) = controls.as_ref().filter(|_| lane.height() >= header::CONTROLS_MIN) {
+        if let Some(controls) = controls
+            .as_ref()
+            .filter(|_| lane.height() >= header::CONTROLS_MIN)
+        {
             let spot = Rect::from_min_size(
                 Pos2::new(lane.right() - 30.0, lane.top() + 2.0),
                 vec2(26.0, 18.0),
@@ -3005,9 +3011,9 @@ fn folder_strip(
     let apply = |organisation: noodle_core::Organisation| {
         Edit::Apply(Command::SetOrganisation(organisation))
     };
-    let colour = folder
-        .colour
-        .map_or(colors::TEXT_WEAK, |slot| colors::track_colour(usize::from(slot)));
+    let colour = folder.colour.map_or(colors::TEXT_WEAK, |slot| {
+        colors::track_colour(usize::from(slot))
+    });
     let painter = ui.painter_at(row);
     painter.rect_filled(row, 0.0, colors::AUTOMATION_HEADER);
     painter.rect_filled(

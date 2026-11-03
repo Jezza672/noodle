@@ -800,7 +800,11 @@ impl App {
             || self.template_name.is_some();
         ctx.input_mut(|input| {
             let mut actions = Vec::new();
-            let keymap = if dialog { Vec::new() } else { self.keymap.global() };
+            let keymap = if dialog {
+                Vec::new()
+            } else {
+                self.keymap.global()
+            };
             for (shortcut, entry) in keymap {
                 // A bare key is a letter for a text field to type.
                 let yields = entry.action.yields_to_text() || shortcut.modifiers == Modifiers::NONE;
@@ -1605,7 +1609,12 @@ impl App {
             .templates
             .iter()
             .enumerate()
-            .map(|(n, (name, _))| (format!("New from Template: {name}"), Action::NewFromTemplate(n)))
+            .map(|(n, (name, _))| {
+                (
+                    format!("New from Template: {name}"),
+                    Action::NewFromTemplate(n),
+                )
+            })
             .collect();
         let out = self.palette.show(ctx, &mut self.keymap, &from_template);
         actions.extend(out.run);

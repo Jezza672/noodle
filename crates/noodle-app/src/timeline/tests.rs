@@ -2703,13 +2703,14 @@ fn a_folded_folder_hides_its_tracks_without_hiding_the_ones_beside_it() {
     let (_, input, _) = add_real_track(&mut h);
     let id = folder_of_tracks(&mut h, &[NodeId(1), NodeId(2)]);
     let session = &mut h.state_mut().session;
-    let org = session.project().organisation().clone().with_folded(id, true);
+    let org = session
+        .project()
+        .organisation()
+        .clone()
+        .with_folded(id, true);
     session.edit([Edit::Apply(Command::SetOrganisation(org))]);
     h.run();
-    assert_eq!(
-        super::visible_tracks(h.state().session.project()),
-        [input]
-    );
+    assert_eq!(super::visible_tracks(h.state().session.project()), [input]);
 }
 
 #[test]
@@ -2755,11 +2756,17 @@ fn a_lane_can_be_shrunk_to_just_its_name_and_grown_back() {
         top + 2.0 * super::colors::LANE_HEIGHT + super::colors::LANE_HEIGHT - 3.0,
     );
     assert!(!h.state().timeline.name_only(input));
-    assert!(h.query_by_label("RA").is_some(), "a track shows its controls");
+    assert!(
+        h.query_by_label("RA").is_some(),
+        "a track shows its controls"
+    );
     double_click(&mut h, grip);
     h.run();
     assert!(h.state().timeline.name_only(input));
-    assert!(h.query_by_label("RA").is_none(), "a name-only lane has none");
+    assert!(
+        h.query_by_label("RA").is_none(),
+        "a name-only lane has none"
+    );
     h.state_mut().timeline.toggle_name_only(input);
     h.run();
     assert!(!h.state().timeline.name_only(input));
