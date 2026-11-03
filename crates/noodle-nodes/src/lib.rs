@@ -164,7 +164,9 @@ pub use script::{
     DEFAULT_SCRIPT, MAX_INPUTS as SCRIPT_MAX_INPUTS, MAX_OUTPUTS as SCRIPT_MAX_OUTPUTS, SCRIPT_ID,
     SCRIPT_KEY, Script, ScriptPorts, check as check_script,
 };
-pub use selector::{SELECTOR_ID, Selector};
+pub use selector::{
+    CHOICE_PORT as SELECTOR_CHOICE, MAX_INPUTS as SELECTOR_MAX_INPUTS, SELECTOR_ID, Selector,
+};
 pub use spectral::{
     ANALYZE_ID, Analyze, CROSS_ID, Cross, SPECTRAL_BLUR_ID, SPECTRAL_FILTER_ID, SPECTRAL_FREEZE_ID,
     SPECTRAL_GATE_ID, SPECTRAL_SHIFT_ID, SYNTHESIZE_ID, SpectralBlur, SpectralFilter,

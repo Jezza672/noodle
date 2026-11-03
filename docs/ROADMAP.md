@@ -116,10 +116,6 @@ deliberately deferred items.
   frames, spectral compressor, convolution reverb from an impulse response,
   noise-profile denoiser) and a choice of frame size (a config on Analyze that
   every spectral node on the wire adopts).
-- **Selector kinds: notes, samples and spectra.** The Selector
-  (`noodle.util.selector`, [features/selector.md](features/selector.md)) takes
-  audio and control signals. Notes, samples and spectra would follow Random
-  Select's `kind` config. Not started.
 - **Piano roll and recording:** keeping the raw take so a recorded MIDI clip
   can be re-quantised afterwards (quantise on record and several MIDI
   ports are built; overdub and count-in are in the items above). The 128-frame engine block is fixed;

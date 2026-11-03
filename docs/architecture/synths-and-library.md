@@ -183,16 +183,22 @@ These are primitives; instruments and racks built from them are groups.
   every candidate and plays the one in force at each note-on, with the same
   `Finish held` / `Cut held` choice for notes already sounding (see
   `signals.md`). Spectra switch at the first frame at or after the trigger.
-- **Selector** (`noodle.util.selector`) routes one of `inputs` audio or
-  control signals (config, 2 to 64) to its output, chosen by the stepped
+- **Selector** (`noodle.util.selector`) is the deterministic counterpart to
+  Random Select: one of `inputs` (config, 2 to 64) of one `kind` (config:
+  signal, notes, samples or spectra) reaches its output, chosen by the stepped
   `which` parameter (`In 1`…`In N`). The value is rounded and clamped, and it
   is a parameter like any other, so automation or a wire can change the choice
-  per sample. The output broadcasts the inputs' shapes, so a mono input plays
-  on every voice and channel; an input with nothing wired is silent. Switching
-  is instant (no zero-crossing option yet), and notes, samples and spectra are
-  not accepted yet. It is the deterministic counterpart to Random Select, and
-  would make pre/post send switching a `which` change rather than a wire move
-  (see `features/selector.md`).
+  per sample. Signals switch `Instant`ly or at the old input's next `Zero
+  crossing` (per voice and channel, giving up after 20 ms), and their output
+  broadcasts the inputs' shapes, so a mono input plays on every voice and
+  channel; an input with nothing wired is silent. Notes switch `Finish held`
+  or `Cut held`, tracking held notes per input; samples expose the `choice`
+  signal the compiler wires to a Sampler, with `CHOICE_CUT` added when held
+  notes are cut; spectra switch at the first frame after the change. The
+  editor sets the kind from the first wire, hides the type-specific `switch`
+  until then, and grows the inputs with the wires. It would make pre/post send
+  switching a `which` change rather than a wire move (see
+  `features/selector.md`).
 - **Dynamics** (`noodle.effect.dynamics`) is a compressor, limiter, gate or
   expander by `mode`, with a `detect` choice of input or sidechain, a
   gain-reduction output, and gain computed in the log domain with a soft knee.
