@@ -17,6 +17,7 @@ mod export_dialog;
 mod freezing;
 mod keyboard;
 mod metronome;
+mod midi_ports;
 mod midi_take;
 mod mixer;
 mod outputs;
@@ -36,6 +37,7 @@ mod stems_dialog;
 #[allow(dead_code)]
 mod stories;
 mod tempo;
+mod tempo_source;
 #[cfg(test)]
 mod testkit;
 mod theme;

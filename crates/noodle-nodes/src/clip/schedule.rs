@@ -827,11 +827,13 @@ fn schedule_controls(
         if note.expressions.is_empty() {
             continue;
         }
-        let start = at(note.start.0);
-        if start >= clip_end {
+        if at(note.start.0) >= clip_end {
             continue;
         }
-        let end = at(note.end().0).min(clip_end).max(start + 1);
+        // The expressions follow the note to where it plays.
+        let shift = midi.humanise_shift(note).max(-note.start.0);
+        let start = at(note.start.0 + shift);
+        let end = at(note.end().0 + shift).min(clip_end).max(start + 1);
         let note_id = NoteId(note_id(id, note));
         let expressions = note.expressions_until(note.length.0);
         let mut kinds: Vec<ExpressionKind> = expressions.iter().map(|e| e.kind).collect();
@@ -847,7 +849,7 @@ fn schedule_controls(
                 value,
             };
             for (i, point) in points.iter().enumerate() {
-                let time = at(note.start.0 + point.tick.0).max(start);
+                let time = at(note.start.0 + shift + point.tick.0).max(start);
                 if time >= end {
                     continue;
                 }
@@ -858,7 +860,7 @@ fn schedule_controls(
                     release: false,
                 });
                 if let (true, Some(next)) = (point.ramp, points.get(i + 1)) {
-                    let to = at(note.start.0 + next.tick.0).min(end);
+                    let to = at(note.start.0 + shift + next.tick.0).min(end);
                     for (t, share) in ramp_steps(time, to, rate) {
                         out.controls.push(ScheduledControl {
                             time: t,
@@ -888,13 +890,17 @@ fn schedule_notes(
         if start >= clip_end {
             continue;
         }
-        let end = at(note.end().0).min(clip_end).max(start + 1);
+        // A humanised note plays early or late, but never before the
+        // clip's own start, and keeps its length.
+        let shift = midi.humanise_shift(note).max(-note.start.0);
+        let played_start = at(note.start.0 + shift);
+        let end = at(note.end().0 + shift).min(clip_end).max(played_start + 1);
         out.notes.push(ScheduledNote {
             id: note_id(id, note),
-            start,
+            start: played_start,
             end,
             key: note.key,
-            velocity: note.velocity,
+            velocity: midi.humanise_velocity_of(note),
         });
     }
 }
@@ -1049,6 +1055,8 @@ struct Inner {
     /// See [`ClipFeeds::set_preview`].
     preview: Arc<std::sync::atomic::AtomicBool>,
     files: Mutex<HashMap<PathBuf, (Option<FileStamp>, FileInfo)>>,
+    /// See [`ClipFeeds::set_input_tap`].
+    input: Mutex<Option<Arc<noodle_engine::InputTap>>>,
 }
 
 /// What a track input is doing, for the UI.
@@ -1142,6 +1150,43 @@ impl ClipFeeds {
         self.shared(node)
             .monitoring
             .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Gives the track inputs built from now on the device input of the
+    /// engine they play in (see
+    /// [`TransportControl::input_tap`](noodle_engine::TransportControl::input_tap)),
+    /// so they can monitor it. Without one, as in an offline render, a track
+    /// input plays only its clips. Call it when an engine starts, before its
+    /// first plan is compiled.
+    pub fn set_input_tap(&self, tap: Option<Arc<noodle_engine::InputTap>>) {
+        *self.inner.input.lock().expect("feeds lock") = tap;
+    }
+
+    pub(super) fn input_tap(&self) -> Option<Arc<noodle_engine::InputTap>> {
+        self.inner.input.lock().expect("feeds lock").clone()
+    }
+
+    /// Says whether the track input `node` is armed to record audio, which
+    /// the Auto setting of its `monitor` listens for.
+    pub fn set_audio_armed(&self, node: NodeId, on: bool) {
+        self.shared(node)
+            .audio_armed
+            .store(on, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    /// Says what the take recording on the track input `node` keeps: the
+    /// samples from `start` to `end` (`None` for no end), or `None` for not
+    /// recording. Auto monitoring plays the input inside the span, and the
+    /// track's clips outside it, which is the old take in the pre-roll and
+    /// after the punch-out.
+    pub fn set_recording(&self, node: NodeId, span: Option<(u64, Option<u64>)>) {
+        use std::sync::atomic::Ordering::Relaxed;
+        let shared = self.shared(node);
+        if let Some((start, end)) = span {
+            shared.record_start.store(start, Relaxed);
+            shared.record_end.store(end.unwrap_or(u64::MAX), Relaxed);
+        }
+        shared.recording.store(span.is_some(), Relaxed);
     }
 
     /// Whether the session is feeding the track input `node` live right now:

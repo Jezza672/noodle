@@ -114,6 +114,7 @@ impl Rig {
             format,
             normalize: None,
             freezer: Some(self.freezer.clone()),
+            silent_tail: None,
         }
     }
 
@@ -647,4 +648,53 @@ fn a_silent_track_makes_no_clip_and_leaves_no_file() {
     let mut partial = request.path.as_os_str().to_owned();
     partial.push(".partial");
     assert!(!std::path::Path::new(&partial).exists());
+}
+
+#[test]
+fn a_silent_tail_is_cut_to_the_latest_sounding_file_for_all_of_them() {
+    let mut rig = setup("silent-tail");
+    let (groups, _, _) = two_tracks(&mut rig);
+    // The audio ends at FRAMES; end the range early so the rest is tail.
+    let cap = 10 * RATE as u64;
+    let mut request = rig.track_request(groups, "tail");
+    request.end = 30_000;
+    request.silent_tail = Some(cap);
+    let report = export(&request, &Progress::new()).unwrap();
+    assert!(report.is_complete(), "{report:?}");
+    let files = [
+        read(request.mixdown.as_ref().unwrap()),
+        read(&request.tracks[0].path),
+        read(&request.tracks[1].path),
+    ];
+    // Equal lengths, longer than the body, short of the cap.
+    let frames = files[0].len() / 2;
+    assert!(files.iter().all(|f| f.len() / 2 == frames));
+    assert_eq!(report.frames, frames as u64);
+    assert!(frames > 30_000 && (frames as u64) < 30_000 + cap);
+    // The last frame sounds in at least one file, and the audio stops there.
+    assert!(
+        files
+            .iter()
+            .any(|f| f[f.len() - 2..].iter().any(|s| s.abs() > CLIP_SILENCE))
+    );
+    // The tail matches an export that runs to the same length untrimmed.
+    let mut fixed = rig.track_request(groups, "fixed");
+    fixed.end = frames as u64;
+    export(&fixed, &Progress::new()).unwrap();
+    assert_eq!(read(&fixed.tracks[0].path), files[1]);
+}
+
+#[test]
+fn a_silent_tail_still_sounding_at_the_cap_fades_out() {
+    let mut rig = setup("silent-tail-cap");
+    let (groups, _, _) = two_tracks(&mut rig);
+    let mut request = rig.track_request(groups, "capped");
+    request.end = 20_000;
+    request.silent_tail = Some(5_000);
+    export(&request, &Progress::new()).unwrap();
+    for path in [&request.tracks[0].path, &request.tracks[1].path] {
+        let file = read(path);
+        assert_eq!(file.len(), 25_000 * 2);
+        assert!(file[file.len() - 2..].iter().all(|s| s.abs() < 1e-3));
+    }
 }

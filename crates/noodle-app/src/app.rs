@@ -14,6 +14,7 @@ use crate::clip_panel::{self, ClipPanel};
 use crate::devices::DevicePicker;
 use crate::editor::{self, EditorState};
 use crate::export_dialog::ExportDialog;
+use crate::midi_ports::MidiPortsView;
 use crate::outputs::OutputsView;
 use crate::piano_roll::{self, PianoRoll};
 use crate::plugin_browser::PluginBrowser;
@@ -47,6 +48,9 @@ const PASTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::V
 const DUPLICATE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::D);
 /// Opens the command palette.
 const PALETTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::K);
+/// Taps the tempo. Handled apart from [`SHORTCUTS`], because T is a note on
+/// the computer keyboard while that is on.
+const TAP: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::T);
 
 /// Where the properties panel's body is scrolled to, in egui's own state.
 fn properties_scroll() -> egui::Id {
@@ -105,6 +109,9 @@ pub struct App {
     plugin_browser: PluginBrowser,
     cache_panel: CachePanel,
     outputs: OutputsView,
+    /// Whether the MIDI ports view is showing.
+    midi_ports_open: bool,
+    midi_ports: MidiPortsView,
     /// The computer keyboard as a MIDI source. Off at start and not saved.
     keyboard: crate::keyboard::KeyboardMidi,
     /// Writes the unsaved project out now and then. `None` in tests and when
@@ -141,6 +148,11 @@ pub(crate) enum Action {
     Undo,
     Redo,
     TogglePlayback,
+    /// Counts a tap of the tempo (the Tap button or `T`).
+    TapTempo,
+    SetTempoSource(crate::tempo_source::TempoSource),
+    /// Makes the live tempo a tempo change in the map at the playhead.
+    WriteTempoToMap,
     Rewind,
     ToggleRecord,
     ToggleKeyboard,
@@ -179,6 +191,7 @@ pub(crate) enum Action {
     BindButton(usize),
     ToggleScope,
     ToggleOutputs,
+    ToggleMidiPorts,
     TogglePlugins,
     ToggleCache,
     ToggleCpu,
@@ -219,7 +232,7 @@ impl Action {
     fn yields_to_text(self) -> bool {
         matches!(
             self,
-            Self::TogglePlayback | Self::ToggleKeyboard | Self::Undo | Self::Redo
+            Self::TogglePlayback | Self::TapTempo | Self::ToggleKeyboard | Self::Undo | Self::Redo
         )
     }
 }
@@ -269,6 +282,8 @@ impl App {
             plugin_browser: PluginBrowser::default(),
             cache_panel: CachePanel::default(),
             outputs: OutputsView::default(),
+            midi_ports_open: false,
+            midi_ports: MidiPortsView::default(),
             keyboard: crate::keyboard::KeyboardMidi::default(),
             autosave: None,
             recovery: None,
@@ -441,6 +456,19 @@ impl App {
                     #[cfg(test)]
                     crate::testkit::mark_view(ui, "outputs");
                     let edits = self.outputs.show(ui, &self.session);
+                    self.session.edit(edits);
+                });
+        }
+
+        if self.midi_ports_open {
+            egui::Panel::bottom("midi ports")
+                .resizable(false)
+                .show(ui, |ui| {
+                    #[cfg(test)]
+                    crate::testkit::mark_view(ui, "midi ports");
+                    let edits = self
+                        .midi_ports
+                        .show(ui, self.session.project(), || self.session.new_node_id());
                     self.session.edit(edits);
                 });
         }
@@ -812,6 +840,9 @@ impl App {
                     actions.push(entry.action);
                 }
             }
+            if !dialog && !typing && !self.keyboard.is_on() && input.consume_shortcut(&TAP) {
+                actions.push(Action::TapTempo);
+            }
             // Escape stops the monitor, but only while there is one, so the
             // other things Escape closes keep it otherwise.
             if !dialog
@@ -990,6 +1021,13 @@ impl App {
                 actions.push(Action::ToggleOutputs);
             }
             if ui
+                .selectable_label(self.midi_ports_open, "MIDI ports")
+                .on_hover_text("Which port each MIDI In, MIDI Control and MIDI Out node uses")
+                .clicked()
+            {
+                actions.push(Action::ToggleMidiPorts);
+            }
+            if ui
                 .selectable_label(self.plugin_browser.is_open(), "Plugins")
                 .on_hover_text("Find and add CLAP plugins")
                 .clicked()
@@ -1080,6 +1118,7 @@ impl App {
         self.metronome_button(ui, actions);
         self.tempo_fields(ui, actions);
         self.extra_buttons(ui, actions);
+        self.tempo_source_controls(ui, actions);
         let at = self
             .session
             .project()
@@ -1089,14 +1128,58 @@ impl App {
         ui.monospace(position).on_hover_text("Bar.beat.tick");
     }
 
+    /// The tempo source, the Tap button, and Write to map while a tap or a
+    /// clock is in charge.
+    fn tempo_source_controls(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let source = self.session.tempo_source();
+        ui.menu_button(format!("♪ {}", source.label()), |ui| {
+            for choice in crate::tempo_source::TempoSource::ALL {
+                if ui
+                    .selectable_label(choice == source, choice.label())
+                    .clicked()
+                {
+                    actions.push(Action::SetTempoSource(choice));
+                    ui.close();
+                }
+            }
+            if self.session.live_tempo().is_some() {
+                ui.separator();
+                if ui
+                    .button("Write to map")
+                    .on_hover_text(
+                        "Keep the live tempo as a tempo change in the map at the playhead",
+                    )
+                    .clicked()
+                {
+                    actions.push(Action::WriteTempoToMap);
+                    ui.close();
+                }
+            }
+        })
+        .response
+        .on_hover_text("Where the tempo comes from: the tempo map, taps, or a MIDI clock");
+        if ui
+            .button("Tap")
+            .on_hover_text("Tap the tempo (T). Three taps make a tempo")
+            .clicked()
+        {
+            actions.push(Action::TapTempo);
+        }
+    }
+
     /// The session's tempo and time signature. The tempo is the one that holds
     /// at the playhead, so where the tempo lane has made changes, this edits
     /// the stretch the playhead is in.
     fn tempo_fields(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let map = self.session.project().tempo_map();
         let mut bpm = map.bpm_at(self.session.playhead());
-        let response = ui
-            .add(
+        // A tap or a clock in charge: its tempo shows in place of the map's
+        // field, which would edit a tempo nothing is playing.
+        let response = if let Some(live) = self.session.live_tempo() {
+            ui.add(egui::Label::new(format!("{live:.1} bpm")).sense(egui::Sense::hover()))
+                .on_hover_text("The live tempo, from taps or the MIDI clock")
+        } else {
+            ui.add(
                 egui::DragValue::new(&mut bpm)
                     .range(noodle_core::TempoMap::MIN_BPM..=noodle_core::TempoMap::MAX_BPM)
                     .speed(0.2)
@@ -1107,7 +1190,8 @@ impl App {
                 "The tempo where the playhead is (the tempo lane has changes)"
             } else {
                 "The session's tempo"
-            });
+            })
+        };
         if response.changed() {
             actions.push(Action::SetTempo {
                 centi_bpm: (bpm * 100.0).round() as u32,
@@ -1767,6 +1851,9 @@ impl App {
                     self.session.play();
                 }
             }
+            Action::TapTempo => self.session.tap_tempo(std::time::Instant::now()),
+            Action::SetTempoSource(source) => self.session.set_tempo_source(source),
+            Action::WriteTempoToMap => self.session.write_tempo_to_map(),
             Action::ToggleEngine => {
                 if self.session.engine_running() {
                     self.session.stop_engine();
@@ -1892,6 +1979,12 @@ impl App {
                 if self.outputs_open {
                     self.outputs
                         .refresh(self.session.audio_config().host.as_deref());
+                }
+            }
+            Action::ToggleMidiPorts => {
+                self.midi_ports_open = !self.midi_ports_open;
+                if self.midi_ports_open {
+                    self.midi_ports.refresh();
                 }
             }
             Action::ImportAudio => {

@@ -260,3 +260,27 @@ on every channel.
   remove the node.
 - The arming is session state and not saved; a new project starts with no
   track armed.
+
+**Audio.** A track input also monitors the device input. Its `monitor`
+parameter is Off, Auto (the default) or In, and its `input` config names the
+device channels (`1`, `3 4`). The audio thread copies each block of device
+input into the transport's `InputTap` (atomics, so no lock), and the track input
+crossfades its clips to the tap's channels over about 5 ms while the input
+should be heard: always for In; for Auto while the track is audio-armed and the
+transport is stopped, or recording inside the take's span, so the player hears
+the old take in the pre-roll and themselves from the punch-in. Offline renders
+have no tap and play clips only. The cue mix on the headphone channels is a send
+to a second Mix and is not routed.
+
+## Tempo source
+
+The transport's tempo is the project's tempo map unless a live tempo stands in
+for it (`Controller::set_live_tempo`): tap tempo or an external MIDI clock, chosen
+in the transport bar. The controller keeps the project's map and the one the
+engine plays by (the live tempo with the project's time signatures)
+separately; the engine gets a new `TempoTable` the way it does for an edit, which
+keeps the playhead's tick. It is session state: no command, no undo step, no
+cache invalidation. "Write to map" makes it a `SetTempoMap`. MIDI timing
+messages reach the session through `MidiBus::clock_tap`, never the MIDI In
+nodes, and `tempo_source.rs` holds the tap and clock estimators. Details and
+limits are in [features/tempo-source-and-monitoring.md](../features/tempo-source-and-monitoring.md).
