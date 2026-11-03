@@ -40,7 +40,7 @@ pub const STORIES: [Story; 30] = [
         id: "S01",
         title: "Comp a vocal from multiple takes",
         status: Status::Partial,
-        missing: "Recording the takes (the route starts from a take folder), a ninth take and sliding the comp: #334.",
+        missing: "A new recording lands as its own clip instead of joining the take folder it was recorded over, and sliding the comp. The takes are recorded for real through the virtual input (#334).",
     },
     Story {
         id: "S02",
@@ -130,7 +130,7 @@ pub const STORIES: [Story; 30] = [
         id: "S16",
         title: "Make a vocoder or spectral effect",
         status: Status::Partial,
-        missing: "The spectral frame size is fixed, so there is no band count to change: #355.",
+        missing: "The spectral frame size is fixed (a roadmap item); the band count is Cross's `bands` parameter (#355).",
     },
     Story {
         id: "S17",
