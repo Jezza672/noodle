@@ -220,7 +220,7 @@ pub const STORIES: [Story; 30] = [
         "S27",
         "Perform a set live with clips and scenes",
         Status::Blocked,
-        "No clip launching or scenes, and no tap tempo, MIDI clock in or Link.",
+        "No clip launching or scenes, and no transport tap tempo, MIDI clock in or Link.",
     ),
     assessed(
         "S28",
