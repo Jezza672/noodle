@@ -1,4 +1,4 @@
-//! The thirty stories and how far Noodle gets with each.
+//! The live stories and how far Noodle gets with each. S25 and S26 are retired and have no entry; IDs are never reused or renumbered.
 //!
 //! The titles are checked against `docs/usability/stories.md`, which owns the
 //! IDs. A story's status moves up as its routes land.
@@ -35,7 +35,7 @@ pub struct Story {
     pub missing: &'static str,
 }
 
-pub const STORIES: [Story; 30] = [
+pub const STORIES: [Story; 28] = [
     Story {
         id: "S01",
         title: "Comp a vocal from multiple takes",
@@ -181,22 +181,10 @@ pub const STORIES: [Story; 30] = [
         missing: "No tail length setting: #361; the native folder dialog stops the export.",
     },
     Story {
-        id: "S25",
-        title: "Exchange a session via interchange formats",
-        status: Status::Blocked,
-        missing: "No AAF or OMF import or export: #362.",
-    },
-    Story {
-        id: "S26",
-        title: "Score and mix to picture",
-        status: Status::Blocked,
-        missing: "No video, timecode or hit points: #363.",
-    },
-    Story {
         id: "S27",
-        title: "Perform a set live with clips and scenes",
-        status: Status::Blocked,
-        missing: "No clip launching or scenes (#364) and no Ableton Link (#365; tap tempo and MIDI clock in are built, but a route cannot see the session-only tempo source).",
+        title: "Jam live with pads that launch loops and patterns",
+        status: Status::Partial,
+        missing: "No Ableton Link (#365); tap tempo and MIDI clock in are built, but a route cannot see the session-only tempo source. Loading a loop into a pad and the late changes are not routed.",
     },
     Story {
         id: "S28",
@@ -229,7 +217,10 @@ mod tests {
             let line = format!("- **{}** **{}.**", story.id, story.title);
             assert!(doc.contains(&line), "{} is not in stories.md", story.id);
         }
-        let in_doc = doc.matches("\n- **S").count();
+        let in_doc = doc
+            .lines()
+            .filter(|l| l.starts_with("- **S") && !l.contains("*Retired.*"))
+            .count();
         assert_eq!(
             in_doc,
             STORIES.len(),
@@ -239,8 +230,12 @@ mod tests {
 
     #[test]
     fn every_story_has_a_status_and_a_missing_piece() {
-        for (i, story) in STORIES.iter().enumerate() {
-            assert_eq!(story.id, format!("S{:02}", i + 1));
+        let mut last = 0;
+        for story in &STORIES {
+            // IDs ascend; retired ones leave gaps.
+            let n: u32 = story.id[1..].parse().unwrap();
+            assert!(n > last, "{} is out of order", story.id);
+            last = n;
 
             if story.status != Status::Full {
                 assert!(!story.missing.is_empty(), "{}", story.id);

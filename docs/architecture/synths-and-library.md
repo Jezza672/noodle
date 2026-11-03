@@ -202,6 +202,15 @@ These are primitives; instruments and racks built from them are groups.
   the transport's tick grid (free-running while stopped): up, down, up-down,
   down-up, as played or random (seeded by the node's seed), over 1 to 4
   octaves, with gate, swing and hold.
+- **Launch Quantise** (`noodle.event.launch_quantise`) holds each note until
+  the next beat, half bar, bar, 2 or 4 bars of the transport (`grid`; bars
+  count from the last time-signature change; free-running while stopped). In
+  *Hold* mode note-offs wait too, and a tap shorter than the wait still plays
+  one grid unit; in *Toggle* mode a press starts the note and the next press
+  of that key ends it, and a second press before the start cancels the launch.
+  Raw MIDI passes straight through. The **Loop Pads** library template is this
+  node in front of a Note Split and eight looping Samplers (keys 36 to 43),
+  so pads launch loops on the bar. There is no clip grid or session view (#364).
 
 - **Envelope** (`noodle.mod.envelope`) plays a drawn curve over `length` (or,
   with `time` set to Beats, over `beats` beats at the transport's tempo, read

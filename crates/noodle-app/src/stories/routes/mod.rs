@@ -29,8 +29,6 @@ mod s21_mix_versions;
 mod s22_surround;
 mod s23_loudness;
 mod s24_stems_export;
-mod s25_interchange;
-mod s26_picture;
 mod s27_clip_launching;
 mod s28_setlist;
 mod s29_organise;
@@ -76,8 +74,6 @@ pub fn all() -> Vec<Route> {
         s22_surround::route(),
         s23_loudness::route(),
         s24_stems_export::route(),
-        s25_interchange::route(),
-        s26_picture::route(),
         s27_clip_launching::route(),
         s28_setlist::route(),
         s29_organise::route(),
