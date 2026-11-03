@@ -529,8 +529,8 @@ mod tests {
         assert!(s12.contains("| 5 act / 9.5 s |"), "{s12}");
         assert!(s12.contains("| stops in wire |"), "{s12}");
         assert!(s12.contains("| 1 of 4 steps | 2 | identical |"), "{s12}");
-        let s02 = lines.iter().find(|l| l.contains("| S11 ")).unwrap();
-        assert!(s02.contains("| blocked | - | - | - |"), "{s02}");
+        let s04 = lines.iter().find(|l| l.contains("| S04 ")).unwrap();
+        assert!(s04.contains("| blocked | - | - | - |"), "{s04}");
         assert!(lines.last().unwrap().contains("S00 (framework check)"));
     }
 

@@ -127,6 +127,9 @@ The app already has what this needs. `crates/noodle-app/src/testkit.rs` drives t
 - **Robustness** (`robustness.rs`, group G). Output underruns counted by the engine across the route and its late changes (reported, not asserted, since a loaded CI machine can drop a block). After each route the project is saved and opened again; it must read back identically and the done check must pass on it, which fails the route.
 - **Diff on PRs** (`scripts/scorecard_diff.py`, the "Scorecard diff" step in `ci.yml`). The baseline is the `usability-scorecard` artifact of the latest green `main` run, not a committed file, so PRs never conflict on it. On each same-repo PR the Linux job diffs `scorecard.json` against it and posts one comment, updated in place (found by a hidden marker), listing only the route rows that moved beyond tolerance: whole-number metrics report any change, KLM and wait seconds 0.5 s, ratios 0.02. With no baseline yet, or no change, the comment says so. Fork PRs have a read-only token and skip the comment (the diff still goes to the job summary). The script has its own tests, run in the same step.
 
+- **Human rubric** ([usability/rubric.md](../usability/rubric.md)). Six Cognitive Dimensions rated by hand per story (filled in for the MVP stories), and the protocol for human sessions: Single Ease Question after each story, SUS at the end, NASA-TLX optionally, results in `docs/usability/sessions/`.
+- **Registry statuses.** Every story has a status. The 24 not yet routed were assessed from the docs and the code, so their statuses are a first reading, and a route may move them either way.
+
 ### Keeping it current
 
 - **New features:** the route file is the record. A feature that makes a story easier should come with a new or shorter route, and the scorecard diff shows the gain.
