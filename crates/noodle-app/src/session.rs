@@ -21,6 +21,7 @@ pub mod record_automation;
 mod render_clip;
 pub mod sample_set;
 mod stems;
+mod transport_tempo;
 pub use export::{ExportChoice, ExportSummary};
 pub use library::LibraryEdit;
 
@@ -327,6 +328,13 @@ pub struct Session {
     clips: ClipFeeds,
     /// Where the MIDI input port's messages go, to reach the MIDI In nodes.
     midi: noodle_io::MidiBus,
+    /// Where the transport's tempo comes from, and the tempo while it is not
+    /// the map (see `tempo_source.rs`).
+    tempo_source: crate::tempo_source::TempoSource,
+    live_bpm: Option<f64>,
+    taps: crate::tempo_source::Taps,
+    clock: crate::tempo_source::ClockFollower,
+    clock_tap: noodle_io::ClockTap,
     /// The samples the Samplers play, kept in `samples` beside the project.
     samples: noodle_nodes::SampleStore,
     /// The open MIDI input ports, each with the name it was chosen by.
@@ -701,7 +709,12 @@ impl Session {
             hosts_checked: None,
             telemetry,
             clips,
+            clock_tap: midi.clock_tap(),
             midi,
+            tempo_source: Default::default(),
+            live_bpm: None,
+            taps: Default::default(),
+            clock: Default::default(),
             samples,
             midi_connections: Vec::new(),
             learning: None,
@@ -1823,7 +1836,9 @@ impl Session {
         // The take belongs to the project it was recorded in, and so does
         // the arming: track IDs mean other tracks in the next project.
         self.stop_recording();
-        self.armed_audio.clear();
+        for track in std::mem::take(&mut self.armed_audio) {
+            self.clips.set_audio_armed(track, false);
+        }
         for track in std::mem::take(&mut self.armed_midi) {
             self.clips.set_monitoring(track, false);
         }
@@ -1949,6 +1964,9 @@ impl Session {
                     .clone()
                     .or_else(|| playback.input_problem().map(no_input))
                     .or_else(|| output_problems(&playback));
+                // Track inputs monitor the device input of this engine.
+                self.clips
+                    .set_input_tap(Some(controller.transport().input_tap()));
                 self.audio = Some(Audio {
                     playback,
                     controller,
@@ -1960,6 +1978,7 @@ impl Session {
                 self.recompile();
                 if let Some(audio) = &mut self.audio {
                     audio.controller.set_tempo_map(self.project.tempo_map());
+                    audio.controller.set_live_tempo(self.live_bpm);
                     audio
                         .controller
                         .transport()
@@ -2105,6 +2124,7 @@ impl Session {
         }
         self.parked = self.playhead();
         self.audio = None;
+        self.clips.set_input_tap(None);
     }
 
     /// The tempo map the audio thread is using, if the stream is open.
@@ -2327,6 +2347,7 @@ impl Session {
             self.set_count_in_click(false);
             self.start_take(from, out);
         }
+        self.follow_clock();
         self.watch_punch();
         match self.freezing.poll() {
             Polled::Nothing => {
@@ -2436,8 +2457,10 @@ impl Session {
         } else {
             set.remove(&track);
         }
-        if kind == ArmKind::Midi {
-            self.clips.set_monitoring(track, on);
+        match kind {
+            ArmKind::Midi => self.clips.set_monitoring(track, on),
+            // Auto monitoring hears the input of an audio-armed track.
+            ArmKind::Audio => self.clips.set_audio_armed(track, on),
         }
     }
 
@@ -2758,6 +2781,30 @@ impl Session {
             quantise: self.record_quantise,
         });
         self.message = notice;
+        self.publish_recording_window();
+    }
+
+    /// Tells the armed audio tracks what the take keeps, so that Auto
+    /// monitoring hears the input inside it and the old take outside.
+    fn publish_recording_window(&self) {
+        let Some(recording) = &self.recording else {
+            return;
+        };
+        let map = match &self.audio {
+            Some(audio) => audio.controller.tempo_map(),
+            None => self.project.tempo_map(),
+        };
+        let rate = match &self.audio {
+            Some(audio) => f64::from(audio.controller.settings().sample_rate),
+            None => f64::from(FREEZE_SETTINGS.sample_rate),
+        };
+        let span = (
+            map.sample_at(recording.keep.0, rate),
+            recording.keep.1.map(|out| map.sample_at(out, rate)),
+        );
+        for &track in &recording.audio_tracks {
+            self.clips.set_recording(track, Some(span));
+        }
     }
 
     /// The sample rate to place a take with, and how long after the
@@ -2865,6 +2912,9 @@ impl Session {
         let Some(mut recording) = self.recording.take() else {
             return;
         };
+        for &track in &recording.audio_tracks {
+            self.clips.set_recording(track, None);
+        }
         let stop_micros = noodle_io::now_micros();
         let mut notes = Vec::new();
         let mut take = None;
@@ -3136,6 +3186,11 @@ impl Session {
         for &track in &self.armed_midi {
             if self.project.graph().node(track).is_some() {
                 self.clips.set_monitoring(track, true);
+            }
+        }
+        for &track in &self.armed_audio {
+            if self.project.graph().node(track).is_some() {
+                self.clips.set_audio_armed(track, true);
             }
         }
     }

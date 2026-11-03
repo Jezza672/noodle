@@ -46,7 +46,7 @@ pub const STORIES: [Story; 30] = [
         id: "S02",
         title: "Punch in on a live overdub",
         status: Status::Partial,
-        missing: "Input monitoring and a headphone cue mix (#345); recording is not routed because a route has no live input (#334).",
+        missing: "A headphone cue mix, which waits on sends in the Mix node (#332, #345); recording is not routed because a route has no live input (#334).",
     },
     Story {
         id: "S03",
@@ -196,7 +196,7 @@ pub const STORIES: [Story; 30] = [
         id: "S27",
         title: "Perform a set live with clips and scenes",
         status: Status::Blocked,
-        missing: "No clip launching or scenes (#364) and no tap tempo, MIDI clock in or Link (#365).",
+        missing: "No clip launching or scenes (#364) and no Ableton Link (#365; tap tempo and MIDI clock in are built, but a route cannot see the session-only tempo source).",
     },
     Story {
         id: "S28",
