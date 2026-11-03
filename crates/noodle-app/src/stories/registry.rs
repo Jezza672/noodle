@@ -46,13 +46,13 @@ pub const STORIES: [Story; 28] = [
         id: "S02",
         title: "Punch in on a live overdub",
         status: Status::Partial,
-        missing: "A headphone cue mix, which waits on sends in the Mix node (#332, #345); recording is not routed because a route has no live input (#334).",
+        missing: "A headphone cue mix is not routed (#345); recording is not routed because a route has no live input (#334).",
     },
     Story {
         id: "S03",
         title: "Drive external hardware like an internal instrument",
         status: Status::Partial,
-        missing: "The MIDI Out port is typed text (#346); recording the synth's audio back is not routed (#334).",
+        missing: "Recording the synth's audio back is not routed (#334).",
     },
     Story {
         id: "S04",
@@ -82,13 +82,13 @@ pub const STORIES: [Story; 28] = [
         id: "S08",
         title: "Edit MIDI performance detail",
         status: Status::Partial,
-        missing: "No humanise: #350; recording the part and redrawing the sustain lane are not routed.",
+        missing: "Recording the part and redrawing the sustain lane are not routed; humanising only some notes with the Humanise node (automating its amount) is not routed.",
     },
     Story {
         id: "S09",
         title: "Program a drum pattern with swing and choke",
         status: Status::Partial,
-        missing: "No swing; the hat choke needs a hand-written Script node; loading the samples and swapping the snare are not routed: #330.",
+        missing: "Loading the samples into the rack and swapping the snare are not routed.",
     },
     Story {
         id: "S10",
@@ -142,13 +142,13 @@ pub const STORIES: [Story; 28] = [
         id: "S18",
         title: "Use third-party plugins",
         status: Status::Partial,
-        missing: "Only CLAP is hosted, and the test machine has no plugin to add, automate or save; swapping a plugin and opening a project without one are untested: #357.",
+        missing: "Only CLAP is hosted, and the test machine has no plugin to add, automate or save; a swap keeping automation is routed with descriptors only (S18 replace route); opening a project without a plugin is a session test.",
     },
     Story {
         id: "S19",
         title: "Build a parallel processing mix bus",
         status: Status::Partial,
-        missing: "Sends are extra wires and pre/post is which wire; delay compensation and adding a drum track are not routed: #332.",
+        missing: "Plugin delay compensation and adding a drum track to the bus are not routed.",
     },
     Story {
         id: "S20",

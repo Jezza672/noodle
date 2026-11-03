@@ -492,3 +492,28 @@ loopback socket is protected by a token only (another local process can connect 
 a start fail, nothing more). The macOS and Windows
 paths are checked by CI building and running the tests (the same tests as
 Linux except the editor ones).
+
+## Replacing a plugin, and a plugin that is missing
+
+**Replace node** (right-click a node, "Replace with...", then the add-node
+search) changes a node's type and keeps its ID, so its wires, automation
+lanes and clips stay. `Session`'s `replace::plan` builds one
+`Command::Batch` (so one undo step) around `Command::SetNodeType`. Audio,
+event and output ports keep their key or go to the port at the same
+position. A parameter keeps its key, except between two plugins, where
+parameter IDs mean nothing and parameters match by name (the full
+"Module / Name", then the name alone). A parameter whose range differs
+keeps its position along the slider, in its stored value and in its lane's
+points. What has no match loses its wire or lane and is named in the status
+message; undo restores it. A stand-in for a missing plugin knows only port
+keys, not names, so it can be replaced but matches by key alone.
+
+**Missing plugins.** A node of a `clap.`, `vst3.` or `au.` type that the
+machine has not scanned is not dropped. `MissingPlugin` (noodle-engine)
+stands in for it: audio input *n* passes to audio output *n*, notes are
+dropped, and the node's type, config (with the saved state) and parameter
+values are untouched, so the project reopens whole where the plugin exists.
+Its ports are the ones the project uses (wired keys and stored parameters),
+read from the key scheme above. The registry offers the stand-in to the
+editor (`Registry::provide_placeholders`, after each edit), and the compiler
+builds it for renders and the command line.
