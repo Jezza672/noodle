@@ -785,6 +785,18 @@ fn table() -> Vec<Row> {
         )
         .int("inputs", 2)
         .int("kind", 1),
+        row("noodle.util.selector", "Instant A/B", &[]),
+        row(
+            "noodle.util.selector",
+            "Zero-crossing A/B",
+            &[("switch", 1.0)],
+        ),
+        row(
+            "noodle.util.selector",
+            "Notes, Cut Held",
+            &[("switch", 1.0)],
+        )
+        .int("kind", 1),
         row(
             "noodle.event.key",
             "Middle C",

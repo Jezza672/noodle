@@ -276,19 +276,23 @@ impl SelectorNode {
     }
 
     fn process_signals(&mut self, ctx: &Context, io: Io<'_, '_>) {
-        let mut now = self.target;
+        let start = self.target;
         self.find_changes(&io, ctx.frames);
         let instant = Self::param(&io, self.switch_port) < 0.5;
         let shape = io.outputs[OUT].shape();
-        let mut edge = 0;
-        for i in 0..ctx.frames {
-            while edge < self.edges.len() && self.edges[edge].0 == i {
-                now = self.edges[edge].1;
-                edge += 1;
-            }
-            for voice in 0..shape.voices {
-                for channel in 0..shape.channels {
-                    let lane = &mut self.lanes[voice * shape.channels + channel];
+        for voice in 0..shape.voices {
+            for channel in 0..shape.channels {
+                let lane = &mut self.lanes[voice * shape.channels + channel];
+                let mut now = start;
+                let mut edge = 0;
+                // A lane is silent only if every sample it passes this block
+                // came from an input known to be silent.
+                let mut silent = true;
+                for i in 0..ctx.frames {
+                    while edge < self.edges.len() && self.edges[edge].0 == i {
+                        now = self.edges[edge].1;
+                        edge += 1;
+                    }
                     if lane.active != now {
                         let old = io.inputs[lane.active].lane(voice, channel)[i];
                         if instant || lane.prev * old <= 0.0 || lane.waited >= self.max_wait {
@@ -298,9 +302,16 @@ impl SelectorNode {
                             lane.waited += 1;
                         }
                     }
-                    let x = io.inputs[lane.active].lane(voice, channel)[i];
+                    let used = lane.active;
+                    if !io.inputs[used].is_silent(voice, channel) {
+                        silent = false;
+                    }
+                    let x = io.inputs[used].lane(voice, channel)[i];
                     lane.prev = x;
                     io.outputs[OUT].lane_mut(voice, channel)[i] = x;
+                }
+                if silent {
+                    io.outputs[OUT].set_silent(voice, channel);
                 }
             }
         }
@@ -442,13 +453,14 @@ impl Node for SelectorNode {
     }
 }
 
-/// The input a `which` value chooses: rounded, clamped to `0..inputs`, and
-/// input 1 for a value that isn't a number.
+/// The input a `which` value chooses: rounded and clamped to
+/// `0..=inputs - 1`. NaN chooses input 1; the infinities clamp like any other
+/// out-of-range value.
 fn chosen_input(which: f32, inputs: usize) -> usize {
-    if which.is_finite() {
-        which.round().clamp(0.0, (inputs - 1) as f32) as usize
-    } else {
+    if which.is_nan() {
         0
+    } else {
+        which.round().clamp(0.0, (inputs - 1) as f32) as usize
     }
 }
 
@@ -505,6 +517,8 @@ mod tests {
             (1.49, 2.0),
             (1.5, 3.0),
             (99.0, 3.0),
+            (f32::INFINITY, 3.0),
+            (f32::NEG_INFINITY, 1.0),
             (f32::NAN, 1.0),
         ] {
             h.set(3, which);
@@ -515,16 +529,21 @@ mod tests {
 
     #[test]
     fn a_wired_which_selects_each_sample() {
-        let connected = [(0, MONO), (1, MONO), (2, MONO)];
-        let mut h = Harness::new(&Selector, &config(2, 0), &connected, 48_000.0, 4).unwrap();
-        h.input(0, 4).fill(1.0);
-        h.input(1, 4).fill(2.0);
-        // The last value rounds to input 2 and the last clamps to it.
-        h.input(2, 4)
-            .lane_mut(0, 0)
-            .copy_from_slice(&[0.0, 1.0, 1.4, 5.0]);
-        h.run(4).unwrap();
-        assert_eq!(h.output(OUT).lane(0, 0), &[1.0, 2.0, 2.0, 2.0]);
+        let connected = [(0, MONO), (1, MONO), (2, MONO), (3, MONO)];
+        let mut h = Harness::new(&Selector, &config(3, 0), &connected, 48_000.0, 5).unwrap();
+        h.input(0, 5).fill(1.0);
+        h.input(1, 5).fill(2.0);
+        h.input(2, 5).fill(3.0);
+        // Rounding, then both infinities clamp, then NaN is input 1.
+        h.input(3, 5).lane_mut(0, 0).copy_from_slice(&[
+            1.4,
+            f32::INFINITY,
+            f32::NEG_INFINITY,
+            f32::NAN,
+            2.0,
+        ]);
+        h.run(5).unwrap();
+        assert_eq!(h.output(OUT).lane(0, 0), &[2.0, 3.0, 1.0, 1.0, 3.0]);
     }
 
     #[test]
@@ -619,14 +638,20 @@ mod tests {
         h.set(3, 1.0);
         h.run(FRAMES).unwrap();
         assert!(h.output(OUT).lane(0, 0).iter().all(|&x| x == 0.0));
+        assert!(
+            h.output(OUT).is_silent(0, 0),
+            "an unconnected selection is flagged silent"
+        );
 
         // The other inputs still pass while selected.
         h.set(3, 2.0);
         h.run(FRAMES).unwrap();
         assert_eq!(h.output(OUT).lane(0, 0), &[3.0; FRAMES]);
+        assert!(!h.output(OUT).is_silent(0, 0));
         h.set(3, 0.0);
         h.run(FRAMES).unwrap();
         assert_eq!(h.output(OUT).lane(0, 0), &[1.0; FRAMES]);
+        assert!(!h.output(OUT).is_silent(0, 0));
     }
 
     #[test]
