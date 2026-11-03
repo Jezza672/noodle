@@ -1275,6 +1275,59 @@ fn live_monitoring_never_allocates_while_notes_come_and_go() {
     }
 }
 
+#[test]
+fn audio_monitoring_never_allocates_while_the_input_comes_and_goes() {
+    let mut registry = Registry::with_builtins();
+    let library = noodle_nodes::register_library(&mut registry);
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    library
+        .clips
+        .set_input_tap(Some(controller.transport().input_tap()));
+    let mut project = Project::new();
+    let track = project.new_node_id();
+    let output = project.new_node_id();
+    for (id, node) in [
+        (track, Node::new(noodle_nodes::TRACK_INPUT_ID)),
+        (output, Node::new(OUTPUT_ID)),
+    ] {
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+    }
+    Command::Connect(Connection {
+        from: Endpoint::new(track, "audio"),
+        to: Endpoint::new(output, "in"),
+    })
+    .apply(&mut project)
+    .unwrap();
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let transport = controller.transport();
+    let frames = 128;
+    let input = vec![0.25; frames * 2];
+    let mut out = vec![0.0; frames * SETTINGS.channels];
+    for round in 0..16u64 {
+        // Armed and disarmed, recording inside a span and not, with the
+        // transport starting and stopping.
+        library.clips.set_audio_armed(track, round % 3 != 2);
+        library.clips.set_recording(
+            track,
+            (round % 4 < 2).then_some((round * 64, Some(round * 64 + 512))),
+        );
+        if round % 2 == 0 {
+            transport.stop();
+        } else {
+            transport.play();
+        }
+        controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                processor.process_with_input(&input, 2, &mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+}
+
 /// Passes its input through 100 samples late and says so, so the engine has
 /// something to compensate for.
 struct Latent;
@@ -1490,12 +1543,27 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
             .with_param("rate", 5.0)
             .with_param("pattern", 5.0),
     );
+    // Swing and Humanise between the arpeggiator and the split, and the
+    // split's outputs in one choke group so each cuts the other.
+    let swing = s.add(
+        Node::new("noodle.event.swing")
+            .with_param("amount", 0.4)
+            .with_param("grid", 2.0),
+    );
+    let humanise = s.add(
+        Node::new("noodle.event.humanise")
+            .with_param("timing", 10.0)
+            .with_param("velocity", 0.3),
+    );
     let split = s.add(
-        Node::new("noodle.event.note_split").with_config(
-            Config::new()
-                .with("outputs", Value::Int(2))
-                .with("rest", Value::Int(1)),
-        ),
+        Node::new("noodle.event.note_split")
+            .with_config(
+                Config::new()
+                    .with("outputs", Value::Int(2))
+                    .with("rest", Value::Int(1)),
+            )
+            .with_param("choke1", 1.0)
+            .with_param("choke2", 1.0),
     );
     let (low, high) = (sampler(&mut s), sampler(&mut s));
     let mix = s.add(Node::new("noodle.util.mix"));
@@ -1510,7 +1578,9 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
     let output = s.add(Node::new(OUTPUT_ID));
     s.wire(button, "out", key, "gate");
     s.wire(key, "out", arp, "in");
-    s.wire(arp, "out", split, "in");
+    s.wire(arp, "out", swing, "in");
+    s.wire(swing, "out", humanise, "in");
+    s.wire(humanise, "out", split, "in");
     s.wire(split, "out1", low, "in");
     s.wire(split, "out2", high, "in");
     s.wire(low, "out", mix, "in1");

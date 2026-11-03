@@ -617,6 +617,25 @@ fn config(
             articulation_map_editor(ui, session, id, info, node, edits);
             continue;
         }
+        // Chosen in the MIDI ports view, which knows what ports there are.
+        if matches!(
+            node_type.info().id,
+            noodle_nodes::MIDI_IN_ID | noodle_nodes::MIDI_CONTROL_ID | noodle_nodes::MIDI_OUT_ID
+        ) && info.key == noodle_nodes::MIDI_PORT_KEY
+        {
+            let port = info.get_text(&node.config);
+            ui.label(if port.is_empty() || port == "*" {
+                if node_type.info().id == noodle_nodes::MIDI_OUT_ID {
+                    "No port chosen".to_owned()
+                } else {
+                    "Listens to every port".to_owned()
+                }
+            } else {
+                format!("Port: {port}")
+            })
+            .on_hover_text("Choose the port in View → MIDI ports.");
+            continue;
+        }
         if node_type.info().id == noodle_nodes::REMAP_ID
             && info.key == noodle_nodes::REMAP_CURVE_KEY
         {

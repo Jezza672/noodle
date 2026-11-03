@@ -16,10 +16,13 @@ pub mod automate;
 mod export;
 pub mod learn_midi;
 mod library;
+pub mod map_to;
 pub mod record_automation;
 mod render_clip;
+pub mod replace;
 pub mod sample_set;
 mod stems;
+mod transport_tempo;
 pub mod versions;
 pub use export::{ExportChoice, ExportSummary};
 pub use library::LibraryEdit;
@@ -114,6 +117,15 @@ pub enum Edit {
     /// The Automate shortcut on a parameter: an Automation node, its lane
     /// and the wire into the parameter, as one undo step (see [`automate`]).
     Automate(noodle_core::Endpoint),
+    /// The Map to gesture: `from` wired to the parameter `to` through a new
+    /// Remap, as one undo step (see [`map_to`]).
+    MapTo {
+        from: noodle_core::Endpoint,
+        to: noodle_core::Endpoint,
+        /// Commands that go first, in the same undo step (a spare port made
+        /// real).
+        prepare: Vec<Command>,
+    },
     /// Learn MIDI on a parameter: the next control moved on any open MIDI
     /// port becomes a MIDI Control node wired into it (see [`learn_midi`]).
     /// Choosing it again on the same parameter stops listening.
@@ -130,9 +142,22 @@ pub enum Edit {
         node: NodeId,
         on: bool,
     },
+    /// Replace node: changes `node` to `type_id`, keeping its ID, wires,
+    /// lanes and clips where ports match (see [`replace`]). One undo step.
+    ReplaceNode {
+        node: NodeId,
+        type_id: String,
+    },
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
+    /// Splits the clip a clip's stems came from again, at the chosen quality,
+    /// and points the stem clips at the new files (see
+    /// [`Session::resplit_stems`]). One undo step, when the job is done.
+    ResplitStems(noodle_core::ClipId),
+    /// Chooses how hard the next split works. Session state: not an undo
+    /// step, not saved.
+    SetStemsQuality(noodle_stems::Quality),
     /// Renders a track or group to a clip (see [`Session::render_to_clip`]):
     /// the loop's span if `in_loop`, else the whole timeline. Not an edit
     /// itself: the track arrives as one undo step when the render is done.
@@ -322,6 +347,13 @@ pub struct Session {
     clips: ClipFeeds,
     /// Where the MIDI input port's messages go, to reach the MIDI In nodes.
     midi: noodle_io::MidiBus,
+    /// Where the transport's tempo comes from, and the tempo while it is not
+    /// the map (see `tempo_source.rs`).
+    tempo_source: crate::tempo_source::TempoSource,
+    live_bpm: Option<f64>,
+    taps: crate::tempo_source::Taps,
+    clock: crate::tempo_source::ClockFollower,
+    clock_tap: noodle_io::ClockTap,
     /// The samples the Samplers play, kept in `samples` beside the project.
     samples: noodle_nodes::SampleStore,
     /// The open MIDI input ports, each with the name it was chosen by.
@@ -696,7 +728,12 @@ impl Session {
             hosts_checked: None,
             telemetry,
             clips,
+            clock_tap: midi.clock_tap(),
             midi,
+            tempo_source: Default::default(),
+            live_bpm: None,
+            taps: Default::default(),
+            clock: Default::default(),
             samples,
             midi_connections: Vec::new(),
             learning: None,
@@ -1604,6 +1641,23 @@ impl Session {
                     self.monitor_as(node, mode, add);
                     continue;
                 }
+                Edit::ReplaceNode { node, type_id } => {
+                    self.history.end_group();
+                    match replace::plan(&self.project, &self.registry, node, &type_id) {
+                        Ok((command, report)) => {
+                            let name = self
+                                .registry
+                                .get(&type_id)
+                                .map_or(type_id.as_str(), |t| t.info().name);
+                            self.message = Some(report.summary(name));
+                            command
+                        }
+                        Err(why) => {
+                            self.message = Some(format!("Can't replace: {why}"));
+                            continue;
+                        }
+                    }
+                }
                 Edit::Monitor {
                     node,
                     command,
@@ -1614,6 +1668,14 @@ impl Session {
                 }
                 Edit::SplitToStems(clip) => {
                     self.split_to_stems(clip);
+                    continue;
+                }
+                Edit::ResplitStems(clip) => {
+                    self.resplit_stems(clip);
+                    continue;
+                }
+                Edit::SetStemsQuality(quality) => {
+                    self.set_stems_quality(quality);
                     continue;
                 }
                 Edit::RenderToClip { group, in_loop } => {
@@ -1658,6 +1720,22 @@ impl Session {
                         Ok(command) => command,
                         Err(error) => {
                             self.message = Some(format!("Couldn't vary per version: {error}"));
+                            continue;
+                        }
+                    }
+                }
+                Edit::MapTo { from, to, prepare } => {
+                    self.history.end_group();
+                    let remap = self.new_node_id();
+                    match map_to::command(&self.project, &self.registry, &from, &to, remap) {
+                        Ok(command) if prepare.is_empty() => command,
+                        Ok(command) => {
+                            let mut all = prepare;
+                            all.push(command);
+                            Command::Batch(all)
+                        }
+                        Err(error) => {
+                            self.message = Some(format!("Couldn't map: {error}"));
                             continue;
                         }
                     }
@@ -1821,7 +1899,9 @@ impl Session {
         // The take belongs to the project it was recorded in, and so does
         // the arming: track IDs mean other tracks in the next project.
         self.stop_recording();
-        self.armed_audio.clear();
+        for track in std::mem::take(&mut self.armed_audio) {
+            self.clips.set_audio_armed(track, false);
+        }
         for track in std::mem::take(&mut self.armed_midi) {
             self.clips.set_monitoring(track, false);
         }
@@ -1947,6 +2027,9 @@ impl Session {
                     .clone()
                     .or_else(|| playback.input_problem().map(no_input))
                     .or_else(|| output_problems(&playback));
+                // Track inputs monitor the device input of this engine.
+                self.clips
+                    .set_input_tap(Some(controller.transport().input_tap()));
                 self.audio = Some(Audio {
                     playback,
                     controller,
@@ -1958,6 +2041,7 @@ impl Session {
                 self.recompile();
                 if let Some(audio) = &mut self.audio {
                     audio.controller.set_tempo_map(self.project.tempo_map());
+                    audio.controller.set_live_tempo(self.live_bpm);
                     audio
                         .controller
                         .transport()
@@ -2103,6 +2187,7 @@ impl Session {
         }
         self.parked = self.playhead();
         self.audio = None;
+        self.clips.set_input_tap(None);
     }
 
     /// The tempo map the audio thread is using, if the stream is open.
@@ -2325,6 +2410,7 @@ impl Session {
             self.set_count_in_click(false);
             self.start_take(from, out);
         }
+        self.follow_clock();
         self.watch_punch();
         match self.freezing.poll() {
             Polled::Nothing => {
@@ -2434,8 +2520,10 @@ impl Session {
         } else {
             set.remove(&track);
         }
-        if kind == ArmKind::Midi {
-            self.clips.set_monitoring(track, on);
+        match kind {
+            ArmKind::Midi => self.clips.set_monitoring(track, on),
+            // Auto monitoring hears the input of an audio-armed track.
+            ArmKind::Audio => self.clips.set_audio_armed(track, on),
         }
     }
 
@@ -2756,6 +2844,30 @@ impl Session {
             quantise: self.record_quantise,
         });
         self.message = notice;
+        self.publish_recording_window();
+    }
+
+    /// Tells the armed audio tracks what the take keeps, so that Auto
+    /// monitoring hears the input inside it and the old take outside.
+    fn publish_recording_window(&self) {
+        let Some(recording) = &self.recording else {
+            return;
+        };
+        let map = match &self.audio {
+            Some(audio) => audio.controller.tempo_map(),
+            None => self.project.tempo_map(),
+        };
+        let rate = match &self.audio {
+            Some(audio) => f64::from(audio.controller.settings().sample_rate),
+            None => f64::from(FREEZE_SETTINGS.sample_rate),
+        };
+        let span = (
+            map.sample_at(recording.keep.0, rate),
+            recording.keep.1.map(|out| map.sample_at(out, rate)),
+        );
+        for &track in &recording.audio_tracks {
+            self.clips.set_recording(track, Some(span));
+        }
     }
 
     /// The sample rate to place a take with, and how long after the
@@ -2863,6 +2975,9 @@ impl Session {
         let Some(mut recording) = self.recording.take() else {
             return;
         };
+        for &track in &recording.audio_tracks {
+            self.clips.set_recording(track, None);
+        }
         let stop_micros = noodle_io::now_micros();
         let mut notes = Vec::new();
         let mut take = None;
@@ -3136,6 +3251,11 @@ impl Session {
                 self.clips.set_monitoring(track, true);
             }
         }
+        for &track in &self.armed_audio {
+            if self.project.graph().node(track).is_some() {
+                self.clips.set_audio_armed(track, true);
+            }
+        }
     }
 
     /// The samples the Sampler nodes play, by hash.
@@ -3360,6 +3480,8 @@ impl Session {
     /// Compiles the project. `start` is whether renders that are missing may
     /// be started now.
     fn recompile_with(&mut self, start: bool) {
+        // A plugin the machine lacks stays in the project as a pass-through.
+        self.registry.provide_placeholders(self.project.graph());
         // Samplers read their samples from beside the project file.
         // An unsaved project has no folder yet: its samples stay in memory
         // until the first save writes them.
@@ -4228,7 +4350,60 @@ mod tests {
             }
             None => edits.push(wire(osc, out)),
         }
+        // The oscillator never falls silent: tests that count samples want
+        // no tail unless they ask for one.
+        edits.push(Edit::Apply(Command::SetExportSettings(
+            noodle_core::ExportSettings {
+                tail: noodle_core::ExportTail::Fixed { seconds: 0.0 },
+            },
+        )));
         session.edit(edits);
+    }
+
+    #[test]
+    fn the_export_tail_follows_a_range_and_is_one_length_for_every_file() {
+        use noodle_io::ExportFormat;
+
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().join("cache"));
+        sine_chain(&mut session, None);
+        let choice = || {
+            ExportChoice::mixdown(
+                ExportFormat::WavFloat,
+                noodle_engine::ChannelLayout::Stereo,
+                Some((0.0, 0.5)),
+            )
+        };
+        let frames = |session: &mut Session, name: &str| {
+            let path = dir.path().join(name);
+            session.start_export(path.clone(), choice()).unwrap();
+            until(session, "the export finishes", |s| {
+                s.export_progress().is_none()
+            });
+            noodle_io::decode_file(&path).unwrap().samples.len() / 2
+        };
+        // Fixed: the range and the seconds.
+        session.edit([Edit::Apply(Command::SetExportSettings(
+            noodle_core::ExportSettings {
+                tail: noodle_core::ExportTail::Fixed { seconds: 1.0 },
+            },
+        ))]);
+        assert_eq!(frames(&mut session, "fixed.wav"), 72_000);
+        // To silence: a steady sine never falls silent, so it runs to the cap
+        // and fades out there.
+        session.edit([Edit::Apply(Command::SetExportSettings(
+            noodle_core::ExportSettings {
+                tail: noodle_core::ExportTail::ToSilence { cap: 2.0 },
+            },
+        ))]);
+        assert_eq!(frames(&mut session, "silence.wav"), 120_000);
+        let audio = noodle_io::decode_file(&dir.path().join("silence.wav")).unwrap();
+        assert!(
+            audio.samples[audio.samples.len() - 2..]
+                .iter()
+                .all(|s| s.abs() < 1e-3)
+        );
     }
 
     #[test]

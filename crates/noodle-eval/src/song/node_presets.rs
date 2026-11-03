@@ -712,6 +712,36 @@ fn table() -> Vec<Row> {
             ],
         ),
         row(
+            "noodle.event.swing",
+            "Light Sixteenth Swing",
+            &[("amount", 0.2), ("grid", 1.0)],
+        ),
+        row(
+            "noodle.event.swing",
+            "Triplet Shuffle",
+            &[("amount", 0.33), ("grid", 0.0)],
+        ),
+        row(
+            "noodle.event.swing",
+            "Heavy Sixteenth Swing",
+            &[("amount", 0.55), ("grid", 1.0)],
+        ),
+        row(
+            "noodle.event.humanise",
+            "Tight",
+            &[("timing", 6.0), ("velocity", 0.1)],
+        ),
+        row(
+            "noodle.event.humanise",
+            "Loose Drummer",
+            &[("timing", 14.0), ("velocity", 0.25)],
+        ),
+        row(
+            "noodle.event.humanise",
+            "Sloppy",
+            &[("timing", 30.0), ("velocity", 0.4)],
+        ),
+        row(
             "noodle.event.note_split",
             "Keyboard Split at C3",
             &[("high1", 59.0), ("low2", 60.0)],

@@ -10,6 +10,7 @@
 //! [`Output::audition`]).
 
 mod articulations;
+mod humanise;
 mod lanes;
 mod looping;
 mod notes;
@@ -335,6 +336,9 @@ pub fn show(
             ui.label(format!("Snap: {}", crate::snap::label(state.step)));
             ui.separator();
             looping::controls(ui, &mut out, id, clip, midi);
+            ui.separator();
+            humanise::controls(ui, &mut out, &state.selected, id, clip, midi);
+            ui.separator();
             lanes::controls(ui, &mut state.lanes);
             articulations::controls(ui, &mut out, project, &state.selected, id, clip, midi);
         },
@@ -581,6 +585,7 @@ pub fn show(
     }
 
     draw_notes(ui, axes, midi, &state.selected, project);
+    humanise::ghosts(ui, axes, midi);
     looping::draw_repeats(ui, axes, midi);
     looping::draw_lines(ui, axes, midi);
     let step = if free { 1 } else { state.step };

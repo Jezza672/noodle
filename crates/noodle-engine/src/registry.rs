@@ -7,6 +7,9 @@ use crate::NodeType;
 #[derive(Default)]
 pub struct Registry {
     types: BTreeMap<&'static str, Arc<dyn NodeType>>,
+    /// Stand-ins for plugin types that are not installed, by ID; see
+    /// [`provide_placeholders`](Self::provide_placeholders).
+    placeholders: BTreeMap<String, Arc<dyn NodeType>>,
     generation: u64,
 }
 
@@ -38,7 +41,34 @@ impl Registry {
     }
 
     pub fn get(&self, id: &str) -> Option<&Arc<dyn NodeType>> {
-        self.types.get(id)
+        self.types.get(id).or_else(|| self.placeholders.get(id))
+    }
+
+    /// Gives every plugin node type in `graph` that is not registered a
+    /// pass-through stand-in (see `MissingPlugin`), so the editor can draw
+    /// the node and the engine keeps the signal moving. Forgets stand-ins
+    /// for types that are registered now or no longer used.
+    pub fn provide_placeholders(&mut self, graph: &noodle_core::Graph) {
+        let mut next: BTreeMap<String, Arc<dyn NodeType>> = BTreeMap::new();
+        for (id, node) in graph.nodes() {
+            if self.types.contains_key(node.type_id.as_str()) || next.contains_key(&node.type_id) {
+                continue;
+            }
+            if let Some(stand_in) = crate::missing::placeholder(graph, id, node) {
+                next.insert(node.type_id.clone(), Arc::new(stand_in));
+            }
+        }
+        let same = next.len() == self.placeholders.len()
+            && next.iter().all(|(k, v)| {
+                self.placeholders.get(k).is_some_and(|old| {
+                    old.layout(&noodle_core::Config::new()).ok()
+                        == v.layout(&noodle_core::Config::new()).ok()
+                })
+            });
+        if !same {
+            self.placeholders = next;
+            self.generation += 1;
+        }
     }
 
     /// The keys of a node's ports as one string, sorted, so the order ports

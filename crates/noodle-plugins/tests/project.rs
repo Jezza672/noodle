@@ -66,10 +66,17 @@ fn a_project_with_a_plugin_node_renders_through_the_extend_registry_hook() {
 }
 
 #[test]
-fn without_the_hook_the_plugin_node_is_unknown_and_reported() {
-    let (samples, problems) = render(&project("", ""), false);
-    assert!(problems > 0, "an unknown node type is a diagnostic");
-    assert!(samples.iter().all(|&s| s == 0.0));
+fn without_the_hook_the_plugin_node_passes_sound_through() {
+    // A plugin the machine lacks is a stand-in that passes audio on, so the
+    // rest of the mix still sounds, and the node keeps its settings.
+    let (samples, problems) = render(&project("\"p1\": 0.5", ""), false);
+    assert_eq!(problems, 0, "a missing plugin is not a compile problem");
+    let (loud, _) = render(&project("", ""), true);
+    assert!(samples.iter().any(|&s| s.abs() > 0.1), "silent");
+    // Unchanged by the plugin's gain: the stand-in does not apply it.
+    for (s, l) in samples.iter().zip(&loud) {
+        assert!((s - l).abs() < 1e-6, "{s} {l}");
+    }
 }
 
 #[test]

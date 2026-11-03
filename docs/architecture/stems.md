@@ -9,7 +9,7 @@ CONTEXT.md ("Stems"). Stem warp, the other use of stems, is not built.
   progress and stopping when asked. `FakeSeparator` splits by frequency band and
   leaves a residual, so tests need no weights. `OnnxSeparator` (feature `onnx`,
   on in the app) runs an HT-Demucs export through ONNX Runtime: it cuts the audio
-  into 7.8 s segments that overlap by a quarter, normalises the mix as Demucs
+  into 7.8 s segments that overlap by a quarter (more at higher `Quality`, below), normalises the mix as Demucs
   does, and blends the segments with triangular weights. The runtime library is
   loaded when a separator is opened (`ort`'s `load-dynamic`), from
   `libonnxruntime.*` in the model folder, `ORT_DYLIB_PATH` or the system's search,
@@ -79,3 +79,5 @@ CONTEXT.md ("Stems"). Stem warp, the other use of stems, is not built.
   scheduled at all, so it costs no stream, and its cache key says only that it is
   muted. The timeline draws it faded; mute is in the clip panel and the clip's
   right-click menu, next to Split to stems. MIDI clips have no mute yet.
+
+- **Quality and Re-separate.** `Quality` (`noodle-stems/src/quality.rs`) is Fast (a quarter overlap, as before), Better (half overlap) or Best (half overlap, and each segment run on three copies delayed by 0.25 s steps, shifted back and averaged, as Demucs' `--shifts` does; the last frames of a delayed copy are averaged over the copies that still hold them). Same model, no new download. `Separator::set_quality` carries it (a no-op for `FakeSeparator`) and `SplitRequest::quality` sets it. The gain over Fast is not measured: the stems evaluation on real weights has not run. The choice is session state (`Session::stems_quality`, `Edit::SetStemsQuality`), a dropdown in the clip panel. **Re-separate** (`Session::resplit_stems`, `Edit::ResplitStems`, shown on a clip whose link group holds stem files) splits the group's muted source again over the widest span any group clip shows, writes new files beside the old, and in one `Command::Batch` points every clip over an old stem file at the new file of the same part (found by the `-<part>.wav` suffix). Offsets, cuts, fades, warps and effects stay valid because the new files cover the same span of the source. The old files stay in the stems folder so undo works.

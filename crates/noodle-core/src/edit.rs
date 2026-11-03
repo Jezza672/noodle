@@ -5,8 +5,8 @@ use std::fmt;
 
 use crate::{
     Articulation, AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Connection,
-    Endpoint, Frame, FrameId, LaneId, Node, NodeId, Position, Project, PunchRange, TempoMap,
-    TransportLoop, Value, WarpId,
+    Endpoint, ExportSettings, Frame, FrameId, LaneId, Node, NodeId, Position, Project, PunchRange,
+    TempoMap, TransportLoop, Value, WarpId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -54,6 +54,14 @@ pub enum Command {
         key: String,
         shown: Option<bool>,
     },
+    /// Changes the node's type, keeping its ID, position, wires and lanes.
+    /// Nothing else about the node changes: the caller (see the app's
+    /// replace helper) batches this with the wire, lane, parameter and
+    /// config changes that fit the new type.
+    SetNodeType {
+        node: NodeId,
+        type_id: String,
+    },
     /// Records which library preset was last applied to a node or group, or
     /// `None` to forget it. Changes nothing the engine sees.
     SetPreset {
@@ -85,6 +93,8 @@ pub enum Command {
     SetLoop(TransportLoop),
     /// Replaces the punch range.
     SetPunch(PunchRange),
+    /// Replaces the export settings.
+    SetExportSettings(ExportSettings),
     /// Replaces the order tracks (their groups) are listed in. Groups it
     /// doesn't name go after the ones it does, in ID order.
     SetTrackOrder(Vec<NodeId>),
@@ -203,6 +213,11 @@ impl Command {
             }
             Command::SetPunch(range) => {
                 return Ok(Command::SetPunch(project.replace_punch(range)));
+            }
+            Command::SetExportSettings(settings) => {
+                return Ok(Command::SetExportSettings(
+                    project.replace_export_settings(settings),
+                ));
             }
             Command::SetFrozen { node, frozen } => {
                 if project.graph().node(node).is_none() {
@@ -366,6 +381,10 @@ impl Command {
                 let old = graph.set_parent(node, parent)?;
                 Command::SetParent { node, parent: old }
             }
+            Command::SetNodeType { node, type_id } => {
+                let old = std::mem::replace(&mut graph.node_mut(node)?.type_id, type_id);
+                Command::SetNodeType { node, type_id: old }
+            }
             Command::SetPreset { node, preset } => {
                 let old = std::mem::replace(&mut graph.node_mut(node)?.preset, preset);
                 Command::SetPreset { node, preset: old }
@@ -378,6 +397,7 @@ impl Command {
             | Command::SetTempoMap(_)
             | Command::SetLoop(_)
             | Command::SetPunch(_)
+            | Command::SetExportSettings(_)
             | Command::SetTrackOrder(_)
             | Command::SetVersions { .. }
             | Command::SetArticulations(_)
@@ -410,6 +430,7 @@ enum Target<'a> {
     TempoMap,
     Loop,
     Punch,
+    ExportSettings,
     TrackOrder,
     Versions,
     Articulations,
@@ -428,6 +449,7 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetTempoMap(_) => Some(Target::TempoMap),
         Command::SetLoop(_) => Some(Target::Loop),
         Command::SetPunch(_) => Some(Target::Punch),
+        Command::SetExportSettings(_) => Some(Target::ExportSettings),
         Command::SetTrackOrder(_) => Some(Target::TrackOrder),
         Command::SetVersions { .. } => Some(Target::Versions),
         Command::SetArticulations(_) => Some(Target::Articulations),

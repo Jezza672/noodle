@@ -149,6 +149,9 @@ impl Project {
         }];
         for (id, count) in self.version_nodes() {
             let node = self.graph().node(id).expect("just listed");
+            if count >= MAX_VERSIONS {
+                continue;
+            }
             let held = slot_value(node, self.active_version.min(count.saturating_sub(1)));
             commands.push(set_count(id, count + 1));
             commands.push(set_slot(id, count, held));
@@ -173,6 +176,9 @@ impl Project {
         };
         let mut commands = vec![Command::SetVersions { names, active }];
         for (id, count) in self.version_nodes() {
+            if index >= count {
+                continue;
+            }
             let node = self.graph().node(id).expect("just listed");
             let values: Vec<f32> = (0..count).map(|i| slot_value(node, i)).collect();
             for (i, value) in values.iter().enumerate().skip(index + 1) {
