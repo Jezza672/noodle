@@ -1172,6 +1172,39 @@
         ),
     )),
     NodePreset((
+        name: "Bar Toggle",
+        slug: "launch-quantise-bar-toggle",
+        node_type: "noodle.event.launch_quantise",
+        values: (
+            params: {
+                "grid": 3.0,
+                "mode": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Beat Hold",
+        slug: "launch-quantise-beat-hold",
+        node_type: "noodle.event.launch_quantise",
+        values: (
+            params: {
+                "grid": 1.0,
+                "mode": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Four Bar Toggle",
+        slug: "launch-quantise-four-bar-toggle",
+        node_type: "noodle.event.launch_quantise",
+        values: (
+            params: {
+                "grid": 5.0,
+                "mode": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Keyboard Split at C3",
         slug: "note-split-keyboard-split-at-c3",
         node_type: "noodle.event.note_split",
