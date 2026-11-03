@@ -106,6 +106,9 @@ pub struct TimelineState {
     automation: automation::State,
     crossfade: crossfade::State,
     takes: takes::State,
+    /// The ruler last drawn, with the screen x of second 0 and points per second.
+    #[cfg(test)]
+    ruler_seen: Option<(Rect, f32, f32)>,
     /// The bar a right-click on the ruler opened its menu at.
     ruler_menu_bar: Option<u32>,
     /// Whether the tempo lane is shown under the ruler.
@@ -154,6 +157,8 @@ impl Default for TimelineState {
             crossfade: crossfade::State::default(),
             takes: takes::State::default(),
             show_tempo: false,
+            #[cfg(test)]
+            ruler_seen: None,
             ruler_menu_bar: None,
             tempo: tempo_lane::State::default(),
             #[cfg(test)]
@@ -325,6 +330,14 @@ impl TimelineState {
     #[cfg(test)]
     pub fn fade_handle(&self, id: ClipId, fade_in: bool) -> Option<Rect> {
         self.fade_handles.get(&(id, fade_in)).copied()
+    }
+
+    /// Where the ruler is at `seconds` into the song, if it is on screen.
+    #[cfg(test)]
+    pub fn ruler_at(&self, seconds: f64) -> Option<Pos2> {
+        let (rect, origin, pps) = self.ruler_seen?;
+        let x = origin + (seconds * f64::from(pps)) as f32;
+        (x > rect.left() && x < rect.right()).then(|| Pos2::new(x, rect.center().y - 3.0))
     }
 
     #[cfg(test)]
@@ -1490,6 +1503,10 @@ pub fn show(
         Pos2::new(content.left(), rect.top()),
         Pos2::new(rect.right(), rect.top() + colors::RULER_HEIGHT),
     );
+    #[cfg(test)]
+    {
+        state.ruler_seen = Some((ruler, axis.origin, axis.pps));
+    }
     if state.show_tempo {
         let row = Rect::from_min_size(
             Pos2::new(content.left(), rect.top() + colors::RULER_HEIGHT),

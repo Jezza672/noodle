@@ -269,6 +269,10 @@ impl<'h> Handle<'h> {
         self.probe().find(label)
     }
 
+    pub fn find_like(&mut self, word: &str) -> Pos2 {
+        self.probe().find_like(word)
+    }
+
     pub fn find_first(&mut self, label: &str) -> Pos2 {
         self.probe().find_first(label)
     }
@@ -320,6 +324,12 @@ impl<'h> Handle<'h> {
             self.probe().roll_point_unclamped(key),
             self.probe().roll_x(tick)
         );
+    }
+
+    /// Where the ruler is at `seconds` into the song.
+    pub fn ruler_at(&mut self, seconds: f64) -> Pos2 {
+        self.probe().settle();
+        self.probe().ruler_at(seconds)
     }
 
     /// Where the arrangement drew the clip.
@@ -418,6 +428,41 @@ impl Probe<'_> {
             .unwrap_or_else(|| panic!("nothing labelled {label:?}"))
             .rect()
             .center()
+    }
+
+    /// Where the arrangement's ruler is at `seconds` into the song.
+    pub fn ruler_at(&self, seconds: f64) -> Pos2 {
+        self.h
+            .state()
+            .timeline()
+            .ruler_at(seconds)
+            .unwrap_or_else(|| panic!("{seconds} s is not on the ruler"))
+    }
+
+    /// The centre of the first widget whose label contains `word`: for a
+    /// submenu, whose label carries an arrow.
+    pub fn find_like(&self, word: &str) -> Pos2 {
+        self.h
+            .get_all_by_label_contains(word)
+            .next()
+            .unwrap_or_else(|| panic!("nothing labelled like {word:?}"))
+            .rect()
+            .center()
+    }
+
+    /// Whether a freeze is still rendering in the background.
+    pub fn freezing(&self) -> bool {
+        self.h.state().session().freeze_pending()
+    }
+
+    /// Whether anything on screen has a label containing `word`.
+    pub fn mentions(&self, word: &str) -> bool {
+        self.h.query_all_by_label_contains(word).next().is_some()
+    }
+
+    /// Whether anything on screen is labelled exactly `label`.
+    pub fn has(&self, label: &str) -> bool {
+        self.h.query_all_by_label(label).next().is_some()
     }
 
     pub fn clip_rect(&self, id: ClipId) -> Rect {
