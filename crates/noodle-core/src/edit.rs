@@ -54,6 +54,14 @@ pub enum Command {
         key: String,
         shown: Option<bool>,
     },
+    /// Changes the node's type, keeping its ID, position, wires and lanes.
+    /// Nothing else about the node changes: the caller (see the app's
+    /// replace helper) batches this with the wire, lane, parameter and
+    /// config changes that fit the new type.
+    SetNodeType {
+        node: NodeId,
+        type_id: String,
+    },
     /// Records which library preset was last applied to a node or group, or
     /// `None` to forget it. Changes nothing the engine sees.
     SetPreset {
@@ -355,6 +363,10 @@ impl Command {
             Command::SetParent { node, parent } => {
                 let old = graph.set_parent(node, parent)?;
                 Command::SetParent { node, parent: old }
+            }
+            Command::SetNodeType { node, type_id } => {
+                let old = std::mem::replace(&mut graph.node_mut(node)?.type_id, type_id);
+                Command::SetNodeType { node, type_id: old }
             }
             Command::SetPreset { node, preset } => {
                 let old = std::mem::replace(&mut graph.node_mut(node)?.preset, preset);

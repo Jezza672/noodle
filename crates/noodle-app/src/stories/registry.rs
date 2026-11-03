@@ -142,7 +142,7 @@ pub const STORIES: [Story; 30] = [
         id: "S18",
         title: "Use third-party plugins",
         status: Status::Partial,
-        missing: "Only CLAP is hosted, and the test machine has no plugin to add, automate or save; swapping a plugin and opening a project without one are untested: #357.",
+        missing: "Only CLAP is hosted, and the test machine has no plugin to add, automate or save; a swap keeping automation is routed with descriptors only (S18 replace route); opening a project without a plugin is a session test.",
     },
     Story {
         id: "S19",

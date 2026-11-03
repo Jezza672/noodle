@@ -139,6 +139,8 @@ pub struct EditorState {
     port_menu: Option<group::GroupPort>,
     /// The node whose monitor button was right-clicked.
     monitor_menu: Option<NodeId>,
+    /// The node whose right-click menu offers Replace with....
+    replace_menu: Option<NodeId>,
     /// The node the context menu offers to remove unused ports of.
     unused_menu: Option<NodeId>,
     /// Which nodes are frozen or offline, and how their renders are doing.
@@ -218,6 +220,7 @@ impl Default for EditorState {
             open_request: None,
             port_menu: None,
             monitor_menu: None,
+            replace_menu: None,
             unused_menu: None,
             freeze: BTreeMap::new(),
             monitored: Vec::new(),
@@ -1202,6 +1205,24 @@ fn pointer(
             .and_then(|p| boundary_port_at(f, p));
     }
     if response.secondary_clicked() {
+        state.replace_menu = latest
+            .filter(|_| state.monitor_menu.is_none())
+            .and_then(|p| match hit(f, p) {
+                Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _)
+                    if !is_group(f.project, id) =>
+                {
+                    Some(id)
+                }
+                _ => None,
+            })
+            .filter(|id| {
+                f.project
+                    .graph()
+                    .node(*id)
+                    .is_some_and(|n| !n.type_id.starts_with("noodle.group"))
+            });
+    }
+    if response.secondary_clicked() {
         state.unused_menu =
             latest
                 .filter(|_| state.monitor_menu.is_none())
@@ -1230,6 +1251,8 @@ fn pointer(
     let monitor = state.monitor_menu;
     let monitored = state.monitored.clone();
     let unused = state.unused_menu;
+    let replace = state.replace_menu;
+    let mut replace_clicked = None;
     // The group the menu is about, and the name being typed for it, if it is
     // about one. The name is taken out of the state for the menu to work on,
     // and put back afterwards. A group that has gone leaves the menu empty.
@@ -1295,13 +1318,30 @@ fn pointer(
                     ui.close();
                 }
             }
+            if let Some(node) = replace
+                && ui.button("Replace with...").clicked()
+            {
+                replace_clicked = Some(node);
+                ui.close();
+            }
             if let Some(group) = group {
                 group_items(ui, f, group, source_name.as_deref(), &mut group_name, edits);
             }
-            if port.is_none() && unused.is_none() && monitor.is_none() && group.is_none() {
+            if port.is_none()
+                && unused.is_none()
+                && monitor.is_none()
+                && group.is_none()
+                && replace.is_none()
+            {
                 ui.close();
             }
         });
+    if let Some(node) = replace_clicked {
+        let screen = latest.unwrap_or(response.rect.center());
+        let mut search = Search::new(f.t.to_graph(screen), screen, state.group.is_some());
+        search.replacing = Some(node);
+        state.search = Some(search);
+    }
     if shown {
         state.group_name = group_name;
     } else {
@@ -2867,7 +2907,17 @@ fn popups(
             search::Outcome::Closed => state.search = None,
             search::Outcome::Chosen(choice) => {
                 let at = search.at;
+                let replacing = search.replacing;
                 state.search = None;
+                if let Some(node) = replacing {
+                    if let Choice::Node(type_id) = choice {
+                        edits.push(Edit::ReplaceNode {
+                            node,
+                            type_id: type_id.to_owned(),
+                        });
+                    }
+                    return;
+                }
                 match choice {
                     Choice::Node(type_id) => {
                         let id = (inputs.new_node_id)();

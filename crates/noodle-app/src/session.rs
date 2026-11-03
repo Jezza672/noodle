@@ -19,6 +19,7 @@ mod library;
 pub mod map_to;
 pub mod record_automation;
 mod render_clip;
+pub mod replace;
 pub mod sample_set;
 mod stems;
 mod transport_tempo;
@@ -135,6 +136,12 @@ pub enum Edit {
     ArmAutomation {
         node: NodeId,
         on: bool,
+    },
+    /// Replace node: changes `node` to `type_id`, keeping its ID, wires,
+    /// lanes and clips where ports match (see [`replace`]). One undo step.
+    ReplaceNode {
+        node: NodeId,
+        type_id: String,
     },
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
@@ -1628,6 +1635,23 @@ impl Session {
                 Edit::MonitorAs { node, mode, add } => {
                     self.monitor_as(node, mode, add);
                     continue;
+                }
+                Edit::ReplaceNode { node, type_id } => {
+                    self.history.end_group();
+                    match replace::plan(&self.project, &self.registry, node, &type_id) {
+                        Ok((command, report)) => {
+                            let name = self
+                                .registry
+                                .get(&type_id)
+                                .map_or(type_id.as_str(), |t| t.info().name);
+                            self.message = Some(report.summary(name));
+                            command
+                        }
+                        Err(why) => {
+                            self.message = Some(format!("Can't replace: {why}"));
+                            continue;
+                        }
+                    }
                 }
                 Edit::Monitor {
                     node,
@@ -3432,6 +3456,8 @@ impl Session {
     /// Compiles the project. `start` is whether renders that are missing may
     /// be started now.
     fn recompile_with(&mut self, start: bool) {
+        // A plugin the machine lacks stays in the project as a pass-through.
+        self.registry.provide_placeholders(self.project.graph());
         // Samplers read their samples from beside the project file.
         // An unsaved project has no folder yet: its samples stay in memory
         // until the first save writes them.

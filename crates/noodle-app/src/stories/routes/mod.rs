@@ -23,6 +23,7 @@ mod s15_rhythmic_gate;
 mod s16_spectral_cross;
 mod s17_resample;
 mod s18_plugins;
+mod s18_replace;
 mod s19_drum_bus;
 mod s20_automation;
 mod s21_mix_versions;
@@ -70,6 +71,7 @@ pub fn all() -> Vec<Route> {
         s16_spectral_cross::route(),
         s17_resample::route(),
         s18_plugins::route(),
+        s18_replace::route(),
         s19_drum_bus::route(),
         s20_automation::route(),
         s21_mix_versions::route(),
