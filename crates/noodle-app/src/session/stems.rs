@@ -12,7 +12,8 @@ use noodle_core::group::PORT_NAME;
 use noodle_core::{Clip, ClipContent, ClipId, NodeId, Value};
 use noodle_engine::{Job, JobPanicked};
 use noodle_stems::{
-    DownloadError, ModelSpec, ModelStore, RuntimeSpec, SplitError, SplitOutput, SplitRequest, split,
+    DownloadError, ModelSpec, ModelStore, Quality, RuntimeSpec, SplitError, SplitOutput,
+    SplitRequest, split,
 };
 
 use super::*;
@@ -71,6 +72,8 @@ struct Run {
     job: Job<Result<SplitOutput, SplitError>>,
     clip: ClipId,
     name: String,
+    /// Set for a Re-separate: the stem clips to point at the new files.
+    redo: bool,
 }
 
 pub(super) struct Stems {
@@ -78,6 +81,10 @@ pub(super) struct Stems {
     run: Option<Run>,
     /// The clip whose split waits for the user to agree to the download.
     asking: Option<ClipId>,
+    /// The split that waits is a Re-separate.
+    asking_redo: bool,
+    /// How hard splits work. Session state, not saved.
+    quality: Quality,
     /// Tests of the asking don't have an ONNX Runtime to load.
     #[cfg(test)]
     skip_runtime_check: bool,
@@ -95,6 +102,8 @@ impl Stems {
             },
             run: None,
             asking: None,
+            asking_redo: false,
+            quality: Quality::default(),
             #[cfg(test)]
             skip_runtime_check: false,
         }
@@ -232,6 +241,51 @@ impl Session {
     /// Starts Split to stems on audio clip `clip`. When the model isn't on
     /// this computer yet, this asks first (see [`stems_consent`](Self::stems_consent)).
     pub fn split_to_stems(&mut self, clip: ClipId) {
+        self.begin_split(clip, false);
+    }
+
+    /// How hard the next split works.
+    pub fn stems_quality(&self) -> Quality {
+        self.stems.quality
+    }
+
+    pub fn set_stems_quality(&mut self, quality: Quality) {
+        self.stems.quality = quality;
+    }
+
+    /// The clip a Re-separate of `clip` would split again: the muted clip its
+    /// stems came from, in the same link group, when `clip` is in a group that
+    /// holds stems.
+    pub fn stems_source(&self, clip: ClipId) -> Option<ClipId> {
+        let (_, members) = self.project.group_of(clip)?;
+        let mut has_stems = false;
+        let mut source = None;
+        for id in members {
+            let Some(audio) = self.project.clip(id).and_then(|c| c.as_audio()) else {
+                continue;
+            };
+            if stem_part(&audio.source).is_some() {
+                has_stems = true;
+            } else if audio.muted && source.is_none() {
+                source = Some(id);
+            }
+        }
+        source.filter(|_| has_stems)
+    }
+
+    /// Separates again, at the chosen quality, the clip that `clip`'s stems
+    /// came from, and points every stem clip at the new files, keeping their
+    /// cuts, fades, warps and effects. One undo step, when the job is done;
+    /// undoing it brings the old files back.
+    pub fn resplit_stems(&mut self, clip: ClipId) {
+        let Some(source) = self.stems_source(clip) else {
+            self.message = Some("This clip has no stems to separate again".into());
+            return;
+        };
+        self.begin_split(source, true);
+    }
+
+    fn begin_split(&mut self, clip: ClipId, redo: bool) {
         if self.stems.run.is_some() {
             self.message = Some("A split is already running".into());
             return;
@@ -251,8 +305,9 @@ impl Session {
                 return;
             }
             self.stems.asking = Some(clip);
+            self.stems.asking_redo = redo;
         } else {
-            self.start_split(clip);
+            self.start_split(clip, redo);
         }
     }
 
@@ -274,7 +329,8 @@ impl Session {
     /// The user agreed: download the model and split.
     pub fn allow_stem_download(&mut self) {
         if let Some(clip) = self.stems.asking.take() {
-            self.start_split(clip);
+            let redo = std::mem::take(&mut self.stems.asking_redo);
+            self.start_split(clip, redo);
         }
     }
 
@@ -283,7 +339,7 @@ impl Session {
         self.stems.asking = None;
     }
 
-    fn start_split(&mut self, clip: ClipId) {
+    fn start_split(&mut self, clip: ClipId, redo: bool) {
         let Some(dir) = self.directory().map(Path::to_path_buf) else {
             return;
         };
@@ -300,9 +356,20 @@ impl Session {
         let name = Path::new(&audio.source)
             .file_stem()
             .map_or_else(|| "clip".to_owned(), |s| s.to_string_lossy().into_owned());
+        // A Re-separate covers whatever any of the stems show, which can be
+        // more than the muted source if the group was extended since.
+        let mut frames = audio.offset + audio.length;
+        if redo && let Some((_, members)) = self.project.group_of(clip) {
+            for member in members {
+                if let Some(a) = self.project.clip(member).and_then(|c| c.as_audio()) {
+                    frames = frames.max(a.offset + a.length);
+                }
+            }
+        }
         let request = SplitRequest {
+            quality: self.stems.quality,
             source: dir.join(&audio.source),
-            frames: audio.offset + audio.length,
+            frames,
             out_dir: dir.join(STEMS_DIR),
             name: name.clone(),
         };
@@ -337,7 +404,12 @@ impl Session {
                 progress.report(share + (1.0 - share) * f).is_ok()
             })
         });
-        self.stems.run = Some(Run { job, clip, name });
+        self.stems.run = Some(Run {
+            job,
+            clip,
+            name,
+            redo,
+        });
     }
 
     /// How far the split under way has got, from 0 to 1, and what it is
@@ -364,12 +436,25 @@ impl Session {
         let Some(done) = run.job.poll() else {
             return;
         };
-        let Run { clip, name, .. } = self.stems.run.take().expect("just polled");
+        let Run {
+            clip, name, redo, ..
+        } = self.stems.run.take().expect("just polled");
         match done {
-            Ok(Ok(output)) => match self.stems_command(clip, &output) {
+            Ok(Ok(output)) => match if redo {
+                self.resplit_command(clip, &output)
+            } else {
+                self.stems_command(clip, &output)
+            } {
                 Ok(command) => {
                     self.edit([Edit::Apply(command)]);
-                    self.message = Some(format!("Split {name} into stems"));
+                    self.message = Some(if redo {
+                        format!(
+                            "Separated {name} again at {} quality",
+                            self.stems.quality.label()
+                        )
+                    } else {
+                        format!("Split {name} into stems")
+                    });
                 }
                 Err(why) => {
                     for file in &output.files {
@@ -384,6 +469,50 @@ impl Session {
                 self.message = Some(format!("Couldn't split {name}: {JobPanicked}"))
             }
         }
+    }
+
+    /// The command that points every clip over a stem file of `id`'s group at
+    /// the file `output` made for the same part: one undo step. The clips
+    /// keep everything else, which stays valid because each new file covers
+    /// the same span of the source as the old one.
+    fn resplit_command(&self, id: ClipId, output: &SplitOutput) -> Result<Command, String> {
+        let project = &self.project;
+        let (_, members) = project
+            .group_of(id)
+            .ok_or("the clip was unlinked while it was being separated")?;
+        let mut old_files = std::collections::BTreeMap::new();
+        for member in members {
+            if let Some(audio) = project.clip(member).and_then(|c| c.as_audio())
+                && let Some(part) = stem_part(&audio.source)
+                && let Some(file) = output.files.iter().find(|f| f.part == part)
+            {
+                old_files.insert(audio.source.clone(), format!("{STEMS_DIR}/{}", file.file));
+            }
+        }
+        if old_files.is_empty() {
+            return Err("its stems were removed while it was being separated".into());
+        }
+        let mut commands = Vec::new();
+        for (clip_id, clip) in project.clips() {
+            let Some(audio) = clip.as_audio() else {
+                continue;
+            };
+            let Some(new) = old_files.get(&audio.source) else {
+                continue;
+            };
+            if audio.offset + audio.length > output.frames {
+                return Err("a stem clip was extended while it was being separated".into());
+            }
+            let mut changed = clip.clone();
+            if let ClipContent::Audio(a) = &mut changed.content {
+                a.source = new.clone();
+            }
+            commands.push(Command::SetClip {
+                id: clip_id,
+                clip: changed,
+            });
+        }
+        Ok(Command::Batch(commands))
     }
 
     /// The command that adds a track and a clip for each part in `output`
@@ -497,6 +626,16 @@ impl Session {
     }
 }
 
+/// Which part a clip's source file holds, if it is a stem file: a path in the
+/// stems folder named `<name>-<part>.wav`.
+fn stem_part(source: &str) -> Option<noodle_stems::Part> {
+    let rest = source.strip_prefix(STEMS_DIR)?.strip_prefix('/')?;
+    let stem = Path::new(rest).file_stem()?.to_str()?;
+    noodle_stems::Part::ALL
+        .into_iter()
+        .find(|part| stem.ends_with(&format!("-{}", part.label())))
+}
+
 /// The track order of `project` with `new` (which are last) moved to just
 /// after `after`.
 pub(super) fn order_after(project: &Project, after: NodeId, new: &[NodeId]) -> Vec<NodeId> {
@@ -583,6 +722,134 @@ mod tests {
                 }
             })
             .collect()
+    }
+
+    /// A fake that says what quality it was asked for.
+    struct Recording(FakeSeparator, Arc<std::sync::Mutex<Vec<Quality>>>);
+
+    impl Separator for Recording {
+        fn model(&self) -> ModelId {
+            self.0.model()
+        }
+        fn set_quality(&mut self, quality: Quality) {
+            self.1.lock().unwrap().push(quality);
+        }
+        fn separate(
+            &mut self,
+            mix: &Stereo,
+            progress: &mut dyn FnMut(f32) -> bool,
+        ) -> Result<[Stereo; 4], SeparateError> {
+            self.0.separate(mix, progress)
+        }
+    }
+
+    #[test]
+    fn re_separating_swaps_the_files_under_the_stem_clips_and_keeps_their_edits_in_one_undo() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, id, _) = rig(dir.path(), 4_000, 30_000);
+        let asked = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let log = asked.clone();
+        session.use_separator(move || Box::new(Recording(FakeSeparator::new(), log.clone())));
+        session.split_to_stems(id);
+        wait(&mut session);
+
+        // Edit a stem clip: its gain and fade, and cut the bass in two.
+        let (drums, bass) = {
+            let find = |label: &str| {
+                session
+                    .project()
+                    .clips()
+                    .find(|(_, c)| {
+                        c.as_audio().unwrap().source == format!("stems/song-{label}.wav")
+                    })
+                    .map(|(id, c)| (id, c.clone()))
+                    .unwrap()
+            };
+            (find("drums"), find("bass"))
+        };
+        let mut edited = drums.1.clone();
+        if let ClipContent::Audio(a) = &mut edited.content {
+            a.gain = 0.25;
+            a.fade_out = 999;
+        }
+        session.edit([Edit::Apply(Command::SetClip {
+            id: drums.0,
+            clip: edited.clone(),
+        })]);
+        let mut second = bass.1.clone();
+        second.start = Tick(5_000);
+        let second_id = session.project().next_clip_id();
+        session.edit([Edit::Apply(Command::AddClip {
+            id: second_id,
+            clip: second,
+        })]);
+        let before = session.project().clone();
+
+        // Any clip of the link finds the source; the quality is the chosen one.
+        assert_eq!(session.stems_source(drums.0), Some(id));
+        session.set_stems_quality(Quality::Best);
+        session.resplit_stems(drums.0);
+        wait(&mut session);
+        assert_eq!(asked.lock().unwrap().last(), Some(&Quality::Best));
+        assert_eq!(
+            session.message(),
+            Some("Separated song again at Best quality")
+        );
+
+        let project = session.project();
+        // Same clips, same tracks, same links; only the files changed.
+        assert_eq!(project.clips().count(), before.clips().count());
+        assert_eq!(project.clip_groups().count(), 1);
+        let new_drums = project.clip(drums.0).unwrap().as_audio().unwrap();
+        let old_drums = edited.as_audio().unwrap();
+        assert_ne!(new_drums.source, old_drums.source);
+        assert!(new_drums.source.starts_with("stems/") && new_drums.source.ends_with("-drums.wav"));
+        assert!(dir.path().join(&new_drums.source).is_file());
+        assert_eq!(
+            (
+                new_drums.gain,
+                new_drums.fade_out,
+                new_drums.offset,
+                new_drums.length
+            ),
+            (0.25, 999, old_drums.offset, old_drums.length)
+        );
+        // Both pieces of the bass moved to the one new file, the source didn't.
+        let bass_new = project
+            .clip(bass.0)
+            .unwrap()
+            .as_audio()
+            .unwrap()
+            .source
+            .clone();
+        assert!(bass_new.ends_with("-bass.wav") && bass_new != bass.1.as_audio().unwrap().source);
+        assert_eq!(
+            project.clip(second_id).unwrap().as_audio().unwrap().source,
+            bass_new
+        );
+        assert_eq!(
+            project.clip(id).unwrap().as_audio().unwrap().source,
+            "song.wav"
+        );
+        // The old files stay, for undo.
+        assert!(dir.path().join("stems/song-drums.wav").is_file());
+
+        session.undo();
+        assert_eq!(session.project(), &before);
+    }
+
+    #[test]
+    fn re_separating_needs_a_clip_with_stems() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, id, _) = rig(dir.path(), 0, 20_000);
+        session.use_separator(fake);
+        assert_eq!(session.stems_source(id), None);
+        session.resplit_stems(id);
+        assert_eq!(session.split_progress(), None);
+        assert_eq!(
+            session.message(),
+            Some("This clip has no stems to separate again")
+        );
     }
 
     #[test]

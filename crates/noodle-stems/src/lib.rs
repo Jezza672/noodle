@@ -10,6 +10,7 @@ mod fake;
 mod model;
 #[cfg(feature = "onnx")]
 mod onnx;
+mod quality;
 mod split;
 
 use std::fmt;
@@ -18,6 +19,7 @@ pub use fake::FakeSeparator;
 pub use model::{DownloadError, ModelSpec, ModelStore, RuntimeSpec, SHA256_VARIABLE, URL_VARIABLE};
 #[cfg(feature = "onnx")]
 pub use onnx::{OnnxSeparator, runtime_file_name};
+pub use quality::Quality;
 pub use split::{SplitError, SplitOutput, SplitRequest, StemFile, split};
 
 /// The sample rate the models work at.
@@ -157,6 +159,9 @@ pub trait Separator: Send {
     fn sample_rate(&self) -> u32 {
         MODEL_RATE
     }
+
+    /// How hard to work. Separators that have no such choice ignore it.
+    fn set_quality(&mut self, _quality: Quality) {}
 
     /// Separates `mix`, which is at [`sample_rate`](Self::sample_rate), into
     /// the stems in [`Stem::ALL`] order, each as long as `mix`. `progress` is

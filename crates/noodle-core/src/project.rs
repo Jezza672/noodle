@@ -21,6 +21,7 @@ pub struct Project {
     tempo_map: TempoMap,
     transport_loop: TransportLoop,
     punch: PunchRange,
+    export_settings: ExportSettings,
     clips: BTreeMap<ClipId, Clip>,
     next_clip_id: u64,
     /// The links between clips (see [`ClipGroup`]).
@@ -52,6 +53,7 @@ impl Default for Project {
             tempo_map: TempoMap::default(),
             transport_loop: TransportLoop::default(),
             punch: PunchRange::default(),
+            export_settings: ExportSettings::default(),
             clips: BTreeMap::new(),
             next_clip_id: 1,
             clip_groups: BTreeMap::new(),
@@ -81,6 +83,7 @@ impl PartialEq for Project {
             && self.tempo_map == other.tempo_map
             && self.transport_loop == other.transport_loop
             && self.punch == other.punch
+            && self.export_settings == other.export_settings
             && self.clips == other.clips
             && self.live_groups() == other.live_groups()
             && self.used_warps() == other.used_warps()
@@ -103,6 +106,8 @@ struct ProjectFile {
     transport_loop: TransportLoop,
     #[serde(default, skip_serializing_if = "is_default_punch")]
     punch: PunchRange,
+    #[serde(default, skip_serializing_if = "is_default_export_settings")]
+    export_settings: ExportSettings,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
     clips: BTreeMap<ClipId, Clip>,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -126,6 +131,10 @@ fn is_default_tempo_map(map: &TempoMap) -> bool {
 
 fn is_default_punch(range: &PunchRange) -> bool {
     *range == PunchRange::default()
+}
+
+fn is_default_export_settings(settings: &ExportSettings) -> bool {
+    *settings == ExportSettings::default()
 }
 
 fn is_default_loop(region: &TransportLoop) -> bool {
@@ -177,6 +186,30 @@ impl Default for PunchRange {
             end: Tick(32 * crate::TICKS_PER_QUARTER),
         }
     }
+}
+
+/// How long an export runs past the end of what it writes, so reverb and
+/// delay tails are not cut off. One length is shared by every file of an
+/// export, so the stems stay the same length and line up.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub enum ExportTail {
+    /// Until every file is silent, but no longer than `cap` seconds.
+    ToSilence { cap: f64 },
+    /// Exactly this many seconds.
+    Fixed { seconds: f64 },
+}
+
+impl Default for ExportTail {
+    fn default() -> Self {
+        Self::ToSilence { cap: 10.0 }
+    }
+}
+
+/// What an export is set to, saved with the project so the next export
+/// starts from it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+pub struct ExportSettings {
+    pub tail: ExportTail,
 }
 
 impl PunchRange {
@@ -312,6 +345,15 @@ impl Project {
     /// The punch range (see [`PunchRange`]).
     pub fn punch(&self) -> PunchRange {
         self.punch
+    }
+
+    /// What exports are set to (see [`ExportSettings`]).
+    pub fn export_settings(&self) -> ExportSettings {
+        self.export_settings
+    }
+
+    pub(crate) fn replace_export_settings(&mut self, settings: ExportSettings) -> ExportSettings {
+        std::mem::replace(&mut self.export_settings, settings)
     }
 
     pub(crate) fn replace_punch(&mut self, range: PunchRange) -> PunchRange {
@@ -948,6 +990,7 @@ impl Project {
             tempo_map: self.tempo_map.clone(),
             transport_loop: self.transport_loop,
             punch: self.punch,
+            export_settings: self.export_settings,
             clips: self.clips.clone(),
             clip_groups: self
                 .live_groups()
@@ -1006,6 +1049,7 @@ impl Project {
             tempo_map: file.tempo_map,
             transport_loop: file.transport_loop,
             punch: file.punch,
+            export_settings: file.export_settings,
             clips,
             next_clip_id,
             clip_groups: file.clip_groups,
@@ -1317,6 +1361,27 @@ mod tests {
         assert_eq!(project.punch().active(), Some((Tick(960), Tick(7680))));
         history.undo(&mut project).unwrap();
         assert_eq!(project.punch(), PunchRange::default());
+    }
+
+    #[test]
+    fn the_export_tail_is_saved_with_the_project_and_undoes() {
+        let (mut project, mut history, _, _, _) = with_timeline();
+        assert!(!project.to_ron().contains("export_settings"));
+        let settings = ExportSettings {
+            tail: ExportTail::Fixed { seconds: 2.5 },
+        };
+        apply(
+            &mut project,
+            &mut history,
+            Command::SetExportSettings(settings),
+        );
+        let text = project.to_ron();
+        assert_eq!(
+            Project::from_ron(&text).unwrap().export_settings(),
+            settings
+        );
+        history.undo(&mut project).unwrap();
+        assert_eq!(project.export_settings(), ExportSettings::default());
     }
 
     #[test]

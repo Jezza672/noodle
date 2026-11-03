@@ -4,9 +4,9 @@
 use std::fmt;
 
 use crate::{
-    AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Connection, Endpoint, Frame,
-    FrameId, LaneId, Node, NodeId, Position, Project, PunchRange, TempoMap, TransportLoop, Value,
-    WarpId,
+    AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Connection, Endpoint,
+    ExportSettings, Frame, FrameId, LaneId, Node, NodeId, Position, Project, PunchRange, TempoMap,
+    TransportLoop, Value, WarpId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -85,6 +85,8 @@ pub enum Command {
     SetLoop(TransportLoop),
     /// Replaces the punch range.
     SetPunch(PunchRange),
+    /// Replaces the export settings.
+    SetExportSettings(ExportSettings),
     /// Replaces the order tracks (their groups) are listed in. Groups it
     /// doesn't name go after the ones it does, in ID order.
     SetTrackOrder(Vec<NodeId>),
@@ -195,6 +197,11 @@ impl Command {
             }
             Command::SetPunch(range) => {
                 return Ok(Command::SetPunch(project.replace_punch(range)));
+            }
+            Command::SetExportSettings(settings) => {
+                return Ok(Command::SetExportSettings(
+                    project.replace_export_settings(settings),
+                ));
             }
             Command::SetFrozen { node, frozen } => {
                 if project.graph().node(node).is_none() {
@@ -361,6 +368,7 @@ impl Command {
             | Command::SetTempoMap(_)
             | Command::SetLoop(_)
             | Command::SetPunch(_)
+            | Command::SetExportSettings(_)
             | Command::SetTrackOrder(_)
             | Command::SetFrozen { .. }
             | Command::AddClip { .. }
@@ -391,6 +399,7 @@ enum Target<'a> {
     TempoMap,
     Loop,
     Punch,
+    ExportSettings,
     TrackOrder,
     Frozen(NodeId),
 }
@@ -407,6 +416,7 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetTempoMap(_) => Some(Target::TempoMap),
         Command::SetLoop(_) => Some(Target::Loop),
         Command::SetPunch(_) => Some(Target::Punch),
+        Command::SetExportSettings(_) => Some(Target::ExportSettings),
         Command::SetTrackOrder(_) => Some(Target::TrackOrder),
         Command::SetFrozen { node, .. } => Some(Target::Frozen(*node)),
         _ => None,
