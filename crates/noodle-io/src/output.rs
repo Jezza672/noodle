@@ -587,7 +587,7 @@ pub struct Playback {
     /// Dropped before the input stream, so a recording in progress is
     /// finished while the input is still running.
     recorder: Option<Recorder>,
-    _input_stream: Option<cpal::Stream>,
+    _input_stream: Option<InputStream>,
     /// The streams of the extra output devices that opened.
     _extra_streams: Vec<cpal::Stream>,
     /// Each extra stream's flag for having played the fade-out.
@@ -631,6 +631,107 @@ impl Drop for Playback {
             }
         }
     }
+}
+
+/// What feeds the input: a device's stream, or the virtual input's thread.
+/// Held for being dropped, which stops it.
+#[allow(dead_code)]
+enum InputStream {
+    Device(cpal::Stream),
+    Virtual(VirtualInput),
+}
+
+impl InputStream {
+    fn play(&self) -> Result<(), DeviceError> {
+        match self {
+            Self::Device(stream) => stream.play(),
+            Self::Virtual(input) => {
+                input.go.store(true, Ordering::Relaxed);
+                Ok(())
+            }
+        }
+    }
+}
+
+/// The virtual input: a thread that plays a WAV file into a [`Capture`] on
+/// the same pace as the virtual output (one block per block's duration), and
+/// then silence, as a quiet microphone would.
+struct VirtualInput {
+    go: Arc<AtomicBool>,
+    stop: Arc<AtomicBool>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Drop for VirtualInput {
+    fn drop(&mut self) {
+        self.stop.store(true, Ordering::Relaxed);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn open_virtual_input(
+    path: &std::path::Path,
+    settings: &Settings,
+    health: &mut Health,
+) -> Result<(InputStream, String, usize, Feed, Recorder), AudioError> {
+    let virtual_error = |reason: String| AudioError::Virtual { reason };
+    let audio = crate::wav::read_wav(path)
+        .map_err(|error| virtual_error(format!("{}: {error}", path.display())))?;
+    let channels = audio.channels.max(1);
+    let (mut capture, feed, recorder) = recordable_input_path(
+        channels,
+        audio.sample_rate as f32,
+        settings.sample_rate,
+        settings.max_frames,
+        Arc::clone(&health.input_glitches),
+    );
+    let go = Arc::new(AtomicBool::new(false));
+    let stop = Arc::new(AtomicBool::new(false));
+    let (started, flag) = (Arc::clone(&go), Arc::clone(&stop));
+    let block = VIRTUAL_BUFFER as usize;
+    let period = Duration::from_secs_f64(block as f64 / f64::from(audio.sample_rate.max(1)));
+    let thread = std::thread::Builder::new()
+        .name("noodle virtual input".into())
+        .spawn(move || {
+            let mut chunk = vec![0.0f32; block * channels];
+            let mut position = 0;
+            while !started.load(Ordering::Relaxed) {
+                if flag.load(Ordering::Relaxed) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_millis(1));
+            }
+            let mut next = Instant::now();
+            while !flag.load(Ordering::Relaxed) {
+                let rest = audio.samples.get(position..).unwrap_or(&[]);
+                let take = rest.len().min(chunk.len());
+                chunk[..take].copy_from_slice(&rest[..take]);
+                chunk[take..].fill(0.0);
+                position += take;
+                capture.capture(&chunk);
+                next += period;
+                let now = Instant::now();
+                if next > now {
+                    std::thread::sleep(next - now);
+                } else if now - next > period * 8 {
+                    next = now;
+                }
+            }
+        })
+        .map_err(|error| virtual_error(error.to_string()))?;
+    Ok((
+        InputStream::Virtual(VirtualInput {
+            go,
+            stop,
+            thread: Some(thread),
+        }),
+        "Virtual input".to_owned(),
+        channels,
+        feed,
+        recorder,
+    ))
 }
 
 /// What runs the engine: a device's stream, or the virtual output's timer.
@@ -1269,13 +1370,14 @@ fn open_playback(
     // without it, and says why.
     let mut input_problem = None;
     let mut input_meter = None;
-    let (writer, input) = match choice_id(&choice.input) {
-        None => (DeviceWriter::new(processor), None),
-        Some(id) => {
+    let opened = match (&choice.input, choice_id(&choice.input)) {
+        (InputChoice::Virtual(path), _) => Some(open_virtual_input(path, &settings, &mut health)),
+        (_, None) => None,
+        (_, Some(id)) => Some(
             // A chosen input device opens on its own host, which may differ
             // from the output's (JACK in, ALSA out, say). The default one
             // comes from the output's host.
-            let opened = match id {
+            match id {
                 Some(_) => host_for(None, id, Direction::Input),
                 None => Ok(host_id),
             }
@@ -1289,20 +1391,21 @@ fn open_playback(
                     live_default,
                     &mut health,
                 )
-            });
-            match opened {
-                Ok((stream, name, channels, feed, recorder)) => {
-                    input_meter = Some(feed.meter());
-                    (
-                        DeviceWriter::with_input(processor, feed),
-                        Some((stream, name, channels, recorder)),
-                    )
-                }
-                Err(error) => {
-                    input_problem = Some(error);
-                    (DeviceWriter::new(processor), None)
-                }
-            }
+            }),
+        ),
+    };
+    let (writer, input) = match opened {
+        None => (DeviceWriter::new(processor), None),
+        Some(Ok((stream, name, channels, feed, recorder))) => {
+            input_meter = Some(feed.meter());
+            (
+                DeviceWriter::with_input(processor, feed),
+                Some((stream, name, channels, recorder)),
+            )
+        }
+        Some(Err(error)) => {
+            input_problem = Some(error);
+            (DeviceWriter::new(processor), None)
         }
     };
     let writer = writer.with_midi_clock(Arc::clone(midi.clock()), controller.transport());
@@ -1500,7 +1603,7 @@ fn open_host(id: Option<cpal::HostId>) -> Result<cpal::Host, AudioError> {
 /// `None` for no input, or `Some` device ID (`None` inside for the default).
 fn choice_id(choice: &InputChoice) -> Option<Option<&str>> {
     match choice {
-        InputChoice::Off => None,
+        InputChoice::Off | InputChoice::Virtual(_) => None,
         InputChoice::Default => Some(None),
         InputChoice::Device(id) => Some(Some(id)),
     }
@@ -1523,7 +1626,7 @@ fn open_input(
     buffer_size: Option<u32>,
     live_default: bool,
     health: &mut Health,
-) -> Result<(cpal::Stream, String, usize, Feed, Recorder), AudioError> {
+) -> Result<(InputStream, String, usize, Feed, Recorder), AudioError> {
     let device = find_device(host, id, Direction::Input)?;
     let name = device_name(&device);
     let ranges: Vec<_> = device.supported_input_configs()?.collect();
@@ -1576,7 +1679,7 @@ fn open_input(
         }
         stream => stream?,
     };
-    Ok((stream, name, channels, feed, recorder))
+    Ok((InputStream::Device(stream), name, channels, feed, recorder))
 }
 
 fn record<T: SizedSample>(
@@ -2292,6 +2395,28 @@ mod tests {
         }
         let seconds = total as f32 / 2.0 / playback.settings().sample_rate;
         assert!(seconds > 0.15, "{seconds}");
+    }
+
+    #[test]
+    fn the_virtual_input_plays_a_wav_into_the_recorder() {
+        let dir = tempfile::tempdir().unwrap();
+        let wav = dir.path().join("in.wav");
+        let tone: Vec<f32> = (0..24_000).map(|i| 0.5 * (i as f32 * 0.05).sin()).collect();
+        crate::wav::write_wav(&wav, &tone, 1, 48_000).unwrap();
+        let config = AudioConfig {
+            input: InputChoice::Virtual(wav),
+            ..virtual_config()
+        };
+        let (mut playback, _controller) = play(&config, 128).unwrap();
+        assert_eq!(playback.input().map(|(_, c)| c), Some(1));
+        let out = dir.path().join("take.wav");
+        playback.start_recording(&out).unwrap();
+        std::thread::sleep(Duration::from_millis(300));
+        let take = playback.stop_recording().unwrap();
+        let heard = crate::wav::read_wav(&take.path).unwrap();
+        let peak = heard.samples.iter().fold(0.0f32, |p, s| p.max(s.abs()));
+        assert!(take.frames > 4_000, "{} frames", take.frames);
+        assert!(peak > 0.3, "peak {peak}");
     }
 
     #[test]

@@ -64,7 +64,7 @@ pub const STORIES: [Story; 30] = [
         id: "S01",
         title: "Comp a vocal from multiple takes",
         status: Status::Partial,
-        missing: "Recording the takes (the route starts from a take folder), a ninth take and sliding the comp: #334.",
+        missing: "A ninth take (the takes are recorded for real through the virtual input, #334) and sliding the comp.",
     },
     assessed(
         "S02",
@@ -154,7 +154,7 @@ pub const STORIES: [Story; 30] = [
         "S16",
         "Make a vocoder or spectral effect",
         Status::Partial,
-        "Spectral Cross, Freeze and Blur exist; the frame size is fixed, so there is no band count. Not routed.",
+        "Spectral Cross (with a `bands` parameter, #355), Freeze and Blur exist; the frame size is fixed (a roadmap item) and the route is not written.",
     ),
     assessed(
         "S17",
