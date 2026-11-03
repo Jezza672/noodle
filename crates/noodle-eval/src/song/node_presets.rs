@@ -712,6 +712,36 @@ fn table() -> Vec<Row> {
             ],
         ),
         row(
+            "noodle.events.pattern",
+            "Sixteenth Loop",
+            &[("mode", 0.0), ("step", 4.0), ("length", 16.0)],
+        ),
+        row(
+            "noodle.events.pattern",
+            "Triplet Loop",
+            &[("mode", 0.0), ("step", 9.0), ("length", 12.0)],
+        ),
+        row(
+            "noodle.events.pattern",
+            "Stepper",
+            &[("mode", 3.0), ("step", 4.0), ("length", 8.0)],
+        ),
+        row(
+            "noodle.events.pattern",
+            "Pad Loop",
+            &[
+                ("mode", 0.0),
+                ("play", 1.0),
+                ("step", 4.0),
+                ("length", 16.0),
+            ],
+        ),
+        row(
+            "noodle.events.pattern",
+            "Fill One-shot",
+            &[("mode", 1.0), ("step", 4.0), ("length", 8.0), ("rate", 5.0)],
+        ),
+        row(
             "noodle.event.note_split",
             "Keyboard Split at C3",
             &[("high1", 59.0), ("low2", 60.0)],

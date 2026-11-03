@@ -40,6 +40,7 @@ mod note_split;
 mod notes;
 mod osc;
 mod pan;
+mod pattern;
 mod phaser;
 mod random_select;
 mod remap;
@@ -133,6 +134,11 @@ pub use note_split::{NOTE_SPLIT_ID, NoteSplit, param_index as note_split_param};
 pub use notes::{KEY_ID, Key, MONO_NOTE_ID, MonoNote};
 pub use osc::{Saw, Sine, Square, Triangle};
 pub use pan::{PAN_ID, Pan};
+pub use pattern::{
+    MAX_SLOTS as PATTERN_MAX_SLOTS, MAX_STEPS as PATTERN_MAX_STEPS, MODES as PATTERN_MODES,
+    PATTERN_ID, PatternNote, PatternPlayer, PatternSet, PatternSlot,
+    RATE_NAMES as PATTERN_RATE_NAMES,
+};
 pub use phaser::{PHASER_ID, Phaser, STAGES as PHASER_STAGES};
 pub use random_select::{
     CHOICE_PORT as RANDOM_SELECT_CHOICE, MAX_INPUTS as RANDOM_SELECT_MAX_INPUTS, RANDOM_SELECT_ID,
@@ -278,6 +284,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(NoteSplit);
     registry.register(RandomSelect);
     registry.register(Arpeggiator);
+    registry.register(PatternPlayer::new(&clips));
     registry.register(Voices);
     registry.register(VoiceMix::new(&telemetry));
     registry.register(Reverse);

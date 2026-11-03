@@ -433,9 +433,12 @@ enum Mode {
 }
 
 /// The track lanes, top to bottom: every track input node, and any other node
-/// that has clips.
+/// that has clips on the timeline (a Pattern Player's patterns are not).
 pub(crate) fn tracks(project: &Project) -> Vec<NodeId> {
-    let with_clips: BTreeSet<NodeId> = project.clips().map(|(_, clip)| clip.node).collect();
+    let with_clips: BTreeSet<NodeId> = project
+        .timeline_clips()
+        .map(|(_, clip)| clip.node)
+        .collect();
     let mut tracks: Vec<NodeId> = project
         .graph()
         .nodes()
@@ -548,7 +551,7 @@ pub fn show(
         // Room to scroll to: the end of the last clip, and some more to
         // place clips in.
         let extent = project
-            .clips()
+            .timeline_clips()
             .map(|(_, clip)| {
                 let rate = clip.as_audio().map_or(FALLBACK_RATE, |audio| {
                     state
@@ -949,6 +952,25 @@ pub fn show(
                             }
                             ui.separator();
                         }
+                        let players = crate::pattern_panel::players(project);
+                        if clip.as_midi().is_some() && !players.is_empty() {
+                            ui.menu_button("Copy to pattern", |ui| {
+                                for (n, &player) in players.iter().enumerate() {
+                                    if ui
+                                        .button(format!("Pattern Player {}", n + 1))
+                                        .on_hover_text("Add a copy of this clip as a slot of the player")
+                                        .clicked()
+                                    {
+                                        ui.close();
+                                        edits.extend(
+                                            crate::pattern_panel::copy_to(project, clip, player)
+                                                .map(Edit::Apply),
+                                        );
+                                    }
+                                }
+                            });
+                            ui.separator();
+                        }
                         let chosen: Vec<ClipId> = state.selected.iter().copied().collect();
                         let linked = project.group_of(id).map(|(_, members)| members);
                         let whole_link = linked.as_ref().is_some_and(|m| *m == chosen);
@@ -1298,7 +1320,7 @@ pub fn show(
                 if split_key && let Some(at) = playhead {
                     // Cutting one linked clip cuts them all.
                     let wanted: Vec<ClipId> = if state.selected.is_empty() {
-                        project.clips().map(|(id, _)| id).collect()
+                        project.timeline_clips().map(|(id, _)| id).collect()
                     } else {
                         project.with_linked(state.selected.iter().copied())
                     };

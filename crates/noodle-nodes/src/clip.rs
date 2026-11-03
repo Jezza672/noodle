@@ -39,6 +39,8 @@ use hub::{
     Links, MAX_CHANNELS, MAX_HEADS, MAX_STREAMS, MONITOR_AUTO, MONITOR_IN, POSITION_STEP, Prepared,
     Retired, Shared, ToNode,
 };
+#[cfg(test)]
+pub(crate) use schedule::CLIP_NOTE_MASK;
 pub use schedule::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Notes, Schedule, ScheduledClip,
     ScheduledControl, ScheduledNote, WarpMap, active_at,
@@ -101,7 +103,7 @@ const MAX_CHASED: usize = 64;
 const MAX_SOUNDING: usize = 128;
 /// The note IDs of keys auditioned from the piano roll; see
 /// [`CLIP_NOTE_MASK`].
-const AUDITION_ID: u32 = 0x4000_0000;
+pub(crate) const AUDITION_ID: u32 = 0x4000_0000;
 const FADE_SECONDS: f32 = 0.005;
 /// Offline, how often the node looks again while it waits for the hub or the
 /// disk, and how long it waits before giving up on them.
@@ -316,35 +318,7 @@ impl NodeType for TrackInput {
                         }
                     }
                 }
-                noodle_core::ClipContent::Midi(midi) => {
-                    key.str("midi")
-                        .i64(midi.length.0)
-                        .u64(midi.notes.len() as u64);
-                    if midi.loop_on {
-                        key.str("loop").i64(midi.loop_start.0).i64(midi.loop_len.0);
-                    }
-                    for note in &midi.notes {
-                        key.i64(note.start.0)
-                            .i64(note.length.0)
-                            .u64(u64::from(note.key))
-                            .f32(note.velocity)
-                            .u64(note.expressions.len() as u64);
-                        for e in &note.expressions {
-                            key.i64(e.tick.0)
-                                .str(&format!("{:?}", e.kind))
-                                .f32(e.value)
-                                .bool(e.ramp);
-                        }
-                    }
-                    key.u64(midi.controls.len() as u64);
-                    for c in &midi.controls {
-                        key.i64(c.tick.0)
-                            .u64(u64::from(c.channel))
-                            .str(&format!("{:?}", c.kind))
-                            .f32(c.value)
-                            .bool(c.ramp);
-                    }
-                }
+                noodle_core::ClipContent::Midi(midi) => key_midi(key, midi),
             }
         }
         Ok(())
@@ -1554,6 +1528,38 @@ impl TrackInputNode {
                 end: note.end,
             });
         }
+    }
+}
+
+/// Mixes what a MIDI clip plays into a cache key: its length, loop, notes
+/// with their expressions, and controllers.
+pub(crate) fn key_midi(key: &mut noodle_core::KeyBuilder, midi: &noodle_core::MidiClip) {
+    key.str("midi")
+        .i64(midi.length.0)
+        .u64(midi.notes.len() as u64);
+    if midi.loop_on {
+        key.str("loop").i64(midi.loop_start.0).i64(midi.loop_len.0);
+    }
+    for note in &midi.notes {
+        key.i64(note.start.0)
+            .i64(note.length.0)
+            .u64(u64::from(note.key))
+            .f32(note.velocity)
+            .u64(note.expressions.len() as u64);
+        for e in &note.expressions {
+            key.i64(e.tick.0)
+                .str(&format!("{:?}", e.kind))
+                .f32(e.value)
+                .bool(e.ramp);
+        }
+    }
+    key.u64(midi.controls.len() as u64);
+    for c in &midi.controls {
+        key.i64(c.tick.0)
+            .u64(u64::from(c.channel))
+            .str(&format!("{:?}", c.kind))
+            .f32(c.value)
+            .bool(c.ramp);
     }
 }
 

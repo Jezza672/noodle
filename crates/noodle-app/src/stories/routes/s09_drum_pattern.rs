@@ -275,6 +275,11 @@ fn steps(h: &mut Handle, _size: usize) {
 static LEVEL: std::sync::Mutex<f32> = std::sync::Mutex::new(0.0);
 
 fn choked(p: &Project) -> Result<(), String> {
+    choked_from(p, TRACK_INPUT_ID)
+}
+
+/// [`choked`], with the Script node fed by a node of type `source`.
+fn choked_from(p: &Project, source_type: &str) -> Result<(), String> {
     let rack = rack_of(p);
     let source = p
         .graph()
@@ -299,9 +304,9 @@ fn choked(p: &Project) -> Result<(), String> {
         .graph()
         .source(&Endpoint::new(source.node, "notes"))
         .and_then(|s| p.graph().node(s.node))
-        .is_some_and(|n| n.type_id == TRACK_INPUT_ID);
+        .is_some_and(|n| n.type_id == source_type);
     if !fed {
-        return Err("the track does not play the script".into());
+        return Err(format!("{source_type} does not play the script"));
     }
     let mode = p
         .graph()
@@ -377,6 +382,92 @@ fn extended(p: &mut Probe, _size: usize) -> Result<(), String> {
         .count();
     if in_bar4 != 3 {
         return Err(format!("{in_bar4} snares in bar 4, wanted 3: {notes:?}"));
+    }
+    Ok(())
+}
+
+// --- The Pattern Player route ---
+
+pub fn pattern_route() -> Route {
+    Route {
+        story: "S09",
+        tag: Tag::Expert,
+        name: "one-bar pattern in a Pattern Player's step grid",
+        fixture: kit,
+        size: None,
+        steps: player_steps,
+        done: player_done,
+        late: &[],
+    }
+}
+
+/// The steps (of sixteen, from 1) each drum plays on.
+const GRID: [(u8, &[usize]); 4] = [
+    (KICK, &[1, 9]),
+    (SNARE, &[5, 13]),
+    (CLOSED_HAT, &[1, 3, 5, 7, 9, 11, 13]),
+    (OPEN_HAT, &[15]),
+];
+
+fn player_steps(h: &mut Handle, _size: usize) {
+    choke(h);
+    h.step("add a Pattern Player");
+    let player = add_node(h, Pos2::new(60.0, 520.0), "pattern player");
+    let script = node_of(h.probe().project(), SCRIPT_ID);
+    h.step("play the script from it");
+    wire(h, (player, "notes"), (script, "notes"));
+    h.step("select the player");
+    let title = title_of(h, player, "mode");
+    h.click(title, Modifiers::NONE);
+    h.step("add a pattern");
+    let new = h.find("+ New slot");
+    h.click(new, Modifiers::NONE);
+    // The field for the next row's key starts at 36 and keeps the last one.
+    let mut shown = 36;
+    for (key, steps) in GRID {
+        h.step("add a row for the drum");
+        let field = h.probe().find_value(&shown.to_string());
+        shown = key;
+        h.click(field, Modifiers::NONE);
+        h.press(field, Modifiers::COMMAND, Key::A);
+        h.type_text(field, &key.to_string());
+        h.press(field, Modifiers::NONE, Key::Enter);
+        let row = h.find("+ Row");
+        h.click(row, Modifiers::NONE);
+        h.step("click the steps in");
+        for step in steps {
+            let cell = h.find(&format!("Step {step} on key {key}"));
+            h.click(cell, Modifiers::NONE);
+        }
+    }
+    h.step("listen");
+    let at = Pos2::new(640.0, 100.0);
+    h.press_playing(at, Modifiers::NONE, Key::Space);
+    let heard = h.probe().hear(std::time::Duration::from_millis(1500));
+    *LEVEL.lock().unwrap() = peak(&heard);
+    h.press_playing(at, Modifiers::NONE, Key::Space);
+}
+
+fn player_done(p: &mut Probe, _size: usize) -> Result<(), String> {
+    choked_from(p.project(), noodle_nodes::PATTERN_ID)?;
+    let heard = *LEVEL.lock().unwrap();
+    if heard < 0.05 {
+        return Err(format!("the pattern is silent (peak {heard})"));
+    }
+    let project = p.project();
+    let player = node_of(project, noodle_nodes::PATTERN_ID);
+    let notes: Vec<(i64, u8)> = project
+        .patterns_of(player)
+        .filter_map(|(_, c)| c.as_midi())
+        .flat_map(|m| m.notes.iter().map(|n| (n.start.0, n.key)))
+        .collect();
+    for (key, steps) in GRID {
+        let mut found: Vec<i64> = notes.iter().filter(|n| n.1 == key).map(|n| n.0).collect();
+        found.sort();
+        let wanted: Vec<i64> = steps.iter().map(|s| (*s as i64 - 1) * 240).collect();
+        if found != wanted {
+            return Err(format!("key {key} is on {found:?}, not {wanted:?}"));
+        }
     }
     Ok(())
 }

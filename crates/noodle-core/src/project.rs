@@ -376,6 +376,26 @@ impl Project {
         self.clips.iter().map(|(&id, clip)| (id, clip))
     }
 
+    /// The clips on the timeline: all of them but the patterns that Pattern
+    /// Players own, which have no place on it. Views that list or draw the
+    /// project's clips use this.
+    pub fn timeline_clips(&self) -> impl Iterator<Item = (ClipId, &Clip)> {
+        self.clips()
+            .filter(|(_, clip)| !self.is_pattern_node(clip.node))
+    }
+
+    /// Whether `node` is a Pattern Player, whose clips are its patterns.
+    pub fn is_pattern_node(&self, node: NodeId) -> bool {
+        self.graph
+            .node(node)
+            .is_some_and(|n| n.type_id == crate::group::PATTERN_PLAYER)
+    }
+
+    /// The patterns a Pattern Player owns, in ID order: its slots.
+    pub fn patterns_of(&self, node: NodeId) -> impl Iterator<Item = (ClipId, &Clip)> {
+        self.clips_on(node).filter(|(_, c)| c.as_midi().is_some())
+    }
+
     /// The clips a track input node plays, in ID order.
     pub fn clips_on(&self, node: NodeId) -> impl Iterator<Item = (ClipId, &Clip)> {
         self.clips().filter(move |(_, clip)| clip.node == node)

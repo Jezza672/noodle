@@ -88,7 +88,7 @@ pub const STORIES: [Story; 30] = [
         id: "S09",
         title: "Program a drum pattern with swing and choke",
         status: Status::Partial,
-        missing: "No swing; the hat choke needs a hand-written Script node; loading the samples and swapping the snare are not routed: #330.",
+        missing: "No swing; the hat choke needs a hand-written Script node; loading the samples and swapping the snare are not routed: #330. The pattern can also be drawn in a Pattern Player's step grid (#354).",
     },
     Story {
         id: "S10",
@@ -117,14 +117,14 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S14",
         title: "Share modulation sources across many parameters",
-        status: Status::Partial,
-        missing: "No step sequencer to replace the LFO with, keeping its targets: #354.",
+        status: Status::Full,
+        missing: "",
     },
     Story {
         id: "S15",
         title: "Make a tempo-synced rhythmic gate",
         status: Status::Partial,
-        missing: "No step-editable gate pattern, so no triplet change by pattern: #354.",
+        missing: "Changing the project tempo is not routed.",
     },
     Story {
         id: "S16",

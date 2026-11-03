@@ -20,6 +20,7 @@ mod metronome;
 mod midi_take;
 mod mixer;
 mod outputs;
+mod pattern_panel;
 mod piano_roll;
 mod pill_buttons;
 mod plugin_browser;

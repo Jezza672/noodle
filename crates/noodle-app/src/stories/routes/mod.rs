@@ -62,6 +62,7 @@ pub fn all() -> Vec<Route> {
         s07_sections::route(),
         s08_midi_detail::route(),
         s09_drum_pattern::route(),
+        s09_drum_pattern::pattern_route(),
         s10_keyswitch::route(),
         s11_audio_to_midi::route(),
         s12_multisampler::route(),
