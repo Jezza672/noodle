@@ -10,6 +10,7 @@ mod edit;
 mod frame;
 mod graph;
 pub mod group;
+mod key;
 pub mod library;
 mod project;
 pub mod spare;
@@ -29,6 +30,7 @@ pub use config::{Config, Value};
 pub use edit::{Command, EditError, History};
 pub use frame::{Frame, FrameId};
 pub use graph::{Connection, Endpoint, Graph, Node, NodeId, Position};
+pub use key::{Key, KeyTarget, Mode, Transpose};
 pub use project::{ExportSettings, ExportTail, LoadError, Project, PunchRange, TransportLoop};
 pub use timeline::{
     MusicalPosition, SignatureChange, TICKS_PER_QUARTER, TempoChange, TempoMap, TempoMapError,
