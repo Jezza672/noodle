@@ -11,6 +11,7 @@ mod s03_external_synth;
 mod s04_tighten_drums;
 mod s05_conform;
 mod s06_stems;
+mod s07_sections;
 mod s08_midi_detail;
 mod s09_drum_pattern;
 mod s10_keyswitch;
@@ -57,6 +58,7 @@ pub fn all() -> Vec<Route> {
         s04_tighten_drums::route(),
         s05_conform::route(),
         s06_stems::route(),
+        s07_sections::route(),
         s08_midi_detail::route(),
         s09_drum_pattern::route(),
         s10_keyswitch::route(),
