@@ -189,6 +189,18 @@ pub trait NodeType: Send + Sync + 'static {
         None
     }
 
+    /// Set by a node that picks between the samples wired to its sample
+    /// inputs while audio runs (Random Select). The compiler then can't write
+    /// one sample into the receiver, so it writes all the candidates (joined
+    /// by `|`, an empty one for an unwired input) under the receiving sample
+    /// input's key, and wires the chooser's signal output `index` to the
+    /// receiver's signal input `{key}_choice`, which holds the number of the
+    /// candidate in force, per frame (see `noodle_nodes::sample_set`). A
+    /// receiver without that input refuses the wire.
+    fn sample_chooser(&self, _config: &Config) -> Option<SampleChooser> {
+        None
+    }
+
     /// The shapes of the outputs, given the shapes of the signal inputs
     /// (unconnected inputs are [`Shape::MONO`]). By default every output gets
     /// the broadcast of all the inputs.
@@ -213,6 +225,18 @@ pub trait NodeType: Send + Sync + 'static {
 
     /// Runs off the audio thread, so it may allocate.
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError>;
+}
+
+/// How a node picks among its sample inputs at run time; see
+/// [`NodeType::sample_chooser`].
+#[derive(Clone, Debug, PartialEq)]
+pub struct SampleChooser {
+    /// The sample output that carries the pick.
+    pub output: String,
+    /// The sample inputs it picks among, in the order of the candidates.
+    pub inputs: Vec<String>,
+    /// The signal output that holds the number of the candidate in force.
+    pub index: String,
 }
 
 /// A node's ports and processing mode for a particular config.

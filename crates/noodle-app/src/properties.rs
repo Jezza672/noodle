@@ -685,6 +685,8 @@ fn config(
             let carries = match (wired, node.config.get("kind")) {
                 (false, _) => "nothing yet: it takes the type of the first wire",
                 (true, Some(noodle_core::Value::Int(1))) => "notes",
+                (true, Some(noodle_core::Value::Int(2))) => "samples",
+                (true, Some(noodle_core::Value::Int(3))) => "spectra",
                 (true, _) => "audio or control signals",
             };
             ui.label(RichText::new(format!("Chooses between: {carries}")).weak());

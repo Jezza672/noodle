@@ -1999,8 +1999,7 @@ fn finish(
 
 /// What a wire to a Random Select's data port sets: until it has one, the
 /// node has no type, and the first wire gives it that of what it carries
-/// (`kind`: 0 signal, 1 notes). Spectral and sample wires can't be selected
-/// between while audio runs, so they are refused with the reason.
+/// (`kind`: 0 signal, 1 notes, 2 samples, 3 spectral).
 fn random_select_type(
     f: &Frame_<'_>,
     endpoint: &Endpoint,
@@ -2019,20 +2018,16 @@ fn random_select_type(
     let wanted = match other {
         Some(PortKind::Audio | PortKind::Param(_)) => 0,
         Some(PortKind::Event) => 1,
-        Some(PortKind::Spectral) => {
-            return Err("Random Select can't switch spectral wires yet".into());
-        }
-        Some(PortKind::Sample) => {
-            return Err("Random Select can't switch sample wires: they are chosen when the project is compiled".into());
-        }
+        Some(PortKind::Sample) => 2,
+        Some(PortKind::Spectral) => 3,
         _ => return Ok(Vec::new()),
+    };
+    let now = match node.config.get("kind") {
+        Some(noodle_core::Value::Int(n)) => *n,
+        _ => 0,
     };
     let mut commands = Vec::new();
     if !layout::random_select_is_wired(graph, endpoint.node) {
-        let now = match node.config.get("kind") {
-            Some(noodle_core::Value::Int(n)) => *n,
-            _ => 0,
-        };
         if now != wanted {
             commands.push(Command::SetConfig {
                 node: endpoint.node,
@@ -2040,13 +2035,14 @@ fn random_select_type(
                 value: Some(noodle_core::Value::Int(wanted)),
             });
         }
-    } else if (wanted == 1) != layout_is_events(node) {
+    } else if now != wanted {
         return Err(format!(
             "Random Select is carrying {}",
-            if layout_is_events(node) {
-                "notes"
-            } else {
-                "signals"
+            match now {
+                1 => "notes",
+                2 => "samples",
+                3 => "spectra",
+                _ => "signals",
             }
         ));
     }
@@ -2054,10 +2050,6 @@ fn random_select_type(
 }
 
 pub use layout::random_select_is_wired;
-
-fn layout_is_events(node: &Node) -> bool {
-    matches!(node.config.get("kind"), Some(noodle_core::Value::Int(1)))
-}
 
 /// What it takes to make the spare port `endpoint` real/// What it takes to make the spare port `endpoint` real, if it is one: more
 /// inputs on a mixer, or a port on a group or the boundary node inside it.

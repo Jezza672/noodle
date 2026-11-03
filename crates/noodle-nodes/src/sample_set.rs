@@ -66,6 +66,22 @@ impl SetEntry {
     }
 }
 
+/// Separates the candidates of a sample that is picked while audio runs, in
+/// the text the compiler writes into the receiver's config (see
+/// [`NodeType::sample_chooser`](noodle_engine::NodeType::sample_chooser)). Each
+/// candidate is one sample or a set, or empty for none.
+pub const CHOICE_SEPARATOR: char = '|';
+
+/// What the picker's signal adds to the number of the candidate when the
+/// notes already sounding on the others are to be cut at the switch (Cut
+/// held). There are at most 64 candidates, so the sum says both.
+pub const CHOICE_CUT: f32 = 64.0;
+
+/// Whether sample text is a list of candidates to pick from.
+pub fn is_choice(text: &str) -> bool {
+    text.contains(CHOICE_SEPARATOR)
+}
+
 /// Whether sample text is a set rather than one sample.
 pub fn is_set(text: &str) -> bool {
     text.contains('@')
@@ -85,7 +101,11 @@ pub fn set_to_text(entries: &[SetEntry]) -> String {
 
 /// The hashes in sample text, whether it is one sample or a set.
 pub fn sample_hashes(text: &str) -> Vec<String> {
-    if is_set(text) {
+    if is_choice(text) {
+        text.split(CHOICE_SEPARATOR)
+            .flat_map(sample_hashes)
+            .collect()
+    } else if is_set(text) {
         parse_set(text)
             .into_iter()
             .map(|e| e.reference.hash)

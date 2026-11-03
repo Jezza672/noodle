@@ -3290,7 +3290,7 @@ fn another_type_is_refused_once_one_is_wired() {
 }
 
 #[test]
-fn spectral_wires_are_refused_with_the_reason() {
+fn a_spectral_wire_makes_it_a_spectral_selector() {
     let mut h = rig();
     let analyze = add(&mut h, Node::new(noodle_nodes::ANALYZE_ID).at(0.0, 0.0));
     let rs = add(
@@ -3301,13 +3301,42 @@ fn spectral_wires_are_refused_with_the_reason() {
     let from = socket(&h, analyze, Side::Output, "spectrum");
     let to = socket(&h, rs, Side::Input, "in1");
     link(&mut h, from, to);
-    assert_eq!(source(&h, rs, "in1"), None);
-    assert!(
-        h.state_mut()
-            .editor
-            .take_refusal()
-            .is_some_and(|why| why.contains("spectral"))
+    assert_eq!(
+        source(&h, rs, "in1"),
+        Some(Endpoint::new(analyze, "spectrum"))
     );
+    assert_eq!(kind_config(&h, rs), noodle_core::Value::Int(3));
+    assert_eq!(
+        port_of(&h, rs, Side::Output, "out").unwrap().kind,
+        crate::editor::layout::PortKind::Spectral
+    );
+    // Spectra have no held notes to finish or cut.
+    assert!(port_of(&h, rs, Side::Input, "switch").is_none());
+}
+
+#[test]
+fn a_sample_wire_makes_it_a_sample_selector_and_hides_the_pick() {
+    let mut h = rig();
+    let sample = add(
+        &mut h,
+        Node::new(noodle_nodes::SAMPLE_INPUT_ID).at(0.0, 0.0),
+    );
+    let rs = add(
+        &mut h,
+        Node::new(noodle_nodes::RANDOM_SELECT_ID).at(300.0, 0.0),
+    );
+    h.run();
+    let from = socket(&h, sample, Side::Output, "sample");
+    let to = socket(&h, rs, Side::Input, "in1");
+    link(&mut h, from, to);
+    assert_eq!(source(&h, rs, "in1"), Some(Endpoint::new(sample, "sample")));
+    assert_eq!(kind_config(&h, rs), noodle_core::Value::Int(2));
+    assert_eq!(
+        port_of(&h, rs, Side::Output, "out").unwrap().kind,
+        crate::editor::layout::PortKind::Sample
+    );
+    // The signal the compiler wires to the Sampler isn't drawn.
+    assert!(port_of(&h, rs, Side::Output, noodle_nodes::RANDOM_SELECT_CHOICE).is_none());
 }
 
 #[test]

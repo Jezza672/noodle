@@ -1652,6 +1652,115 @@ fn a_sampler_playing_a_sample_set_never_allocates_through_layers_takes_and_bend(
 }
 
 #[test]
+fn a_sampler_switching_samples_on_a_trigger_never_allocates() {
+    use noodle_io::Audio;
+    use noodle_nodes::{SAMPLE_KEY, SampleStore, Sampler};
+
+    // An arpeggiated key plays a sampler whose sample a fast clock picks from
+    // three, now finishing held notes and now cutting them, and the spectral
+    // and sample kinds of Random Select are exercised by the clock too.
+    let mut s = Session::new();
+    let store = SampleStore::new();
+    s.registry
+        .replace(Sampler::new(&store, &noodle_engine::Telemetry::new()));
+    let clock = s.add(Node::new("noodle.generator.clock").with_param("rate", 8.0));
+    let select = s.add(
+        Node::new("noodle.util.randselect")
+            .with_config(
+                Config::new()
+                    .with("kind", Value::Int(2))
+                    .with("inputs", Value::Int(3)),
+            )
+            .with_param("avoid_repeat", 1.0),
+    );
+    for (i, pitch) in [0.01, 0.02, 0.03].into_iter().enumerate() {
+        let hash = store.insert(&Audio {
+            samples: (0..4800).map(|n| (n as f32 * pitch).sin() * 0.4).collect(),
+            channels: 1,
+            sample_rate: 48_000,
+        });
+        let sample = s.add(
+            Node::new(noodle_nodes::SAMPLE_INPUT_ID)
+                .with_config(Config::new().with(SAMPLE_KEY, Value::Text(hash))),
+        );
+        s.wire(sample, "sample", select, &format!("in{}", i + 1));
+    }
+    s.wire(clock, "out", select, "trigger");
+    let button = s.add(Node::new("noodle.input.button").with_param("state", 1.0));
+    let key = s.add(Node::new("noodle.event.key"));
+    let arp = s.add(Node::new("noodle.event.arpeggiator").with_param("rate", 6.0));
+    let sampler = s.add(Node::new("noodle.instrument.sampler"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(button, "out", key, "gate");
+    s.wire(key, "out", arp, "in");
+    s.wire(arp, "out", sampler, "in");
+    s.wire(select, "out", sampler, "sample");
+    s.wire(sampler, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..16 {
+        s.controller.set_param(select, "switch", (round % 2) as f32);
+        s.controller.set_param(select, "seed", round as f32);
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+    assert!(heard, "the sampler never sounded");
+}
+
+#[test]
+fn random_select_passing_spectra_never_allocates() {
+    // Two analysers feed a Random Select of spectra that a fast clock
+    // triggers; a Synth turns what it passes back into audio.
+    let mut s = Session::new();
+    let clock = s.add(Node::new("noodle.generator.clock").with_param("rate", 40.0));
+    let select = s.add(
+        Node::new("noodle.util.randselect")
+            .with_config(
+                Config::new()
+                    .with("kind", Value::Int(3))
+                    .with("inputs", Value::Int(2)),
+            )
+            .with_param("avoid_repeat", 1.0),
+    );
+    let output = s.add(Node::new(OUTPUT_ID));
+    for (i, hz) in [220.0, 660.0].into_iter().enumerate() {
+        let osc = s.add(Node::new("noodle.osc.sine").with_param("frequency", hz));
+        let analyze = s.add(Node::new(noodle_nodes::ANALYZE_ID));
+        s.wire(osc, "out", analyze, "in");
+        s.wire(analyze, "spectrum", select, &format!("in{}", i + 1));
+    }
+    let synth = s.add(Node::new(noodle_nodes::SYNTHESIZE_ID));
+    s.wire(clock, "out", select, "trigger");
+    s.wire(select, "out", synth, "spectrum");
+    s.wire(synth, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..12 {
+        s.controller.set_param(select, "seed", round as f32);
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+    assert!(heard, "the spectra never sounded");
+}
+
+#[test]
 fn a_sampler_plays_a_stretched_warp_and_takes_live_edits_without_allocating() {
     use noodle_io::Audio;
     use noodle_nodes::{GAIN_ENV_KEY, SAMPLE_KEY, SampleStore, Sampler, WARP_KEY};
