@@ -1,0 +1,138 @@
+//! S14: one LFO, one envelope follower and one random source modulating
+//! several parameters on different devices, each with its own depth.
+//!
+//! Partial. A modulation source's output can be wired to any number of
+//! parameter sockets, and a Remap before each socket gives it its own depth.
+//! There is no step sequencer to swap in for the LFO (#354), so that late
+//! change is not routed.
+
+use std::path::Path;
+
+use super::super::{Keep, LateChange, Route, Tag};
+use super::patch::{Op, Ref, audible, check, nodes_of, run, seeded};
+use crate::app::App;
+use noodle_core::Project;
+
+const SAW: Ref = Ref("osc.saw", 0);
+const NOISE: Ref = Ref("noise.white", 0);
+const OUT: Ref = Ref("io.output", 0);
+const FILTER: Ref = Ref("filter.svf", 0);
+const DRIVE: Ref = Ref("effect.distortion", 0);
+const VERB: Ref = Ref("effect.reverb", 0);
+const LFO: Ref = Ref("mod.lfo", 0);
+const FOLLOW: Ref = Ref("mod.follower", 0);
+const HOLD: Ref = Ref("mod.samplehold", 0);
+const CLOCK: Ref = Ref("generator.clock", 0);
+const DEPTH: Ref = Ref("util.remap", 0);
+
+fn fixture(dir: &Path) -> App {
+    seeded(
+        dir,
+        &[
+            ("osc.saw", 60.0, 120.0, &[("frequency", 110.0)]),
+            ("noise.white", 60.0, 560.0, &[]),
+            ("io.output", 1150.0, 150.0, &[]),
+            ("filter.svf", 300.0, 120.0, &[]),
+            ("effect.distortion", 560.0, 120.0, &[]),
+            ("effect.reverb", 820.0, 120.0, &[]),
+        ],
+        &[
+            (0, "out", 3, "in"),
+            (3, "low", 4, "in"),
+            (4, "out", 5, "in"),
+            (5, "out", 2, "in"),
+        ],
+    )
+}
+
+const BUILD: &[Op] = &[
+    Op::Step("add the three sources"),
+    Op::Add(LFO, 300.0, 540.0),
+    Op::Add(FOLLOW, 560.0, 540.0),
+    Op::Add(HOLD, 820.0, 540.0),
+    Op::Add(CLOCK, 560.0, 700.0),
+    Op::Step("feed the follower and the random source"),
+    Op::Wire(SAW, "out", FOLLOW, "in"),
+    Op::Wire(NOISE, "out", HOLD, "in"),
+    Op::Wire(CLOCK, "out", HOLD, "trigger"),
+    Op::Step("send each source to its targets"),
+    Op::Wire(LFO, "out", FILTER, "cutoff"),
+    Op::Wire(FOLLOW, "out", DRIVE, "drive"),
+    Op::Wire(HOLD, "out", VERB, "mix"),
+    Op::Wire(LFO, "out", VERB, "damping"),
+    Op::Step("listen"),
+    Op::Play,
+];
+
+pub fn route() -> Route {
+    Route {
+        story: "S14",
+        tag: Tag::Default,
+        name: "an LFO, a follower and a random source across three devices",
+        fixture,
+        size: None,
+        steps: |h, _| run(h, BUILD),
+        done: |p, _| {
+            check(p, BUILD)?;
+            audible(p)
+        },
+        late: &[
+            LateChange {
+                name: "change the LFO's depth",
+                steps: |h, _| run(h, DEPTH_DOWN),
+                done: |p, _| check(p, DEPTH_DOWN),
+                keep: &[Keep {
+                    name: "the targets",
+                    of: targets,
+                }],
+            },
+            LateChange {
+                name: "add a new target",
+                steps: |h, _| run(h, NEW_TARGET),
+                done: |p, _| check(p, NEW_TARGET),
+                keep: &[Keep {
+                    name: "the targets",
+                    of: targets,
+                }],
+            },
+            LateChange {
+                name: "give one target its own depth",
+                steps: |h, _| run(h, OWN_DEPTH),
+                done: |p, _| check(p, OWN_DEPTH),
+                keep: &[],
+            },
+        ],
+    }
+}
+
+const DEPTH_DOWN: &[Op] = &[Op::Step("lower the LFO depth"), Op::Set(LFO, "depth", 0.4)];
+
+const NEW_TARGET: &[Op] = &[
+    Op::Step("send the follower to the filter resonance as well"),
+    Op::Wire(FOLLOW, "out", FILTER, "resonance"),
+];
+
+/// A depth that belongs to one target is a Remap between the source and it.
+const OWN_DEPTH: &[Op] = &[
+    Op::Step("scale the follower for the drive only"),
+    Op::Add(DEPTH, 560.0, 420.0),
+    Op::Set(DEPTH, "out_max", 0.5),
+    Op::Wire(FOLLOW, "out", DEPTH, "in"),
+    Op::Wire(DEPTH, "out", DRIVE, "drive"),
+];
+
+/// Which source feeds which socket, for the late changes to leave alone.
+fn targets(p: &Project) -> String {
+    let sources: Vec<_> = ["mod.follower", "mod.samplehold"]
+        .iter()
+        .flat_map(|k| nodes_of(p, k))
+        .collect();
+    let mut lines: Vec<String> = p
+        .graph()
+        .connections()
+        .filter(|c| sources.contains(&c.from.node) && c.to.port != "resonance")
+        .map(|c| format!("{:?}->{:?}", c.from, c.to))
+        .collect();
+    lines.sort();
+    lines.join("\n")
+}
