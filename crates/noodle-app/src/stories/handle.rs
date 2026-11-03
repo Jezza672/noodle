@@ -450,6 +450,11 @@ impl Probe<'_> {
             .center()
     }
 
+    /// Whether a freeze is still rendering in the background.
+    pub fn freezing(&self) -> bool {
+        self.h.state().session().freeze_pending()
+    }
+
     /// Whether anything on screen has a label containing `word`.
     pub fn mentions(&self, word: &str) -> bool {
         self.h.query_all_by_label_contains(word).next().is_some()

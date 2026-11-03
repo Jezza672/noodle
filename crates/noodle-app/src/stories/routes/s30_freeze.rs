@@ -46,6 +46,14 @@ fn press(h: &mut Handle, button: &str) {
     h.probe().settle();
     let at = h.find(button);
     h.click(at, Modifiers::NONE);
+    // The user waits for the render to finish before going on.
+    let mut frames = 0;
+    while h.probe().freezing() && frames < 400 {
+        h.probe().settle();
+        std::thread::sleep(std::time::Duration::from_millis(25));
+        frames += 1;
+    }
+    h.waited(f64::from(frames) * 0.025);
 }
 
 fn steps(h: &mut Handle, _size: usize) {
