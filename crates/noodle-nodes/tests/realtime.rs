@@ -1543,12 +1543,27 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
             .with_param("rate", 5.0)
             .with_param("pattern", 5.0),
     );
+    // Swing and Humanise between the arpeggiator and the split, and the
+    // split's outputs in one choke group so each cuts the other.
+    let swing = s.add(
+        Node::new("noodle.event.swing")
+            .with_param("amount", 0.4)
+            .with_param("grid", 2.0),
+    );
+    let humanise = s.add(
+        Node::new("noodle.event.humanise")
+            .with_param("timing", 10.0)
+            .with_param("velocity", 0.3),
+    );
     let split = s.add(
-        Node::new("noodle.event.note_split").with_config(
-            Config::new()
-                .with("outputs", Value::Int(2))
-                .with("rest", Value::Int(1)),
-        ),
+        Node::new("noodle.event.note_split")
+            .with_config(
+                Config::new()
+                    .with("outputs", Value::Int(2))
+                    .with("rest", Value::Int(1)),
+            )
+            .with_param("choke1", 1.0)
+            .with_param("choke2", 1.0),
     );
     let (low, high) = (sampler(&mut s), sampler(&mut s));
     let mix = s.add(Node::new("noodle.util.mix"));
@@ -1563,7 +1578,9 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
     let output = s.add(Node::new(OUTPUT_ID));
     s.wire(button, "out", key, "gate");
     s.wire(key, "out", arp, "in");
-    s.wire(arp, "out", split, "in");
+    s.wire(arp, "out", swing, "in");
+    s.wire(swing, "out", humanise, "in");
+    s.wire(humanise, "out", split, "in");
     s.wire(split, "out1", low, "in");
     s.wire(split, "out2", high, "in");
     s.wire(low, "out", mix, "in1");
@@ -2031,8 +2048,8 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
 fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
     // A 5.1 engine: sine -> surround pan (azimuth swept by an LFO) -> split
     // -> merge -> output, the same pan through a downmix to stereo and an
-    // upmix back, and a second pan whose layout alternates 5.1 and 7.1 (a
-    // 6 -> 8 -> 6 channel rebuild) into a Convert Layout back to 5.1.
+    // upmix back, and a second pan whose layout alternates 5.1 and 7.1.4 (a
+    // 6 -> 12 -> 6 channel rebuild) with its elevation swept into a Convert Layout back to 5.1.
     let surround = Settings {
         channels: 6,
         ..SETTINGS
@@ -2067,6 +2084,8 @@ fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
         .add(Node::new("noodle.util.mix").with_config(Config::new().with("inputs", Value::Int(3))));
     let output = s.add(Node::new(OUTPUT_ID));
     s.wire(sine, "out", swept, "in");
+    // Elevation moves too: in 7.1.4 (12 channels) it pans into the heights.
+    s.wire(lfo, "out", swept, "elevation");
     s.wire(swept, "out", to_51, "in");
     s.wire(to_51, "out", mix, "in3");
     s.wire(sine, "out", pan, "in");
@@ -2086,12 +2105,12 @@ fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
     let mut channels_heard = [false; 6];
     for round in 0..8 {
         // Between blocks, on this thread: the second pan changes shape,
-        // 6 channels then 8 then 6 again.
+        // 6 channels then 12 then 6 again.
         s.edit(Command::SetConfig {
             node: swept,
             key: "layout".to_owned(),
             value: Some(Value::Text(
-                if round % 2 == 1 { "7.1" } else { "5.1" }.to_owned(),
+                if round % 2 == 1 { "7.1.4" } else { "5.1" }.to_owned(),
             )),
         });
         s.update();
@@ -2502,4 +2521,251 @@ fn random_select_never_allocates_through_triggers_reseeds_and_resizes() {
         assert!(out.iter().all(|x| x.is_finite()), "round {round}");
     }
     assert!(heard, "the patch never sounded");
+}
+
+#[test]
+fn selector_never_allocates_through_switches_wiring_and_resizes() {
+    // Three oscillators go through a Selector: `which` is set from the UI,
+    // then wired from an LFO so it changes per sample, and the input count is
+    // resized mid-run.
+    let mut s = Session::new();
+    let select = s.add(
+        Node::new(noodle_nodes::SELECTOR_ID)
+            .with_config(Config::new().with("inputs", Value::Int(3))),
+    );
+    for (i, hz) in [220.0, 330.0, 440.0].into_iter().enumerate() {
+        let osc = s.add(Node::new("noodle.osc.sine").with_param("frequency", hz));
+        s.wire(osc, "out", select, &format!("in{}", i + 1));
+    }
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(select, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..16 {
+        match round {
+            ..=5 => s.controller.set_param(select, "which", (round % 3) as f32),
+            6 => {
+                // A wire changes `which` per sample from here on.
+                let lfo = s.add(Node::new("noodle.mod.lfo").with_param("rate", 4.0));
+                s.wire(lfo, "out", select, "which");
+                s.update();
+            }
+            10 => {
+                s.edit(Command::SetConfig {
+                    node: select,
+                    key: "inputs".into(),
+                    value: Some(Value::Int(4)),
+                });
+                s.update();
+            }
+            _ => {}
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+    assert!(heard, "the patch never sounded");
+}
+
+#[test]
+fn selector_zero_crossing_never_allocates_through_switches_and_resizes() {
+    // Two oscillators go through a Selector in zero-crossing mode; a clock
+    // moves `which`, and a third input is added mid-run.
+    let mut s = Session::new();
+    let clock = s.add(Node::new("noodle.generator.clock").with_param("rate", 7.0));
+    let select = s.add(
+        Node::new(noodle_nodes::SELECTOR_ID)
+            .with_config(Config::new().with("inputs", Value::Int(2)))
+            .with_param("switch", 1.0),
+    );
+    for (i, hz) in [220.0, 330.0].into_iter().enumerate() {
+        let osc = s.add(Node::new("noodle.osc.sine").with_param("frequency", hz));
+        s.wire(osc, "out", select, &format!("in{}", i + 1));
+    }
+    s.wire(clock, "out", select, "which");
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(select, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..12 {
+        if round == 6 {
+            s.edit(Command::SetConfig {
+                node: select,
+                key: "inputs".into(),
+                value: Some(Value::Int(3)),
+            });
+            s.update();
+            let osc = s.add(Node::new("noodle.osc.sine").with_param("frequency", 550.0));
+            s.wire(osc, "out", select, "in3");
+            s.update();
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+    assert!(heard, "the patch never sounded");
+}
+
+#[test]
+fn selector_note_sample_and_spectral_kinds_never_allocate() {
+    use noodle_io::Audio;
+    use noodle_nodes::{SAMPLE_KEY, SampleStore, Sampler};
+
+    // Two keys -> Selector (notes), with a clock moving `which` while notes
+    // are held; its output plays through MonoNote, a saw and a VCA.
+    let mut notes = Session::new();
+    let nselect = notes.add(
+        Node::new(noodle_nodes::SELECTOR_ID).with_config(Config::new().with("kind", Value::Int(1))),
+    );
+    let button = notes.add(Node::new("noodle.input.button").with_param("state", 1.0));
+    let button2 = notes.add(Node::new("noodle.input.button"));
+    let key = notes.add(Node::new("noodle.event.key"));
+    let key2 = notes.add(Node::new("noodle.event.key").with_param("note", 55.0));
+    let nclock = notes.add(Node::new("noodle.generator.clock").with_param("rate", 2.0));
+    let mono = notes.add(Node::new("noodle.event.mono"));
+    let saw = notes.add(Node::new("noodle.osc.saw"));
+    let vca = notes.add(Node::new("noodle.util.vca"));
+    let nout = notes.add(Node::new(OUTPUT_ID));
+    notes.wire(button, "out", key, "gate");
+    notes.wire(button2, "out", key2, "gate");
+    notes.wire(key, "out", nselect, "in1");
+    notes.wire(key2, "out", nselect, "in2");
+    notes.wire(nclock, "out", nselect, "which");
+    notes.wire(nselect, "out", mono, "in");
+    notes.wire(mono, "pitch", saw, "frequency");
+    notes.wire(mono, "gate", vca, "level");
+    notes.wire(saw, "out", vca, "in");
+    notes.wire(vca, "out", nout, "in");
+    notes.update();
+
+    // Two samples into a Selector, whose choice the compiler wires to a
+    // Sampler.
+    let mut samples = Session::new();
+    let store = SampleStore::new();
+    samples
+        .registry
+        .replace(Sampler::new(&store, &noodle_engine::Telemetry::new()));
+    let clock = samples.add(Node::new("noodle.generator.clock").with_param("rate", 6.0));
+    let sselect = samples.add(
+        Node::new(noodle_nodes::SELECTOR_ID).with_config(
+            Config::new()
+                .with("kind", Value::Int(2))
+                .with("inputs", Value::Int(2)),
+        ),
+    );
+    for (i, pitch) in [0.01, 0.02].into_iter().enumerate() {
+        let hash = store.insert(&Audio {
+            samples: (0..4800).map(|n| (n as f32 * pitch).sin() * 0.4).collect(),
+            channels: 1,
+            sample_rate: 48_000,
+        });
+        let sample = samples.add(
+            Node::new(noodle_nodes::SAMPLE_INPUT_ID)
+                .with_config(Config::new().with(SAMPLE_KEY, Value::Text(hash))),
+        );
+        samples.wire(sample, "sample", sselect, &format!("in{}", i + 1));
+    }
+    samples.wire(clock, "out", sselect, "which");
+    let sbutton = samples.add(Node::new("noodle.input.button").with_param("state", 1.0));
+    let skey = samples.add(Node::new("noodle.event.key"));
+    let arp = samples.add(Node::new("noodle.event.arpeggiator").with_param("rate", 6.0));
+    let sampler = samples.add(Node::new("noodle.instrument.sampler"));
+    let sout = samples.add(Node::new(OUTPUT_ID));
+    samples.wire(sbutton, "out", skey, "gate");
+    samples.wire(skey, "out", arp, "in");
+    samples.wire(arp, "out", sampler, "in");
+    samples.wire(sselect, "out", sampler, "sample");
+    samples.wire(sampler, "out", sout, "in");
+    samples.update();
+
+    // Two analysers into a Selector of spectra, back to audio through a Synth.
+    let mut spectra = Session::new();
+    let xclock = spectra.add(Node::new("noodle.generator.clock").with_param("rate", 40.0));
+    let xselect = spectra.add(
+        Node::new(noodle_nodes::SELECTOR_ID).with_config(
+            Config::new()
+                .with("kind", Value::Int(3))
+                .with("inputs", Value::Int(2)),
+        ),
+    );
+    for (i, hz) in [220.0, 660.0].into_iter().enumerate() {
+        let osc = spectra.add(Node::new("noodle.osc.sine").with_param("frequency", hz));
+        let analyze = spectra.add(Node::new(noodle_nodes::ANALYZE_ID));
+        spectra.wire(osc, "out", analyze, "in");
+        spectra.wire(analyze, "spectrum", xselect, &format!("in{}", i + 1));
+    }
+    spectra.wire(xclock, "out", xselect, "which");
+    let synth = spectra.add(Node::new(noodle_nodes::SYNTHESIZE_ID));
+    let xout = spectra.add(Node::new(OUTPUT_ID));
+    spectra.wire(xselect, "out", synth, "spectrum");
+    spectra.wire(synth, "out", xout, "in");
+    spectra.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    let mut notes_heard = false;
+    for round in 0..12 {
+        let switch = (round % 2) as f32;
+        notes.controller.set_param(nselect, "switch", switch);
+        // Overlapping gates keep notes held across the clock's switches, so
+        // both Finish held and Cut held see notes to release.
+        notes.controller.set_param(
+            button,
+            "state",
+            if round % 4 == 0 || round % 4 == 1 {
+                1.0
+            } else {
+                0.0
+            },
+        );
+        notes.controller.set_param(
+            button2,
+            "state",
+            if round % 4 == 1 || round % 4 == 2 {
+                1.0
+            } else {
+                0.0
+            },
+        );
+        notes.controller.set_param(key, "note", 48.0 + round as f32);
+        notes
+            .controller
+            .set_param(key2, "note", 60.0 + round as f32);
+        samples.controller.set_param(sselect, "switch", switch);
+        notes.controller.maintain();
+        samples.controller.maintain();
+        spectra.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                notes.processor.process(&mut out);
+                let sound = out.iter().any(|&x| x.abs() > 1e-3);
+                heard |= sound;
+                notes_heard |= sound;
+                samples.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+                spectra.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+    assert!(heard, "the patch never sounded");
+    assert!(notes_heard, "the notes path never sounded");
 }

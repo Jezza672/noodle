@@ -76,6 +76,10 @@ _Avoid_: Clip player, source
 Automation of one parameter over time, stored with the arrangement rather than as a wire.
 _Avoid_: Envelope (that is a synthesis node), automation track
 
+**Marker**:
+A named tick on the timeline (a verse, the chorus). The span from one marker to the next is a **section**: it can be selected across all tracks, and copying it takes clips, automation lanes and tempo, nothing else. Copies are not linked.
+_Avoid_: Cue, locator, scene
+
 **Automate**:
 A shortcut on a parameter that adds an Automation node beside it, a lane on the node's value, and a wire from the node into the parameter, as one undo step. Nothing links the parameter and the lane except that wire. The node gets a range and taper copied from the parameter.
 

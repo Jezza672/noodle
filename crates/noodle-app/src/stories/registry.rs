@@ -46,13 +46,13 @@ pub const STORIES: [Story; 30] = [
         id: "S02",
         title: "Punch in on a live overdub",
         status: Status::Partial,
-        missing: "A headphone cue mix, which waits on sends in the Mix node (#332, #345); recording is not routed because a route has no live input (#334).",
+        missing: "A headphone cue mix is not routed (#345); recording is not routed because a route has no live input (#334).",
     },
     Story {
         id: "S03",
         title: "Drive external hardware like an internal instrument",
         status: Status::Partial,
-        missing: "The MIDI Out port is typed text (#346); recording the synth's audio back is not routed (#334).",
+        missing: "Recording the synth's audio back is not routed (#334).",
     },
     Story {
         id: "S04",
@@ -75,20 +75,20 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S07",
         title: "Restructure an arrangement by section",
-        status: Status::Blocked,
-        missing: "No named arrangement sections: #329.",
+        status: Status::Full,
+        missing: "",
     },
     Story {
         id: "S08",
         title: "Edit MIDI performance detail",
         status: Status::Partial,
-        missing: "No humanise: #350; recording the part and redrawing the sustain lane are not routed.",
+        missing: "Recording the part and redrawing the sustain lane are not routed; humanising only some notes with the Humanise node (automating its amount) is not routed.",
     },
     Story {
         id: "S09",
         title: "Program a drum pattern with swing and choke",
         status: Status::Partial,
-        missing: "No swing; the hat choke needs a hand-written Script node; loading the samples and swapping the snare are not routed: #330.",
+        missing: "Loading the samples into the rack and swapping the snare are not routed.",
     },
     Story {
         id: "S10",
@@ -148,7 +148,7 @@ pub const STORIES: [Story; 30] = [
         id: "S19",
         title: "Build a parallel processing mix bus",
         status: Status::Partial,
-        missing: "Sends are extra wires and pre/post is which wire; delay compensation and adding a drum track are not routed: #332.",
+        missing: "Plugin delay compensation and adding a drum track to the bus are not routed.",
     },
     Story {
         id: "S20",
@@ -166,13 +166,13 @@ pub const STORIES: [Story; 30] = [
         id: "S22",
         title: "Produce a surround or immersive mix",
         status: Status::Partial,
-        missing: "No 3D object panning, 7.1.4 layout or ADM export: #359.",
+        missing: "No ADM export (dropped); the export dialog is a native file dialog, so the route stops before it. A 3D object panner with x, y, z is backlog #379.",
     },
     Story {
         id: "S23",
         title: "Master to loudness targets",
         status: Status::Partial,
-        missing: "No album sequence, true-peak limiter after normalising, DDP or ISRC: #360; the native file dialog stops the export.",
+        missing: "No album sequence with gaps and crossfades (waits on the setlist design, #366); DDP is dropped for a CUE sheet; the native file dialog stops the export.",
     },
     Story {
         id: "S24",

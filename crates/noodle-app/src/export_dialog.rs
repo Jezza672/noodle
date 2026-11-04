@@ -42,6 +42,14 @@ pub struct ExportDialog {
     /// Bring the mixdown to `target` LUFS.
     normalize: bool,
     target: f64,
+    /// Hold the mixdown's true peak under `ceiling` dBTP.
+    limit: bool,
+    ceiling: f64,
+    /// Written into the mixdown file, and a CUE sheet next to it.
+    title: String,
+    artist: String,
+    isrc: String,
+    cue: bool,
     /// The tail, as the project has it; changing it is one undo step.
     tail: ExportTail,
     /// How the export that ended went, shown in place of the fields.
@@ -64,6 +72,12 @@ impl Default for ExportDialog {
             groups: Vec::new(),
             normalize: false,
             target: -14.0,
+            limit: false,
+            ceiling: -1.0,
+            title: String::new(),
+            artist: String::new(),
+            isrc: String::new(),
+            cue: false,
             tail: ExportTail::default(),
             done: None,
         }
@@ -177,8 +191,15 @@ impl ExportDialog {
                 return;
             }
             let range_ok = self.part == Part::Whole || self.to > self.from;
+            let isrc_ok = self.isrc_ok();
             let chosen = self.mixdown || self.groups.iter().any(|(_, _, on)| *on);
-            let can = range_ok && chosen && (self.part == Part::Range || self.length > 0.0);
+            let flac_ok = !self.flac_too_wide();
+            let can = range_ok
+                && isrc_ok
+                && flac_ok
+                && (!self.cue || self.mixdown)
+                && chosen
+                && (self.part == Part::Range || self.length > 0.0);
             ui.horizontal(|ui| {
                 if ui
                     .add_enabled(can, egui::Button::new("Export…"))
@@ -197,6 +218,11 @@ impl ExportDialog {
                             .map(|(id, _, _)| *id)
                             .collect(),
                         normalize: self.normalize.then_some(self.target),
+                        true_peak_ceiling: self.limit.then_some(self.ceiling),
+                        title: self.title.clone(),
+                        artist: self.artist.clone(),
+                        isrc: self.isrc.clone(),
+                        cue: self.cue,
                     });
                 }
                 if ui.button("Close").clicked() {
@@ -209,6 +235,12 @@ impl ExportDialog {
                     ui.visuals().warn_fg_color,
                     if !range_ok {
                         "The range ends before it starts"
+                    } else if !flac_ok {
+                        "FLAC holds at most 8 channels: choose WAV for this layout"
+                    } else if !isrc_ok {
+                        "The ISRC is two letters, three letters or digits, then seven digits"
+                    } else if self.cue && !self.mixdown {
+                        "A CUE sheet goes with the mixdown: tick Mixdown"
                     } else if !chosen {
                         "Choose the mixdown or a track to export"
                     } else {
@@ -220,6 +252,17 @@ impl ExportDialog {
         if modal.should_close() && running.is_none() {
             self.open = false;
         }
+    }
+
+    /// Whether the format is FLAC and the layout has more channels than it holds.
+    fn flac_too_wide(&self) -> bool {
+        matches!(self.format, ExportFormat::Flac24 | ExportFormat::Flac16)
+            && self.layout.channels() > noodle_io::FLAC_MAX_CHANNELS
+    }
+
+    /// Whether the ISRC is empty or a valid one.
+    fn isrc_ok(&self) -> bool {
+        self.isrc.trim().is_empty() || noodle_io::normalize_isrc(&self.isrc).is_some()
     }
 
     fn fields(&mut self, ui: &mut egui::Ui) {
@@ -273,6 +316,42 @@ impl ExportDialog {
                             .suffix(" LUFS"),
                     );
                 });
+                ui.end_row();
+                ui.label("True peak");
+                ui.horizontal(|ui| {
+                    ui.checkbox(&mut self.limit, "Limit the mixdown to")
+                        .on_hover_text(
+                            "A lookahead limiter after the loudness gain keeps the peaks between \
+                             samples under the ceiling. Track files are not limited.",
+                        );
+                    ui.add_enabled(
+                        self.limit,
+                        egui::DragValue::new(&mut self.ceiling)
+                            .range(-12.0..=0.0)
+                            .speed(0.05)
+                            .suffix(" dBTP"),
+                    );
+                });
+                ui.end_row();
+                ui.label("Title");
+                ui.text_edit_singleline(&mut self.title);
+                ui.end_row();
+                ui.label("Artist");
+                ui.text_edit_singleline(&mut self.artist);
+                ui.end_row();
+                ui.label("ISRC");
+                ui.add(
+                    egui::TextEdit::singleline(&mut self.isrc)
+                        .hint_text("CC-XXX-YY-NNNNN")
+                        .desired_width(150.0),
+                );
+                ui.end_row();
+                ui.label("CUE sheet");
+                ui.checkbox(&mut self.cue, "Write one next to the mixdown")
+                    .on_hover_text(
+                        "A .cue file with the title, artist and ISRC. For a CD, choose WAV 16-bit \
+                         at 44.1 kHz.",
+                    );
                 ui.end_row();
                 ui.label("Part");
                 ui.vertical(|ui| {
@@ -355,6 +434,10 @@ fn results(ui: &mut egui::Ui, summary: &ExportSummary) -> bool {
             ui.visuals().warn_fg_color,
             "Some files go past full scale; 16 and 24-bit files cut that off.",
         );
+    }
+    if let Some(cue) = &summary.cue {
+        ui.add_space(4.0);
+        ui.label(format!("CUE sheet: {}", cue.display()));
     }
     ui.add_space(8.0);
     ui.button("Close").clicked()

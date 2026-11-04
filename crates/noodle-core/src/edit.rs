@@ -5,8 +5,8 @@ use std::fmt;
 
 use crate::{
     AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Connection, Endpoint,
-    ExportSettings, Frame, FrameId, LaneId, Node, NodeId, Position, Project, PunchRange, TempoMap,
-    TransportLoop, Value, WarpId,
+    ExportSettings, Frame, FrameId, LaneId, Marker, Node, NodeId, Position, Project, PunchRange,
+    TempoMap, TransportLoop, Value, WarpId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -91,6 +91,8 @@ pub enum Command {
     SetTempoMap(TempoMap),
     /// Replaces the transport's loop.
     SetLoop(TransportLoop),
+    /// Replaces the markers.
+    SetMarkers(Vec<Marker>),
     /// Replaces the punch range.
     SetPunch(PunchRange),
     /// Replaces the export settings.
@@ -199,6 +201,9 @@ impl Command {
             }
             Command::SetTempoMap(map) => {
                 return Ok(Command::SetTempoMap(project.replace_tempo_map(map)));
+            }
+            Command::SetMarkers(markers) => {
+                return Ok(Command::SetMarkers(project.replace_markers(markers)));
             }
             Command::SetLoop(region) => {
                 return Ok(Command::SetLoop(project.replace_loop(region)));
@@ -379,6 +384,7 @@ impl Command {
             | Command::SetFrame { .. }
             | Command::SetTempoMap(_)
             | Command::SetLoop(_)
+            | Command::SetMarkers(_)
             | Command::SetPunch(_)
             | Command::SetExportSettings(_)
             | Command::SetTrackOrder(_)
@@ -410,6 +416,7 @@ enum Target<'a> {
     Lane(LaneId),
     TempoMap,
     Loop,
+    Markers,
     Punch,
     ExportSettings,
     TrackOrder,
@@ -427,6 +434,7 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetLane { id, .. } => Some(Target::Lane(*id)),
         Command::SetTempoMap(_) => Some(Target::TempoMap),
         Command::SetLoop(_) => Some(Target::Loop),
+        Command::SetMarkers(_) => Some(Target::Markers),
         Command::SetPunch(_) => Some(Target::Punch),
         Command::SetExportSettings(_) => Some(Target::ExportSettings),
         Command::SetTrackOrder(_) => Some(Target::TrackOrder),

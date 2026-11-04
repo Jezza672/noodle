@@ -455,6 +455,8 @@ fn channels_label(channels: Option<u16>) -> String {
         Some(4) => "4 (quad)".to_owned(),
         Some(6) => "6 (5.1)".to_owned(),
         Some(8) => "8 (7.1)".to_owned(),
+        Some(10) => "10 (7.1.2)".to_owned(),
+        Some(12) => "12 (7.1.4)".to_owned(),
         Some(count) => count.to_string(),
     }
 }
@@ -463,11 +465,11 @@ fn channels_label(channels: Option<u16>) -> String {
 /// and its own maximum.
 fn channel_counts(output: Option<&Capabilities>) -> Vec<u16> {
     let max = output.map_or(2, |caps| caps.max_channels);
-    let mut counts: Vec<u16> = [1, 2, 4, 6, 8]
+    let mut counts: Vec<u16> = [1, 2, 4, 6, 8, 10, 12]
         .into_iter()
         .filter(|&count| count <= max)
         .collect();
-    if max > 8 || (max > 0 && !counts.contains(&max)) {
+    if max > 12 || (max > 0 && !counts.contains(&max)) {
         counts.push(max);
     }
     counts
@@ -841,7 +843,7 @@ mod tests {
         assert_eq!(channel_counts(Some(&with(2))), [1, 2]);
         assert_eq!(channel_counts(Some(&with(6))), [1, 2, 4, 6]);
         assert_eq!(channel_counts(Some(&with(5))), [1, 2, 4, 5]);
-        assert_eq!(channel_counts(Some(&with(18))), [1, 2, 4, 6, 8, 18]);
+        assert_eq!(channel_counts(Some(&with(18))), [1, 2, 4, 6, 8, 10, 12, 18]);
         assert_eq!(channels_label(Some(6)), "6 (5.1)");
     }
 

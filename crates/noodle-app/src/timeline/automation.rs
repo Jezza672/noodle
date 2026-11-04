@@ -502,7 +502,7 @@ pub fn act(
             vec![Edit::Apply(Command::SetLane { id, lane })]
         }
         // A point has no "just after" to go to.
-        ClipAction::Duplicate => Vec::new(),
+        ClipAction::Duplicate | ClipAction::InsertTime | ClipAction::DeleteTime => Vec::new(),
     }
 }
 

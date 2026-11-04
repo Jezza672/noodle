@@ -820,6 +820,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
                 &mut edits,
             ),
             ClipAction::Duplicate => duplicate(state, &f, &mut inputs, &mut edits),
+            ClipAction::InsertTime | ClipAction::DeleteTime => {}
         }
     }
 
@@ -1963,7 +1964,7 @@ fn finish(
                     (&target_end, side.other(), &anchor),
                 ] {
                     let other = f.scene.port(there, here.other()).map(|p| p.kind.clone());
-                    match random_select_type(f, endpoint, here, other.as_ref()) {
+                    match picker_type(f, endpoint, here, other.as_ref()) {
                         Ok(more) => commands.extend(more),
                         Err(why) => {
                             refused = Some(why);
@@ -2062,10 +2063,10 @@ fn finish(
     }
 }
 
-/// What a wire to a Random Select's data port sets: until it has one, the
-/// node has no type, and the first wire gives it that of what it carries
-/// (`kind`: 0 signal, 1 notes, 2 samples, 3 spectral).
-fn random_select_type(
+/// What a wire to a picker's data port sets: until it has one, the node has no
+/// type, and the first wire gives it that of what it carries (`kind`: 0
+/// signal, 1 notes, 2 samples, 3 spectral).
+fn picker_type(
     f: &Frame_<'_>,
     endpoint: &Endpoint,
     side: Side,
@@ -2074,8 +2075,8 @@ fn random_select_type(
     let graph = f.project.graph();
     let Some(node) = graph
         .node(endpoint.node)
-        .filter(|n| n.type_id == noodle_nodes::RANDOM_SELECT_ID)
-        .filter(|_| layout::random_select_carries(&endpoint.port))
+        .filter(|n| layout::is_picker(n.type_id.as_str()))
+        .filter(|_| layout::picker_carries(&endpoint.port))
     else {
         return Ok(Vec::new());
     };
@@ -2092,7 +2093,7 @@ fn random_select_type(
         _ => 0,
     };
     let mut commands = Vec::new();
-    if !layout::random_select_is_wired(graph, endpoint.node) {
+    if !layout::picker_is_wired(graph, endpoint.node) {
         if now != wanted {
             commands.push(Command::SetConfig {
                 node: endpoint.node,
@@ -2101,8 +2102,13 @@ fn random_select_type(
             });
         }
     } else if now != wanted {
+        let name = if node.type_id == noodle_nodes::SELECTOR_ID {
+            "Selector"
+        } else {
+            "Random Select"
+        };
         return Err(format!(
-            "Random Select is carrying {}",
+            "{name} is carrying {}",
             match now {
                 1 => "notes",
                 2 => "samples",
@@ -2114,7 +2120,7 @@ fn random_select_type(
     Ok(commands)
 }
 
-pub use layout::random_select_is_wired;
+pub use layout::picker_is_wired;
 
 /// What it takes to make the spare port `endpoint` real/// What it takes to make the spare port `endpoint` real, if it is one: more
 /// inputs on a mixer, or a port on a group or the boundary node inside it.
@@ -2132,7 +2138,7 @@ fn make_real(
     match node.type_id.as_str() {
         spare::MIXER => spare::prepare_mixer_input(graph, endpoint.node, &endpoint.port),
         // More inputs, as for a mixer.
-        noodle_nodes::RANDOM_SELECT_ID => {
+        type_id if layout::is_picker(type_id) => {
             let index = spare::mixer_input_index(&endpoint.port).unwrap_or(0) as i64;
             let now = match node.config.get("inputs") {
                 Some(noodle_core::Value::Int(n)) => *n,

@@ -48,6 +48,9 @@ fn the_exports_loudness_agrees_with_the_evaluators_on_the_example_songs() {
             tracks: Vec::new(),
             format: ExportFormat::WavFloat,
             normalize: None,
+            true_peak_ceiling: None,
+            metadata: Default::default(),
+            cue: false,
             freezer: None,
             silent_tail: None,
         };
