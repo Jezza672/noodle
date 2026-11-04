@@ -75,8 +75,8 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S07",
         title: "Restructure an arrangement by section",
-        status: Status::Blocked,
-        missing: "No named arrangement sections: #329.",
+        status: Status::Full,
+        missing: "",
     },
     Story {
         id: "S08",
