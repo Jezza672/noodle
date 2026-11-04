@@ -750,6 +750,7 @@ fn drum_rack(db: f32, spread: f32) -> Instrument {
                 pan: pan * spread / 0.6,
             })
             .collect(),
+        controls: true,
     })
 }
 

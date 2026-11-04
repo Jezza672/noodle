@@ -1537,6 +1537,7 @@ pub(crate) fn key_midi(key: &mut noodle_core::KeyBuilder, midi: &noodle_core::Mi
     key.str("midi")
         .i64(midi.length.0)
         .u64(midi.notes.len() as u64);
+    key.i64(midi.humanise_timing.0).f32(midi.humanise_velocity);
     if midi.loop_on {
         key.str("loop").i64(midi.loop_start.0).i64(midi.loop_len.0);
     }
@@ -1546,6 +1547,9 @@ pub(crate) fn key_midi(key: &mut noodle_core::KeyBuilder, midi: &noodle_core::Mi
             .u64(u64::from(note.key))
             .f32(note.velocity)
             .u64(note.expressions.len() as u64);
+        if let Some((t, v)) = note.humanise {
+            key.f32(t).f32(v);
+        }
         for e in &note.expressions {
             key.i64(e.tick.0)
                 .str(&format!("{:?}", e.kind))

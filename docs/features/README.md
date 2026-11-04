@@ -35,3 +35,5 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [replace-node.md](replace-node.md) | Replace node and missing plugins |
 | [pattern-player.md](pattern-player.md) | Pattern Player: a node that owns MIDI clips as patterns, its step grid, templates and routes |
 | [tempo-source-and-monitoring.md](tempo-source-and-monitoring.md) | Tempo source (tap, MIDI clock in) and audio input monitoring |
+| [swing-humanise-midi-ports.md](swing-humanise-midi-ports.md) | Swing node, choke groups, humanise in the piano roll and as a node, View > MIDI ports |
+| [selector.md](selector.md) | Selector node: deterministic N-way selection of signals, notes, samples and spectra |

@@ -55,8 +55,11 @@ reference to a sample instead of signal:
     it is done (the `busy` input, a feedback loop) or after `tail` seconds (a
     parameter, default 10): see "Silence skipping" below.
     `Voice Mix` (`noodle.poly.voice_mix`) sums voices.
-    `MIDI In` (`noodle.event.midi_in`) plays the app's MIDI input port: see
-    "MIDI input" below.
+    `Selector` (`noodle.util.selector`) chooses one of its event inputs with
+    the `which` parameter: note-ons come from the chosen input, and a switch
+    either lets its held notes finish or ends them with note-offs. `MIDI In`
+    (`noodle.event.midi_in`) plays the app's MIDI input port: see "MIDI input"
+    below.
   - **Testing:** `Harness::send_events` and `Harness::events` feed and read a
     node's event ports.
 - **Spectral:** FFT frames, for processing a sound by its frequencies. Every
@@ -113,7 +116,8 @@ reference to a sample instead of signal:
     modulator's band levels on the carrier's own fine structure, the channel
     vocoder's character at any frame size; the modulator's latest frame is used
     for each carrier frame, so the two analysers need not have started
-    together).
+    together) and `Selector` (one of N spectral inputs by `which`, switching
+    at the first frame after a change; see `synths-and-library.md`).
   - **Caching:** a node's cache key covers its spectral inputs like its event
     inputs, so a freeze across a spectral chain keys correctly. Offline nodes
     take no spectral input.
@@ -138,8 +142,9 @@ reference to a sample instead of signal:
   plays as if it were the whole sample.
   **Picked while audio runs.** A node can name itself a chooser
   (`NodeType::sample_chooser`: its sample output, the sample inputs it picks
-  among, and a signal output holding the pick). Random Select of samples is the
-  one. A wire from it is not fixed at compile time, so `resolve_samples` writes
+  among, and a signal output holding the pick). Random Select and Selector of
+  samples are the ones. A wire from it is not fixed at compile time, so
+  `resolve_samples` writes
   every candidate into the receiver's config instead, joined by `|` (an empty
   one for an input with nothing wired), so the cache key covers them and the
   Sampler loads them all when it is built. It also wires the chooser's `choice`

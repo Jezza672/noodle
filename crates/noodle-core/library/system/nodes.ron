@@ -1234,6 +1234,72 @@
         ),
     )),
     NodePreset((
+        name: "Light Sixteenth Swing",
+        slug: "swing-light-sixteenth-swing",
+        node_type: "noodle.event.swing",
+        values: (
+            params: {
+                "amount": 0.2,
+                "grid": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Triplet Shuffle",
+        slug: "swing-triplet-shuffle",
+        node_type: "noodle.event.swing",
+        values: (
+            params: {
+                "amount": 0.33,
+                "grid": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Heavy Sixteenth Swing",
+        slug: "swing-heavy-sixteenth-swing",
+        node_type: "noodle.event.swing",
+        values: (
+            params: {
+                "amount": 0.55,
+                "grid": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Tight",
+        slug: "humanise-tight",
+        node_type: "noodle.event.humanise",
+        values: (
+            params: {
+                "timing": 6.0,
+                "velocity": 0.1,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Loose Drummer",
+        slug: "humanise-loose-drummer",
+        node_type: "noodle.event.humanise",
+        values: (
+            params: {
+                "timing": 14.0,
+                "velocity": 0.25,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Sloppy",
+        slug: "humanise-sloppy",
+        node_type: "noodle.event.humanise",
+        values: (
+            params: {
+                "timing": 30.0,
+                "velocity": 0.4,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Keyboard Split at C3",
         slug: "note-split-keyboard-split-at-c3",
         node_type: "noodle.event.note_split",
@@ -1325,6 +1391,35 @@
             },
             config: {
                 "inputs": 2,
+                "kind": 1,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Instant A/B",
+        slug: "selector-instant-a-b",
+        node_type: "noodle.util.selector",
+        values: (),
+    )),
+    NodePreset((
+        name: "Zero-crossing A/B",
+        slug: "selector-zero-crossing-a-b",
+        node_type: "noodle.util.selector",
+        values: (
+            params: {
+                "switch": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Notes, Cut Held",
+        slug: "selector-notes-cut-held",
+        node_type: "noodle.util.selector",
+        values: (
+            params: {
+                "switch": 1.0,
+            },
+            config: {
                 "kind": 1,
             },
         ),
