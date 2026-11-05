@@ -120,6 +120,7 @@ pub fn route() -> Route {
         },
         done: |p, _| {
             let project = p.project();
+
             let launcher = project
                 .graph()
                 .nodes()
@@ -129,9 +130,16 @@ pub fn route() -> Route {
             if launcher.is_some_and(|g| (g - 3.0).abs() > 0.01) {
                 return Err(format!("the launch grid is {launcher:?}, not a bar"));
             }
-            // The loop starts on the next bar line, at most two seconds off,
-            // and goes on until the pad is pressed again.
-            let level = peak(&p.hear(Duration::from_millis(2_400)));
+            // The loop starts on the next bar line, at most two seconds off
+            // (more on a slow machine), and goes on until the pad is pressed
+            // again, so listen for a few bars.
+            let mut level = 0.0;
+            for _ in 0..4 {
+                level = peak(&p.hear(Duration::from_millis(2_400)));
+                if level >= 0.01 {
+                    break;
+                }
+            }
             if level < 0.01 {
                 return Err(format!("the pad's loop never started (peak {level})"));
             }

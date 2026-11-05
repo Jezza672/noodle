@@ -174,7 +174,6 @@ impl Node for Quantiser {
         let grid = first(Ps::GRID).round().clamp(0.0, 5.0) as usize;
         let toggle = first(Ps::MODE) >= 0.5;
         let out = &mut event_outputs[Ps::OUT];
-
         let frames = ctx.frames;
         let tps = ctx.transport.bpm * 960.0 / 60.0 / f64::from(self.sample_rate);
         let start = if ctx.transport.playing {
@@ -464,5 +463,31 @@ mod tests {
         let heard = run(&mut h, 8, &[on(10_000, 2, 36)]);
         assert_eq!(heard.iter().filter(|e| e.1 == "on").count(), 1, "{heard:?}");
         assert!(heard.iter().all(|e| e.1 != "off"), "{heard:?}");
+    }
+
+    #[test]
+    fn a_node_built_mid_bar_waits_for_the_next_bar() {
+        let mut h = Harness::starting_at(
+            &LaunchQuantise,
+            &Config::new(),
+            &[],
+            RATE,
+            BEAT as usize,
+            30_000,
+        )
+        .unwrap();
+        h.set(Ps::GRID, 3.0);
+        h.set(Ps::MODE, 1.0);
+        h.send_events(Ps::NOTES, &[on(0, 1, 36)]);
+        let mut heard = Vec::new();
+        for b in 0..6u32 {
+            h.run(BEAT as usize).unwrap();
+            for e in h.events(Ps::OUT) {
+                heard.push((30_000 + b * BEAT + e.time, e.kind));
+            }
+            h.send_events(Ps::NOTES, &[]);
+        }
+        assert_eq!(heard.len(), 1, "{heard:?}");
+        assert_eq!(heard[0].0, BAR);
     }
 }
