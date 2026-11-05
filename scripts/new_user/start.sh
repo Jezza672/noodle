@@ -6,10 +6,11 @@ dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 repo="@REPO@"
 story="@STORY@"
 budget="@BUDGET@"
+size="@SIZE@"   # empty: the route's own size
 rm -rf "$dir"/{world,screens,internal,cmd.*,resp.*,ready,result.json,log.jsonl,.seq}
 cd "$repo"
 cargo test -p noodle-app --no-run 2>&1 | tail -2
-NOODLE_AGENT_STORY="$story" NOODLE_AGENT_DIR="$dir" NOODLE_AGENT_BUDGET="$budget" \
+env NOODLE_AGENT_STORY="$story" NOODLE_AGENT_DIR="$dir" NOODLE_AGENT_BUDGET="$budget" ${size:+NOODLE_AGENT_SIZE=$size} \
   nohup cargo test -p noodle-app stories::agent::drive -- --ignored --nocapture \
   > "$dir/driver.log" 2>&1 &
 echo $! > "$dir/driver.pid"

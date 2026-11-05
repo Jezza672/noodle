@@ -43,7 +43,7 @@ use crate::testkit;
 const DEFAULT_BUDGET: usize = 80;
 
 /// The agent's one command, parsed.
-#[derive(Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 enum Command {
     Screenshot,
     Tree,
@@ -69,6 +69,8 @@ enum Command {
     },
     /// The agent thinking aloud. Free, and only logged.
     Note(String),
+    /// Answers the file picker that opened: the paths, or none to cancel.
+    Choose(Vec<PathBuf>),
     Finish,
     GiveUp,
 }
@@ -81,6 +83,7 @@ impl Command {
             Command::Screenshot
                 | Command::Tree
                 | Command::Note(_)
+                | Command::Choose(_)
                 | Command::Finish
                 | Command::GiveUp
         )
@@ -182,6 +185,13 @@ fn parse(line: &str) -> Result<Command, String> {
             at: point(&words, 0)?,
             delta: Vec2::new(number(words.get(2), "dx")?, number(words.get(3), "dy")?),
         },
+        "choose" => {
+            if rest.is_empty() {
+                return Err("choose needs a path (separate several with ;)".into());
+            }
+            Command::Choose(rest.split(';').map(|p| PathBuf::from(p.trim())).collect())
+        }
+        "cancel" => Command::Choose(Vec::new()),
         "note" => Command::Note(rest.to_string()),
         "finish" | "done" => Command::Finish,
         "giveup" => Command::GiveUp,
@@ -257,6 +267,10 @@ struct Run {
     pointer: Pos2,
     shots: usize,
     next: usize,
+    /// The last action, which answering a file picker plays again.
+    last: Option<Command>,
+    /// Whether a file picker is waiting for an answer.
+    asked: bool,
 }
 
 impl Run {
@@ -327,8 +341,17 @@ fn execute(h: &mut AppHarness, run: &mut Run, command: Command) -> String {
         Command::Tree => tree(h),
         Command::Note(_) => "noted".into(),
         Command::Finish | Command::GiveUp => "ok".into(),
+        Command::Choose(paths) => {
+            let Some(last) = run.last.clone().filter(|_| run.asked) else {
+                return "no file picker is open".into();
+            };
+            run.asked = false;
+            crate::picker::answer(paths);
+            execute(h, run, last)
+        }
         action => {
             run.actions += 1;
+            run.last = Some(action.clone());
             match action {
                 Command::Click { at, modifiers } => {
                     run.pointer = at;
@@ -361,7 +384,21 @@ fn execute(h: &mut AppHarness, run: &mut Run, command: Command) -> String {
                 _ => unreachable!("handled above"),
             }
             let shot = run.shot(h);
-            format!("action {} of {} done. {shot}", run.actions, run.budget)
+            let picker = match crate::picker::take_asked() {
+                Some(what) => {
+                    run.asked = true;
+                    format!(
+                        " A file picker opened ({what}). It is a native dialog that screenshots do \
+                         not show. To pick, type the full path yourself: `choose /full/path` \
+                         (several files: separate with ;), or `cancel` to close it."
+                    )
+                }
+                None => String::new(),
+            };
+            format!(
+                "action {} of {} done. {shot}{picker}",
+                run.actions, run.budget
+            )
         }
     }
 }
@@ -383,8 +420,20 @@ fn route_for(story: &str) -> Route {
         .unwrap_or_else(|| panic!("no route for story {story}"))
 }
 
+/// The size the done check is asked about: `NOODLE_AGENT_SIZE`, else the
+/// route's own. A route that scales sets some of its fixture aside to make
+/// the size, which an agent's run does not, so its size is what the fixture
+/// holds.
+fn size_of(route: &Route) -> usize {
+    std::env::var("NOODLE_AGENT_SIZE")
+        .ok()
+        .and_then(|n| n.parse().ok())
+        .or(route.size)
+        .unwrap_or(1)
+}
+
 fn end(run: &Run, route: &Route, h: &mut AppHarness, how: &str) {
-    let n = route.size.unwrap_or(1);
+    let n = size_of(route);
     // Stop the transport first: the done check looks at the result.
     h.state_mut().session_mut().set_transport_running(false);
     h.run_steps(3);
@@ -436,6 +485,8 @@ fn drive() {
         pointer: Pos2::new(640.0, 400.0),
         shots: 0,
         next: 1,
+        last: None,
+        asked: false,
     };
     let first = run.shot(&mut h);
     std::fs::write(dir.join("ready"), first).expect("ready is written");
@@ -512,6 +563,11 @@ mod tests {
         assert!(
             matches!(parse("drag 0 0 5 5 9 9 alt").unwrap(), Command::Drag { path, modifiers } if path.len() == 3 && modifiers.alt)
         );
+        assert_eq!(
+            parse("choose /a/b; /c/d.wav").unwrap(),
+            Command::Choose(vec!["/a/b".into(), "/c/d.wav".into()])
+        );
+        assert_eq!(parse("cancel").unwrap(), Command::Choose(Vec::new()));
         assert!(parse("click 10").is_err());
         assert!(parse("fly").is_err());
     }

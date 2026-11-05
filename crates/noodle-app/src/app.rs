@@ -2352,9 +2352,8 @@ impl App {
     }
 
     fn import_audio(&mut self, target: timeline::Target) {
-        let picked = rfd::FileDialog::new()
-            .add_filter("Audio", &["wav", "flac", "mp3", "ogg", "m4a", "aac"])
-            .pick_files();
+        let picked =
+            crate::picker::pick_files(("Audio", &["wav", "flac", "mp3", "ogg", "m4a", "aac"]));
         let Some(files) = picked else {
             return;
         };
