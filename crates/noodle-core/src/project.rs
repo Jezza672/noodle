@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Command, EditError, Endpoint,
-    Frame, FrameId, Graph, LaneId, NodeId, Organisation, TempoMap, Tick, WarpId,
+    Frame, FrameId, Graph, Key, LaneId, NodeId, Organisation, TempoMap, Tick, WarpId,
 };
 
 /// Everything that gets saved: the graph, the frames drawn around parts of
@@ -23,6 +23,8 @@ pub struct Project {
     punch: PunchRange,
     /// Named points on the timeline, in order of position.
     markers: Vec<Marker>,
+    /// The key before the first marker that sets one (see [`Marker::key`]).
+    key: Key,
     export_settings: ExportSettings,
     clips: BTreeMap<ClipId, Clip>,
     next_clip_id: u64,
@@ -58,6 +60,7 @@ impl Default for Project {
             transport_loop: TransportLoop::default(),
             punch: PunchRange::default(),
             markers: Vec::new(),
+            key: Key::default(),
             export_settings: ExportSettings::default(),
             clips: BTreeMap::new(),
             next_clip_id: 1,
@@ -90,6 +93,7 @@ impl PartialEq for Project {
             && self.transport_loop == other.transport_loop
             && self.punch == other.punch
             && self.markers == other.markers
+            && self.key == other.key
             && self.export_settings == other.export_settings
             && self.clips == other.clips
             && self.live_groups() == other.live_groups()
@@ -116,6 +120,8 @@ struct ProjectFile {
     punch: PunchRange,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     markers: Vec<Marker>,
+    #[serde(default, skip_serializing_if = "is_default_key")]
+    key: Key,
     #[serde(default, skip_serializing_if = "is_default_export_settings")]
     export_settings: ExportSettings,
     #[serde(default, skip_serializing_if = "BTreeMap::is_empty")]
@@ -139,6 +145,10 @@ pub(crate) type Dependents = (Vec<(ClipId, Clip)>, Vec<(LaneId, AutomationLane)>
 
 fn is_default_tempo_map(map: &TempoMap) -> bool {
     *map == TempoMap::default()
+}
+
+fn is_default_key(key: &Key) -> bool {
+    *key == Key::default()
 }
 
 fn is_default_punch(range: &PunchRange) -> bool {
@@ -187,6 +197,11 @@ impl TransportLoop {
 pub struct Marker {
     pub name: String,
     pub at: Tick,
+    /// The timeline's key from here to the next marker that sets one, if
+    /// this marker changes it. Clips that follow the timeline's key (see
+    /// [`Transpose`]) are carried to it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub key: Option<Key>,
 }
 
 /// The punch range: where recording starts and stops while it is `on`,
@@ -398,6 +413,40 @@ impl Project {
     pub(crate) fn replace_markers(&mut self, mut markers: Vec<Marker>) -> Vec<Marker> {
         markers.sort_by_key(|marker| marker.at);
         std::mem::replace(&mut self.markers, markers)
+    }
+
+    /// The timeline's key at `tick`: the last marker at or before it that
+    /// sets one, else the project's key.
+    pub fn key_at(&self, tick: Tick) -> Key {
+        let upto = self.markers.partition_point(|m| m.at <= tick);
+        self.markers[..upto]
+            .iter()
+            .rev()
+            .find_map(|m| m.key)
+            .unwrap_or(self.key)
+    }
+
+    /// The ticks in `(from, to)` where the timeline's key changes, with the
+    /// key from there on, in order.
+    pub fn key_changes(&self, from: Tick, to: Tick) -> Vec<(Tick, Key)> {
+        let mut changes: Vec<(Tick, Key)> = Vec::new();
+        let mut current = self.key_at(from);
+        for marker in self.markers.iter().filter(|m| m.at > from && m.at < to) {
+            if let Some(key) = marker.key.filter(|&k| k != current) {
+                current = key;
+                changes.push((marker.at, key));
+            }
+        }
+        changes
+    }
+
+    /// The key before the first marker that sets one.
+    pub fn key(&self) -> Key {
+        self.key
+    }
+
+    pub(crate) fn replace_key(&mut self, key: Key) -> Key {
+        std::mem::replace(&mut self.key, key)
     }
 
     /// What exports are set to (see [`ExportSettings`]).
@@ -1044,6 +1093,7 @@ impl Project {
             transport_loop: self.transport_loop,
             punch: self.punch,
             markers: self.markers.clone(),
+            key: self.key,
             export_settings: self.export_settings,
             clips: self.clips.clone(),
             clip_groups: self
@@ -1108,6 +1158,7 @@ impl Project {
             tempo_map: file.tempo_map,
             transport_loop: file.transport_loop,
             punch: file.punch,
+            key: file.key,
             markers: {
                 let mut markers = file.markers;
                 markers.sort_by_key(|marker| marker.at);
@@ -1411,10 +1462,51 @@ mod tests {
     }
 
     #[test]
+    fn the_key_holds_from_a_marker_to_the_next_that_sets_one() {
+        let mut project = Project::new();
+        let mut history = History::new();
+        let (d, e) = (
+            Key::new(2, crate::Mode::Major),
+            Key::new(4, crate::Mode::Minor),
+        );
+        assert!(!project.to_ron().contains("key"));
+        apply(&mut project, &mut history, Command::SetKey(d));
+        let marker = |at: i64, key: Option<Key>| Marker {
+            name: "m".into(),
+            at: Tick(at),
+            key,
+        };
+        apply(
+            &mut project,
+            &mut history,
+            Command::SetMarkers(vec![
+                marker(100, Some(e)),
+                marker(200, None),
+                marker(300, Some(d)),
+            ]),
+        );
+        assert_eq!(project.key_at(Tick(99)), d);
+        assert_eq!(project.key_at(Tick(100)), e);
+        assert_eq!(project.key_at(Tick(250)), e);
+        assert_eq!(project.key_at(Tick(300)), d);
+        assert_eq!(
+            project.key_changes(Tick(0), Tick(1000)),
+            vec![(Tick(100), e), (Tick(300), d)]
+        );
+        assert_eq!(project.key_changes(Tick(150), Tick(250)), vec![]);
+        let again = Project::from_ron(&project.to_ron()).unwrap();
+        assert_eq!(again.key_at(Tick(250)), e);
+        assert_eq!(again.key(), d);
+        history.undo(&mut project).unwrap();
+        assert!(project.markers().is_empty());
+    }
+
+    #[test]
     fn markers_are_saved_in_order_and_undo() {
         let (mut project, mut history, _, _, _) = with_timeline();
         assert!(!project.to_ron().contains("markers"));
         let marker = |name: &str, at: i64| Marker {
+            key: None,
             name: name.into(),
             at: Tick(at),
         };

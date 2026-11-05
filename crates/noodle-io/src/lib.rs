@@ -8,6 +8,7 @@ mod export;
 mod files;
 mod hash;
 mod input;
+mod key;
 mod limiter;
 mod loudness;
 mod midi;
@@ -37,6 +38,7 @@ pub use export::{
 pub use files::{AudioFiles, FileStamp};
 pub use hash::{FileHasher, Peek};
 pub use input::{Capture, Feed, InputMeter, input_path, recordable_input_path};
+pub use key::detect_key;
 pub use limiter::TruePeakLimiter;
 pub use loudness::{Loudness, LoudnessMeter, measure as measure_loudness};
 pub use midi::{

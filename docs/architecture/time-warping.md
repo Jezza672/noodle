@@ -243,3 +243,5 @@ the follower, reading only the source's stored markers, so links
 never chain or loop. The groove is derived data and is saved with the follower,
 so a link to a clip that is not saved keeps the last groove and is dropped on
 load. Warp data is not a wire (ADR 0002); a groove is lent as clip data.
+
+**Transposing.** `ClipWarp::transpose` (`Transpose { from, to }`, `to` a fixed key or `Follow`) moves a clip's pitch without moving its timing. The schedule turns it into a `PitchPath` (`clip/pitch.rs`): the semitone shift at each frame of the section, with a step at every marker that changes the key (`Project::key_changes`). The stretch worker renders the clip `r` times as long and `Pitcher` reads it back at `r` (cubic), so the path's steps are where the pitch changes. `WarpMap::with_pitch` moves the map's output axis to the stretched audio's. A transposed clip is always stretched. Formants move with the pitch. The track input's cache key hashes the transpose, and the project's and markers' keys when it follows.

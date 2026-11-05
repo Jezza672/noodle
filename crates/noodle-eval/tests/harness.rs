@@ -144,6 +144,7 @@ fn auto_without_a_detected_tempo_keeps_the_timeline_tempo_it_was_warped_at() {
         tempo: None,
         grid: None,
         percussive: false,
+        key: None,
     };
     let (tempo, _) = noodle_eval::harness::auto_choice(&none, &at_import);
     assert_eq!(tempo.points()[0].bpm, h.source_bpm);

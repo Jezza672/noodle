@@ -10,6 +10,7 @@ mod edit;
 mod frame;
 mod graph;
 pub mod group;
+mod key;
 pub mod library;
 mod organise;
 mod project;
@@ -30,6 +31,7 @@ pub use config::{Config, Value};
 pub use edit::{Command, EditError, History};
 pub use frame::{Frame, FrameId};
 pub use graph::{Connection, Endpoint, Graph, Node, NodeId, Position};
+pub use key::{Key, KeyTarget, Mode, Transpose};
 pub use organise::{Folder, FolderId, Organisation};
 pub use project::{
     ExportSettings, ExportTail, LoadError, Marker, Project, PunchRange, TransportLoop,

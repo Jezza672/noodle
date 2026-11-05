@@ -1998,7 +1998,10 @@ pub fn show(
         for (i, marker) in markers.iter().enumerate() {
             let x = axis.x(marker.at);
             let galley = painter.layout_no_wrap(
-                marker.name.clone(),
+                match marker.key {
+                    Some(key) => format!("{} · {key}", marker.name),
+                    None => marker.name.clone(),
+                },
                 FontId::proportional(10.0),
                 MARKER_COLOUR,
             );
@@ -2062,6 +2065,28 @@ pub fn show(
                         edits.push(Edit::Apply(Command::SetMarkers(renamed)));
                         ui.close();
                     }
+                    ui.horizontal(|ui| {
+                        ui.label("Key");
+                        let shown = marker.key.map(noodle_core::KeyTarget::Fixed);
+                        if let Some(picked) = crate::clip_panel::key_picker(
+                            ui,
+                            "marker key",
+                            shown,
+                            Some("Same as before"),
+                            false,
+                        ) {
+                            let mut changed = markers.to_vec();
+                            changed[i].key = match picked {
+                                Some(noodle_core::KeyTarget::Fixed(key)) => Some(key),
+                                _ => None,
+                            };
+                            edits.push(Edit::Apply(Command::SetMarkers(changed)));
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Clips that follow the timeline's key are carried to this key from here",
+                    );
                     let next = markers
                         .get(i + 1)
                         .map_or("end of the song".to_string(), |next| {
@@ -2200,6 +2225,19 @@ pub fn show(
         });
         ui.separator();
         ui.menu_button("Markers and selection", |ui| {
+            ui.menu_button(format!("Key at the start: {}", project.key()), |ui| {
+                for key in crate::clip_panel::all_keys() {
+                    if ui
+                        .selectable_label(key == project.key(), key.to_string())
+                        .clicked()
+                    {
+                        ui.close();
+                        edits.push(Edit::Apply(Command::SetKey(key)));
+                    }
+                }
+            })
+            .response
+            .on_hover_text("The key of the timeline until a marker changes it");
             if ui
                 .button(format!("Add marker at bar {}", bar + 1))
                 .on_hover_text("Name a point of the song: a verse, the chorus")
@@ -2210,6 +2248,7 @@ pub fn show(
                 if markers.iter().all(|m| m.at != here) {
                     markers.push(noodle_core::Marker {
                         name: sections::next_name(session.project()),
+                        key: None,
                         at: here,
                     });
                     edits.push(Edit::Apply(Command::SetMarkers(markers)));

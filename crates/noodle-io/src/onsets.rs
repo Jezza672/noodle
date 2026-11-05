@@ -496,6 +496,8 @@ pub struct Analysis {
     /// Whether the file is long enough, with transients close enough, that
     /// its beats are worth keeping whole when it is stretched.
     pub percussive: bool,
+    /// The key of the file, as best it can be told (see [`detect_key`]).
+    pub key: Option<noodle_core::Key>,
 }
 
 impl Analysis {
@@ -536,6 +538,7 @@ impl Analysis {
             tempo: grid.filter(TempoEstimate::is_clear).map(|g| g.bpm),
             grid,
             percussive: seconds > 0.0 && onsets.len() as f64 / seconds >= 1.0,
+            key: crate::detect_key(mono, rate),
             onsets,
         }
     }
