@@ -9,6 +9,7 @@
 //! Clicking a key on the keyboard plays it on the clip's track (see
 //! [`Output::audition`]).
 
+mod articulations;
 mod humanise;
 mod lanes;
 mod looping;
@@ -339,6 +340,7 @@ pub fn show(
             humanise::controls(ui, &mut out, &state.selected, id, clip, midi);
             ui.separator();
             lanes::controls(ui, &mut state.lanes);
+            articulations::controls(ui, &mut out, project, &state.selected, id, clip, midi);
         },
     );
     if closed {
@@ -582,7 +584,7 @@ pub fn show(
         out.edits.push(Edit::EndDrag);
     }
 
-    draw_notes(ui, axes, midi, &state.selected);
+    draw_notes(ui, axes, midi, &state.selected, project);
     humanise::ghosts(ui, axes, midi);
     looping::draw_repeats(ui, axes, midi);
     looping::draw_lines(ui, axes, midi);
@@ -984,14 +986,21 @@ fn draw_ruler(ui: &egui::Ui, rect: Rect, axes: Axes, clip: &Clip, map: &noodle_c
     }
 }
 
-fn draw_notes(ui: &egui::Ui, axes: Axes, midi: &MidiClip, selected: &BTreeSet<u32>) {
+fn draw_notes(
+    ui: &egui::Ui,
+    axes: Axes,
+    midi: &MidiClip,
+    selected: &BTreeSet<u32>,
+    project: &Project,
+) {
     let painter = ui.painter_at(axes.grid);
     for note in &midi.notes {
         let rect = axes.note_rect(note);
         if !rect.intersects(axes.grid) {
             continue;
         }
-        let fill = theme::ACCENT.gamma_multiply(0.45 + 0.55 * note.velocity);
+        let base = articulations::tint(project, note.articulation).unwrap_or(theme::ACCENT);
+        let fill = base.gamma_multiply(0.45 + 0.55 * note.velocity);
         painter.rect_filled(rect, 2.0, fill);
         let stroke = if selected.contains(&note.id) {
             Stroke::new(1.5, colors::SELECTED)

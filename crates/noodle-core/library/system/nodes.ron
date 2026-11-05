@@ -1172,6 +1172,68 @@
         ),
     )),
     NodePreset((
+        name: "Sixteenth Loop",
+        slug: "pattern-player-sixteenth-loop",
+        node_type: "noodle.events.pattern",
+        values: (
+            params: {
+                "length": 16.0,
+                "mode": 0.0,
+                "step": 4.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Triplet Loop",
+        slug: "pattern-player-triplet-loop",
+        node_type: "noodle.events.pattern",
+        values: (
+            params: {
+                "length": 12.0,
+                "mode": 0.0,
+                "step": 9.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Stepper",
+        slug: "pattern-player-stepper",
+        node_type: "noodle.events.pattern",
+        values: (
+            params: {
+                "length": 8.0,
+                "mode": 3.0,
+                "step": 4.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Pad Loop",
+        slug: "pattern-player-pad-loop",
+        node_type: "noodle.events.pattern",
+        values: (
+            params: {
+                "length": 16.0,
+                "mode": 0.0,
+                "play": 1.0,
+                "step": 4.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Fill One-shot",
+        slug: "pattern-player-fill-one-shot",
+        node_type: "noodle.events.pattern",
+        values: (
+            params: {
+                "length": 8.0,
+                "mode": 1.0,
+                "rate": 5.0,
+                "step": 4.0,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Bar Toggle",
         slug: "launch-quantise-bar-toggle",
         node_type: "noodle.event.launch_quantise",
@@ -1322,6 +1384,57 @@
             config: {
                 "outputs": 1,
                 "rest": 1,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Keyswitches C0 and D0",
+        slug: "articulation-map-keyswitches-c0-and-d0",
+        node_type: "noodle.event.articulation_map",
+        values: (
+            config: {
+                "map": "1 key 24 100 50\n2 key 26 100 50",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Controller 32 Switch",
+        slug: "articulation-map-controller-32-switch",
+        node_type: "noodle.event.articulation_map",
+        values: (
+            config: {
+                "map": "1 cc 32 32\n2 cc 32 64\n3 cc 32 96",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Level in dB, Two Versions",
+        slug: "version-value-level-in-db-two-versions",
+        node_type: "noodle.mod.version_value",
+        values: (
+            params: {
+                "max": 6.0,
+                "min": -24.0,
+                "v1": 0.8,
+                "v2": 0.8,
+            },
+            config: {
+                "versions": 2,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Cutoff in Hz, Three Versions",
+        slug: "version-value-cutoff-in-hz-three-versions",
+        node_type: "noodle.mod.version_value",
+        values: (
+            params: {
+                "max": 20000.0,
+                "min": 20.0,
+                "taper": 1.0,
+            },
+            config: {
+                "versions": 3,
             },
         ),
     )),

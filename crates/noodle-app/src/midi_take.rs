@@ -424,6 +424,7 @@ impl MidiTake {
                         .into_iter()
                         .filter(|e| e.tick.0 < length)
                         .collect(),
+                    articulation: None,
                     humanise: None,
                 }
             })

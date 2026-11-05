@@ -1,0 +1,120 @@
+[
+    Template((
+        name: "Step Gate",
+        slug: "step-gate",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Step Gate"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:in\n2:step\n3:depth"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.events.pattern",
+                params: {"length": 16.0, "mode": 0.0, "step": 4.0},
+                position: (x: 220.0, y: 130.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.util.math",
+                params: {"a": 1.0},
+                config: {"expr": "1 - a * (1 - b)"},
+                position: (x: 440.0, y: 130.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.util.vca",
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 910.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 3, port: "step"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 4, port: "a"),
+            ),
+            (
+                from: (node: 3, port: "gate"),
+                to: (node: 4, port: "b"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 5, port: "in"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "level"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 6, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Sixteenth Gate",
+        slug: "step-gate-sixteenth-gate",
+        topology: "ce66cc2987c83bfd",
+        nodes: [
+            (
+                params: {"length": 16.0, "mode": 0.0, "step": 4.0},
+            ),
+            (),
+            (
+                params: {"a": 1.0},
+                config: {"expr": "1 - a * (1 - b)"},
+            ),
+            (),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Eighth Chop",
+        slug: "step-gate-eighth-chop",
+        topology: "ce66cc2987c83bfd",
+        nodes: [
+            (
+                params: {"length": 16.0, "mode": 0.0, "step": 3.0},
+            ),
+            (),
+            (
+                params: {"a": 0.9},
+                config: {"expr": "1 - a * (1 - b)"},
+            ),
+            (),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Soft Triplets",
+        slug: "step-gate-soft-triplets",
+        topology: "ce66cc2987c83bfd",
+        nodes: [
+            (
+                params: {"length": 16.0, "mode": 0.0, "step": 9.0},
+            ),
+            (),
+            (
+                params: {"a": 0.6},
+                config: {"expr": "1 - a * (1 - b)"},
+            ),
+            (),
+            (),
+        ],
+    )),
+]

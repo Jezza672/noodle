@@ -118,6 +118,11 @@ The **Project** is the single source of truth. It holds one global graph:
     the mute are not played after it). The header, the mixer strip and
     automation lanes set the parameter (`Graph::control_target`); a track
     whose output mute is wired some other way falls back to the output's own.
+  - **Patterns are clips too.** A Pattern Player owns MIDI clips the same way
+    a track input does (`Clip::node` is the player), but its `start` means
+    nothing: they are its slots, played on the player's own clock. Everything
+    that lists or draws the timeline's clips uses `Project::timeline_clips`,
+    which skips them; `Project::patterns_of(node)` lists a player's.
   - **There is no track gain.** Level belongs to clips: an audio clip has a
     `gain` and an envelope of `gain_points` (below). A group output's `gain`
     still exists as a boundary-node control, for nested groups and wiring,

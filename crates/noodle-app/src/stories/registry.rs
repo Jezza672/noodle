@@ -88,13 +88,13 @@ pub const STORIES: [Story; 28] = [
         id: "S09",
         title: "Program a drum pattern with swing and choke",
         status: Status::Partial,
-        missing: "Loading the samples into the rack and swapping the snare are not routed.",
+        missing: "Loading the samples into the rack and swapping the snare are not routed. The pattern can also be drawn in a Pattern Player's step grid (#354).",
     },
     Story {
         id: "S10",
         title: "Program multi-articulation orchestral parts",
-        status: Status::Workaround,
-        missing: "Keyswitch notes are placed by hand; no articulation map, chasing or rename: #351.",
+        status: Status::Full,
+        missing: "",
     },
     Story {
         id: "S11",
@@ -117,14 +117,14 @@ pub const STORIES: [Story; 28] = [
     Story {
         id: "S14",
         title: "Share modulation sources across many parameters",
-        status: Status::Partial,
-        missing: "No step sequencer to replace the LFO with, keeping its targets: #354.",
+        status: Status::Full,
+        missing: "",
     },
     Story {
         id: "S15",
         title: "Make a tempo-synced rhythmic gate",
         status: Status::Partial,
-        missing: "No step-editable gate pattern, so no triplet change by pattern: #354.",
+        missing: "Changing the project tempo is not routed.",
     },
     Story {
         id: "S16",
@@ -159,8 +159,8 @@ pub const STORIES: [Story; 28] = [
     Story {
         id: "S21",
         title: "Recall alternate mix versions",
-        status: Status::Blocked,
-        missing: "No mix snapshots, versions or batch export of versions: #358.",
+        status: Status::Partial,
+        missing: "Choosing the folder for the batch export is a native dialog, so the route ticks the versions and stops before Export.",
     },
     Story {
         id: "S22",

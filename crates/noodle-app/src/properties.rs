@@ -63,6 +63,9 @@ pub fn show<'a>(
     }
     match node_type {
         Some(node_type) => {
+            if node.type_id == noodle_nodes::PATTERN_ID {
+                crate::pattern_panel::show(ui, session, id, node, &mut edits);
+            }
             config(ui, session, node_type.as_ref(), id, node, &mut edits);
             params(ui, session, node_type.as_ref(), id, node, live, &mut edits);
         }
@@ -611,6 +614,12 @@ fn config(
             .on_hover_text("Choose the device in View → Outputs.");
             continue;
         }
+        if node_type.info().id == noodle_core::ARTICULATION_MAP_ID
+            && info.key == noodle_core::ARTICULATION_MAP_KEY
+        {
+            articulation_map_editor(ui, session, id, info, node, edits);
+            continue;
+        }
         // Chosen in the MIDI ports view, which knows what ports there are.
         if matches!(
             node_type.info().id,
@@ -753,6 +762,124 @@ fn config(
 /// An Output node's speaker routing: for each channel of the signal (named by
 /// the layout chosen here, which only decides how many rows there are), the
 /// device channel it plays on. The setting holds the numbers, in order.
+/// The Articulation Map's table: a row for the default and for each of the
+/// project's articulations, with how the instrument is asked for it.
+fn articulation_map_editor(
+    ui: &mut egui::Ui,
+    session: &Session,
+    id: NodeId,
+    info: &noodle_engine::ConfigInfo,
+    node: &Node,
+    edits: &mut Vec<Edit>,
+) {
+    use noodle_nodes::{ArticulationAction as Action, ArticulationEntry as Entry};
+    let mut entries = noodle_nodes::articulation_map_from_text(&info.get_text(&node.config));
+    let mut rows: Vec<(u16, String)> = vec![(0, "Default".to_owned())];
+    rows.extend(
+        session
+            .project()
+            .articulations()
+            .iter()
+            .map(|a| (a.id, a.name.clone())),
+    );
+    let mut changed = false;
+    egui::Grid::new(("articulation map", id))
+        .num_columns(3)
+        .show(ui, |ui| {
+            for (art, name) in rows {
+                ui.label(name);
+                let at = entries.iter().position(|e| e.id == art);
+                let kind = |e: Option<&Entry>| match e.map(|e| e.action) {
+                    None => 0,
+                    Some(Action::Keyswitch { .. }) => 1,
+                    Some(Action::Controller { .. }) => 2,
+                    Some(Action::Program(_)) => 3,
+                };
+                let was = kind(at.map(|i| &entries[i]));
+                let mut now = was;
+                crate::widgets::Dropdown::from_id_salt(("articulation kind", id, art))
+                    .selected_text(["Nothing", "Keyswitch", "Controller", "Program"][was])
+                    .show_ui(ui, |ui| {
+                        for (n, label) in ["Nothing", "Keyswitch", "Controller", "Program"]
+                            .into_iter()
+                            .enumerate()
+                        {
+                            ui.selectable_value(&mut now, n, label);
+                        }
+                    });
+                if now != was {
+                    entries.retain(|e| e.id != art);
+                    let action = match now {
+                        1 => Some(Action::Keyswitch {
+                            key: 24,
+                            velocity: 100,
+                            length_ms: 50,
+                        }),
+                        2 => Some(Action::Controller {
+                            number: 32,
+                            value: 64,
+                        }),
+                        3 => Some(Action::Program(0)),
+                        _ => None,
+                    };
+                    entries.extend(action.map(|action| Entry { id: art, action }));
+                    changed = true;
+                }
+                ui.horizontal(|ui| {
+                    let Some(entry) = entries.iter_mut().find(|e| e.id == art) else {
+                        return;
+                    };
+                    let drag = |ui: &mut egui::Ui, v: &mut u8, tip: &str| {
+                        ui.add(egui::DragValue::new(v).range(0..=127))
+                            .on_hover_text(tip)
+                            .changed()
+                    };
+                    match &mut entry.action {
+                        Action::Keyswitch {
+                            key,
+                            velocity,
+                            length_ms,
+                        } => {
+                            changed |= drag(ui, key, "Keyswitch key");
+                            changed |= drag(ui, velocity, "Velocity");
+                            changed |= ui
+                                .add(
+                                    egui::DragValue::new(length_ms)
+                                        .range(1..=noodle_nodes::MAX_KEYSWITCH_MS)
+                                        .suffix(" ms"),
+                                )
+                                .on_hover_text("How long the keyswitch is held")
+                                .changed();
+                        }
+                        Action::Controller { number, value } => {
+                            changed |= drag(ui, number, "Controller number");
+                            changed |= drag(ui, value, "Value");
+                        }
+                        Action::Program(n) => changed |= drag(ui, n, "Program"),
+                    }
+                });
+                ui.end_row();
+            }
+        });
+    if changed {
+        edits.push(Edit::Apply(Command::SetConfig {
+            node: id,
+            key: info.key.to_owned(),
+            value: Some(noodle_core::Value::Text(
+                noodle_nodes::articulation_map_to_text(&entries),
+            )),
+        }));
+    }
+    ui.label(
+        RichText::new(
+            "How the instrument is asked for each articulation. The track sends the change \
+             just before a note that has it, and again after a jump.",
+        )
+        .weak()
+        .small(),
+    );
+}
+
 fn routing_editor(
     ui: &mut Ui,
     session: &Session,
@@ -1234,6 +1361,12 @@ fn params(
                     .width(ui.available_width())
                     .automate(
                         match crate::session::automate::refusal(session.project(), &target) {
+                            None => Automate::Offered,
+                            Some(why) => Automate::Refused(why),
+                        },
+                    )
+                    .vary_per_version(
+                        match crate::session::versions::refusal(session.project(), &target) {
                             None => Automate::Offered,
                             Some(why) => Automate::Refused(why),
                         },

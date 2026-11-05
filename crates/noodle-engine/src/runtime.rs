@@ -287,6 +287,7 @@ impl Controller {
         if self.project_tempo != *project.tempo_map() {
             self.set_tempo_map(project.tempo_map());
         }
+        self.transport().set_version(project.active_version());
         let lanes: Vec<_> = project.lanes().collect();
         self.update_with_lanes(project.graph(), &lanes, registry)
     }
@@ -313,6 +314,7 @@ impl Controller {
         if self.project_tempo != *project.tempo_map() {
             self.set_tempo_map(project.tempo_map());
         }
+        self.transport().set_version(project.active_version());
         let lanes: Vec<_> = project.lanes().collect();
         let options = Options {
             replacements: Some(replacements),
@@ -334,6 +336,7 @@ impl Controller {
         if self.project_tempo != *project.tempo_map() {
             self.set_tempo_map(project.tempo_map());
         }
+        self.transport().set_version(project.active_version());
         let lanes: Vec<_> = project.lanes().collect();
         let options = Options {
             replacements: Some(replacements),
@@ -643,6 +646,7 @@ impl Processor {
                             signature: self.table.signature_at(tick),
                             signature_start: self.table.signature_start_at(tick),
                             count_in: self.control.counting_in(),
+                            version: self.control.version() as u32,
                         },
                     };
                     plan.run(&ctx, input_chunk, chunk, channels, self.workers.as_ref());

@@ -24,6 +24,7 @@ pub mod replace;
 pub mod sample_set;
 mod stems;
 mod transport_tempo;
+pub mod versions;
 pub use export::{ExportChoice, ExportSummary};
 pub use library::LibraryEdit;
 
@@ -132,6 +133,10 @@ pub enum Edit {
     LearnMidi(noodle_core::Endpoint),
     /// Stops listening for MIDI learn.
     CancelLearnMidi,
+    /// Vary per version on a parameter: a Version Value node wired into it,
+    /// holding the parameter's value in every version, as one undo step (see
+    /// [`versions`]). It starts the version list if the project has none.
+    VaryPerVersion(noodle_core::Endpoint),
     /// Arms or disarms an Automation node for recording (see
     /// [`record_automation`]). Session state: not an undo step, not saved.
     ArmAutomation {
@@ -1737,6 +1742,17 @@ impl Session {
                         }
                     }
                 }
+                Edit::VaryPerVersion(target) => {
+                    self.history.end_group();
+                    let node = self.new_node_id();
+                    match versions::command(&self.project, &self.registry, &target, node) {
+                        Ok(command) => command,
+                        Err(error) => {
+                            self.message = Some(format!("Couldn't vary per version: {error}"));
+                            continue;
+                        }
+                    }
+                }
                 Edit::MapTo { from, to, prepare } => {
                     self.history.end_group();
                     let remap = self.new_node_id();
@@ -1780,6 +1796,14 @@ impl Session {
             }
             if effect.clips {
                 self.feed_clips();
+            }
+            if effect.version
+                && let Some(audio) = &self.audio
+            {
+                audio
+                    .controller
+                    .transport()
+                    .set_version(self.project.active_version());
             }
             // A parameter or clip upstream of a frozen node makes its render
             // stale. Its key changes, so compiling again takes the stale audio
@@ -3661,6 +3685,9 @@ struct Effect {
     /// Clips or the tempo map changed, so the track inputs need their
     /// schedules again. The graph is unchanged.
     clips: bool,
+    /// The mix version that plays changed. The transport takes it with no
+    /// rebuild.
+    version: bool,
 }
 
 impl Effect {
@@ -3678,6 +3705,7 @@ impl Effect {
             | Command::SetParamShown { .. }
             | Command::SetPreset { .. }
             | Command::SetTrackOrder(_)
+            | Command::SetArticulations(_)
             | Command::SetOrganisation(_)
             | Command::SetClipGroup { .. }
             | Command::AddFrame { .. }
@@ -3686,6 +3714,7 @@ impl Effect {
             // The transport takes the loop when the edit is applied (see
             // `Session::edit`).
             Command::SetLoop(_) => {}
+            Command::SetVersions { .. } => self.version = true,
             // Solo is read when the project is compiled: it mutes the other
             // tracks' stages, which no parameter reaches.
             Command::SetParam { key, .. }
@@ -3717,6 +3746,7 @@ impl Effect {
     fn merge(&mut self, other: Self) {
         self.structural |= other.structural;
         self.clips |= other.clips;
+        self.version |= other.version;
         self.params.extend(other.params);
     }
 }
@@ -5515,6 +5545,7 @@ mod tests {
                 structural: false,
                 params: vec![param(-6.0)],
                 clips: false,
+                version: false,
             }
         );
         // Parameters in a batch still skip the recompile.
@@ -5528,6 +5559,7 @@ mod tests {
                 structural: false,
                 params: vec![param(-6.0), param(-3.0)],
                 clips: false,
+                version: false,
             }
         );
         assert!(Effect::of(&set(None)).structural);
@@ -5545,6 +5577,22 @@ mod tests {
                 id: noodle_core::ClipId(1)
             })
             .clips
+        );
+        // Switching version needs no rebuild; the lists change nothing the
+        // engine sees.
+        assert_eq!(
+            Effect::of(&Command::SetVersions {
+                names: vec!["a".into(), "b".into()],
+                active: 1,
+            }),
+            Effect {
+                version: true,
+                ..Effect::default()
+            }
+        );
+        assert_eq!(
+            Effect::of(&Command::SetArticulations(Vec::new())),
+            Effect::default()
         );
         assert!(
             Effect::of(&Command::Batch(vec![

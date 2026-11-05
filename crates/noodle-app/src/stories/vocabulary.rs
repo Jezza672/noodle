@@ -76,7 +76,7 @@ pub const TERMS: &[Term] = &[
     elsewhere("flatten", "Flatten takes, in the take folder's menu"),
     elsewhere("quantize", "Quantise, in the piano roll"),
     elsewhere("warp", "Warp markers, in the clip editor"),
-    elsewhere("keyswitch", "not built yet (S10)"),
+    node("keyswitch", &["Articulation Map"]),
 ];
 
 #[derive(Clone, Debug, PartialEq)]

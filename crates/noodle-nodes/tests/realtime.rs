@@ -2524,6 +2524,114 @@ fn random_select_never_allocates_through_triggers_reseeds_and_resizes() {
 }
 
 #[test]
+fn a_pattern_player_never_allocates_through_modes_retriggers_and_pattern_swaps() {
+    use noodle_core::{Clip, ClipContent, MidiClip, MidiNote, Tick};
+    use noodle_engine::TempoTable;
+
+    let mut registry = Registry::with_builtins();
+    let library = noodle_nodes::register_library(&mut registry);
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    let mut project = Project::new();
+    let (input, player, output) = (
+        project.new_node_id(),
+        project.new_node_id(),
+        project.new_node_id(),
+    );
+    for (id, node) in [
+        (input, Node::new(noodle_nodes::MIDI_IN_ID)),
+        (
+            player,
+            Node::new(noodle_nodes::PATTERN_ID)
+                .with_param("length", 4.0)
+                .with_param("sync", 1.0),
+        ),
+        (output, Node::new(OUTPUT_ID)),
+    ] {
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+    }
+    for (from, port, to, to_port) in [
+        (input, "out", player, "trigger"),
+        (player, "gate", output, "in"),
+    ] {
+        Command::Connect(Connection {
+            from: Endpoint::new(from, port),
+            to: Endpoint::new(to, to_port),
+        })
+        .apply(&mut project)
+        .unwrap();
+    }
+    let pattern = |keys: &[u8]| {
+        let mut clip = MidiClip::new(Tick(960));
+        clip.notes = keys
+            .iter()
+            .enumerate()
+            .map(|(i, &key)| MidiNote::new(Tick(i as i64 * 240), Tick(300), key))
+            .collect();
+        Clip {
+            node: player,
+            start: Tick(0),
+            content: ClipContent::Midi(clip),
+        }
+    };
+    let clip = project.new_clip_id();
+    Command::AddClip {
+        id: clip,
+        clip: pattern(&[60, 62, 64, 65]),
+    }
+    .apply(&mut project)
+    .unwrap();
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let table = TempoTable::new(project.tempo_map(), SETTINGS.sample_rate);
+    library
+        .clips
+        .update(&project, &table, 48_000, std::path::Path::new("."));
+
+    let transport = controller.transport();
+    transport.play();
+    let mut out = vec![0.0; 128 * SETTINGS.channels];
+    let mut gated = false;
+    for round in 0..24u8 {
+        // Every mode, with trigger notes coming and going, and a new pattern
+        // swapped in on the way.
+        controller.set_param(player, "mode", f32::from(round % 4));
+        controller.set_param(player, "play", f32::from(round % 3));
+        library.midi.send([0x90, 36 + (round % 5), 100]);
+        if round % 2 == 1 {
+            library.midi.send([0x80, 36 + ((round + 4) % 5), 0]);
+        }
+        if round % 6 == 5 {
+            let keys: &[u8] = if round % 12 == 5 {
+                &[48, 50]
+            } else {
+                &[60, 62, 64]
+            };
+            let mut edited = project.clone();
+            Command::SetClip {
+                id: clip,
+                clip: pattern(keys),
+            }
+            .apply(&mut edited)
+            .unwrap();
+            project = edited;
+            library
+                .clips
+                .update(&project, &table, 48_000, std::path::Path::new("."));
+            library.clips.audition(player, 60 + round, round % 12 == 5);
+        }
+        controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..8 {
+                processor.process(&mut out);
+                gated |= out.iter().any(|&x| x.abs() > 0.5);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+    assert!(gated, "the pattern never gated");
+}
+
+#[test]
 fn selector_never_allocates_through_switches_wiring_and_resizes() {
     // Three oscillators go through a Selector: `which` is set from the UI,
     // then wired from an LFO so it changes per sample, and the input count is
@@ -2861,4 +2969,70 @@ fn pitch_track_and_to_notes_never_allocate_while_the_voice_and_sensitivity_chang
         assert_eq!(violations, 0, "allocated in round {round}");
     }
     assert!(out.iter().all(|x| x.is_finite()));
+}
+
+#[test]
+fn version_values_and_articulation_maps_never_allocate_through_switches_and_edits() {
+    use noodle_core::{ARTICULATION_MAP_ID, ARTICULATION_MAP_KEY, VERSION_VALUE_ID};
+
+    // button -> key -> articulation map (keyswitch on every note) -> mono
+    // note -> sine, whose frequency comes from a Version Value; the version
+    // is switched, the map's table and the slot count are edited.
+    let mut s = Session::new();
+    let button = s.add(Node::new("noodle.input.button").with_param("state", 1.0));
+    let key = s.add(Node::new("noodle.event.key"));
+    let map = s.add(Node::new(ARTICULATION_MAP_ID).with_config(
+        Config::new().with(ARTICULATION_MAP_KEY, Value::Text("0 key 24 100 20".into())),
+    ));
+    let sine = s.add(Node::new("noodle.osc.sine"));
+    let versions = s.add(
+        Node::new(VERSION_VALUE_ID)
+            .with_config(Config::new().with("versions", Value::Int(3)))
+            .with_param("min", 100.0)
+            .with_param("max", 800.0)
+            .with_param("v1", 0.1)
+            .with_param("v2", 0.5)
+            .with_param("v3", 0.9),
+    );
+    let mono = s.add(Node::new("noodle.event.mono"));
+    let mix = s.add(Node::new("noodle.util.mix"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(button, "out", key, "gate");
+    s.wire(key, "out", map, "in");
+    s.wire(map, "out", mono, "in");
+    s.wire(versions, "out", sine, "frequency");
+    s.wire(sine, "out", mix, "in1");
+    s.wire(mono, "gate", mix, "in2");
+    s.wire(mix, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for round in 0..16 {
+        s.controller.transport().set_version(round % 3);
+        s.controller
+            .set_param(button, "state", if round % 2 == 0 { 1.0 } else { 0.0 });
+        s.controller
+            .set_param(versions, "v2", 0.2 + round as f32 * 0.04);
+        if round == 8 {
+            s.edit(Command::SetConfig {
+                node: map,
+                key: ARTICULATION_MAP_KEY.into(),
+                value: Some(Value::Text("0 cc 32 64\n1 program 5".into())),
+            });
+            s.edit(Command::SetConfig {
+                node: versions,
+                key: "versions".into(),
+                value: Some(Value::Int(4)),
+            });
+            s.update();
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
 }
