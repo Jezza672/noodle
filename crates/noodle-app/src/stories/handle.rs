@@ -447,6 +447,11 @@ impl Probe<'_> {
             .center()
     }
 
+    /// Where the playhead is.
+    pub fn playhead(&self) -> noodle_core::Tick {
+        self.h.state().session().playhead()
+    }
+
     /// Where the arrangement's ruler is at `seconds` into the song.
     pub fn ruler_at(&self, seconds: f64) -> Pos2 {
         self.h

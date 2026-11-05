@@ -306,6 +306,11 @@ impl App {
     }
 
     #[cfg(test)]
+    pub fn timeline_mut(&mut self) -> &mut TimelineState {
+        &mut self.timeline
+    }
+
+    #[cfg(test)]
     pub fn timeline(&self) -> &TimelineState {
         &self.timeline
     }
@@ -948,6 +953,21 @@ impl App {
             ] {
                 item(ui, text, Some(shortcut), enabled, Action::Clips(action));
             }
+            let ranged = self.focus == Focus::Arrangement && self.timeline.has_range();
+            item(
+                ui,
+                "Insert Time",
+                None,
+                ranged,
+                Action::Clips(timeline::ClipAction::InsertTime),
+            );
+            item(
+                ui,
+                "Delete Time",
+                None,
+                ranged,
+                Action::Clips(timeline::ClipAction::DeleteTime),
+            );
             ui.separator();
             let selected = self.editor.has_selection();
             item(
@@ -2582,7 +2602,11 @@ mod tests {
         harness.run();
         harness.get_by_label("Edit").click();
         harness.run();
-        harness.get_by_label_contains("Delete").click();
+        harness
+            .get_all_by_label_contains("Delete")
+            .last()
+            .expect("a Delete item")
+            .click();
         harness.run();
         assert!(harness.state().session.project().graph().node(id).is_none());
     }

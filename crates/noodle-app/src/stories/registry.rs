@@ -75,8 +75,8 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S07",
         title: "Restructure an arrangement by section",
-        status: Status::Blocked,
-        missing: "No named arrangement sections: #329.",
+        status: Status::Full,
+        missing: "",
     },
     Story {
         id: "S08",
@@ -166,13 +166,13 @@ pub const STORIES: [Story; 30] = [
         id: "S22",
         title: "Produce a surround or immersive mix",
         status: Status::Partial,
-        missing: "No 3D object panning, 7.1.4 layout or ADM export: #359.",
+        missing: "No ADM export (dropped); the export dialog is a native file dialog, so the route stops before it. A 3D object panner with x, y, z is backlog #379.",
     },
     Story {
         id: "S23",
         title: "Master to loudness targets",
         status: Status::Partial,
-        missing: "No album sequence, true-peak limiter after normalising, DDP or ISRC: #360; the native file dialog stops the export.",
+        missing: "No album sequence with gaps and crossfades (waits on the setlist design, #366); DDP is dropped for a CUE sheet; the native file dialog stops the export.",
     },
     Story {
         id: "S24",

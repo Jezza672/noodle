@@ -65,7 +65,7 @@ fn rig() -> (H, ClipId) {
         _dir: dir,
     };
     let mut h = Harness::builder()
-        .with_size(Vec2::new(900.0, 300.0))
+        .with_size(Vec2::new(900.0, 420.0))
         .with_step_dt(1.0 / 60.0)
         .build_ui_state(
             |ui, rig: &mut Rig| {

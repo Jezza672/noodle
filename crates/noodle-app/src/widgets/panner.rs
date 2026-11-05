@@ -9,6 +9,11 @@
 //! is the draggable full-size version: dragging the source sets the azimuth
 //! with its angle and the spread with its distance from the middle, a run of
 //! [`Edit::Drag`]s ended by [`Edit::EndDrag`].
+//!
+//! A layout with height speakers (7.1.2, 7.1.4) also has a height strip down
+//! the right edge, whose dot is the node's `elevation` (the bottom is ear
+//! level, the top overhead), and draws its height speakers on a smaller ring,
+//! as in a view from above. Dragging in the strip sets the elevation.
 
 use egui::{Align2, FontId, Id, Painter, Pos2, Rect, Sense, Stroke, Ui, pos2, vec2};
 use noodle_core::{Command, NodeId};
@@ -19,6 +24,30 @@ use crate::theme::editor as colors;
 
 /// The height of the full-size display.
 const FULL_HEIGHT: f32 = 180.0;
+
+/// The width of the height strip, which a layout with height speakers has down
+/// its right edge.
+const STRIP: f32 = 18.0;
+
+/// Splits `area` into the part the ring is in and, for a layout with height
+/// speakers, the height strip.
+fn split(area: Rect, layout: ChannelLayout, zoom: f32) -> (Rect, Option<Rect>) {
+    if !layout.speakers().iter().any(|s| s.is_top()) {
+        return (area, None);
+    }
+    let width = (STRIP * zoom).min(area.width() * 0.25);
+    let (ring, strip) = (
+        Rect::from_min_max(area.min, pos2(area.max.x - width, area.max.y)),
+        Rect::from_min_max(pos2(area.max.x - width, area.min.y), area.max),
+    );
+    (ring, Some(strip))
+}
+
+/// The elevation of a source dragged to `pos` in a height strip, from 0 to 90.
+pub fn elevation_at(strip: Rect, pos: Pos2) -> f32 {
+    let height = (strip.height() - 16.0).max(1.0);
+    (((strip.bottom() - 8.0 - pos.y) / height).clamp(0.0, 1.0)) * 90.0
+}
 
 /// The ring: its centre and radius inside `area`, leaving room for the
 /// speakers' dots.
@@ -46,6 +75,15 @@ pub fn source_at(area: Rect, pos: Pos2) -> (f32, f32) {
     (azimuth, 1.0 - (d.length() / radius).clamp(0.0, 1.0))
 }
 
+/// Where the source is: its angle round the listener, its height and how
+/// much of it plays from every speaker.
+#[derive(Clone, Copy, Debug)]
+pub struct Source {
+    pub azimuth: f32,
+    pub elevation: f32,
+    pub spread: f32,
+}
+
 /// Draws the panner in `area`. `labels` names the speakers, which only a
 /// full-size drawing has room for.
 pub fn paint(
@@ -53,11 +91,35 @@ pub fn paint(
     area: Rect,
     zoom: f32,
     layout: ChannelLayout,
-    azimuth: f32,
-    spread: f32,
+    source: Source,
     labels: bool,
 ) {
+    let Source {
+        azimuth,
+        elevation,
+        spread,
+    } = source;
     painter.rect_filled(area, 2.0 * zoom, colors::BODY);
+    let (plan, strip) = split(area, layout, zoom);
+    if let Some(strip) = strip {
+        let x = strip.center().x;
+        let (bottom, top) = (strip.bottom() - 8.0, strip.top() + 8.0);
+        let axis = Stroke::new(zoom.max(1.0), colors::SCOPE_AXIS);
+        painter.line_segment([pos2(x, bottom), pos2(x, top)], axis);
+        // Where the height speakers stand.
+        let tops = bottom - (bottom - top) * (noodle_engine::TOP_ELEVATION / 90.0);
+        painter.line_segment(
+            [pos2(x - 4.0 * zoom, tops), pos2(x + 4.0 * zoom, tops)],
+            axis,
+        );
+        let e = elevation.clamp(0.0, 90.0) / 90.0;
+        painter.circle_filled(
+            pos2(x, bottom - (bottom - top) * e),
+            3.5 * zoom,
+            colors::METER_RMS,
+        );
+    }
+    let area = plan;
     let (center, radius) = ring(area);
     let axis = Stroke::new(zoom.max(1.0), colors::SCOPE_AXIS);
     painter.circle_stroke(center, radius, axis);
@@ -79,13 +141,22 @@ pub fn paint(
 
     let mut gains = [0.0f32; noodle_engine::MAX_LAYOUT_CHANNELS];
     let gains = &mut gains[..layout.channels()];
-    layout.pan_gains(azimuth, spread, gains);
+    layout.pan_gains_3d(azimuth, elevation, spread, gains);
     for (speaker, &gain) in layout.speakers().iter().zip(gains.iter()) {
         // The LFE has no direction: it sits at the listener.
+        // A height speaker is drawn on a smaller ring, nearer the middle.
         let at = layout
             .azimuth(*speaker)
             .map_or(pos2(center.x, center.y + radius * 0.25), |a| {
-                on_ring(center, radius, a)
+                on_ring(
+                    center,
+                    if speaker.is_top() {
+                        radius * 0.7
+                    } else {
+                        radius
+                    },
+                    a,
+                )
             });
         let size = (2.5 + 5.5 * gain.clamp(0.0, 1.0)) * zoom;
         painter.circle_filled(
@@ -121,9 +192,12 @@ pub struct PannerEditor<'a> {
     node: NodeId,
     layout: ChannelLayout,
     azimuth: f32,
+    elevation: f32,
     spread: f32,
     /// Whether each of the two parameters can be set (neither is wired).
     editable: (bool, bool),
+    /// Whether the elevation can be set (it is not wired).
+    elevation_editable: bool,
     /// The ranges of the azimuth and spread, as the node's parameters have.
     azimuth_range: (f32, f32),
     spread_range: (f32, f32),
@@ -142,12 +216,21 @@ impl<'a> PannerEditor<'a> {
             node,
             layout,
             azimuth,
+            elevation: 0.0,
             spread,
             editable,
+            elevation_editable: false,
             azimuth_range: (-180.0, 180.0),
             spread_range: (0.0, 1.0),
             label: "Surround panner",
         }
+    }
+
+    /// Gives the elevation and whether it can be set.
+    pub fn elevation(mut self, elevation: f32, editable: bool) -> Self {
+        self.elevation = elevation;
+        self.elevation_editable = editable;
+        self
     }
 
     /// Sets the ranges the azimuth and spread can be dragged through.
@@ -163,29 +246,45 @@ impl<'a> PannerEditor<'a> {
         let (response, painter) =
             ui.allocate_painter(vec2(width, FULL_HEIGHT), Sense::click_and_drag());
         let area = response.rect;
-        let editable = self.editable.0 || self.editable.1;
+        let (plan, strip) = split(area, self.layout, 1.0);
+        let editable =
+            self.editable.0 || self.editable.1 || (strip.is_some() && self.elevation_editable);
         let drag_id = Id::new((self.node, "panner drag"));
         paint(
             &painter,
             area,
             1.0,
             self.layout,
-            self.azimuth,
-            self.spread,
+            Source {
+                azimuth: self.azimuth,
+                elevation: self.elevation,
+                spread: self.spread,
+            },
             true,
         );
         response
             .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Other, true, self.label));
         let response = response.on_hover_text(if editable {
-            "Drag the dot: its angle is the azimuth, its distance from the middle the spread."
+            "Drag the dot: its angle is the azimuth, its distance from the middle the spread. \
+             The strip on the right sets the height."
         } else {
             "The azimuth and spread are wired."
         });
         if !editable {
             return edits;
         }
-        let set = |edits: &mut Vec<Edit>, pos: Pos2| {
-            let (azimuth, spread) = source_at(area, pos);
+        let set = |edits: &mut Vec<Edit>, pos: Pos2, in_strip: bool| {
+            if in_strip {
+                if let (Some(strip), true) = (strip, self.elevation_editable) {
+                    edits.push(Edit::Drag(Command::SetParam {
+                        node: self.node,
+                        key: "elevation".to_owned(),
+                        value: Some(elevation_at(strip, pos)),
+                    }));
+                }
+                return;
+            }
+            let (azimuth, spread) = source_at(plan, pos);
             let (lo, hi) = self.azimuth_range;
             if self.editable.0 {
                 edits.push(Edit::Drag(Command::SetParam {
@@ -205,12 +304,18 @@ impl<'a> PannerEditor<'a> {
             }
         };
         if response.drag_started() {
-            ui.data_mut(|d| d.insert_temp(drag_id, true));
+            // Which part the drag began in decides what it sets.
+            let in_strip = response
+                .interact_pointer_pos()
+                .zip(strip)
+                .is_some_and(|(pos, strip)| strip.contains(pos));
+            ui.data_mut(|d| d.insert_temp(drag_id, in_strip));
         }
         if response.dragged()
             && let Some(pos) = response.interact_pointer_pos()
         {
-            set(&mut edits, pos);
+            let in_strip = ui.data(|d| d.get_temp::<bool>(drag_id)).unwrap_or(false);
+            set(&mut edits, pos, in_strip);
         }
         if response.drag_stopped() && ui.data_mut(|d| d.remove_temp::<bool>(drag_id)).is_some() {
             edits.push(Edit::EndDrag);

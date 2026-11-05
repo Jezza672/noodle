@@ -17,6 +17,7 @@ pub(crate) mod grid;
 pub(crate) mod header;
 pub mod import;
 mod midi_preview;
+mod sections;
 mod sources;
 mod take;
 mod takes;
@@ -59,6 +60,28 @@ pub(crate) fn toggle_mute(id: ClipId, clip: &Clip) -> Command {
         audio.muted = !audio.muted;
     }
     Command::SetClip { id, clip: changed }
+}
+
+/// The sample rate of every audio file the project's clips play, for laying
+/// the clips out in ticks.
+fn source_rates(
+    project: &Project,
+    sources: &mut Sources,
+    ctx: &egui::Context,
+    directory: Option<&std::path::Path>,
+) -> std::collections::HashMap<String, u32> {
+    project
+        .clips()
+        .filter_map(|(_, clip)| Some(clip.as_audio()?.source.clone()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|source| {
+            let rate = sources
+                .get(ctx, directory, &source)
+                .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate);
+            (source, rate)
+        })
+        .collect()
 }
 
 fn warp_of<'a>(project: &'a Project, clip: &Clip) -> Option<&'a noodle_core::ClipWarp> {
@@ -114,6 +137,15 @@ pub struct TimelineState {
     ruler_seen: Option<(Rect, f32, f32)>,
     /// The bar a right-click on the ruler opened its menu at.
     ruler_menu_bar: Option<u32>,
+    /// The span selected across all tracks (a section between two markers, or
+    /// one picked on the ruler), which copy, cut, paste, insert time and delete
+    /// time work on. Clips, automation points and a range are never selected
+    /// together.
+    range: Option<sections::Range>,
+    /// The marker a right-click on the ruler opened its menu at, and the name
+    /// being typed for it.
+    marker_menu: Option<usize>,
+    marker_name: String,
     /// Whether the tempo lane is shown under the ruler.
     show_tempo: bool,
     tempo: tempo_lane::State,
@@ -164,6 +196,9 @@ impl Default for TimelineState {
             #[cfg(test)]
             ruler_seen: None,
             ruler_menu_bar: None,
+            range: None,
+            marker_menu: None,
+            marker_name: String::new(),
             tempo: tempo_lane::State::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
@@ -352,6 +387,12 @@ impl TimelineState {
         self.fade_handles.get(&(id, fade_in)).copied()
     }
 
+    /// Zooms to `pps` screen points per second, as if the user had zoomed.
+    #[cfg(test)]
+    pub fn set_zoom(&mut self, pps: f32) {
+        self.pps = pps.clamp(MIN_PPS, MAX_PPS);
+    }
+
     /// Where the ruler is at `seconds` into the song, if it is on screen.
     #[cfg(test)]
     pub fn ruler_at(&self, seconds: f64) -> Option<Pos2> {
@@ -393,6 +434,10 @@ pub enum ClipAction {
     Paste,
     /// Copies the selected clips to just after themselves.
     Duplicate,
+    /// Opens empty time the length of the selected range at its start.
+    InsertTime,
+    /// Takes the selected range out and closes the gap.
+    DeleteTime,
 }
 
 impl TimelineState {
@@ -403,13 +448,19 @@ impl TimelineState {
 
     /// Whether there are selected clips to copy, cut or duplicate.
     pub fn can_copy(&self) -> bool {
-        !self.selected.is_empty() || self.automation.selected().is_some()
+        !self.selected.is_empty() || self.automation.selected().is_some() || self.range.is_some()
+    }
+
+    /// Whether a range is selected, for insert time and delete time.
+    pub fn has_range(&self) -> bool {
+        self.range.is_some()
     }
 
     /// Whether there is anything to paste: clips, or a point where one is
     /// selected to paste onto its lane.
     pub fn can_paste(&self) -> bool {
         crate::clipboard::holds(crate::clipboard::CLIP_MIME)
+            || crate::clipboard::holds(crate::clipboard::SECTION_MIME)
             || (self.automation.selected().is_some()
                 && crate::clipboard::holds(crate::clipboard::POINT_MIME))
     }
@@ -1357,6 +1408,17 @@ pub fn show(
                     lane_height: colors::LANE_HEIGHT,
                 },
             ));
+            if let Some(range) = state.range {
+                let (x0, x1) = (axis.x(range.start), axis.x(range.end));
+                let band = Rect::from_x_y_ranges(
+                    x0.max(content.left())..=x1.min(content.right()),
+                    content.y_range(),
+                );
+                if band.width() > 0.0 {
+                    ui.painter_at(content)
+                        .rect_filled(band, 0.0, colors::SELECTED.gamma_multiply(0.12));
+                }
+            }
             let before_box = state.selected.clone();
             select_by_box(ui, state, &background, content, &drawn, state.scroll_x, scroll_y);
             // A clip picked takes its link with it.
@@ -1370,6 +1432,7 @@ pub fn show(
             // Clips and automation points share the Delete key, so picking one
             // drops the other from the selection.
             if state.selected != clips_before && !state.selected.is_empty() {
+                state.range = None;
                 state.selected_track = None;
                 state.automation.deselect();
                 state.tempo.deselect();
@@ -1388,6 +1451,7 @@ pub fn show(
             ));
 
             if state.automation.selected().is_some() && state.automation.selected() != point_before {
+                state.range = None;
                 state.selected.clear();
                 state.tempo.deselect();
             }
@@ -1543,6 +1607,60 @@ pub fn show(
                             .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
                     })
                 };
+                let ranged = state
+                    .range
+                    .filter(|_| state.selected.is_empty() && state.automation.selected().is_none());
+                let pasting_section = action == ClipAction::Paste
+                    && crate::clipboard::holds(crate::clipboard::SECTION_MIME);
+                if ranged.is_some() || pasting_section {
+                    let rates = source_rates(project, &mut state.sources, ui.ctx(), directory.as_deref());
+                    let rate = |clip: &Clip| {
+                        clip.as_audio()
+                            .and_then(|audio| rates.get(&audio.source).copied())
+                            .unwrap_or(FALLBACK_RATE)
+                    };
+                    match (action, ranged) {
+                        (ClipAction::Copy | ClipAction::Cut, Some(range)) => {
+                            let section = sections::copy(project, range, &rate);
+                            crate::clipboard::copy(
+                                crate::clipboard::SECTION_MIME,
+                                &section,
+                                "a section",
+                            );
+                            if action == ClipAction::Cut {
+                                edits.push(Edit::Apply(sections::clear(project, range, &rate)));
+                            }
+                        }
+                        (ClipAction::InsertTime, Some(range)) => {
+                            edits.extend(
+                                sections::insert_time(project, range.start, range.len(), &rate)
+                                    .map(Edit::Apply),
+                            );
+                        }
+                        (ClipAction::DeleteTime, Some(range)) => {
+                            edits.push(Edit::Apply(sections::delete_time(project, range, &rate)));
+                            state.range = None;
+                        }
+                        (ClipAction::Paste, _) => {
+                            if let Some(section) = crate::clipboard::paste::<sections::Section>(
+                                crate::clipboard::SECTION_MIME,
+                            ) {
+                                let at = playhead.unwrap_or(Tick::ZERO);
+                                let (command, _) = sections::paste_section(project, &section, at);
+                                if let Some(command) = command {
+                                    edits.push(Edit::Apply(command));
+                                    state.range = sections::Range::new(
+                                        at,
+                                        Tick(at.0 + section.length.0),
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let handled = ranged.is_some() || pasting_section;
+                if !handled {
                 edits.extend(automation::act(
                     action,
                     &mut state.automation,
@@ -1598,6 +1716,7 @@ pub fn show(
                         state.selected = copies;
                         edits.push(Edit::Apply(command));
                     }
+                }
                 }
             }
 
@@ -1824,6 +1943,125 @@ pub fn show(
             }
         }
     }
+    // Markers: a flag on the ruler for each, dragged to move and right-clicked
+    // for its menu. The span from one to the next is a section.
+    {
+        let markers = project.markers();
+        let painter = ui.painter_at(ruler);
+        let flag_top = ruler.top();
+        for (i, marker) in markers.iter().enumerate() {
+            let x = axis.x(marker.at);
+            let galley = painter.layout_no_wrap(
+                marker.name.clone(),
+                FontId::proportional(10.0),
+                MARKER_COLOUR,
+            );
+            if x + galley.size().x + 8.0 < ruler.left() || x - 4.0 > ruler.right() {
+                continue;
+            }
+            let hit = Rect::from_min_size(
+                Pos2::new(x - 4.0, flag_top),
+                vec2(galley.size().x + 12.0, 12.0),
+            );
+            let response = ui
+                .interact(hit, ui.id().with(("marker", i)), Sense::click_and_drag())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            painter.vline(x, ruler.y_range(), Stroke::new(1.5, MARKER_COLOUR));
+            painter.rect_filled(
+                Rect::from_min_size(Pos2::new(x, flag_top), vec2(galley.size().x + 6.0, 12.0)),
+                2.0,
+                MARKER_COLOUR.gamma_multiply(if response.hovered() { 0.5 } else { 0.3 }),
+            );
+            painter.galley(Pos2::new(x + 3.0, flag_top + 1.0), galley, MARKER_COLOUR);
+            if response.dragged()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                // Between its neighbours, so it keeps its place in the list.
+                let low = if i == 0 { 0 } else { markers[i - 1].at.0 + 1 };
+                let high = markers.get(i + 1).map_or(i64::MAX, |next| next.at.0 - 1);
+                let tick = axis.snap(axis.tick(pos.x).max(Tick::ZERO));
+                let tick = Tick(tick.0.clamp(low, high.max(low)));
+                if tick != marker.at {
+                    let mut moved = markers.to_vec();
+                    moved[i].at = tick;
+                    edits.push(Edit::Drag(Command::SetMarkers(moved)));
+                }
+            }
+            if response.drag_stopped() {
+                edits.push(Edit::EndDrag);
+            }
+            if response.secondary_clicked() {
+                state.marker_menu = Some(i);
+                state.marker_name = marker.name.clone();
+            }
+            // A click in the name field must not close the menu, so its buttons
+            // close it themselves.
+            egui::Popup::context_menu(&response)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
+                    if state.marker_menu != Some(i) {
+                        return;
+                    }
+                    let name = ui.add(
+                        egui::TextEdit::singleline(&mut state.marker_name)
+                            .hint_text("Marker name")
+                            .desired_width(120.0),
+                    );
+                    if name.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter)) {
+                        let mut renamed = markers.to_vec();
+                        renamed[i].name = state.marker_name.trim().to_string();
+                        if renamed[i].name.is_empty() {
+                            renamed[i].name = marker.name.clone();
+                        }
+                        edits.push(Edit::Apply(Command::SetMarkers(renamed)));
+                        ui.close();
+                    }
+                    let next = markers
+                        .get(i + 1)
+                        .map_or("end of the song".to_string(), |next| {
+                            format!("\"{}\"", next.name)
+                        });
+                    if ui
+                        .button(format!("Select to {next}"))
+                        .on_hover_text("Select every track between this marker and the next")
+                        .clicked()
+                    {
+                        ui.close();
+                        let rates = source_rates(
+                            project,
+                            &mut state.sources,
+                            ui.ctx(),
+                            directory.as_deref(),
+                        );
+                        let rate = |clip: &Clip| {
+                            clip.as_audio()
+                                .and_then(|audio| rates.get(&audio.source).copied())
+                                .unwrap_or(FALLBACK_RATE)
+                        };
+                        if let Some(range) = sections::between_markers(project, i, &rate) {
+                            select_range(state, range);
+                        }
+                    }
+                    if ui.button("Delete marker").clicked() {
+                        ui.close();
+                        let mut rest = markers.to_vec();
+                        rest.remove(i);
+                        edits.push(Edit::Apply(Command::SetMarkers(rest)));
+                    }
+                });
+        }
+        // The selected range is a band along the top of the ruler.
+        if let Some(range) = state.range {
+            let (x0, x1) = (axis.x(range.start), axis.x(range.end));
+            let band = Rect::from_x_y_ranges(
+                x0.max(ruler.left())..=x1.min(ruler.right()),
+                ruler.top()..=ruler.top() + 3.0,
+            );
+            if band.width() > 0.0 {
+                painter.rect_filled(band, 0.0, colors::SELECTED);
+            }
+        }
+    }
     if scrub.secondary_clicked() {
         state.ruler_menu_bar = scrub
             .interact_pointer_pos()
@@ -1912,6 +2150,54 @@ pub fn show(
                     end,
                     ..punch
                 })));
+            }
+        });
+        ui.separator();
+        ui.menu_button("Markers and selection", |ui| {
+            if ui
+                .button(format!("Add marker at bar {}", bar + 1))
+                .on_hover_text("Name a point of the song: a verse, the chorus")
+                .clicked()
+            {
+                ui.close();
+                let mut markers = session.project().markers().to_vec();
+                if markers.iter().all(|m| m.at != here) {
+                    markers.push(noodle_core::Marker {
+                        name: sections::next_name(session.project()),
+                        at: here,
+                    });
+                    edits.push(Edit::Apply(Command::SetMarkers(markers)));
+                }
+            }
+            if ui
+                .button("Start selection here")
+                .on_hover_text("Select from here across all tracks, to copy, cut or delete")
+                .clicked()
+            {
+                ui.close();
+                let end = state
+                    .range
+                    .map(|r| r.end)
+                    .filter(|&end| end > here)
+                    .unwrap_or_else(|| bar_tick(map, bar + 2));
+                if let Some(range) = sections::Range::new(here, end) {
+                    select_range(state, range);
+                }
+            }
+            if ui.button("End selection here").clicked() {
+                ui.close();
+                let start = state
+                    .range
+                    .map(|r| r.start)
+                    .filter(|&start| start < here)
+                    .unwrap_or(Tick::ZERO);
+                if let Some(range) = sections::Range::new(start, here) {
+                    select_range(state, range);
+                }
+            }
+            if state.range.is_some() && ui.button("Clear selection").clicked() {
+                ui.close();
+                state.range = None;
             }
         });
         ui.separator();
@@ -2105,6 +2391,18 @@ pub fn show(
 }
 
 /// The first tick of 1-based `bar`, through the signature changes.
+/// The colour of markers.
+const MARKER_COLOUR: egui::Color32 = egui::Color32::from_rgb(235, 180, 60);
+
+/// Selects `range` across all tracks, dropping any clip or point selection.
+fn select_range(state: &mut TimelineState, range: sections::Range) {
+    state.selected.clear();
+    state.selected_track = None;
+    state.automation.deselect();
+    state.tempo.deselect();
+    state.range = Some(range);
+}
+
 fn bar_tick(map: &noodle_core::TempoMap, bar: u32) -> Tick {
     let target = bar.saturating_sub(1);
     let signatures = map.signatures();
