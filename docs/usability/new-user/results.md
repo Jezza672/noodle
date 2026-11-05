@@ -62,3 +62,46 @@ Every run, in the agents' own notes, unprompted:
 User-facing docs, then the same runs with the agent able to look them up (not
 pasted into its prompt). More stories: the other `full` ones whose fixture
 needs a file or two (S09, S23).
+
+## All stories, zero docs, one run each
+
+Haiku, medium effort, 80 actions, run from the same build. "Check" is the
+route's done check, which for some stories is weak (see below). Per-story
+notes and raw logs are kept outside the repo; findings are being reviewed
+before they become issues.
+
+| Story | Agent ended | Actions | Check | Check says |
+|---|---|---|---|---|
+| S01 comp | gave up | 40 | no | takes [4], wanted [3, 6] |
+| S02 punch | gave up | 54 | yes | punch set (found in the ruler menu) |
+| S03 external synth | gave up | 18 | no | MIDI In not wired to MIDI Out (no MIDI in the cloud) |
+| S04 tighten drums | gave up | 36 | yes | transients pinned (the story is partial) |
+| S05 conform | gave up | 31 | no | key and warp mode |
+| S06 stems | gave up | 23 | yes | **vacuous**: only that the download question is not open |
+| S07 sections | gave up | 67 | no | one marker of the wanted set |
+| S08 MIDI detail | gave up | 30 | no | wanted notes [60, 64, 67, 72] |
+| S09 drum pattern | gave up | 72 | no | nothing wired into Swing |
+| S10 articulations | gave up | 42 | no | 0 articulations, wanted 2 |
+| S11 audio to MIDI | finished | 11 | yes | |
+| S12 multisampler | finished | 16 | yes | (run 4) |
+| S13 macro patch | gave up | 52 | no | no Mix node |
+| S14 shared modulation | gave up | 42 | no | no Sample & Hold node (agent used an LFO set to Random) |
+| S15 rhythmic gate | finished | 75 | no | Saw not wired to the VCA the route uses |
+| S16 spectral cross | finished | 57 | no | Synthesize not wired to Output |
+| S17 resample, slice | gave up | 46 | no | no Distortion |
+| S18 plugins | gave up | 30 | yes | **vacuous**: the check is `Ok(())` |
+| S19 drum bus | gave up | 69 | no | no Gain after the drum bus |
+| S20 automation | gave up | 39 | no | lane has 1 point |
+| S21 mix versions | gave up | 18 | no | cutoff not varied per version (#387 feature not found) |
+| S22 surround | gave up | 61 | no | no layout converter |
+| S23 loudness | gave up | 39 | no | no Dynamics node |
+| S24 stems export | gave up | 25 | yes | **weak**: passes with nothing built |
+| S27 clip launching | finished | 55 | yes | |
+| S28 setlist | gave up | 33 | yes | **vacuous** (the story is blocked) |
+| S29 organise | finished | 42 | no | not one folded folder of two tracks |
+| S30 freeze | gave up | 34 | no | reverb not frozen (Freeze exists; not found) |
+
+Passes that mean something: S11, S12, S27. Several "no" rows are a different
+valid method (S14, S16, S19, S22, S23): a route's done check is stricter than
+the story. Fixing the vacuous checks and loosening the method-specific ones
+is its own piece of work.

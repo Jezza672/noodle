@@ -11,9 +11,12 @@ budget="@BUDGET@"
 size="@SIZE@"   # empty: the route's own size
 rm -rf "$dir"/{world,screens,cmd.*,resp.*,ready,over,.seq} "$private"/{result.json,log.jsonl,prefs.ron,driver.log,driver.pid}
 cd "$repo"
-cargo test -p noodle-app --no-run 2>&1 | tail -2
+# Run the test binary itself, so several runs can go at once without waiting
+# on cargo's build lock.
+bin="$(cargo test -p noodle-app --no-run 2>&1 | sed -n 's/.*(\(target\/debug\/deps\/noodle_app-[0-9a-f]*\)).*/\1/p' | tail -1)"
+[ -x "$repo/$bin" ] || { echo "could not find the test binary"; exit 1; }
 env NOODLE_AGENT_STORY="$story" NOODLE_AGENT_DIR="$dir" NOODLE_AGENT_PRIVATE="$private" NOODLE_AGENT_BUDGET="$budget" ${size:+NOODLE_AGENT_SIZE=$size} \
-  nohup cargo test -p noodle-app stories::agent::drive -- --ignored --nocapture \
+  nohup "$repo/$bin" stories::agent::drive --ignored --nocapture \
   > "$private/driver.log" 2>&1 &
 echo $! > "$private/driver.pid"
 for _ in $(seq 1 600); do

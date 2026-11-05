@@ -1895,7 +1895,7 @@ impl App {
                 self.editor = EditorState::default();
             }
             Action::Open => {
-                if let Some(path) = dialog().pick_file()
+                if let Some(path) = crate::picker::pick_file(("Noodle project", &["ron"]))
                     && self.session.load(&path)
                 {
                     self.editor = EditorState::default();
@@ -1909,7 +1909,8 @@ impl App {
             Action::SaveAs => {
                 let then = self.after_save.take();
                 let name = format!("{}.ron", self.session.name());
-                if let Some(path) = dialog().set_file_name(name).save_file()
+                if let Some(path) =
+                    crate::picker::save_file(&name, ("Noodle project", &["ron"]), None)
                     && self.session.save_as(&with_extension(path))
                     && let Some(then) = then
                 {
@@ -2186,14 +2187,12 @@ impl App {
         // One file is a file to save; several go in a folder.
         let path = if choice.groups.is_empty() {
             let name = format!("{}.{}", self.session.name(), choice.format.extension());
-            let mut dialog = rfd::FileDialog::new().set_file_name(name);
-            if let Some(dir) = self.session.directory() {
-                dialog = dialog.set_directory(dir);
-            }
-            let Some(path) = dialog
-                .add_filter(choice.format.label(), &[choice.format.extension()])
-                .save_file()
-            else {
+            let dir = self.session.directory().map(std::path::Path::to_path_buf);
+            let Some(path) = crate::picker::save_file(
+                &name,
+                (choice.format.label(), &[choice.format.extension()]),
+                dir.as_deref(),
+            ) else {
                 self.export.declined();
                 return;
             };
@@ -2204,11 +2203,10 @@ impl App {
                 path
             }
         } else {
-            let mut dialog = rfd::FileDialog::new().set_title("Folder for the exported files");
-            if let Some(dir) = self.session.directory() {
-                dialog = dialog.set_directory(dir);
-            }
-            let Some(path) = dialog.pick_folder() else {
+            let dir = self.session.directory().map(std::path::Path::to_path_buf);
+            let Some(path) =
+                crate::picker::pick_folder_in("Folder for the exported files", dir.as_deref())
+            else {
                 self.export.declined();
                 return;
             };
@@ -2365,10 +2363,6 @@ impl App {
             self.session.notify(notice);
         }
     }
-}
-
-fn dialog() -> rfd::FileDialog {
-    rfd::FileDialog::new().add_filter("Noodle project", &["ron"])
 }
 
 /// Adds `.ron` if the save dialog didn't.

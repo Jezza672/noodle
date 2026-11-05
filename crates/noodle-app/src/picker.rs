@@ -43,10 +43,24 @@ fn ask(what: &str) -> Option<Vec<PathBuf>> {
 }
 
 pub fn pick_folder() -> Option<PathBuf> {
+    pick_folder_in("", None)
+}
+
+/// A folder to pick, with a title and a place to start.
+pub fn pick_folder_in(title: &str, dir: Option<&std::path::Path>) -> Option<PathBuf> {
     #[cfg(test)]
-    return ask("choose a folder").and_then(|p| p.into_iter().next());
+    {
+        let _ = dir;
+        ask(&format!("choose a folder {title}")).and_then(|p| p.into_iter().next())
+    }
     #[cfg(not(test))]
-    rfd::FileDialog::new().pick_folder()
+    {
+        let mut dialog = rfd::FileDialog::new().set_title(title);
+        if let Some(dir) = dir {
+            dialog = dialog.set_directory(dir);
+        }
+        dialog.pick_folder()
+    }
 }
 
 pub fn pick_file(filter: Filter) -> Option<PathBuf> {
@@ -65,4 +79,21 @@ pub fn pick_files(filter: Filter) -> Option<Vec<PathBuf>> {
     rfd::FileDialog::new()
         .add_filter(filter.0, filter.1)
         .pick_files()
+}
+
+/// A file to save to, offered `name`, starting in `dir` if there is one.
+pub fn save_file(name: &str, filter: Filter, dir: Option<&std::path::Path>) -> Option<PathBuf> {
+    #[cfg(test)]
+    {
+        let _ = (dir, filter);
+        ask(&format!("choose where to save {name}")).and_then(|p| p.into_iter().next())
+    }
+    #[cfg(not(test))]
+    {
+        let mut dialog = rfd::FileDialog::new().set_file_name(name);
+        if let Some(dir) = dir {
+            dialog = dialog.set_directory(dir);
+        }
+        dialog.add_filter(filter.0, filter.1).save_file()
+    }
 }
