@@ -332,7 +332,7 @@ scroll area around it.
   and decrement actions work too.
 - **Choices** for stepped parameters with labels: a toggle button when the
   labels are Off and On, radio-style segments when up to four short options
-  fit the row, and otherwise a drop-down. The drop-down is not egui's
+  each fit an equal share of the row, and otherwise a drop-down. The drop-down is not egui's
   `ComboBox` but a button that opens a plain area under it (closed by a pick,
   Escape or a press elsewhere), so it does not depend on how the platform
   delivers a click: the combo box would not open for a Mac user. Every
@@ -483,7 +483,11 @@ A Surround Pan node shows a panner (`widgets/panner.rs`): the layout's
 speakers around a ring, each dot sized by the gain `pan_gains` gives it, and
 the source at the azimuth's angle, nearer the middle as `spread` grows. In the
 properties panel the source can be dragged (angle sets the azimuth, distance
-the spread, one undo step per drag; a wired parameter isn't set).
+the spread, one undo step per drag; a wired parameter isn't set). A layout
+with height speakers (7.1.2, 7.1.4) draws them on a smaller ring, and has a
+height strip down the right edge whose dot is the `elevation`: dragging in the
+strip sets it (bottom ear level, top overhead; a tick marks where the height
+speakers stand).
 
 An Output node has a `routing` setting: for each channel of its signal, the
 device channel (from 1) it plays on, or `-` for none (`3 4 1 2` swaps the pairs

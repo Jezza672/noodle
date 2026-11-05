@@ -7,8 +7,8 @@
 //!   fine control), click to type a value, and press Backspace while hovering
 //!   to reset it to the default. The right-click menu also resets.
 //! - **Stepped parameters with labels** are a toggle button when they are Off
-//!   and On, radio-style segments when a few short options fit the row, and
-//!   otherwise a drop-down.
+//!   and On, radio-style segments when a few short options each fit an equal
+//!   share of the row, and otherwise a drop-down.
 //!
 //! The field doesn't own the value: it's given the current value each frame
 //! and reports what the user asked for as a [`ParamEdit`], which the caller
@@ -626,7 +626,8 @@ impl<'a> ParamField<'a> {
                         current == on_index,
                         egui::RichText::new(text).font(font.clone()),
                     )
-                    .min_size(vec2(0.0, 0.0)),
+                    .min_size(vec2(0.0, 0.0))
+                    .wrap_mode(egui::TextWrapMode::Truncate),
                 );
                 if button.clicked() {
                     picked = Some(1 - current.min(1));
@@ -647,7 +648,8 @@ impl<'a> ParamField<'a> {
                             index == current,
                             egui::RichText::new(label.as_ref()).font(font.clone()),
                         )
-                        .min_size(vec2(0.0, 0.0)),
+                        .min_size(vec2(0.0, 0.0))
+                        .wrap_mode(egui::TextWrapMode::Truncate),
                     );
                     if button.clicked() {
                         picked = Some(index);
@@ -765,19 +767,21 @@ impl ChoiceStyle {
         if labels.len() > Self::MAX_SEGMENTS {
             return Self::List;
         }
-        // Each option needs its text and the button's padding.
+        // Each option gets an equal share of the row, so every label has to
+        // fit its own segment, not just the row in total. A long option in a
+        // set that fits overall would otherwise wrap and spill into the line
+        // below (the Selector's "Instant" / "Zero crossing" did).
         let pad = 2.0 * ui.spacing().button_padding.x;
-        let needed: f32 = labels
-            .iter()
-            .map(|label| {
-                ui.painter()
-                    .layout_no_wrap(label.to_string(), font.clone(), egui::Color32::WHITE)
-                    .size()
-                    .x
-                    + pad
-            })
-            .sum();
-        if needed <= width {
+        let segment = width / labels.len() as f32;
+        let every_label_fits = labels.iter().all(|label| {
+            ui.painter()
+                .layout_no_wrap(label.to_string(), font.clone(), egui::Color32::WHITE)
+                .size()
+                .x
+                + pad
+                <= segment
+        });
+        if every_label_fits {
             Self::Segments
         } else {
             Self::List
@@ -834,4 +838,36 @@ fn wants_reset(ui: &Ui, response: &Response) -> bool {
     let focus = ui.memory(|m| m.focused());
     let targeted = response.has_focus() || (response.hovered() && focus.is_none());
     targeted && ui.input_mut(|i| i.consume_key(Modifiers::NONE, Key::Backspace))
+}
+
+#[cfg(test)]
+mod tests {
+    use std::borrow::Cow;
+
+    use super::*;
+
+    fn style(labels: &[&'static str], width: f32) -> ChoiceStyle {
+        let ctx = egui::Context::default();
+        let labels: Vec<Cow<'static, str>> =
+            labels.iter().map(|label| Cow::Borrowed(*label)).collect();
+        let mut style = None;
+        ctx.run_ui(Default::default(), |ui| {
+            let font = TextStyle::Body.resolve(ui.style());
+            style = Some(ChoiceStyle::of(ui, &labels, &font, width));
+        })
+        .drop_without_applying_deltas();
+        style.unwrap()
+    }
+
+    #[test]
+    fn segments_need_each_label_to_fit_its_share_of_the_row() {
+        // Together these fit 160 px, but "Zero crossing" is much longer than
+        // "Instant", so it cannot fit half the row.
+        assert_eq!(
+            style(&["Instant", "Zero crossing"], 160.0),
+            ChoiceStyle::List
+        );
+        // Short labels of similar length still get segments.
+        assert_eq!(style(&["Sine", "Saw"], 160.0), ChoiceStyle::Segments);
+    }
 }

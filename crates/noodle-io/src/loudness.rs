@@ -72,14 +72,14 @@ fn k_weighting(rate: f64) -> [Biquad; 2] {
 }
 
 /// Taps either side of the point being interpolated.
-const SIDE: usize = 6;
-const TAPS: usize = 2 * SIDE;
+pub(crate) const SIDE: usize = 6;
+pub(crate) const TAPS: usize = 2 * SIDE;
 /// The oversampling factor, so three points are interpolated between samples.
-const OVERSAMPLING: usize = 4;
+pub(crate) const OVERSAMPLING: usize = 4;
 
 /// The interpolation filters: windowed sinc at 1/4, 2/4 and 3/4 of the way
 /// to the next sample, each scaled to pass DC at exactly 1.
-fn interpolators() -> [[f64; TAPS]; OVERSAMPLING - 1] {
+pub(crate) fn interpolators() -> [[f64; TAPS]; OVERSAMPLING - 1] {
     let mut filters = [[0.0; TAPS]; OVERSAMPLING - 1];
     for (p, filter) in filters.iter_mut().enumerate() {
         let f = (p + 1) as f64 / OVERSAMPLING as f64;
