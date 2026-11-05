@@ -20,25 +20,34 @@ rule is only an instruction: check the transcript, not just the log.
 ## Making a run
 
 ```sh
-python3 scripts/new_user/build_run.py --story S12 --out /tmp/run-s12-0            # zero docs
-python3 scripts/new_user/build_run.py --story S12 --clues 2 --out /tmp/run-s12-2  # two clues
-bash /tmp/run-s12-0/start.sh      # builds and starts the app (software Vulkan is fine)
+python3 scripts/new_user/build_run.py --story S12 --out /tmp/noodle-run-s12-0            # zero docs
+python3 scripts/new_user/build_run.py --story S12 --clues 2 --out /tmp/noodle-run-s12-2  # two clues
+bash /tmp/noodle-run-s12-0/private/start.sh   # builds and starts the app (software Vulkan is fine)
 ```
 
-Then give `prompt.md` from the output folder to an agent with a shell, as its
-whole prompt. Any model works: the driver is plain files, no SDK. The build is
-the one the repo is at, recorded in `run.json`. On Linux without a GPU,
-install `mesa-vulkan-drivers` and `libasound2-dev`.
+The run folder has two parts. `agent/` is all the agent is pointed at: `ctl.sh`,
+then the screens and its files. `private/` is not: `prompt.md`, `start.sh`
+(which names the repo), `run.json`, and the results. Use a neutral `--out`
+(no repo path in it), and run the agent from an empty directory, because the
+prompt only *asks* it not to read other files. A Claude subagent inherits the
+repo as its working directory, so check its transcript for stray reads.
 
-When the agent says `finish` or `giveup`, or runs out of actions, the output
-folder holds:
+Give `private/prompt.md` to an agent with a shell as its whole prompt. Any
+model works: the driver is plain files, no SDK. The build is the one the repo
+is at, recorded in `run.json`. On Linux without a GPU, install
+`mesa-vulkan-drivers` and `libasound2-dev`.
+
+When the agent says `finish` or `giveup`, or runs out of actions, `private/`
+holds:
 
 | File | What |
 |---|---|
 | `result.json` | Whether the story's done check passed (the agent is never told), actions used, seconds |
 | `log.jsonl` | Each command with its result, the widget and view it hit, the agent's notes |
-| `screens/` | The screen after every action |
 | `run.json` | Story, clues given, budget, build |
+
+and `agent/screens/` has the screen after every action. The prompts are not
+kept in the repo: rebuild one with the same `--story` and `--clues`.
 
 The driver is `crates/noodle-app/src/stories/agent.rs`, an ignored test. Its
 start state is the route's fixture, so the done check is the route's.

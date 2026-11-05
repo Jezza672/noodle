@@ -15,16 +15,20 @@
 //! whatever model it is. `scripts/new_user/ctl.sh` is the client. See
 //! `docs/usability/new-user-runs.md` for the protocol and the commands.
 //!
-//! Files in `NOODLE_AGENT_DIR`:
+//! Files in `NOODLE_AGENT_DIR`, which is all the agent can see:
 //! - `cmd.N` (written by the client) and `resp.N` (written here): one command
 //!   and its answer, numbered from 1.
 //! - `ready`: written when the app is up.
 //! - `world/`: the fixture's files, where the user's samples and so on are.
 //! - `screens/NNN.png`: the screen after each action.
+//! - `over`: written when the run ends.
+//!
+//! Files in `NOODLE_AGENT_PRIVATE`, which the agent is never pointed at:
 //! - `log.jsonl`: every command with its result, the widget and view it hit,
 //!   and the seconds since the start.
 //! - `result.json`: written when the run ends: whether the story's done check
 //!   passed, and the action count.
+//! - `prefs.ron`: the app's own settings.
 //!
 //! The agent is never told whether the done check passed.
 
@@ -259,7 +263,10 @@ fn escape(s: &str) -> String {
 }
 
 struct Run {
+    /// What the agent can see: the screens, its files, the command files.
     dir: PathBuf,
+    /// What it cannot: the log, the result, the app's own files.
+    private: PathBuf,
     start: Instant,
     actions: usize,
     budget: usize,
@@ -315,7 +322,7 @@ impl Run {
         std::fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(self.dir.join("log.jsonl"))
+            .open(self.private.join("log.jsonl"))
             .expect("the log opens")
             .write_all(entry.as_bytes())
             .expect("the log is written");
@@ -455,7 +462,9 @@ fn end(run: &Run, route: &Route, h: &mut AppHarness, how: &str) {
         run.budget,
         run.start.elapsed().as_secs_f64()
     );
-    std::fs::write(run.dir.join("result.json"), result).expect("the result is written");
+    std::fs::write(run.private.join("result.json"), result).expect("the result is written");
+    // The client stops sending when this appears. It says nothing of the result.
+    std::fs::write(run.dir.join("over"), "").expect("the end is marked");
 }
 
 /// Serves one run. Ignored: it needs a person or an agent to drive it.
@@ -468,17 +477,22 @@ fn drive() {
         .ok()
         .and_then(|b| b.parse().ok())
         .unwrap_or(DEFAULT_BUDGET);
+    let private = PathBuf::from(
+        std::env::var("NOODLE_AGENT_PRIVATE")
+            .expect("NOODLE_AGENT_PRIVATE, outside NOODLE_AGENT_DIR"),
+    );
     let world = dir.join("world");
     std::fs::create_dir_all(dir.join("screens")).expect("a place for screenshots");
     std::fs::create_dir_all(&world).expect("a place for the user's files");
-    std::fs::create_dir_all(dir.join("internal")).expect("a place for the app's own files");
-    crate::prefs::init(dir.join("internal").join("prefs.ron"));
+    std::fs::create_dir_all(&private).expect("a place for the app's own files");
+    crate::prefs::init(private.join("prefs.ron"));
 
     let route = route_for(&story);
     let mut h = window_with((route.fixture)(&world), true);
     let rec = testkit::record();
     let mut run = Run {
         dir: dir.clone(),
+        private,
         start: Instant::now(),
         actions: 0,
         budget,

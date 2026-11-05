@@ -2,11 +2,14 @@
 """Builds a "new user" run: the prompt for an agent that has never seen
 Noodle, and everything it needs to drive the app.
 
-    scripts/new_user/build_run.py --story S12 --out /tmp/run-s12-0
-    scripts/new_user/build_run.py --story S12 --clues 2 --out /tmp/run-s12-2
+    scripts/new_user/build_run.py --story S12 --out /tmp/noodle-run-s12-0
+    scripts/new_user/build_run.py --story S12 --clues 2 --out /tmp/noodle-run-s12-2
 
-The output folder holds prompt.md (give it to any model that has a shell),
-ctl.sh (the agent's hands), start.sh (starts the app), run.json and a README.
+The output folder has two parts. agent/ is all the agent is pointed at: ctl.sh
+(its hands), and later the screens and its files. private/ is not: prompt.md
+(give it to any model that has a shell), start.sh (which names the repo),
+run.json, a README, and afterwards result.json and log.jsonl. Use a neutral
+--out (no repo path in it), and run the agent from an empty directory.
 No docs from the repo are included: the agent gets the story's own words, how
 to press buttons through ctl.sh, and (with --clues N) the first N clues, which
 are what a friend who already uses Noodle might say. Clues live in
@@ -19,6 +22,7 @@ import json
 import re
 import shutil
 import subprocess
+import tempfile
 import sys
 from pathlib import Path
 
@@ -119,11 +123,13 @@ def main() -> None:
     ap.add_argument("--story", required=True, help="a story ID, such as S12")
     ap.add_argument("--clues", type=int, default=0, help="how many clues to include")
     ap.add_argument("--budget", type=int, default=80, help="actions the agent gets")
-    ap.add_argument("--out", required=True, help="folder to build the run in")
+    ap.add_argument("--out", help="folder to build the run in (default: a new /tmp/noodle-run-*)")
     args = ap.parse_args()
 
-    out = Path(args.out).resolve()
-    out.mkdir(parents=True, exist_ok=True)
+    out = Path(args.out or tempfile.mkdtemp(prefix="noodle-run-")).resolve()
+    agent, private = out / "agent", out / "private"
+    agent.mkdir(parents=True, exist_ok=True)
+    private.mkdir(parents=True, exist_ok=True)
     clues_all = load_json(NEW_USER / "clues.json", {}).get(args.story, [])
     if args.clues > len(clues_all):
         sys.exit(f"{args.story} has only {len(clues_all)} clues recorded")
@@ -131,7 +137,7 @@ def main() -> None:
     tasks = load_json(NEW_USER / "tasks.json", {}).get(args.story, {})
 
     files = tasks.get("files")
-    where = f"{out}/world" + (f"/{files}" if files else "")
+    where = f"{agent}/world" + (f"/{files}" if files else "")
     files_text = (
         f"Your files for this are in the folder `{where}`."
         if files
@@ -141,31 +147,32 @@ def main() -> None:
     prompt = PROMPT.format(
         story=story_text(args.story),
         files=files_text,
-        ctl=f"{out}/ctl.sh",
-        first=f"{out}/screens/001.png",
+        ctl=f"{agent}/ctl.sh",
+        first=f"{agent}/screens/001.png",
         budget=args.budget,
         clues=CLUES.format(items=items) if clues else "",
     )
-    (out / "prompt.md").write_text(prompt)
+    (private / "prompt.md").write_text(prompt)
 
     size = tasks.get("size")
-    for name in ("ctl.sh", "start.sh"):
+    for name, home in (("ctl.sh", agent), ("start.sh", private)):
         text = (HERE / name).read_text()
         text = (
             text.replace("@REPO@", str(REPO))
+            .replace("@AGENT@", str(agent))
             .replace("@STORY@", args.story)
             .replace("@BUDGET@", str(args.budget))
             .replace("@SIZE@", str(size) if size else "")
         )
-        (out / name).write_text(text)
-        (out / name).chmod(0o755)
+        (home / name).write_text(text)
+        (home / name).chmod(0o755)
 
     commit = subprocess.run(
         ["git", "-C", str(REPO), "rev-parse", "--short", "HEAD"],
         capture_output=True,
         text=True,
     ).stdout.strip()
-    (out / "run.json").write_text(
+    (private / "run.json").write_text(
         json.dumps(
             {
                 "story": args.story,
@@ -178,16 +185,18 @@ def main() -> None:
         )
         + "\n"
     )
-    (out / "README.md").write_text(
+    (private / "README.md").write_text(
         f"""# New-user run: {args.story}, {len(clues)} clue(s)
 
-1. `bash {out}/start.sh` builds and starts Noodle and waits until it is up.
-2. Give the agent `{out}/prompt.md` as its whole prompt (it needs a shell, and
-   a way to look at PNG files if it can see images). Give it nothing else.
+1. `bash {private}/start.sh` builds and starts Noodle and waits until it is up.
+2. Give the agent `{private}/prompt.md` as its whole prompt (it needs a shell,
+   and a way to look at PNG files if it can see images). Give it nothing else,
+   and run it from an empty directory, not a checkout: it is only asked not to
+   read other files.
 3. When the agent ends (it says finish or giveup, or runs out of actions),
-   `{out}/result.json` holds whether the story's done check passed.
-   `{out}/log.jsonl` has every command, what it hit, and the agent's notes.
-4. Stop the app if it is still running: `kill $(cat {out}/driver.pid)`.
+   `{private}/result.json` holds whether the story's done check passed.
+   `{private}/log.jsonl` has every command, what it hit, and the agent's notes.
+4. Stop the app if it is still running: `kill $(cat {private}/driver.pid)`.
 
 Protocol and how to record clues: `docs/usability/new-user-runs.md`.
 """
