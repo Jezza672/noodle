@@ -1100,6 +1100,8 @@ struct Inner {
     /// See [`ClipFeeds::blocking`].
     blocking: bool,
     hubs: Mutex<HashMap<NodeId, Arc<Shared>>>,
+    /// What each Pattern Player plays: the clips it owns.
+    patterns: Mutex<HashMap<NodeId, Arc<crate::pattern::PatternShared>>>,
     /// See [`ClipFeeds::set_preview`].
     preview: Arc<std::sync::atomic::AtomicBool>,
     files: Mutex<HashMap<PathBuf, (Option<FileStamp>, FileInfo)>>,
@@ -1134,6 +1136,17 @@ impl std::fmt::Display for FileError {
 }
 
 impl ClipFeeds {
+    /// What the Pattern Player `node` plays, made on first use.
+    pub(crate) fn pattern_shared(&self, node: NodeId) -> Arc<crate::pattern::PatternShared> {
+        self.inner
+            .patterns
+            .lock()
+            .expect("feeds lock")
+            .entry(node)
+            .or_insert_with(|| Arc::new(crate::pattern::PatternShared::new()))
+            .clone()
+    }
+
     pub(super) fn shared(&self, node: NodeId) -> Arc<Shared> {
         let blocking = self.inner.blocking;
         self.inner
@@ -1187,7 +1200,17 @@ impl ClipFeeds {
     /// note were playing, for the piano roll's keyboard. The node plays it
     /// from the next block, whether or not the transport runs.
     pub fn audition(&self, node: NodeId, key: u8, on: bool) {
-        self.shared(node).set_audition(key, on);
+        let player = self
+            .inner
+            .patterns
+            .lock()
+            .expect("feeds lock")
+            .get(&node)
+            .cloned();
+        match player {
+            Some(player) => player.set_audition(key, on),
+            None => self.shared(node).set_audition(key, on),
+        }
     }
 
     /// Turns live monitoring on or off for the track input `node`: while on,
@@ -1245,7 +1268,9 @@ impl ClipFeeds {
     /// loses its cache.)
     pub fn is_live(&self, node: NodeId) -> bool {
         let hubs = self.inner.hubs.lock().expect("feeds lock");
+        let patterns = self.inner.patterns.lock().expect("feeds lock");
         hubs.get(&node).is_some_and(|shared| shared.is_live())
+            || patterns.get(&node).is_some_and(|shared| shared.is_live())
     }
 
     /// While on, warped clips play as Repitch whatever their mode: cheap
@@ -1302,7 +1327,19 @@ impl ClipFeeds {
         let mut by_node: HashMap<NodeId, Schedule> = HashMap::new();
         let mut notes_by_node: HashMap<NodeId, Notes> = HashMap::new();
         let mut crossfades: HashMap<NodeId, Vec<(ClipId, u64, u64)>> = HashMap::new();
+        let mut sets: HashMap<NodeId, crate::pattern::PatternSet> = HashMap::new();
         for (id, clip) in project.clips() {
+            // A Pattern Player's clips are its slots, in ticks: they don't
+            // go on the timeline.
+            if project.is_pattern_node(clip.node) {
+                if let ClipContent::Midi(midi) = &clip.content {
+                    sets.entry(clip.node)
+                        .or_default()
+                        .slots
+                        .push(crate::pattern::PatternSlot::from_midi(midi));
+                }
+                continue;
+            }
             let audio = match &clip.content {
                 ClipContent::Audio(audio) => audio,
                 ClipContent::Midi(midi) => {
@@ -1468,6 +1505,19 @@ impl ClipFeeds {
                     });
             }
         }
+        {
+            let mut patterns = self.inner.patterns.lock().expect("feeds lock");
+            for node in sets.keys() {
+                patterns
+                    .entry(*node)
+                    .or_insert_with(|| Arc::new(crate::pattern::PatternShared::new()));
+            }
+            for (node, shared) in patterns.iter() {
+                shared.set(sets.remove(node).unwrap_or_default());
+            }
+            // Forget players that are gone.
+            patterns.retain(|_, shared| Arc::strong_count(shared) > 1 || !shared.is_empty());
+        }
         let mut hubs = self.inner.hubs.lock().expect("feeds lock");
         for node in by_node.keys().chain(notes_by_node.keys()) {
             hubs.entry(*node).or_insert_with(|| {
@@ -1504,7 +1554,7 @@ impl ClipFeeds {
         base: &Path,
     ) -> u64 {
         project
-            .clips()
+            .timeline_clips()
             .map(|(_, clip)| {
                 let start = table.sample_at_tick(clip.start);
                 match &clip.content {

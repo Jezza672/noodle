@@ -1,0 +1,123 @@
+[
+    Template((
+        name: "Step Sequencer",
+        slug: "step-sequencer",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Step Sequencer"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:rate\n2:length\n3:transpose"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.generator.clock",
+                params: {"rate": 4.0},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.events.pattern",
+                params: {"length": 16.0, "mode": 3.0, "transpose": 0.0},
+                position: (x: 440.0, y: 0.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.group.output",
+                config: {"ports": "1:notes\n2:gate"},
+                position: (x: 690.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 3, port: "rate"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 4, port: "advance"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 4, port: "length"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 4, port: "transpose"),
+            ),
+            (
+                from: (node: 4, port: "notes"),
+                to: (node: 5, port: "p1"),
+            ),
+            (
+                from: (node: 4, port: "gate"),
+                to: (node: 5, port: "p2"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Sixteenths",
+        slug: "step-sequencer-sixteenths",
+        topology: "e65949abb8304433",
+        nodes: [
+            (),
+            (
+                params: {"length": 16.0, "mode": 3.0, "transpose": 0.0},
+            ),
+            (
+                params: {"rate": 4.0},
+            ),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Eighths",
+        slug: "step-sequencer-eighths",
+        topology: "e65949abb8304433",
+        nodes: [
+            (),
+            (
+                params: {"length": 8.0, "mode": 3.0, "transpose": 0.0},
+            ),
+            (
+                params: {"rate": 3.0},
+            ),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Sixteenth Triplets",
+        slug: "step-sequencer-sixteenth-triplets",
+        topology: "e65949abb8304433",
+        nodes: [
+            (),
+            (
+                params: {"length": 12.0, "mode": 3.0, "transpose": 0.0},
+            ),
+            (
+                params: {"rate": 9.0},
+            ),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Octave Up Eighths",
+        slug: "step-sequencer-octave-up-eighths",
+        topology: "e65949abb8304433",
+        nodes: [
+            (),
+            (
+                params: {"length": 8.0, "mode": 3.0, "transpose": 12.0},
+            ),
+            (
+                params: {"rate": 3.0},
+            ),
+            (),
+        ],
+    )),
+]

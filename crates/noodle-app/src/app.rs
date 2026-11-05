@@ -632,6 +632,12 @@ impl App {
             self.clip_editor.open_sampler(node);
         }
 
+        // "Edit" on one of a Pattern Player's slots in the properties panel.
+        if let Some(clip) = crate::pattern_panel::take_request(ui.ctx()) {
+            self.clip_editor.close();
+            self.piano_roll.open(clip);
+        }
+
         let mut roll_rect = None;
         if let Some(clip) = self.piano_roll.clip() {
             roll_rect = Some(

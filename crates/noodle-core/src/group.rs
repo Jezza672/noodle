@@ -38,6 +38,11 @@ pub const PORTS: &str = "ports";
 /// The track's source node, inside its group. It has two outputs, [`AUDIO`]
 /// and [`MIDI`]; the transport plays the track's clips out of them.
 pub const TRACK_INPUT: &str = "noodle.track.input";
+/// The Pattern Player node. Like a track input it owns MIDI clips (each
+/// clip's `node` is the player), but they are patterns the player plays on
+/// its own clock, not clips on the timeline, so the timeline's views skip
+/// them (see [`Project::timeline_clips`](crate::Project::timeline_clips)).
+pub const PATTERN_PLAYER: &str = "noodle.events.pattern";
 pub const AUDIO: &str = "audio";
 pub const MIDI: &str = "midi";
 /// The track input's mute (0 or 1), both its parameter and an output carrying

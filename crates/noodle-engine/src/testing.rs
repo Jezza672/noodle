@@ -24,6 +24,7 @@ pub struct Harness {
     position: u64,
     version: u32,
     frames: usize,
+    playing: bool,
 }
 
 struct HarnessInput {
@@ -199,6 +200,7 @@ impl Harness {
             position,
             version: 0,
             frames: 0,
+            playing: true,
         })
     }
 
@@ -286,7 +288,7 @@ impl Harness {
             sample_rate: self.sample_rate,
             frames,
             transport: Transport {
-                playing: true,
+                playing: self.playing,
                 position: self.position,
                 // 120 beats per minute, the default tempo.
                 tick: self.position as f64 * 2.0 * 960.0 / f64::from(self.sample_rate),
@@ -307,6 +309,12 @@ impl Harness {
     /// Chooses the mix version the transport reports from the next block.
     pub fn set_version(&mut self, version: u32) {
         self.version = version;
+    }
+
+    /// Stops or starts the transport the node sees (it starts playing). The
+    /// position still advances with every block.
+    pub fn set_playing(&mut self, playing: bool) {
+        self.playing = playing;
     }
 
     /// Moves the playhead to `position` and resets the node, as a seek does

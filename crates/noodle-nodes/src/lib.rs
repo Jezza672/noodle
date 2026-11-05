@@ -44,6 +44,7 @@ mod note_split;
 mod notes;
 mod osc;
 mod pan;
+mod pattern;
 mod phaser;
 mod pitch_track;
 mod random_select;
@@ -151,6 +152,11 @@ pub use note_split::{NOTE_SPLIT_ID, NoteSplit, param_index as note_split_param};
 pub use notes::{KEY_ID, Key, MONO_NOTE_ID, MonoNote};
 pub use osc::{Saw, Sine, Square, Triangle};
 pub use pan::{PAN_ID, Pan};
+pub use pattern::{
+    MAX_SLOTS as PATTERN_MAX_SLOTS, MAX_STEPS as PATTERN_MAX_STEPS, MODES as PATTERN_MODES,
+    PATTERN_ID, PatternNote, PatternPlayer, PatternSet, PatternSlot,
+    RATE_NAMES as PATTERN_RATE_NAMES,
+};
 pub use phaser::{PHASER_ID, Phaser, STAGES as PHASER_STAGES};
 pub use pitch_track::{PITCH_TRACK_ID, PitchTrack, TO_NOTES_ID, ToNotes};
 pub use random_select::{
@@ -309,6 +315,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(RandomSelect);
     registry.register(Selector);
     registry.register(Arpeggiator);
+    registry.register(PatternPlayer::new(&clips));
     registry.register(LaunchQuantise);
     registry.register(PitchTrack);
     registry.register(ToNotes);

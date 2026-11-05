@@ -63,6 +63,9 @@ pub fn show<'a>(
     }
     match node_type {
         Some(node_type) => {
+            if node.type_id == noodle_nodes::PATTERN_ID {
+                crate::pattern_panel::show(ui, session, id, node, &mut edits);
+            }
             config(ui, session, node_type.as_ref(), id, node, &mut edits);
             params(ui, session, node_type.as_ref(), id, node, live, &mut edits);
         }

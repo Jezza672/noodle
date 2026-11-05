@@ -1,15 +1,19 @@
 //! S14: one LFO, one envelope follower and one random source modulating
 //! several parameters on different devices, each with its own depth.
 //!
-//! Partial. A modulation source's output can be wired to any number of
-//! parameter sockets, and a Remap before each socket gives it its own depth.
-//! There is no step sequencer to swap in for the LFO (#354), so that late
-//! change is not routed.
+//! A modulation source's output can be wired to any number of parameter
+//! sockets, and a Remap before each socket gives it its own depth. The step
+//! sequencer to swap in for the LFO is a Pattern Player (#354): Replace with
+//! keeps the LFO's wires, because the player's `out` has the LFO's key, and
+//! "+ New slot" gives it a pattern to draw.
 
 use std::path::Path;
 
+use egui::{Modifiers, Pos2};
+
+use super::super::handle::{Handle, Probe};
 use super::super::{Keep, LateChange, Route, Tag};
-use super::patch::{Op, Ref, audible, check, nodes_of, run, seeded};
+use super::patch::{Op, Ref, audible, check, find, nodes_of, run, seeded};
 use crate::app::App;
 use noodle_core::Project;
 
@@ -101,8 +105,70 @@ pub fn route() -> Route {
                 done: |p, _| check(p, OWN_DEPTH),
                 keep: &[],
             },
+            LateChange {
+                name: "replace the LFO with a step sequencer",
+                steps: |h, _| replace_lfo(h),
+                done: |p, _| replaced(p),
+                keep: &[Keep {
+                    name: "the targets",
+                    of: sequenced_targets,
+                }],
+            },
         ],
     }
+}
+
+/// Right-clicks the LFO, chooses "Replace with...", picks the Pattern Player,
+/// then gives it a slot to draw in.
+fn replace_lfo(h: &mut Handle) {
+    let node = find(h.probe().project(), LFO).expect("the LFO");
+    h.step("open the LFO's menu");
+    let row = h.probe().port_rect(node, false, "rate");
+    h.right_click(Pos2::new(row.center().x, row.top() - 8.0));
+    h.step("choose Replace with");
+    let item = h.find("Replace with...");
+    h.click(item, Modifiers::NONE);
+    h.step("pick the Pattern Player");
+    h.type_text(Pos2::new(640.0, 300.0), "pattern player");
+    h.press(Pos2::new(640.0, 300.0), Modifiers::NONE, egui::Key::Enter);
+    h.step("give it a pattern");
+    let row = h.probe().port_rect(node, false, "mode");
+    h.click(Pos2::new(row.center().x, row.top() - 8.0), Modifiers::NONE);
+    let new = h.find("+ New slot");
+    h.click(new, Modifiers::NONE);
+}
+
+/// Where the LFO or its replacement sends its signal.
+fn sequenced_targets(p: &Project) -> String {
+    let sources: Vec<_> = ["mod.lfo", "events.pattern"]
+        .iter()
+        .flat_map(|k| nodes_of(p, k))
+        .collect();
+    let mut lines: Vec<String> = p
+        .graph()
+        .connections()
+        .filter(|c| sources.contains(&c.from.node) && c.from.port == "out")
+        .map(|c| format!("{:?}", c.to))
+        .collect();
+    lines.sort();
+    lines.join("\n")
+}
+
+fn replaced(p: &mut Probe) -> Result<(), String> {
+    let project = p.project();
+    if !nodes_of(project, "mod.lfo").is_empty() {
+        return Err("the LFO is still there".into());
+    }
+    let player = *nodes_of(project, "events.pattern")
+        .first()
+        .ok_or("no Pattern Player")?;
+    if sequenced_targets(project).lines().count() < 2 {
+        return Err("the player lost the LFO's targets".into());
+    }
+    if project.patterns_of(player).next().is_none() {
+        return Err("the player has no pattern to draw in".into());
+    }
+    Ok(())
 }
 
 const DEPTH_DOWN: &[Op] = &[Op::Step("lower the LFO depth"), Op::Set(LFO, "depth", 0.4)];
