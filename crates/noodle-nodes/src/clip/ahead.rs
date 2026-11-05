@@ -521,13 +521,17 @@ fn open(
         return Err(format!("more than {MAX_CHANNELS} channels"));
     }
     let source = StreamSource::new(stream, worker);
-    let mut stretcher = Stretcher::new(
-        source,
-        map,
-        (cuts, &transients.bass),
-        clip.length,
-        rate as f32,
-    );
+    let mut stretcher = if clip.mode == noodle_core::WarpMode::Slices {
+        Stretcher::slices(source, map, clip.length, rate as f32)
+    } else {
+        Stretcher::new(
+            source,
+            map,
+            (cuts, &transients.bass),
+            clip.length,
+            rate as f32,
+        )
+    };
     let from = from.min(clip.length);
     stretcher.seek(from);
     let (ring, consumer) = RingBuffer::new(RING_FRAMES * 2);

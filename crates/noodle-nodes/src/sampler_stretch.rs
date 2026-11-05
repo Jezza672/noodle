@@ -110,13 +110,17 @@ pub(crate) fn render(sample: &Sample, warp: &ClipWarp, bpm: f64) -> Option<Stret
         left: &sample.left,
         right: &sample.right,
     };
-    let mut stretcher = Stretcher::new(
-        source,
-        Arc::new(map.clone()),
-        (&all, &bass),
-        total,
-        rate as f32,
-    );
+    let mut stretcher = if warp.mode == noodle_core::WarpMode::Slices {
+        Stretcher::slices(source, Arc::new(map.clone()), total, rate as f32)
+    } else {
+        Stretcher::new(
+            source,
+            Arc::new(map.clone()),
+            (&all, &bass),
+            total,
+            rate as f32,
+        )
+    };
     const CHUNK: usize = 4096;
     let mut buffer = vec![0.0f32; CHUNK * 2];
     let mut left = Vec::with_capacity(total as usize);

@@ -43,6 +43,7 @@ mod notes;
 mod osc;
 mod pan;
 mod phaser;
+mod pitch_track;
 mod random_select;
 mod remap;
 mod render_clip;
@@ -58,6 +59,7 @@ mod sampler_stretch;
 mod scope;
 mod script;
 mod selector;
+mod slice;
 mod spectral;
 mod spectrum;
 mod stage;
@@ -139,6 +141,7 @@ pub use notes::{KEY_ID, Key, MONO_NOTE_ID, MonoNote};
 pub use osc::{Saw, Sine, Square, Triangle};
 pub use pan::{PAN_ID, Pan};
 pub use phaser::{PHASER_ID, Phaser, STAGES as PHASER_STAGES};
+pub use pitch_track::{PITCH_TRACK_ID, PitchTrack, TO_NOTES_ID, ToNotes};
 pub use random_select::{
     CHOICE_PORT as RANDOM_SELECT_CHOICE, MAX_INPUTS as RANDOM_SELECT_MAX_INPUTS, RANDOM_SELECT_ID,
     RandomSelect,
@@ -166,6 +169,10 @@ pub use script::{
 };
 pub use selector::{
     CHOICE_PORT as SELECTOR_CHOICE, MAX_INPUTS as SELECTOR_MAX_INPUTS, SELECTOR_ID, Selector,
+};
+pub use slice::{
+    MAX_SLICES, SLICE_EDITS_KEY, SLICE_FIRST_KEY, SLICE_ID, SLICE_SENSITIVITY_KEY, Slice,
+    cuts as slice_cuts, slice_set,
 };
 pub use spectral::{
     ANALYZE_ID, Analyze, CROSS_ID, Cross, SPECTRAL_BLUR_ID, SPECTRAL_FILTER_ID, SPECTRAL_FREEZE_ID,
@@ -288,6 +295,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(RandomSelect);
     registry.register(Selector);
     registry.register(Arpeggiator);
+    registry.register(PitchTrack);
+    registry.register(ToNotes);
     registry.register(Swing);
     registry.register(Humanise);
     registry.register(Voices);
@@ -312,6 +321,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     } else {
         Sampler::new(&samples, &telemetry)
     });
+    registry.register(Slice::new(&samples));
     Library {
         telemetry,
         clips,

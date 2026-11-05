@@ -33,6 +33,7 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [automate.md](automate.md) | Automate a parameter: shortcut, Automation range and taper, curve tension; recording with arming, Read/Touch/Latch and the `record` input |
 | [markers-and-sections.md](markers-and-sections.md) | Markers, section selection, copy and paste of a section, insert and delete time |
 | [takes-and-punch.md](takes-and-punch.md) | Take folders, loop recording, punch, count-in and pre-roll |
+| [onsets-slicing-and-midi.md](onsets-slicing-and-midi.md) | Onset sensitivity, Slice, transient quantise (regions, Slices mode), audio to MIDI, Pitch Track |
 | [replace-node.md](replace-node.md) | Replace node and missing plugins |
 | [tempo-source-and-monitoring.md](tempo-source-and-monitoring.md) | Tempo source (tap, MIDI clock in) and audio input monitoring |
 | [swing-humanise-midi-ports.md](swing-humanise-midi-ports.md) | Swing node, choke groups, humanise in the piano roll and as a node, View > MIDI ports |

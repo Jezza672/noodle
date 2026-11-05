@@ -189,6 +189,24 @@ pub trait NodeType: Send + Sync + 'static {
         None
     }
 
+    /// Set by a node whose sample output is made from the sample wired to one
+    /// of its sample inputs (Slice): the key of that input. The compiler then
+    /// resolves the input first and gives its text to
+    /// [`sample_derived`](Self::sample_derived), so a chain of such nodes
+    /// works whatever its length. A node that returns this must not also be a
+    /// [`sample_chooser`](Self::sample_chooser).
+    fn sample_through(&self, _config: &Config, _key: &str) -> Option<String> {
+        None
+    }
+
+    /// The sample a sample output carries when it is made from its input
+    /// (see [`sample_through`](Self::sample_through)): `input` is the text of
+    /// the sample wired in, or `None` if nothing sample-like is. Runs while
+    /// the project is compiled, so it should be quick or cached.
+    fn sample_derived(&self, _config: &Config, _key: &str, _input: Option<&str>) -> Option<String> {
+        None
+    }
+
     /// Set by a node that picks between the samples wired to its sample
     /// inputs while audio runs (Random Select). The compiler then can't write
     /// one sample into the receiver, so it writes all the candidates (joined

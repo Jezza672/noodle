@@ -54,7 +54,7 @@ Under each story are its **late changes**: edits to an early decision, made afte
   - *Late change:* Start playback mid-cue after the change.
 - **S11** **Turn an audio phrase into MIDI.** As a producer, I want to convert a hummed melody or a recorded bassline into MIDI notes, then play them through a synth, so that I can reuse a performance with a different sound.
   - *Late change:* Re-record the hum.
-  - *Late change:* Change detection sensitivity after notes have been edited.
+  - *Late change:* Change detection sensitivity after notes have been edited. (Scored as converting again at another setting and replacing the MIDI clip: the conversion is destructive and keeps nothing of its analysis.)
   - *Late change:* Play the MIDI through a different synth.
 
 ## Sound design
