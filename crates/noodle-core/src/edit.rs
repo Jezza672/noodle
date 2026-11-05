@@ -6,8 +6,7 @@ use std::fmt;
 use crate::{
     Articulation, AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Connection,
     Endpoint, ExportSettings, Frame, FrameId, LaneId, Marker, Node, NodeId, Position, Project,
-    PunchRange,
-    TempoMap, TransportLoop, Value, WarpId,
+    PunchRange, TempoMap, TransportLoop, Value, WarpId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
