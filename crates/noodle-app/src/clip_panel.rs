@@ -1065,7 +1065,7 @@ fn transpose_section(
         let picked = key_picker(ui, "clip transpose from", from, Some("Not set"), false);
         let found = analysis.and_then(|a| a.key);
         let detect = ui
-            .add_enabled(found.is_some(), egui::Button::new("Detect"))
+            .add_enabled(found.is_some(), egui::Button::new("Detect key"))
             .on_hover_text(if analysis.is_none() {
                 "Still reading the file"
             } else if found.is_none() {

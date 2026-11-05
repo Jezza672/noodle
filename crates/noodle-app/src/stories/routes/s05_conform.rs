@@ -2,7 +2,7 @@
 //!
 //! Select the clip and press Warp in its panel: it follows the timeline's
 //! tempo from the tempo found in the audio. Its Key row says what key it is
-//! in (Detect finds it from the audio; the route sets it by hand, since the
+//! in (Detect key finds it from the audio; the route sets it by hand, since the
 //! fixture is clicks), and it is carried to the timeline's key, which the
 //! ruler's menu sets for the project. Formant preservation is not built, so
 //! the story's wording leaves it out.
