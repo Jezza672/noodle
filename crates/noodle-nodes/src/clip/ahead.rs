@@ -33,6 +33,7 @@ use noodle_io::{
 use rtrb::{Consumer, Producer, RingBuffer};
 
 use super::hub::{LOOKAHEAD, MAX_CHANNELS, RETRY, Shared, wanted};
+use super::pitch::Pitcher;
 use super::read_frames;
 use super::schedule::ScheduledClip;
 use super::stretch::{Source, Stretcher};
@@ -254,7 +255,7 @@ struct Job {
     head: bool,
     ring: Producer<f32>,
     control: Arc<Control>,
-    stretcher: Stretcher<StreamSource>,
+    stretcher: Pitcher<StreamSource>,
     /// How long the section is, and the next frame of it to render.
     length: u64,
     pos: u64,
@@ -521,13 +522,21 @@ fn open(
         return Err(format!("more than {MAX_CHANNELS} channels"));
     }
     let source = StreamSource::new(stream, worker);
-    let mut stretcher = Stretcher::new(
-        source,
-        map,
-        (cuts, &transients.bass),
-        clip.length,
-        rate as f32,
-    );
+    // A transposed clip is stretched to the length its pitch change needs,
+    // and read back at the pitch's rate (see `pitch`).
+    let (map, total) = match &clip.pitch {
+        Some(path) => (
+            Arc::new(map.with_pitch(path)),
+            path.inter(clip.length as f64).ceil() as u64 + 1,
+        ),
+        None => (map, clip.length),
+    };
+    let stretcher = if clip.mode == noodle_core::WarpMode::Slices {
+        Stretcher::slices(source, map, total, rate as f32)
+    } else {
+        Stretcher::new(source, map, (cuts, &transients.bass), total, rate as f32)
+    };
+    let mut stretcher = Pitcher::new(stretcher, clip.pitch.clone());
     let from = from.min(clip.length);
     stretcher.seek(from);
     let (ring, consumer) = RingBuffer::new(RING_FRAMES * 2);

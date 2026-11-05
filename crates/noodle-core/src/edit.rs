@@ -5,8 +5,8 @@ use std::fmt;
 
 use crate::{
     AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Connection, Endpoint,
-    ExportSettings, Frame, FrameId, LaneId, Node, NodeId, Position, Project, PunchRange, TempoMap,
-    TransportLoop, Value, WarpId,
+    ExportSettings, Frame, FrameId, Key, LaneId, Marker, Node, NodeId, Position, Project,
+    PunchRange, TempoMap, TransportLoop, Value, WarpId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -91,6 +91,10 @@ pub enum Command {
     SetTempoMap(TempoMap),
     /// Replaces the transport's loop.
     SetLoop(TransportLoop),
+    /// Replaces the markers.
+    SetMarkers(Vec<Marker>),
+    /// Sets the project's key, which holds before the first marker that sets one.
+    SetKey(Key),
     /// Replaces the punch range.
     SetPunch(PunchRange),
     /// Replaces the export settings.
@@ -98,6 +102,8 @@ pub enum Command {
     /// Replaces the order tracks (their groups) are listed in. Groups it
     /// doesn't name go after the ones it does, in ID order.
     SetTrackOrder(Vec<NodeId>),
+    /// Replaces the tracks' colours and folders, for display only.
+    SetOrganisation(crate::Organisation),
     /// Freezes or unfreezes a node or group.
     SetFrozen {
         node: NodeId,
@@ -200,8 +206,14 @@ impl Command {
             Command::SetTempoMap(map) => {
                 return Ok(Command::SetTempoMap(project.replace_tempo_map(map)));
             }
+            Command::SetMarkers(markers) => {
+                return Ok(Command::SetMarkers(project.replace_markers(markers)));
+            }
             Command::SetLoop(region) => {
                 return Ok(Command::SetLoop(project.replace_loop(region)));
+            }
+            Command::SetKey(key) => {
+                return Ok(Command::SetKey(project.replace_key(key)));
             }
             Command::SetPunch(range) => {
                 return Ok(Command::SetPunch(project.replace_punch(range)));
@@ -220,6 +232,11 @@ impl Command {
             }
             Command::SetTrackOrder(order) => {
                 return Ok(Command::SetTrackOrder(project.replace_track_order(order)));
+            }
+            Command::SetOrganisation(organisation) => {
+                return Ok(Command::SetOrganisation(
+                    project.replace_organisation(organisation),
+                ));
             }
             Command::AddClip { id, clip } => {
                 project.insert_clip(id, clip)?;
@@ -379,9 +396,12 @@ impl Command {
             | Command::SetFrame { .. }
             | Command::SetTempoMap(_)
             | Command::SetLoop(_)
+            | Command::SetMarkers(_)
+            | Command::SetKey(_)
             | Command::SetPunch(_)
             | Command::SetExportSettings(_)
             | Command::SetTrackOrder(_)
+            | Command::SetOrganisation(_)
             | Command::SetFrozen { .. }
             | Command::AddClip { .. }
             | Command::RemoveClip { .. }
@@ -410,9 +430,12 @@ enum Target<'a> {
     Lane(LaneId),
     TempoMap,
     Loop,
+    Markers,
     Punch,
+    Key,
     ExportSettings,
     TrackOrder,
+    Organisation,
     Frozen(NodeId),
 }
 
@@ -427,9 +450,12 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetLane { id, .. } => Some(Target::Lane(*id)),
         Command::SetTempoMap(_) => Some(Target::TempoMap),
         Command::SetLoop(_) => Some(Target::Loop),
+        Command::SetMarkers(_) => Some(Target::Markers),
         Command::SetPunch(_) => Some(Target::Punch),
+        Command::SetKey(_) => Some(Target::Key),
         Command::SetExportSettings(_) => Some(Target::ExportSettings),
         Command::SetTrackOrder(_) => Some(Target::TrackOrder),
+        Command::SetOrganisation(_) => Some(Target::Organisation),
         Command::SetFrozen { node, .. } => Some(Target::Frozen(*node)),
         _ => None,
     }

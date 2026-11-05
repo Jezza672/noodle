@@ -431,7 +431,7 @@ fn render_audio(request: &Request, audio: &Arc<Audio>) -> Option<Peaks> {
                 builder.push(&chunk);
             }
         }
-        WarpMode::Grain | WarpMode::Beats => {
+        WarpMode::Grain | WarpMode::Beats | WarpMode::Slices => {
             // As the engine finds them: the bass transients for both modes,
             // those of the whole mix for Beats only.
             let from = request.offset as usize;
@@ -451,8 +451,11 @@ fn render_audio(request: &Request, audio: &Arc<Audio>) -> Option<Peaks> {
                 channels,
                 offset: request.offset as i64,
             };
-            let mut stretcher =
-                Stretcher::new(source, Arc::new(map), (&all, &bass), total, rate as f32);
+            let mut stretcher = if request.warp.mode == WarpMode::Slices {
+                Stretcher::slices(source, Arc::new(map), total, rate as f32)
+            } else {
+                Stretcher::new(source, Arc::new(map), (&all, &bass), total, rate as f32)
+            };
             let mut buffer = vec![0.0f32; CHUNK * 2];
             loop {
                 let n = stretcher.read(&mut buffer);

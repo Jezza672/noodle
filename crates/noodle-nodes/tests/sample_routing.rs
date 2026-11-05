@@ -276,3 +276,48 @@ fn the_sampler_plays_the_sample_the_trigger_picked() {
     );
     assert!(peak(true) > 0.4, "the second, once triggered");
 }
+
+#[test]
+fn a_slice_node_turns_the_wired_sample_into_a_set_for_the_sampler() {
+    use noodle_nodes::{SLICE_FIRST_KEY, SLICE_ID, SetEntry, parse_set};
+
+    let store = SampleStore::new();
+    let mut registry = registry(&store);
+    registry.replace(noodle_nodes::Slice::new(&store));
+    // Two clicks, half a second apart.
+    let mut samples = vec![0.0f32; 48_000];
+    for at in [4_000usize, 28_000] {
+        for i in 0..2_000 {
+            let t = i as f32 / 48_000.0;
+            samples[at + i] = 0.8 * (t * 2_500.0).sin() * (-t * 60.0).exp();
+        }
+    }
+    let hash = store.insert(&Audio {
+        samples,
+        channels: 1,
+        sample_rate: 48_000,
+    });
+    let mut project = Project::new();
+    let source = add(
+        &mut project,
+        Node::new(SAMPLE_INPUT_ID).with_config(text(&hash)),
+    );
+    let slice = add(
+        &mut project,
+        Node::new(SLICE_ID).with_config(Config::new().with(SLICE_FIRST_KEY, Value::Int(48))),
+    );
+    let sampler = add(&mut project, Node::new(SAMPLER_ID));
+    wire(&mut project, (source, "sample"), (slice, "sample"));
+    wire(&mut project, (slice, "slices"), (sampler, "sample"));
+    let set = parse_set(&compiled_sample(&project, &registry, sampler));
+    let roots: Vec<Option<u8>> = set.iter().map(|e: &SetEntry| e.root).collect();
+    assert_eq!(roots, [Some(48), Some(49)], "{set:?}");
+    assert!(set.iter().all(|e| e.reference.hash == hash));
+
+    // Without a wired sample the Sampler gets nothing.
+    let mut project = Project::new();
+    let slice = add(&mut project, Node::new(SLICE_ID));
+    let sampler = add(&mut project, Node::new(SAMPLER_ID).with_config(text("own")));
+    wire(&mut project, (slice, "slices"), (sampler, "sample"));
+    assert_eq!(compiled_sample(&project, &registry, sampler), "");
+}

@@ -29,7 +29,7 @@ pub(super) const MAX_STREAMS: usize = 6;
 /// round.
 pub(super) const MAX_HEADS: usize = 4;
 /// The most channels a file can have and still play.
-pub(super) const MAX_CHANNELS: usize = 8;
+pub(super) const MAX_CHANNELS: usize = noodle_engine::MAX_LAYOUT_CHANNELS;
 /// How far ahead of the playhead streams are opened, in seconds.
 pub(super) const LOOKAHEAD: f64 = 1.0;
 /// How far the playhead goes before the node rings the hub (and the stretch

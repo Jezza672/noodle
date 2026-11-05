@@ -2048,8 +2048,8 @@ fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() 
 fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
     // A 5.1 engine: sine -> surround pan (azimuth swept by an LFO) -> split
     // -> merge -> output, the same pan through a downmix to stereo and an
-    // upmix back, and a second pan whose layout alternates 5.1 and 7.1 (a
-    // 6 -> 8 -> 6 channel rebuild) into a Convert Layout back to 5.1.
+    // upmix back, and a second pan whose layout alternates 5.1 and 7.1.4 (a
+    // 6 -> 12 -> 6 channel rebuild) with its elevation swept into a Convert Layout back to 5.1.
     let surround = Settings {
         channels: 6,
         ..SETTINGS
@@ -2084,6 +2084,8 @@ fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
         .add(Node::new("noodle.util.mix").with_config(Config::new().with("inputs", Value::Int(3))));
     let output = s.add(Node::new(OUTPUT_ID));
     s.wire(sine, "out", swept, "in");
+    // Elevation moves too: in 7.1.4 (12 channels) it pans into the heights.
+    s.wire(lfo, "out", swept, "elevation");
     s.wire(swept, "out", to_51, "in");
     s.wire(to_51, "out", mix, "in3");
     s.wire(sine, "out", pan, "in");
@@ -2103,12 +2105,12 @@ fn surround_nodes_never_allocate_while_the_layout_and_wires_change() {
     let mut channels_heard = [false; 6];
     for round in 0..8 {
         // Between blocks, on this thread: the second pan changes shape,
-        // 6 channels then 8 then 6 again.
+        // 6 channels then 12 then 6 again.
         s.edit(Command::SetConfig {
             node: swept,
             key: "layout".to_owned(),
             value: Some(Value::Text(
-                if round % 2 == 1 { "7.1" } else { "5.1" }.to_owned(),
+                if round % 2 == 1 { "7.1.4" } else { "5.1" }.to_owned(),
             )),
         });
         s.update();
@@ -2874,4 +2876,97 @@ fn selector_note_sample_and_spectral_kinds_never_allocate() {
     }
     assert!(heard, "the patch never sounded");
     assert!(notes_heard, "the notes path never sounded");
+}
+
+#[test]
+fn launch_quantise_never_allocates_while_notes_wait_and_play() {
+    use noodle_io::Audio;
+    use noodle_nodes::{SAMPLE_KEY, SampleStore, Sampler};
+
+    // A button presses a key; the notes wait on a Launch Quantise (a beat, in
+    // toggle mode and then hold mode) before a looping sampler plays them.
+    let mut s = Session::new();
+    let store = SampleStore::new();
+    s.registry
+        .replace(Sampler::new(&store, &noodle_engine::Telemetry::new()));
+    let hash = store.insert(&Audio {
+        samples: (0..4800).map(|i| (i as f32 * 0.05).sin() * 0.4).collect(),
+        channels: 1,
+        sample_rate: 48_000,
+    });
+    let button = s.add(Node::new("noodle.input.button"));
+    let key = s.add(Node::new("noodle.event.key"));
+    let quantise = s.add(Node::new("noodle.event.launch_quantise").with_param("grid", 1.0));
+    let sampler = s.add(
+        Node::new("noodle.instrument.sampler")
+            .with_config(Config::new().with(SAMPLE_KEY, Value::Text(hash)))
+            .with_param("mode", 1.0)
+            .with_param("loop", 1.0),
+    );
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(button, "out", key, "gate");
+    s.wire(key, "out", quantise, "in");
+    s.wire(quantise, "out", sampler, "in");
+    s.wire(sampler, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..40 {
+        s.controller.set_param(button, "state", (round % 2) as f32);
+        s.controller
+            .set_param(quantise, "mode", ((round / 10) % 2) as f32);
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..8 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+    assert!(heard, "the launched note never sounded");
+}
+
+#[test]
+fn pitch_track_and_to_notes_never_allocate_while_the_voice_and_sensitivity_change() {
+    // saw (its frequency stepped) -> pitch track -> to notes -> mono note ->
+    // saw -> output; the first saw is also the voice.
+    let mut s = Session::new();
+    let voice = s.add(Node::new("noodle.osc.saw").with_param("frequency", 220.0));
+    let track = s.add(Node::new("noodle.analysis.pitch_track"));
+    let notes = s.add(Node::new("noodle.event.to_notes"));
+    let mono = s.add(Node::new("noodle.event.mono"));
+    let synth = s.add(Node::new("noodle.osc.saw"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(voice, "out", track, "in");
+    s.wire(track, "pitch", notes, "pitch");
+    s.wire(track, "confidence", notes, "confidence");
+    s.wire(track, "level", notes, "level");
+    s.wire(notes, "out", mono, "in");
+    s.wire(mono, "pitch", synth, "frequency");
+    s.wire(synth, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for round in 0..16 {
+        s.controller.set_param(
+            voice,
+            "frequency",
+            110.0 * (1.0 + (round % 5) as f32 * 0.25),
+        );
+        s.controller
+            .set_param(track, "sensitivity", (round % 4) as f32 / 3.0);
+        s.controller
+            .set_param(notes, "sensitivity", (round % 3) as f32 / 2.0);
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+    }
+    assert!(out.iter().all(|x| x.is_finite()));
 }

@@ -1,14 +1,22 @@
-//! S22: produce a surround mix.
+//! S22: produce a surround or immersive mix.
 //!
-//! Partial. Surround Pan places a source among the speakers of a layout and
-//! Convert Layout folds the result down to stereo to check it. There is no
-//! 3D object panning with automation, no 7.1.4 layout and no ADM export
-//! (#359). The route builds the bed: a source panned in 5.1, folded down.
+//! Partial. Surround Pan places a source among the speakers of a layout, up to
+//! 7.1.4, and its `elevation` raises the source into the height speakers;
+//! Convert Layout folds the result down to stereo to check it. Objects are
+//! exported as stems by ticking their group in the export dialog (the
+//! pre-pan mono signal) beside the bed and the fold-down. ADM export is not
+//! planned (#359). The export dialog is a native file dialog away, so the
+//! route stops before it. The route builds the bed in 5.1 and folds it down;
+//! the late changes move to 7.1.4 and move one object through the heights.
 
 use std::path::Path;
 
+use egui::{Modifiers, vec2};
+use noodle_core::Value;
+
+use super::super::handle::{Handle, Probe};
 use super::super::{LateChange, Route, Tag};
-use super::patch::{Op, Ref, audible, check, run, seeded};
+use super::patch::{Op, Ref, audible, check, find, run, seeded};
 use crate::app::App;
 
 const SRC: Ref = Ref("osc.saw", 0);
@@ -39,10 +47,44 @@ const BUILD: &[Op] = &[
     Op::Play,
 ];
 
-const MOVE_OBJECT: &[Op] = &[
-    Op::Step("move the source to the right rear"),
-    Op::Set(PAN, "azimuth", 110.0),
+/// Chooses the pan's layout in the properties panel.
+fn choose_layout(h: &mut Handle, label: &str) {
+    // The nodes show live values while the project plays.
+    let _busy = crate::testkit::playing_mode();
+    h.step("select the panner");
+    let pan = find(h.probe().project(), PAN).expect("the surround pan");
+    let row = h.port_row(pan, true, "out");
+    // The row's left end is the node's body, clear of the socket.
+    h.click(row - vec2(40.0, 0.0), Modifiers::NONE);
+    h.probe().settle();
+    h.step("set the layout of the bus");
+    let layout = h.find("Layout");
+    h.click(layout, Modifiers::NONE);
+    h.probe().settle();
+    let choice = h.find(label);
+    h.click(choice, Modifiers::NONE);
+    h.probe().settle();
+}
+
+const RAISE: &[Op] = &[
+    Op::Step("raise the source into the heights"),
+    Op::Set(PAN, "elevation", 45.0),
+    Op::Set(PAN, "azimuth", 135.0),
 ];
+
+fn layout_is(p: &mut Probe, name: &str) -> Result<(), String> {
+    let project = p.project();
+    let pan = find(project, PAN).ok_or("no surround pan")?;
+    let layout = project
+        .graph()
+        .node(pan)
+        .and_then(|n| n.config.get("layout").cloned());
+    if layout == Some(Value::Text(name.to_owned())) {
+        Ok(())
+    } else {
+        Err(format!("the layout is {layout:?}, not {name}"))
+    }
+}
 
 pub fn route() -> Route {
     Route {
@@ -56,11 +98,25 @@ pub fn route() -> Route {
             check(p, BUILD)?;
             audible(p)
         },
-        late: &[LateChange {
-            name: "move one object's position",
-            steps: |h, _| run(h, MOVE_OBJECT),
-            done: |p, _| check(p, MOVE_OBJECT),
-            keep: &[],
-        }],
+        late: &[
+            LateChange {
+                name: "change the layout from 5.1 to 7.1.4",
+                steps: |h, _| choose_layout(h, "7.1.4 (12 channels)"),
+                done: |p, _| layout_is(p, "7.1.4"),
+                keep: &[],
+            },
+            LateChange {
+                name: "move one object's path in 3D",
+                steps: |h, _| {
+                    choose_layout(h, "7.1.4 (12 channels)");
+                    run(h, RAISE);
+                },
+                done: |p, _| {
+                    layout_is(p, "7.1.4")?;
+                    check(p, RAISE)
+                },
+                keep: &[],
+            },
+        ],
     }
 }

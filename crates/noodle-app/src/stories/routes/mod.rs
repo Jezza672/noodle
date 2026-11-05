@@ -22,6 +22,7 @@ mod s14_shared_modulation;
 mod s15_rhythmic_gate;
 mod s16_spectral_cross;
 mod s17_resample;
+mod s17_slice;
 mod s18_plugins;
 mod s18_replace;
 mod s19_drum_bus;
@@ -30,8 +31,6 @@ mod s21_mix_versions;
 mod s22_surround;
 mod s23_loudness;
 mod s24_stems_export;
-mod s25_interchange;
-mod s26_picture;
 mod s27_clip_launching;
 mod s28_setlist;
 mod s29_organise;
@@ -73,6 +72,7 @@ pub fn all() -> Vec<Route> {
         s15_rhythmic_gate::route(),
         s16_spectral_cross::route(),
         s17_resample::route(),
+        s17_slice::route(),
         s18_plugins::route(),
         s18_replace::route(),
         s19_drum_bus::route(),
@@ -81,8 +81,6 @@ pub fn all() -> Vec<Route> {
         s22_surround::route(),
         s23_loudness::route(),
         s24_stems_export::route(),
-        s25_interchange::route(),
-        s26_picture::route(),
         s27_clip_launching::route(),
         s28_setlist::route(),
         s29_organise::route(),

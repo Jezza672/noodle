@@ -40,7 +40,9 @@ fn voice_silent(input: &SignalIn<'_>, voice: usize) -> bool {
 /// Places a signal among the speakers of a layout. The input's channels are
 /// averaged to one source, which is panned by `azimuth` (degrees from straight
 /// ahead, positive to the right, wrapping at ±180) with constant power between
-/// the two speakers either side of it. `spread` blends toward every speaker
+/// the two speakers either side of it. `elevation` (0 at ear level, 90
+/// overhead) raises it toward the height speakers of a layout that has them
+/// (7.1.2, 7.1.4) and is ignored by one that has none. `spread` blends toward every speaker
 /// playing the source equally, and `lfe` sends some of it to the LFE channel
 /// of a layout that has one (off at its minimum). A wire into `azimuth` moves
 /// it along its range, so a full-scale LFO circles the listener. It works per
@@ -56,6 +58,8 @@ struct PanPorts {
     input: (),
     #[param("azimuth", "Azimuth", ParamInfo::new(-180.0, 180.0, 0.0).unit(Unit::Degrees).offset())]
     azimuth: (),
+    #[param("elevation", "Elevation", ParamInfo::new(0.0, 90.0, 0.0).unit(Unit::Degrees))]
+    elevation: (),
     #[param("spread", "Spread", ParamInfo::new(0.0, 1.0, 0.0))]
     spread: (),
     #[param("lfe", "LFE send", ParamInfo::new(-60.0, 12.0, -60.0).unit(Unit::Decibels))]
@@ -151,8 +155,9 @@ impl Node for SurroundPanNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let frames = ctx.frames;
         let input = io.inputs[PanPorts::INPUT];
-        let (azimuth, spread, lfe) = (
+        let (azimuth, elevation, spread, lfe) = (
             io.inputs[PanPorts::AZIMUTH],
+            io.inputs[PanPorts::ELEVATION],
             io.inputs[PanPorts::SPREAD],
             io.inputs[PanPorts::LFE],
         );
@@ -184,18 +189,22 @@ impl Node for SurroundPanNode {
                 mono.iter_mut().for_each(|m| *m *= scale);
             }
 
-            let (az, sp, lf) = (
+            let (az, el, sp, lf) = (
                 azimuth.lane(voice, 0),
+                elevation.lane(voice, 0),
                 spread.lane(voice, 0),
                 lfe.lane(voice, 0),
             );
-            let fixed = azimuth.constant().zip(spread.constant());
+            let fixed = azimuth
+                .constant()
+                .zip(elevation.constant())
+                .zip(spread.constant());
             let mut gains = [0.0f32; MAX_LAYOUT_CHANNELS];
-            if let Some((az, sp)) = fixed {
-                layout.pan_gains(az, sp, &mut gains);
+            if let Some(((az, el), sp)) = fixed {
+                layout.pan_gains_3d(az, el, sp, &mut gains);
             } else {
                 for f in 0..frames {
-                    layout.pan_gains(az[f], sp[f], &mut gains);
+                    layout.pan_gains_3d(az[f], el[f], sp[f], &mut gains);
                     for (c, g) in gains[..channels].iter().enumerate() {
                         self.table[c * frames + f] = *g;
                     }
@@ -233,7 +242,7 @@ impl Node for SurroundPanNode {
 // Convert Layout
 
 /// Converts a signal from the layout its channel count implies (1 mono, 2
-/// stereo, 3 as 3.0, 4 quad, 6 as 5.1, 8 as 7.1) to the layout in its
+/// stereo, 3 as 3.0, 4 quad, 6 as 5.1, 8 as 7.1, 10 as 7.1.2, 12 as 7.1.4) to the layout in its
 /// `layout` setting, by the downmix and upmix rules of
 /// [`ChannelLayout::convert_matrix`]: -3 dB folds, the LFE dropped where
 /// there is no LFE, speakers the source lacks left silent.
@@ -255,7 +264,7 @@ const CONVERT_DEFAULT: ChannelLayout = ChannelLayout::Stereo;
 fn source_layout(shape: Shape) -> Result<ChannelLayout, NodeError> {
     ChannelLayout::from_channels(shape.channels).ok_or_else(|| {
         NodeError::config(format!(
-            "Convert Layout takes 1, 2, 3, 4, 6 or 8 channels, not {}",
+            "Convert Layout takes 1, 2, 3, 4, 6, 8, 10 or 12 channels, not {}",
             shape.channels
         ))
     })
@@ -532,6 +541,60 @@ mod tests {
         (0..out.shape().channels)
             .map(|c| out.lane(0, c).to_vec())
             .collect()
+    }
+
+    #[test]
+    fn elevation_raises_a_pan_into_the_height_speakers() {
+        let run = |layout: &str, elevation: f32| {
+            let mut h = Harness::new(
+                &SurroundPan,
+                &with_layout(layout),
+                &[(PanPorts::INPUT, Shape::MONO)],
+                48_000.0,
+                FRAMES,
+            )
+            .unwrap();
+            h.input(PanPorts::INPUT, FRAMES).fill(1.0);
+            h.set(PanPorts::AZIMUTH, -45.0);
+            h.set(PanPorts::ELEVATION, elevation);
+            h.run(FRAMES).unwrap();
+            let out = h.output(PanPorts::OUT);
+            (0..out.shape().channels)
+                .map(|c| out.lane(0, c)[FRAMES - 1])
+                .collect::<Vec<_>>()
+        };
+        let low = run("7.1.4", 0.0);
+        assert_eq!(low.len(), 12);
+        assert!(low[8..].iter().all(|&g| g == 0.0), "{low:?}");
+        let high = run("7.1.4", 45.0);
+        assert!((high[8] - 1.0).abs() < 1e-5, "front left height: {high:?}");
+        assert!(high[..8].iter().all(|g| g.abs() < 1e-6), "{high:?}");
+        // A layout with no heights hears nothing different.
+        assert_eq!(run("7.1", 60.0), run("7.1", 0.0));
+        assert_eq!(run("7.1.2", 45.0).len(), 10);
+    }
+
+    #[test]
+    fn convert_layout_folds_a_7_1_4_bed_down() {
+        let mut h = Harness::new(
+            &ConvertLayout,
+            &with_layout("5.1"),
+            &[(0, Shape::new(1, 12))],
+            48_000.0,
+            FRAMES,
+        )
+        .unwrap();
+        {
+            let mut input = h.input(0, FRAMES);
+            for c in 0..12 {
+                input.lane_mut(0, c).fill(if c == 8 { 1.0 } else { 0.0 });
+            }
+        }
+        h.run(FRAMES).unwrap();
+        let out = h.output(0);
+        assert_eq!(out.shape().channels, 6);
+        // The front-left height plays the front left at -3 dB.
+        assert!((out.lane(0, 0)[0] - std::f32::consts::FRAC_1_SQRT_2).abs() < 1e-6);
     }
 
     #[test]

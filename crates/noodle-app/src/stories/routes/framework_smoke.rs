@@ -1,4 +1,4 @@
-//! The framework's own check, not one of the thirty stories: add an
+//! The framework's own check, not one of the stories: add an
 //! oscillator, wire it to the output, and hear it.
 
 use std::time::Duration;

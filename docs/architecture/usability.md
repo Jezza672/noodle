@@ -1,6 +1,6 @@
 # Assessing how hard each user story is
 
-A draft framework for scoring the 30 stories in [stories.md](../usability/stories.md). Nothing is scored yet. The aim is a scorecard per story that can be measured mostly by machine, rerun as Noodle changes, and compared over time and against other DAWs.
+A draft framework for scoring the 28 live stories (S25 and S26 are retired) in [stories.md](../usability/stories.md). Nothing is scored yet. The aim is a scorecard per story that can be measured mostly by machine, rerun as Noodle changes, and compared over time and against other DAWs.
 
 ## 1. The unit of measurement: a route
 
@@ -109,7 +109,7 @@ The app already has what this needs. `crates/noodle-app/src/testkit.rs` drives t
 ### What is built
 
 - **Action log** (`testkit.rs`). `testkit::record()` turns recording on for the thread; every helper then logs an `Action` (kind, modifiers, start and end point, the widget under each end from egui's accessibility tree, the view each end is in, frame time). The app marks its panels with `testkit::mark_view`, so views are `node editor`, `timeline`, `piano roll`, `clip editor`, `mixer`, `outputs`, `scope`, `properties`, `menu`, `status`, or `overlay` for a dialog, menu or popup. Off by default, so other tests are unchanged.
-- **Routes** (`noodle-app/src/stories/`, test-only). A `Route` has a story, a tag, a fixture, an optional size, steps and a done check; a `LateChange` starts from a route's end state. Steps get a `Handle` (input events only), the done check a `Probe` (read only). The registry (`registry.rs`) lists all 30 stories with a status and the missing piece; a test keeps it in step with `stories.md`. Routes live in `stories/routes/`, one file per story.
+- **Routes** (`noodle-app/src/stories/`, test-only). A `Route` has a story, a tag, a fixture, an optional size, steps and a done check; a `LateChange` starts from a route's end state. Steps get a `Handle` (input events only), the done check a `Probe` (read only). The registry (`registry.rs`) lists the 28 live stories with a status and the missing piece; a test keeps it in step with `stories.md`. Routes live in `stories/routes/`, one file per story.
 - **Effort scorer** (`effort.rs`, group A): action counts, view and dialog switches, wait time, and KLM time. The rules that place the operators are in the file's header.
 - **Report** (`report.rs`): a JSON file per route and a Markdown table across the stories. With `NOODLE_SCORECARD_DIR` set the route test writes them; CI (Linux) does so and uploads the `usability-scorecard` artifact.
 

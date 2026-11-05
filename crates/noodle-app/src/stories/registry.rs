@@ -1,4 +1,4 @@
-//! The thirty stories and how far Noodle gets with each.
+//! The live stories and how far Noodle gets with each. S25 and S26 are retired and have no entry; IDs are never reused or renumbered.
 //!
 //! The titles are checked against `docs/usability/stories.md`, which owns the
 //! IDs. A story's status moves up as its routes land.
@@ -35,7 +35,7 @@ pub struct Story {
     pub missing: &'static str,
 }
 
-pub const STORIES: [Story; 30] = [
+pub const STORIES: [Story; 28] = [
     Story {
         id: "S01",
         title: "Comp a vocal from multiple takes",
@@ -57,14 +57,14 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S04",
         title: "Tighten a multitrack drum recording",
-        status: Status::Blocked,
-        missing: "No group transient quantize with a strength and crossfades: #347.",
+        status: Status::Partial,
+        missing: "Quantise regions are edited in the panel, not drawn on the warp editor.",
     },
     Story {
         id: "S05",
         title: "Conform audio to a new tempo and key",
         status: Status::Partial,
-        missing: "No clip pitch shift, project key or formant preservation: #348.",
+        missing: "No formant preservation (a later step of #348); the tempo change after the fact is not routed.",
     },
     Story {
         id: "S06",
@@ -75,8 +75,8 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S07",
         title: "Restructure an arrangement by section",
-        status: Status::Blocked,
-        missing: "No named arrangement sections: #329.",
+        status: Status::Full,
+        missing: "",
     },
     Story {
         id: "S08",
@@ -99,8 +99,8 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S11",
         title: "Turn an audio phrase into MIDI",
-        status: Status::Blocked,
-        missing: "No audio-to-MIDI conversion: #352.",
+        status: Status::Full,
+        missing: "",
     },
     Story {
         id: "S12",
@@ -136,7 +136,7 @@ pub const STORIES: [Story; 30] = [
         id: "S17",
         title: "Resample and mangle audio",
         status: Status::Partial,
-        missing: "No slicing of a clip by transient onto a sampler: #356; rendering to a clip is not routed.",
+        missing: "The live chain through a To Sample node is not built; rendering to a clip is not routed.",
     },
     Story {
         id: "S18",
@@ -166,13 +166,13 @@ pub const STORIES: [Story; 30] = [
         id: "S22",
         title: "Produce a surround or immersive mix",
         status: Status::Partial,
-        missing: "No 3D object panning, 7.1.4 layout or ADM export: #359.",
+        missing: "No ADM export (dropped); the export dialog is a native file dialog, so the route stops before it. A 3D object panner with x, y, z is backlog #379.",
     },
     Story {
         id: "S23",
         title: "Master to loudness targets",
         status: Status::Partial,
-        missing: "No album sequence, true-peak limiter after normalising, DDP or ISRC: #360; the native file dialog stops the export.",
+        missing: "No album sequence with gaps and crossfades (waits on the setlist design, #366); DDP is dropped for a CUE sheet; the native file dialog stops the export.",
     },
     Story {
         id: "S24",
@@ -181,22 +181,10 @@ pub const STORIES: [Story; 30] = [
         missing: "No tail length setting: #361; the native folder dialog stops the export.",
     },
     Story {
-        id: "S25",
-        title: "Exchange a session via interchange formats",
-        status: Status::Blocked,
-        missing: "No AAF or OMF import or export: #362.",
-    },
-    Story {
-        id: "S26",
-        title: "Score and mix to picture",
-        status: Status::Blocked,
-        missing: "No video, timecode or hit points: #363.",
-    },
-    Story {
         id: "S27",
-        title: "Perform a set live with clips and scenes",
-        status: Status::Blocked,
-        missing: "No clip launching or scenes (#364) and no Ableton Link (#365; tap tempo and MIDI clock in are built, but a route cannot see the session-only tempo source).",
+        title: "Jam live with pads that launch loops and patterns",
+        status: Status::Partial,
+        missing: "No Ableton Link (#365); tap tempo and MIDI clock in are built, but a route cannot see the session-only tempo source. Loading a loop into a pad and the late changes are not routed.",
     },
     Story {
         id: "S28",
@@ -207,8 +195,8 @@ pub const STORIES: [Story; 30] = [
     Story {
         id: "S29",
         title: "Organise a large session with templates",
-        status: Status::Partial,
-        missing: "No track colours, folders, hiding or macros: #367; saving a template is not routed.",
+        status: Status::Full,
+        missing: "No macros (dropped): key commands are the palette and the keymap.",
     },
     Story {
         id: "S30",
@@ -229,7 +217,10 @@ mod tests {
             let line = format!("- **{}** **{}.**", story.id, story.title);
             assert!(doc.contains(&line), "{} is not in stories.md", story.id);
         }
-        let in_doc = doc.matches("\n- **S").count();
+        let in_doc = doc
+            .lines()
+            .filter(|l| l.starts_with("- **S") && !l.contains("*Retired.*"))
+            .count();
         assert_eq!(
             in_doc,
             STORIES.len(),
@@ -239,8 +230,12 @@ mod tests {
 
     #[test]
     fn every_story_has_a_status_and_a_missing_piece() {
-        for (i, story) in STORIES.iter().enumerate() {
-            assert_eq!(story.id, format!("S{:02}", i + 1));
+        let mut last = 0;
+        for story in &STORIES {
+            // IDs ascend; retired ones leave gaps.
+            let n: u32 = story.id[1..].parse().unwrap();
+            assert!(n > last, "{} is out of order", story.id);
+            last = n;
 
             if story.status != Status::Full {
                 assert!(!story.missing.is_empty(), "{}", story.id);

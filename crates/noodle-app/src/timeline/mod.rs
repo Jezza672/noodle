@@ -17,6 +17,7 @@ pub(crate) mod grid;
 pub(crate) mod header;
 pub mod import;
 mod midi_preview;
+mod sections;
 mod sources;
 mod take;
 mod takes;
@@ -33,7 +34,8 @@ use egui::{
     Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, Vec2, vec2,
 };
 use noodle_core::{
-    Clip, ClipId, ClipWarp, Command, Endpoint, LaneId, NodeId, Project, TempoMap, Tick, WarpId,
+    Clip, ClipId, ClipWarp, Command, Endpoint, FolderId, LaneId, NodeId, Project, TempoMap, Tick,
+    WarpId,
 };
 
 use crate::session::{ArmKind, Edit, Session};
@@ -58,6 +60,28 @@ pub(crate) fn toggle_mute(id: ClipId, clip: &Clip) -> Command {
         audio.muted = !audio.muted;
     }
     Command::SetClip { id, clip: changed }
+}
+
+/// The sample rate of every audio file the project's clips play, for laying
+/// the clips out in ticks.
+fn source_rates(
+    project: &Project,
+    sources: &mut Sources,
+    ctx: &egui::Context,
+    directory: Option<&std::path::Path>,
+) -> std::collections::HashMap<String, u32> {
+    project
+        .clips()
+        .filter_map(|(_, clip)| Some(clip.as_audio()?.source.clone()))
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .map(|source| {
+            let rate = sources
+                .get(ctx, directory, &source)
+                .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate);
+            (source, rate)
+        })
+        .collect()
 }
 
 fn warp_of<'a>(project: &'a Project, clip: &Clip) -> Option<&'a noodle_core::ClipWarp> {
@@ -100,6 +124,8 @@ pub struct TimelineState {
     sources: Sources,
     /// A track name being typed.
     renaming: Option<header::Rename>,
+    /// A folder name being typed.
+    renaming_folder: Option<(FolderId, String)>,
     waveforms: waveform::Cache,
     /// Sections' waveforms as they play, once warped.
     warped_waves: warped_waves::WarpedWaves,
@@ -111,6 +137,15 @@ pub struct TimelineState {
     ruler_seen: Option<(Rect, f32, f32)>,
     /// The bar a right-click on the ruler opened its menu at.
     ruler_menu_bar: Option<u32>,
+    /// The span selected across all tracks (a section between two markers, or
+    /// one picked on the ruler), which copy, cut, paste, insert time and delete
+    /// time work on. Clips, automation points and a range are never selected
+    /// together.
+    range: Option<sections::Range>,
+    /// The marker a right-click on the ruler opened its menu at, and the name
+    /// being typed for it.
+    marker_menu: Option<usize>,
+    marker_name: String,
     /// Whether the tempo lane is shown under the ruler.
     show_tempo: bool,
     tempo: tempo_lane::State,
@@ -151,6 +186,7 @@ impl Default for TimelineState {
             last_seek: None,
             sources: Sources::default(),
             renaming: None,
+            renaming_folder: None,
             waveforms: waveform::Cache::default(),
             warped_waves: warped_waves::WarpedWaves::default(),
             automation: automation::State::default(),
@@ -160,6 +196,9 @@ impl Default for TimelineState {
             #[cfg(test)]
             ruler_seen: None,
             ruler_menu_bar: None,
+            range: None,
+            marker_menu: None,
+            marker_name: String::new(),
             tempo: tempo_lane::State::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
@@ -185,7 +224,7 @@ impl TimelineState {
         match &self.tracks_cache {
             Some((revision, tracks)) if *revision == project.revision() => tracks.clone(),
             _ => {
-                let tracks: std::rc::Rc<[NodeId]> = tracks(project).into();
+                let tracks: std::rc::Rc<[NodeId]> = visible_tracks(project).into();
                 self.tracks_cache = Some((project.revision(), tracks.clone()));
                 tracks
             }
@@ -213,6 +252,22 @@ impl TimelineState {
         let own = self.lane_height(track) + dy;
         self.lane_heights
             .insert(track, (own / self.v_zoom).clamp(MIN_LANE, MAX_LANE));
+    }
+
+    /// Whether `track`'s lane is down to just its name.
+    fn name_only(&self, track: NodeId) -> bool {
+        self.lane_heights
+            .get(&track)
+            .is_some_and(|&h| h <= MIN_LANE)
+    }
+
+    /// Shrinks `track`'s lane to its name, or gives it its usual height back.
+    fn toggle_name_only(&mut self, track: NodeId) {
+        if self.name_only(track) {
+            self.lane_heights.remove(&track);
+        } else {
+            self.lane_heights.insert(track, MIN_LANE);
+        }
     }
 
     /// Forgets clips that no longer exist, e.g. after an undo.
@@ -332,6 +387,12 @@ impl TimelineState {
         self.fade_handles.get(&(id, fade_in)).copied()
     }
 
+    /// Zooms to `pps` screen points per second, as if the user had zoomed.
+    #[cfg(test)]
+    pub fn set_zoom(&mut self, pps: f32) {
+        self.pps = pps.clamp(MIN_PPS, MAX_PPS);
+    }
+
     /// Where the ruler is at `seconds` into the song, if it is on screen.
     #[cfg(test)]
     pub fn ruler_at(&self, seconds: f64) -> Option<Pos2> {
@@ -373,6 +434,10 @@ pub enum ClipAction {
     Paste,
     /// Copies the selected clips to just after themselves.
     Duplicate,
+    /// Opens empty time the length of the selected range at its start.
+    InsertTime,
+    /// Takes the selected range out and closes the gap.
+    DeleteTime,
 }
 
 impl TimelineState {
@@ -383,13 +448,19 @@ impl TimelineState {
 
     /// Whether there are selected clips to copy, cut or duplicate.
     pub fn can_copy(&self) -> bool {
-        !self.selected.is_empty() || self.automation.selected().is_some()
+        !self.selected.is_empty() || self.automation.selected().is_some() || self.range.is_some()
+    }
+
+    /// Whether a range is selected, for insert time and delete time.
+    pub fn has_range(&self) -> bool {
+        self.range.is_some()
     }
 
     /// Whether there is anything to paste: clips, or a point where one is
     /// selected to paste onto its lane.
     pub fn can_paste(&self) -> bool {
         crate::clipboard::holds(crate::clipboard::CLIP_MIME)
+            || crate::clipboard::holds(crate::clipboard::SECTION_MIME)
             || (self.automation.selected().is_some()
                 && crate::clipboard::holds(crate::clipboard::POINT_MIME))
     }
@@ -448,15 +519,123 @@ pub(crate) fn tracks(project: &Project) -> Vec<NodeId> {
     // Track order is the order of the groups the inputs sit in; an input
     // with no group (or clips on another node) sorts by its own ID.
     tracks.sort_by_key(|&id| {
-        let group = project
-            .graph()
-            .node(id)
-            .and_then(|n| n.parent)
-            .unwrap_or(id);
+        let group = group_of(project, id);
         let rank = project.track_order().iter().position(|&g| g == group);
         (rank.unwrap_or(usize::MAX), id)
     });
+    // A folder's tracks sit together, where its first one is.
+    let org = project.organisation();
+    if org.folders.is_empty() {
+        return tracks;
+    }
+    let mut together = Vec::with_capacity(tracks.len());
+    let mut placed = BTreeSet::new();
+    for &track in &tracks {
+        match org.folder_of(group_of(project, track)) {
+            Some(folder) if org.folders.contains_key(&folder) => {
+                if placed.insert(folder) {
+                    together.extend(
+                        tracks
+                            .iter()
+                            .copied()
+                            .filter(|&t| org.folder_of(group_of(project, t)) == Some(folder)),
+                    );
+                }
+            }
+            _ => together.push(track),
+        }
+    }
+    together
+}
+
+/// The group a track is ordered, coloured and foldered by: the one its input
+/// sits in, or the node itself if it has none.
+pub(crate) fn group_of(project: &Project, track: NodeId) -> NodeId {
+    project
+        .graph()
+        .node(track)
+        .and_then(|n| n.parent)
+        .unwrap_or(track)
+}
+
+/// The folder a track is in, if it has one.
+pub(crate) fn folder_of(project: &Project, track: NodeId) -> Option<FolderId> {
+    let org = project.organisation();
+    org.folder_of(group_of(project, track))
+        .filter(|f| org.folders.contains_key(f))
+}
+
+/// [`tracks`] without the ones in folded folders: the lanes on screen.
+pub(crate) fn visible_tracks(project: &Project) -> Vec<NodeId> {
+    let org = project.organisation();
+    let mut tracks = tracks(project);
+    tracks.retain(|&t| folder_of(project, t).is_none_or(|f| !org.folders[&f].folded));
     tracks
+}
+
+/// A folder's header strip in the track list.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Strip {
+    pub folder: FolderId,
+    /// How many of the visible tracks come before it.
+    pub before: usize,
+}
+
+/// The folder strips for the visible lanes, top to bottom: one for each
+/// folder, above its first visible track (or, folded, where it would have
+/// been).
+pub(crate) fn strips(project: &Project, all: &[NodeId], visible: &[NodeId]) -> Vec<Strip> {
+    let mut strips: Vec<Strip> = Vec::new();
+    let mut seen = 0;
+    for &track in all {
+        if let Some(folder) = folder_of(project, track)
+            && !strips.iter().any(|s| s.folder == folder)
+        {
+            strips.push(Strip {
+                folder,
+                before: seen,
+            });
+        }
+        if visible.contains(&track) {
+            seen += 1;
+        }
+    }
+    strips
+}
+
+/// How many strips come right before each visible track, and one more entry
+/// for after the last, as [`automation::Rows::new`] takes them.
+pub(crate) fn strip_counts(strips: &[Strip], tracks: usize) -> Vec<usize> {
+    let mut counts = vec![0; tracks + 1];
+    for strip in strips {
+        counts[strip.before] += 1;
+    }
+    counts
+}
+
+/// The colour each of `shown` is drawn in: the palette slot it was given, or
+/// its folder's, or else one by when it was made, so reordering never
+/// recolours a track.
+pub(crate) fn track_colours(project: &Project, shown: &[NodeId]) -> Vec<Color32> {
+    let mut made: Vec<NodeId> = tracks(project);
+    made.sort();
+    let org = project.organisation();
+    shown
+        .iter()
+        .map(|&track| {
+            let slot = org
+                .shown_colour(group_of(project, track))
+                .map(usize::from)
+                .or_else(|| made.iter().position(|&t| t == track))
+                .unwrap_or(0);
+            colors::track_colour(slot)
+        })
+        .collect()
+}
+
+/// One track's colour (see [`track_colours`]).
+pub(crate) fn colour_of(project: &Project, track: NodeId) -> Color32 {
+    track_colours(project, &[track])[0]
 }
 
 /// Where the screen's x axis is in time.
@@ -531,7 +710,16 @@ pub fn show(
     let heights: Vec<f32> = tracks.iter().map(|&t| state.lane_height(t)).collect();
     state.takes.retain(project);
     let take_lanes = state.takes.lanes(project, &tracks);
-    let rows = automation::Rows::new(project, &tracks, &heights, &take_lanes);
+    let all_tracks = self::tracks(project);
+    let strips = strips(project, &all_tracks, &tracks);
+    let rows = automation::Rows::new(
+        project,
+        &tracks,
+        &heights,
+        &take_lanes,
+        &strip_counts(&strips, tracks.len()),
+    );
+    let colours = track_colours(project, &tracks);
     let map = project.tempo_map();
 
     let (rect, background) = ui.allocate_exact_size(ui.available_size(), Sense::click_and_drag());
@@ -616,6 +804,17 @@ pub fn show(
             let painter = ui.painter_at(content);
             painter.rect_filled(rect, 0.0, colors::BACKGROUND);
             let lane_top = |i: usize| content.top() - scroll_y + rows.top(i);
+            for k in 0..strips.len() {
+                let top = content.top() - scroll_y + rows.strip_top(k);
+                painter.rect_filled(
+                    Rect::from_min_size(
+                        Pos2::new(content.left(), top),
+                        vec2(content.width(), automation::STRIP),
+                    ),
+                    0.0,
+                    colors::HEADER,
+                );
+            }
             for i in 0..tracks.len() {
                 let top = lane_top(i);
                 let fill = if i % 2 == 0 {
@@ -669,7 +868,7 @@ pub fn show(
                 if top > content.bottom() || top + lane_height < content.top() {
                     continue;
                 }
-                let colour = colors::track_colour(index);
+                let colour = colours[index];
                 if let Some(take) = &take {
                     let drawn = take::draw(&painter, axis, top, lane_height, take, track, |n| {
                         let mut cached = take_wave.borrow_mut();
@@ -925,6 +1124,52 @@ pub fn show(
                                 ui.close();
                                 edits.push(Edit::SplitToStems(id));
                             }
+                            if ui
+                                .button("Pin transients")
+                                .on_hover_text(
+                                    "Put a warp marker on every hit of this clip and the clips linked to it (one for a hit the mics hear a few milliseconds apart), where it plays now. Quantise and the Slices mode work from them.",
+                                )
+                                .clicked()
+                            {
+                                ui.close();
+                                edits.push(Edit::PinTransients(id, 50));
+                            }
+                            if ui
+                                .button("Slice to Sampler")
+                                .on_hover_text(
+                                    "Cut this clip at its transients onto a new track that plays each slice from a key, starting at C2",
+                                )
+                                .clicked()
+                            {
+                                ui.close();
+                                edits.push(Edit::SliceToSampler(id));
+                            }
+                            // A MIDI clip picked with this one is what the
+                            // conversion replaces.
+                            let replace = state
+                                .selected
+                                .iter()
+                                .copied()
+                                .find(|c| project.clip(*c).is_some_and(|c| c.as_midi().is_some()));
+                            ui.menu_button("Convert to MIDI", |ui| {
+                                ui.label(if replace.is_some() {
+                                    "Replaces the selected MIDI clip"
+                                } else {
+                                    "Notes on a new track (select a MIDI clip too to replace it)"
+                                });
+                                for detect in crate::session::convert::Detect::ALL {
+                                    if ui
+                                        .button(detect.label())
+                                        .on_hover_text(
+                                            "Follows one voice or line. The notes are plain notes to edit; convert again to try another setting.",
+                                        )
+                                        .clicked()
+                                    {
+                                        ui.close();
+                                        edits.push(Edit::ConvertToMidi(id, detect, replace));
+                                    }
+                                }
+                            });
                             ui.separator();
                         }
                         if let Some(midi) = clip.as_midi()
@@ -1191,7 +1436,7 @@ pub fn show(
                     axis,
                     content,
                     directory: directory.as_deref(),
-                    colour: colors::track_colour(index),
+                    colour: colours[index],
                     lane_top: top,
                     lane_height,
                     audition: session.take_audition(),
@@ -1231,6 +1476,17 @@ pub fn show(
                     lane_height: colors::LANE_HEIGHT,
                 },
             ));
+            if let Some(range) = state.range {
+                let (x0, x1) = (axis.x(range.start), axis.x(range.end));
+                let band = Rect::from_x_y_ranges(
+                    x0.max(content.left())..=x1.min(content.right()),
+                    content.y_range(),
+                );
+                if band.width() > 0.0 {
+                    ui.painter_at(content)
+                        .rect_filled(band, 0.0, colors::SELECTED.gamma_multiply(0.12));
+                }
+            }
             let before_box = state.selected.clone();
             select_by_box(ui, state, &background, content, &drawn, state.scroll_x, scroll_y);
             // A clip picked takes its link with it.
@@ -1244,6 +1500,7 @@ pub fn show(
             // Clips and automation points share the Delete key, so picking one
             // drops the other from the selection.
             if state.selected != clips_before && !state.selected.is_empty() {
+                state.range = None;
                 state.selected_track = None;
                 state.automation.deselect();
                 state.tempo.deselect();
@@ -1262,6 +1519,7 @@ pub fn show(
             ));
 
             if state.automation.selected().is_some() && state.automation.selected() != point_before {
+                state.range = None;
                 state.selected.clear();
                 state.tempo.deselect();
             }
@@ -1417,6 +1675,60 @@ pub fn show(
                             .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
                     })
                 };
+                let ranged = state
+                    .range
+                    .filter(|_| state.selected.is_empty() && state.automation.selected().is_none());
+                let pasting_section = action == ClipAction::Paste
+                    && crate::clipboard::holds(crate::clipboard::SECTION_MIME);
+                if ranged.is_some() || pasting_section {
+                    let rates = source_rates(project, &mut state.sources, ui.ctx(), directory.as_deref());
+                    let rate = |clip: &Clip| {
+                        clip.as_audio()
+                            .and_then(|audio| rates.get(&audio.source).copied())
+                            .unwrap_or(FALLBACK_RATE)
+                    };
+                    match (action, ranged) {
+                        (ClipAction::Copy | ClipAction::Cut, Some(range)) => {
+                            let section = sections::copy(project, range, &rate);
+                            crate::clipboard::copy(
+                                crate::clipboard::SECTION_MIME,
+                                &section,
+                                "a section",
+                            );
+                            if action == ClipAction::Cut {
+                                edits.push(Edit::Apply(sections::clear(project, range, &rate)));
+                            }
+                        }
+                        (ClipAction::InsertTime, Some(range)) => {
+                            edits.extend(
+                                sections::insert_time(project, range.start, range.len(), &rate)
+                                    .map(Edit::Apply),
+                            );
+                        }
+                        (ClipAction::DeleteTime, Some(range)) => {
+                            edits.push(Edit::Apply(sections::delete_time(project, range, &rate)));
+                            state.range = None;
+                        }
+                        (ClipAction::Paste, _) => {
+                            if let Some(section) = crate::clipboard::paste::<sections::Section>(
+                                crate::clipboard::SECTION_MIME,
+                            ) {
+                                let at = playhead.unwrap_or(Tick::ZERO);
+                                let (command, _) = sections::paste_section(project, &section, at);
+                                if let Some(command) = command {
+                                    edits.push(Edit::Apply(command));
+                                    state.range = sections::Range::new(
+                                        at,
+                                        Tick(at.0 + section.length.0),
+                                    );
+                                }
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                let handled = ranged.is_some() || pasting_section;
+                if !handled {
                 edits.extend(automation::act(
                     action,
                     &mut state.automation,
@@ -1473,6 +1785,7 @@ pub fn show(
                         edits.push(Edit::Apply(command));
                     }
                 }
+                }
             }
 
             // Ctrl/Cmd+Left and Right take the playhead to the edges of the selected
@@ -1512,7 +1825,21 @@ pub fn show(
             }
 
             let (header_edits, header_arm) =
-                draw_headers(ui, rect, content, &tracks, &rows, session, state, scroll_y);
+                draw_headers(
+                    ui,
+                    rect,
+                    content,
+                    Lanes {
+                        tracks: &tracks,
+                        all: &all_tracks,
+                        strips: &strips,
+                        colours: &colours,
+                    },
+                    &rows,
+                    session,
+                    state,
+                    scroll_y,
+                );
             edits.extend(header_edits);
             arm.extend(header_arm);
         });
@@ -1684,6 +2011,150 @@ pub fn show(
             }
         }
     }
+    // Markers: a flag on the ruler for each, dragged to move and right-clicked
+    // for its menu. The span from one to the next is a section.
+    {
+        let markers = project.markers();
+        let painter = ui.painter_at(ruler);
+        let flag_top = ruler.top();
+        for (i, marker) in markers.iter().enumerate() {
+            let x = axis.x(marker.at);
+            let galley = painter.layout_no_wrap(
+                match marker.key {
+                    Some(key) => format!("{} · {key}", marker.name),
+                    None => marker.name.clone(),
+                },
+                FontId::proportional(10.0),
+                MARKER_COLOUR,
+            );
+            if x + galley.size().x + 8.0 < ruler.left() || x - 4.0 > ruler.right() {
+                continue;
+            }
+            let hit = Rect::from_min_size(
+                Pos2::new(x - 4.0, flag_top),
+                vec2(galley.size().x + 12.0, 12.0),
+            );
+            let response = ui
+                .interact(hit, ui.id().with(("marker", i)), Sense::click_and_drag())
+                .on_hover_cursor(egui::CursorIcon::PointingHand);
+            painter.vline(x, ruler.y_range(), Stroke::new(1.5, MARKER_COLOUR));
+            painter.rect_filled(
+                Rect::from_min_size(Pos2::new(x, flag_top), vec2(galley.size().x + 6.0, 12.0)),
+                2.0,
+                MARKER_COLOUR.gamma_multiply(if response.hovered() { 0.5 } else { 0.3 }),
+            );
+            painter.galley(Pos2::new(x + 3.0, flag_top + 1.0), galley, MARKER_COLOUR);
+            if response.dragged()
+                && let Some(pos) = response.interact_pointer_pos()
+            {
+                // Between its neighbours, so it keeps its place in the list.
+                let low = if i == 0 { 0 } else { markers[i - 1].at.0 + 1 };
+                let high = markers.get(i + 1).map_or(i64::MAX, |next| next.at.0 - 1);
+                let tick = axis.snap(axis.tick(pos.x).max(Tick::ZERO));
+                let tick = Tick(tick.0.clamp(low, high.max(low)));
+                if tick != marker.at {
+                    let mut moved = markers.to_vec();
+                    moved[i].at = tick;
+                    edits.push(Edit::Drag(Command::SetMarkers(moved)));
+                }
+            }
+            if response.drag_stopped() {
+                edits.push(Edit::EndDrag);
+            }
+            if response.secondary_clicked() {
+                state.marker_menu = Some(i);
+                state.marker_name = marker.name.clone();
+            }
+            // A click in the name field must not close the menu, so its buttons
+            // close it themselves.
+            egui::Popup::context_menu(&response)
+                .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+                .show(|ui| {
+                    if state.marker_menu != Some(i) {
+                        return;
+                    }
+                    let name = ui.add(
+                        egui::TextEdit::singleline(&mut state.marker_name)
+                            .hint_text("Marker name")
+                            .desired_width(120.0),
+                    );
+                    if name.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter)) {
+                        let mut renamed = markers.to_vec();
+                        renamed[i].name = state.marker_name.trim().to_string();
+                        if renamed[i].name.is_empty() {
+                            renamed[i].name = marker.name.clone();
+                        }
+                        edits.push(Edit::Apply(Command::SetMarkers(renamed)));
+                        ui.close();
+                    }
+                    ui.horizontal(|ui| {
+                        ui.label("Key");
+                        let shown = marker.key.map(noodle_core::KeyTarget::Fixed);
+                        if let Some(picked) = crate::clip_panel::key_picker(
+                            ui,
+                            "marker key",
+                            shown,
+                            Some("Same as before"),
+                            false,
+                        ) {
+                            let mut changed = markers.to_vec();
+                            changed[i].key = match picked {
+                                Some(noodle_core::KeyTarget::Fixed(key)) => Some(key),
+                                _ => None,
+                            };
+                            edits.push(Edit::Apply(Command::SetMarkers(changed)));
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Clips that follow the timeline's key are carried to this key from here",
+                    );
+                    let next = markers
+                        .get(i + 1)
+                        .map_or("end of the song".to_string(), |next| {
+                            format!("\"{}\"", next.name)
+                        });
+                    if ui
+                        .button(format!("Select to {next}"))
+                        .on_hover_text("Select every track between this marker and the next")
+                        .clicked()
+                    {
+                        ui.close();
+                        let rates = source_rates(
+                            project,
+                            &mut state.sources,
+                            ui.ctx(),
+                            directory.as_deref(),
+                        );
+                        let rate = |clip: &Clip| {
+                            clip.as_audio()
+                                .and_then(|audio| rates.get(&audio.source).copied())
+                                .unwrap_or(FALLBACK_RATE)
+                        };
+                        if let Some(range) = sections::between_markers(project, i, &rate) {
+                            select_range(state, range);
+                        }
+                    }
+                    if ui.button("Delete marker").clicked() {
+                        ui.close();
+                        let mut rest = markers.to_vec();
+                        rest.remove(i);
+                        edits.push(Edit::Apply(Command::SetMarkers(rest)));
+                    }
+                });
+        }
+        // The selected range is a band along the top of the ruler.
+        if let Some(range) = state.range {
+            let (x0, x1) = (axis.x(range.start), axis.x(range.end));
+            let band = Rect::from_x_y_ranges(
+                x0.max(ruler.left())..=x1.min(ruler.right()),
+                ruler.top()..=ruler.top() + 3.0,
+            );
+            if band.width() > 0.0 {
+                painter.rect_filled(band, 0.0, colors::SELECTED);
+            }
+        }
+    }
     if scrub.secondary_clicked() {
         state.ruler_menu_bar = scrub
             .interact_pointer_pos()
@@ -1772,6 +2243,68 @@ pub fn show(
                     end,
                     ..punch
                 })));
+            }
+        });
+        ui.separator();
+        ui.menu_button("Markers and selection", |ui| {
+            ui.menu_button(format!("Key at the start: {}", project.key()), |ui| {
+                for key in crate::clip_panel::all_keys() {
+                    if ui
+                        .selectable_label(key == project.key(), key.to_string())
+                        .clicked()
+                    {
+                        ui.close();
+                        edits.push(Edit::Apply(Command::SetKey(key)));
+                    }
+                }
+            })
+            .response
+            .on_hover_text("The key of the timeline until a marker changes it");
+            if ui
+                .button(format!("Add marker at bar {}", bar + 1))
+                .on_hover_text("Name a point of the song: a verse, the chorus")
+                .clicked()
+            {
+                ui.close();
+                let mut markers = session.project().markers().to_vec();
+                if markers.iter().all(|m| m.at != here) {
+                    markers.push(noodle_core::Marker {
+                        name: sections::next_name(session.project()),
+                        key: None,
+                        at: here,
+                    });
+                    edits.push(Edit::Apply(Command::SetMarkers(markers)));
+                }
+            }
+            if ui
+                .button("Start selection here")
+                .on_hover_text("Select from here across all tracks, to copy, cut or delete")
+                .clicked()
+            {
+                ui.close();
+                let end = state
+                    .range
+                    .map(|r| r.end)
+                    .filter(|&end| end > here)
+                    .unwrap_or_else(|| bar_tick(map, bar + 2));
+                if let Some(range) = sections::Range::new(here, end) {
+                    select_range(state, range);
+                }
+            }
+            if ui.button("End selection here").clicked() {
+                ui.close();
+                let start = state
+                    .range
+                    .map(|r| r.start)
+                    .filter(|&start| start < here)
+                    .unwrap_or(Tick::ZERO);
+                if let Some(range) = sections::Range::new(start, here) {
+                    select_range(state, range);
+                }
+            }
+            if state.range.is_some() && ui.button("Clear selection").clicked() {
+                ui.close();
+                state.range = None;
             }
         });
         ui.separator();
@@ -1965,6 +2498,18 @@ pub fn show(
 }
 
 /// The first tick of 1-based `bar`, through the signature changes.
+/// The colour of markers.
+const MARKER_COLOUR: egui::Color32 = egui::Color32::from_rgb(235, 180, 60);
+
+/// Selects `range` across all tracks, dropping any clip or point selection.
+fn select_range(state: &mut TimelineState, range: sections::Range) {
+    state.selected.clear();
+    state.selected_track = None;
+    state.automation.deselect();
+    state.tempo.deselect();
+    state.range = Some(range);
+}
+
 fn bar_tick(map: &noodle_core::TempoMap, bar: u32) -> Tick {
     let target = bar.saturating_sub(1);
     let signatures = map.signatures();
@@ -2073,7 +2618,8 @@ const HANDLE: f32 = 10.0;
 /// How tall the strip on a track header's bottom edge is that drags to resize.
 const GRIP: f32 = 6.0;
 /// The range of a track's own lane height, before vertical zoom.
-const MIN_LANE: f32 = 32.0;
+/// The least is a lane of just the track's name, with no controls.
+const MIN_LANE: f32 = 20.0;
 const MAX_LANE: f32 = 400.0;
 /// The range of the vertical zoom (Alt+scroll).
 const MIN_V_ZOOM: f32 = 0.5;
@@ -2521,25 +3067,69 @@ fn drag_command(drag: &Drag, input: DragInput<'_>, project: &Project) -> Option<
     }
 }
 
-/// Moving `moved` to position `slot` among `tracks` (counted before it was
-/// taken out), as a new track order. `None` when that leaves the order as it
-/// was.
+/// Moving `moved` to position `slot` among the visible `tracks` (counted
+/// before it was taken out), as a new track order, and the folder it lands
+/// in. `None` when that leaves both as they were.
+///
+/// It joins the folder both of its new neighbours are in, and keeps its own
+/// while either is in it, so reordering inside a folder, even to its ends,
+/// does not take a track out. Anything else leaves it in no folder; the
+/// header's menu takes a track out of a folder as well.
 fn reorder(project: &Project, tracks: &[NodeId], moved: NodeId, slot: usize) -> Option<Edit> {
     // A track is ordered by its group, or by itself if it has none (see
-    // `tracks`).
-    let key = |input: NodeId| {
-        project
-            .graph()
-            .node(input)
-            .and_then(|n| n.parent)
-            .unwrap_or(input)
-    };
+    // `tracks`). The order covers every track, folded away or not.
+    let all = self::tracks(project);
+    let key = |input: NodeId| group_of(project, input);
     let from = tracks.iter().position(|&t| t == moved)?;
-    let before: Vec<NodeId> = tracks.iter().map(|&t| key(t)).collect();
+    let slot = slot.saturating_sub(usize::from(slot > from));
+    let others: Vec<NodeId> = tracks.iter().copied().filter(|&t| t != moved).collect();
+    // The neighbours it lands between, among the visible ones.
+    let above = slot.checked_sub(1).and_then(|i| others.get(i)).copied();
+    let below = others.get(slot).copied();
+    let before: Vec<NodeId> = all.iter().map(|&t| key(t)).collect();
     let mut order = before.clone();
-    let moved = order.remove(from);
-    order.insert(slot.saturating_sub(usize::from(slot > from)), moved);
-    (order != before).then_some(Edit::Apply(Command::SetTrackOrder(order)))
+    let at = order.iter().position(|&g| g == key(moved))?;
+    let group = order.remove(at);
+    // Just before the track now below it, or after the one above it.
+    let place = match (below, above) {
+        (Some(below), _) => order.iter().position(|&g| g == key(below)),
+        (None, Some(above)) => order.iter().position(|&g| g == key(above)).map(|i| i + 1),
+        (None, None) => Some(0),
+    }
+    .unwrap_or(order.len());
+    order.insert(place, group);
+    let org = project.organisation();
+    let folder = |t: Option<NodeId>| t.and_then(|t| folder_of(project, t));
+    let own = folder_of(project, moved);
+    let landing = match (folder(above), folder(below)) {
+        (Some(a), Some(b)) if a == b => Some(a),
+        (a, b) if own.is_some() && (a == own || b == own) => own,
+        _ => None,
+    };
+    let new_org = org.clone().with_folder(&[group], landing);
+    let mut commands = Vec::new();
+    if order != before {
+        commands.push(Command::SetTrackOrder(order));
+    }
+    if &new_org != org {
+        commands.push(Command::SetOrganisation(new_org));
+    }
+    match commands.len() {
+        0 => None,
+        1 => commands.pop().map(Edit::Apply),
+        _ => Some(Edit::Apply(Command::Batch(commands))),
+    }
+}
+
+/// The lanes on screen, for the header column.
+#[derive(Clone, Copy)]
+struct Lanes<'a> {
+    /// The visible tracks, top to bottom.
+    tracks: &'a [NodeId],
+    /// Every track, folded away or not.
+    all: &'a [NodeId],
+    strips: &'a [Strip],
+    colours: &'a [Color32],
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -2547,12 +3137,18 @@ fn draw_headers(
     ui: &mut egui::Ui,
     rect: Rect,
     content: Rect,
-    tracks: &[NodeId],
+    lanes: Lanes<'_>,
     rows: &automation::Rows,
     session: &Session,
     state: &mut TimelineState,
     scroll_y: f32,
 ) -> (Vec<Edit>, Vec<(NodeId, ArmKind, bool)>) {
+    let Lanes {
+        tracks,
+        all,
+        strips,
+        colours,
+    } = lanes;
     let graph = session.project().graph();
     let column = Rect::from_min_max(
         Pos2::new(rect.left(), content.top()),
@@ -2613,13 +3209,15 @@ fn draw_headers(
             graph,
             header::Lane {
                 rect: lane,
-                index,
+                index: all.iter().position(|&t| t == input).unwrap_or(index),
                 input,
                 selected: state.selected_track == Some(input),
+                colour: colours[index],
             },
             controls.clone(),
             automated,
             &mut state.renaming,
+            session.project().organisation(),
         );
         // The lane's bottom edge drags to resize the track. Inside the lane, since
         // the next header is drawn over anything below it.
@@ -2627,12 +3225,22 @@ fn draw_headers(
             Pos2::new(lane.left(), lane.bottom() - GRIP),
             vec2(lane.width(), GRIP),
         );
-        let resize = ui.interact(grip, ui.id().with(("resize", input)), Sense::drag());
+        let resize = ui.interact(
+            grip,
+            ui.id().with(("resize", input)),
+            Sense::click_and_drag(),
+        );
         if resize.hovered() || resize.dragged() {
             ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
         }
         if resize.dragged() {
             state.resize_track(input, resize.drag_delta().y);
+        }
+        if resize
+            .on_hover_text("Drag to resize. Double-click to shrink to just the name.")
+            .double_clicked()
+        {
+            state.toggle_name_only(input);
         }
         edits.extend(changes.edits);
         arm.extend(changes.arm_audio.map(|on| (input, ArmKind::Audio, on)));
@@ -2645,7 +3253,10 @@ fn draw_headers(
             state.selected.clear();
             state.automation.deselect();
         }
-        if let Some(controls) = &controls {
+        if let Some(controls) = controls
+            .as_ref()
+            .filter(|_| lane.height() >= header::CONTROLS_MIN)
+        {
             let spot = Rect::from_min_size(
                 Pos2::new(lane.right() - 30.0, lane.top() + 2.0),
                 vec2(26.0, 18.0),
@@ -2658,6 +3269,17 @@ fn draw_headers(
                 controls.controls,
             ));
         }
+    }
+    for (k, strip) in strips.iter().enumerate() {
+        let top = content.top() - scroll_y + rows.strip_top(k);
+        let row = Rect::from_min_size(
+            Pos2::new(column.left(), top),
+            vec2(colors::HEADER_WIDTH, automation::STRIP),
+        );
+        if row.bottom() < column.top() || row.top() > column.bottom() {
+            continue;
+        }
+        edits.extend(folder_strip(ui, session.project(), *strip, row, state));
     }
     let project = session.project();
     let mut lane_rows: Vec<(LaneId, f32)> = Vec::new();
@@ -2775,6 +3397,117 @@ fn draw_headers(
     }
     ui.set_clip_rect(clip);
     (edits, arm)
+}
+
+/// Draws a folder's header strip: its fold arrow, colour and name.
+fn folder_strip(
+    ui: &mut egui::Ui,
+    project: &Project,
+    strip: Strip,
+    row: Rect,
+    state: &mut TimelineState,
+) -> Vec<Edit> {
+    let organisation = project.organisation();
+    let Some(folder) = organisation.folders.get(&strip.folder) else {
+        return Vec::new();
+    };
+    let id = strip.folder;
+    let mut edits = Vec::new();
+    let apply = |organisation: noodle_core::Organisation| {
+        Edit::Apply(Command::SetOrganisation(organisation))
+    };
+    let colour = folder.colour.map_or(colors::TEXT_WEAK, |slot| {
+        colors::track_colour(usize::from(slot))
+    });
+    let painter = ui.painter_at(row);
+    painter.rect_filled(row, 0.0, colors::AUTOMATION_HEADER);
+    painter.rect_filled(
+        Rect::from_min_size(row.min, vec2(4.0, row.height())),
+        0.0,
+        colour,
+    );
+    painter.hline(
+        row.x_range(),
+        row.bottom() - 0.5,
+        Stroke::new(1.0, colors::LANE_EVEN),
+    );
+    let background = ui.interact(row, ui.id().with(("folder", id)), Sense::click());
+    background.context_menu(|ui| {
+        if ui.button("Rename").clicked() {
+            ui.close();
+            state.renaming_folder = Some((id, folder.name.clone()));
+        }
+        ui.menu_button("Colour", |ui| {
+            if let Some(slot) = header::colour_menu(ui, folder.colour) {
+                edits.push(apply(organisation.clone().with_folder_colour(id, slot)));
+            }
+        });
+        let all_folded = organisation.folders.values().all(|f| f.folded);
+        let label = if all_folded {
+            "Unfold all folders"
+        } else {
+            "Fold all folders"
+        };
+        if ui.button(label).clicked() {
+            ui.close();
+            edits.push(apply(organisation.clone().with_all_folded(!all_folded)));
+        }
+        if ui.button("Ungroup").clicked() {
+            ui.close();
+            edits.push(apply(organisation.clone().without_folder(id)));
+        }
+    });
+    let arrow = if folder.folded { "▸" } else { "▾" };
+    let arrow_rect = Rect::from_min_size(row.min + vec2(6.0, 0.0), vec2(18.0, row.height()));
+    let toggle = ui.interact(arrow_rect, ui.id().with(("fold", id)), Sense::click());
+    painter.text(
+        arrow_rect.center(),
+        Align2::CENTER_CENTER,
+        arrow,
+        FontId::proportional(13.0),
+        colors::TEXT,
+    );
+    if toggle
+        .on_hover_text(if folder.folded { "Unfold" } else { "Fold" })
+        .clicked()
+        || background.clicked() && !matches!(&state.renaming_folder, Some((f, _)) if *f == id)
+    {
+        edits.push(apply(organisation.clone().with_folded(id, !folder.folded)));
+    }
+    let name_rect = Rect::from_min_max(
+        Pos2::new(row.left() + 26.0, row.top()),
+        Pos2::new(row.right() - 4.0, row.bottom()),
+    );
+    if let Some((f, text)) = &mut state.renaming_folder
+        && *f == id
+    {
+        let mut child = ui.new_child(egui::UiBuilder::new().max_rect(name_rect));
+        let field = child.add(
+            egui::TextEdit::singleline(text)
+                .desired_width(name_rect.width())
+                .id(child.id().with(("rename folder", id))),
+        );
+        if !field.has_focus() && !field.lost_focus() {
+            field.request_focus();
+        }
+        if field.lost_focus() {
+            let cancelled = child.input(|i| i.key_pressed(Key::Escape));
+            let name = text.trim().to_owned();
+            state.renaming_folder = None;
+            if !cancelled && !name.is_empty() && name != folder.name {
+                edits.push(apply(organisation.clone().with_folder_name(id, &name)));
+            }
+        }
+    } else {
+        painter.text(
+            name_rect.left_center(),
+            Align2::LEFT_CENTER,
+            &folder.name,
+            FontId::proportional(12.0),
+            colors::TEXT,
+        );
+    }
+    edits
 }
 
 /// Draws the ruler, and returns the time signature markers it drew.

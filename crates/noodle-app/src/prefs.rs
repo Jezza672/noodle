@@ -41,6 +41,9 @@ pub struct Prefs {
     pub midi_record: crate::midi_take::MidiRecord,
     /// How armed Automation nodes write: Read, Touch or Latch.
     pub automation_mode: crate::session::record_automation::AutomationMode,
+    /// The keys the user changed, by command (see `app::commands`).
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub keymap: std::collections::BTreeMap<String, String>,
 }
 
 impl Default for Prefs {
@@ -54,6 +57,7 @@ impl Default for Prefs {
             pre_roll_bars: 0,
             midi_record: Default::default(),
             automation_mode: Default::default(),
+            keymap: Default::default(),
         }
     }
 }
@@ -183,6 +187,37 @@ pub fn remember_automation_mode(mode: crate::session::record_automation::Automat
     });
 }
 
+/// The keys the user changed, as [`init`] read them or [`remember_keymap`]
+/// last saved them.
+pub fn keymap() -> std::collections::BTreeMap<String, String> {
+    CURRENT.with_borrow(|current| {
+        current
+            .as_ref()
+            .map(|(_, prefs)| prefs.keymap.clone())
+            .unwrap_or_default()
+    })
+}
+
+/// Saves the keys the user changed, with the other preferences, if [`init`]
+/// has been called.
+pub fn remember_keymap(keymap: &std::collections::BTreeMap<String, String>) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.keymap = keymap.clone();
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
+/// Where project templates live: one project file each, in the data
+/// directory beside the library, e.g. `~/.local/share/noodle/templates`.
+pub fn templates_dir() -> Option<PathBuf> {
+    directories::ProjectDirs::from("", "", "Noodle").map(|dirs| dirs.data_dir().join("templates"))
+}
+
 /// Saves the device the node monitor plays on, with the other preferences, if
 /// [`init`] has been called.
 pub fn remember_monitor_device(device: &str) {
@@ -260,7 +295,18 @@ mod tests {
             auto_cache: false,
             midi_record: crate::midi_take::MidiRecord::Takes,
             automation_mode: crate::session::record_automation::AutomationMode::Latch,
+            keymap: Default::default(),
         }
+    }
+
+    #[test]
+    fn the_keymap_is_saved_and_absent_means_the_defaults() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.ron");
+        init(path.clone());
+        assert!(keymap().is_empty());
+        remember_keymap(&[("file.save".to_owned(), "Cmd+J".to_owned())].into());
+        assert_eq!(load(&path).unwrap().keymap["file.save"], "Cmd+J");
     }
 
     #[test]

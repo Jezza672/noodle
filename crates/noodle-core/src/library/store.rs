@@ -29,6 +29,7 @@ const EMBEDDED: &[&str] = &[
     include_str!("../../library/system/step-sequencer.ron"),
     include_str!("../../library/system/step-gate.ron"),
     include_str!("../../library/system/pattern-pads.ron"),
+    include_str!("../../library/system/loop-pads.ron"),
     include_str!("../../library/system/nodes.ron"),
 ];
 
