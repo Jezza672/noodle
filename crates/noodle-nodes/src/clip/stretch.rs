@@ -157,9 +157,32 @@ impl<S: Source> Stretcher<S> {
     pub fn new(
         source: S,
         map: Arc<WarpMap>,
+        cuts: (&[u64], &[u64]),
+        total: u64,
+        rate: f32,
+    ) -> Self {
+        Self::build(source, map, cuts, total, rate, false)
+    }
+
+    /// A stretcher for **Slices** mode: the clip is cut at the warp's
+    /// markers (the knots of `map`, which every clip sharing the warp has in
+    /// the same places, so linked mics are cut together and stay in phase)
+    /// and each slice plays at its natural speed, moved to where the map puts
+    /// it. Where the map leaves a gap after a slice, the slice runs on until
+    /// the next marker's source and then is silent; where slices overlap, they
+    /// are crossfaded.
+    pub fn slices(source: S, map: Arc<WarpMap>, total: u64, rate: f32) -> Self {
+        let cuts = slice_cuts(&map);
+        Self::build(source, map, (&cuts, &cuts), total, rate, true)
+    }
+
+    fn build(
+        source: S,
+        map: Arc<WarpMap>,
         (cuts, bass): (&[u64], &[u64]),
         total: u64,
         rate: f32,
+        natural: bool,
     ) -> Self {
         let split = Arc::new(Mutex::new(Split::new(source, rate)));
         let low = Band::new(
@@ -169,6 +192,7 @@ impl<S: Source> Stretcher<S> {
             total,
             rate,
             (LOW_GRAIN_SECONDS, LOW_SEARCH_SECONDS),
+            natural,
         );
         let high = Band::new(
             HighSource(split, OPEN),
@@ -177,6 +201,7 @@ impl<S: Source> Stretcher<S> {
             total,
             rate,
             (HIGH_GRAIN_SECONDS, HIGH_SEARCH_SECONDS),
+            natural,
         );
         Self {
             low,
@@ -411,6 +436,7 @@ impl<S: Source> Band<S> {
         total: u64,
         rate: f32,
         (grain, search): (f64, f64),
+        natural: bool,
     ) -> Self {
         let rate = f64::from(rate);
         let hop = ((grain * rate / 2.0).round() as i64).max(8);
@@ -419,7 +445,7 @@ impl<S: Source> Band<S> {
         let fade = ((LEAD_SECONDS * rate).round() as i64).max(2);
         let channels = source.channels().max(1);
         let total = total as i64;
-        let segments = plan(&map, onsets, total, rate, fade);
+        let segments = plan(&map, onsets, total, rate, fade, natural);
         let hann = (0..win)
             .map(|j| (PI * j as f32 / win as f32).sin().powi(2))
             .collect();
@@ -685,14 +711,42 @@ fn mix_down(frames: &[f32], channels: usize, out: &mut Vec<f32>) {
     );
 }
 
+/// Slices closer than this (in output), in seconds, aren't cut at.
+const MIN_SLICE_SECONDS: f64 = 0.01;
+
+/// The source frames of the knots of `map` inside it: where the warp's
+/// markers (and tempo changes) are, which Slices mode cuts at.
+fn slice_cuts(map: &WarpMap) -> Vec<u64> {
+    let knots = map.knots();
+    if knots.len() < 3 {
+        return Vec::new();
+    }
+    knots[1..knots.len() - 1]
+        .iter()
+        .map(|&(_, source)| source.round().max(0.0) as u64)
+        .collect()
+}
+
 /// Cuts the section at its transients: one segment each, the first starting
 /// at the section's start. A transient that would leave a segment too short
-/// isn't cut at.
-fn plan(map: &WarpMap, onsets: &[u64], total: i64, rate: f64, fade: i64) -> Vec<Segment> {
+/// isn't cut at. With `natural` (Slices mode) every segment, the first
+/// included, plays at natural speed throughout.
+fn plan(
+    map: &WarpMap,
+    onsets: &[u64],
+    total: i64,
+    rate: f64,
+    fade: i64,
+    natural: bool,
+) -> Vec<Segment> {
     if total <= 0 {
         return Vec::new();
     }
-    let shortest = (MIN_SEGMENT_SECONDS * rate) as i64;
+    let shortest = if natural {
+        (MIN_SLICE_SECONDS * rate) as i64
+    } else {
+        (MIN_SEGMENT_SECONDS * rate) as i64
+    };
     let mut anchors: Vec<(i64, f64)> = vec![(0, 0.0)];
     for &onset in onsets {
         let source = onset as f64;
@@ -711,7 +765,9 @@ fn plan(map: &WarpMap, onsets: &[u64], total: i64, rate: f64, fade: i64) -> Vec<
                 .get(i + 1)
                 .map_or((total, map.source_len()), |a| (a.0, a.1));
             let cut = i > 0;
-            let attack = if cut {
+            let attack = if natural {
+                o1 - o0
+            } else if cut {
                 ((ATTACK_SECONDS * rate) as i64).min((o1 - o0) / 2)
             } else {
                 0
@@ -983,6 +1039,61 @@ mod tests {
         assert!(late > 0.0005, "{late}");
     }
 
+    fn render_slices(data: Vec<f32>, map: Arc<WarpMap>) -> Vec<f32> {
+        let total = map.out_len() as u64;
+        let mut stretcher = Stretcher::slices(Memory { data, channels: 1 }, map, total, RATE);
+        let mut out = Vec::new();
+        let mut buffer = vec![0.0f32; 4096 * 2];
+        loop {
+            let n = stretcher.read(&mut buffer);
+            out.extend_from_slice(&buffer[..n * 2]);
+            if n < 4096 {
+                break;
+            }
+        }
+        left(&out)
+    }
+
+    #[test]
+    fn slices_play_at_natural_speed_moved_to_where_the_map_puts_them() {
+        // Two hits of a 440 Hz tone, 0.5 s apart in the source, which the map
+        // moves to 0.5 s and 0.8 s: a hit played at natural speed 0.3 s
+        // late, not stretched.
+        let mut data = vec![0.0f32; 48_000];
+        for start in [0usize, 24_000] {
+            for i in 0..20_000 {
+                let t = i as f32 / RATE;
+                data[start + i] = 0.5 * (std::f32::consts::TAU * 440.0 * t).sin();
+            }
+        }
+        let map = Arc::new(WarpMap::from_knots(vec![
+            (0.0, 0.0),
+            (38_400.0, 24_000.0),
+            (62_400.0, 48_000.0),
+        ]));
+        // The second hit's slice starts at source 24 000, output 38 400.
+        let out = render_slices(data.clone(), map);
+        let hit_at = |from: usize, to: usize| {
+            out[from..to]
+                .iter()
+                .position(|x| x.abs() > 0.1)
+                .map(|p| p + from)
+        };
+        assert!(
+            hit_at(0, 12_000).is_some_and(|p| p < 100),
+            "the first hit is where it was"
+        );
+        let second = hit_at(30_000, 50_000).expect("the second hit");
+        assert!(second.abs_diff(38_400) < 100, "{second}");
+        // Nothing is stretched to fill the gap: the first slice sounds for
+        // as long as it is (20 000 frames) and then is silent until the next.
+        let gap = rms(&out[22_000..38_000]);
+        assert!(gap < 0.01, "{gap}");
+        // Natural speed: the same pitch, over the same number of cycles.
+        let cycles = crossings(&out[second..second + 4_800]) as i64;
+        assert!((cycles - 44).abs() <= 2, "{cycles}");
+    }
+
     #[test]
     fn transients_too_close_are_not_cut_at() {
         let map = steady(96_000, 96_000);
@@ -992,6 +1103,7 @@ mod tests {
             96_000,
             48_000.0,
             72,
+            false,
         );
         let cuts: Vec<i64> = segments.iter().map(|s| s.o0).collect();
         assert_eq!(cuts, vec![0, 24_000]);

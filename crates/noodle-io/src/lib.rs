@@ -8,12 +8,14 @@ mod export;
 mod files;
 mod hash;
 mod input;
+mod limiter;
 mod loudness;
 mod midi;
 mod midi_out;
 mod onsets;
 mod output;
 mod peaks;
+mod pitch;
 pub mod pool;
 mod record;
 mod resample;
@@ -28,10 +30,14 @@ pub use devices::{
     Direction, HostInfo, InputChoice, LIVE_BUFFER, VIRTUAL_OUTPUT, buffer_request, capabilities,
     choose_config, devices, hosts, virtual_output,
 };
-pub use export::{ExportError, ExportFormat, ExportWriter};
+pub use export::{
+    ExportError, ExportFormat, ExportMetadata, ExportWriter, FLAC_MAX_CHANNELS, cue_sheet,
+    normalize_isrc,
+};
 pub use files::{AudioFiles, FileStamp};
 pub use hash::{FileHasher, Peek};
 pub use input::{Capture, Feed, InputMeter, input_path, recordable_input_path};
+pub use limiter::TruePeakLimiter;
 pub use loudness::{Loudness, LoudnessMeter, measure as measure_loudness};
 pub use midi::{
     ALL_INPUTS, AudioClock, ClockEvent, ClockHeard, ClockTap, Heard, MidiBus, MidiConnection,
@@ -42,8 +48,10 @@ pub use midi_out::{
     MidiOutHub, MidiOutSender, MidiSink, OpenSink, OutMessage, midi_outputs, open_midi_output,
 };
 pub use onsets::{
-    ANALYSIS_SECONDS, Analysis, CLEAR_PROMINENCE, CLEAR_TEMPO, PROMINENT_ONSETS, TempoEstimate,
-    detect_bass_onsets, detect_onsets, detect_treble_onsets, estimate_grid, estimate_tempo,
+    ANALYSIS_SECONDS, Analysis, CLEAR_PROMINENCE, CLEAR_TEMPO, DEFAULT_SENSITIVITY,
+    PROMINENT_ONSETS, TempoEstimate, detect_bass_onsets, detect_bass_onsets_with, detect_onsets,
+    detect_onsets_with, detect_treble_onsets, detect_treble_onsets_with, estimate_grid,
+    estimate_tempo, rise_db,
 };
 pub use output::{
     DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, InputLatency, LatencyReport,
@@ -51,6 +59,10 @@ pub use output::{
     looks_like_bluetooth, play, play_with_outputs, play_with_outputs_stopped,
 };
 pub use peaks::{BLOCK_FRAMES, Peak, Peaks, PeaksBuilder};
+pub use pitch::{
+    FoundNote, HOP_SECONDS, NoteSegmenter, NoteStep, PitchFrame, PitchTracker, Transcription,
+    key_of_hz, transcribe,
+};
 pub use record::{RecordError, RecordTap, Recorder, Take, record_path};
 pub use resample::{ResampleError, StreamResampler, resample};
 pub use stream::{ClipStream, StreamSpec, StreamWorker, clip_frames, open_stream};

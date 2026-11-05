@@ -14,6 +14,136 @@ use flacenc::config::Encoder;
 use flacenc::error::Verify;
 use flacenc::source::{Context, Fill, FrameBuf};
 
+/// What an exported file says about itself: written into the file (WAV
+/// `LIST/INFO`, FLAC Vorbis comments) and into a CUE sheet.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct ExportMetadata {
+    pub title: String,
+    pub artist: String,
+    /// An ISRC in its twelve-character form, as [`normalize_isrc`] returns it.
+    pub isrc: String,
+}
+
+impl ExportMetadata {
+    pub fn is_empty(&self) -> bool {
+        self.title.is_empty() && self.artist.is_empty() && self.isrc.is_empty()
+    }
+
+    /// The fields that are set, under their Vorbis comment names.
+    fn fields(&self) -> Vec<(&'static str, &str)> {
+        [
+            ("TITLE", self.title.as_str()),
+            ("ARTIST", self.artist.as_str()),
+            ("ISRC", self.isrc.as_str()),
+        ]
+        .into_iter()
+        .filter(|(_, value)| !value.is_empty())
+        .collect()
+    }
+}
+
+/// An ISRC (International Standard Recording Code) in its twelve-character
+/// form: a two-letter country, a three-character registrant, a two-digit
+/// year and a five-digit designation. Dashes and spaces are dropped and
+/// letters upper-cased; `None` if what is left is not an ISRC.
+pub fn normalize_isrc(text: &str) -> Option<String> {
+    let code: String = text
+        .chars()
+        .filter(|c| !c.is_whitespace() && *c != '-')
+        .map(|c| c.to_ascii_uppercase())
+        .collect();
+    let b = code.as_bytes();
+    let ok = b.len() == 12
+        && b[..2].iter().all(u8::is_ascii_uppercase)
+        && b[2..5].iter().all(u8::is_ascii_alphanumeric)
+        && b[5..].iter().all(u8::is_ascii_digit);
+    ok.then_some(code)
+}
+
+/// A CUE sheet for one exported file holding one track: the title, the
+/// artist and the ISRC, for CD burning and replication tools.
+pub fn cue_sheet(file_name: &str, format: ExportFormat, metadata: &ExportMetadata) -> String {
+    let quoted = |text: &str| format!("\"{}\"", text.replace('"', "'"));
+    let mut cue = String::new();
+    if !metadata.artist.is_empty() {
+        cue.push_str(&format!("PERFORMER {}\n", quoted(&metadata.artist)));
+    }
+    if !metadata.title.is_empty() {
+        cue.push_str(&format!("TITLE {}\n", quoted(&metadata.title)));
+    }
+    let kind = match format.extension() {
+        "flac" => "FLAC",
+        _ => "WAVE",
+    };
+    cue.push_str(&format!("FILE {} {kind}\n", quoted(file_name)));
+    cue.push_str("  TRACK 01 AUDIO\n");
+    if !metadata.title.is_empty() {
+        cue.push_str(&format!("    TITLE {}\n", quoted(&metadata.title)));
+    }
+    if !metadata.artist.is_empty() {
+        cue.push_str(&format!("    PERFORMER {}\n", quoted(&metadata.artist)));
+    }
+    if !metadata.isrc.is_empty() {
+        cue.push_str(&format!("    ISRC {}\n", metadata.isrc));
+    }
+    cue.push_str("    INDEX 01 00:00:00\n");
+    cue
+}
+
+/// Appends a `LIST`/`INFO` chunk to a finished WAV file. The tags are the
+/// RIFF ones: `INAM` (title), `IART` (artist) and `ISRC`.
+fn append_wav_info(path: &Path, metadata: &ExportMetadata) -> io::Result<()> {
+    let tags = [
+        (*b"INAM", metadata.title.as_str()),
+        (*b"IART", metadata.artist.as_str()),
+        (*b"ISRC", metadata.isrc.as_str()),
+    ];
+    let mut info = b"INFO".to_vec();
+    for (id, text) in tags.into_iter().filter(|(_, t)| !t.is_empty()) {
+        // Zero-terminated, and padded to an even length.
+        let mut body = text.as_bytes().to_vec();
+        body.push(0);
+        info.extend_from_slice(&id);
+        info.extend_from_slice(&(body.len() as u32).to_le_bytes());
+        if body.len() % 2 == 1 {
+            body.push(0);
+        }
+        info.extend_from_slice(&body);
+    }
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .open(path)?;
+    let mut end = file.seek(SeekFrom::End(0))?;
+    if end % 2 == 1 {
+        file.write_all(&[0])?;
+        end += 1;
+    }
+    file.write_all(b"LIST")?;
+    file.write_all(&(info.len() as u32).to_le_bytes())?;
+    file.write_all(&info)?;
+    // The RIFF size covers everything after its own eight bytes.
+    let riff = end + 8 + info.len() as u64 - 8;
+    file.seek(SeekFrom::Start(4))?;
+    file.write_all(&u32::try_from(riff).unwrap_or(u32::MAX).to_le_bytes())
+}
+
+/// A FLAC `VORBIS_COMMENT` block body for `metadata`.
+fn vorbis_comments(metadata: &ExportMetadata) -> Vec<u8> {
+    let vendor = b"noodle";
+    let mut out = Vec::new();
+    out.extend_from_slice(&(vendor.len() as u32).to_le_bytes());
+    out.extend_from_slice(vendor);
+    let fields = metadata.fields();
+    out.extend_from_slice(&(fields.len() as u32).to_le_bytes());
+    for (name, value) in fields {
+        let comment = format!("{name}={value}");
+        out.extend_from_slice(&(comment.len() as u32).to_le_bytes());
+        out.extend_from_slice(comment.as_bytes());
+    }
+    out
+}
+
 /// A file format and sample depth to export in.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ExportFormat {
@@ -101,6 +231,9 @@ impl From<hound::Error> for ExportError {
     }
 }
 
+/// The most channels a FLAC file can have.
+pub const FLAC_MAX_CHANNELS: usize = 8;
+
 /// Frames per FLAC block, at most.
 const BLOCK: usize = 4096;
 /// The shortest block FLAC decoders accept (the spec lets a stream's last
@@ -129,6 +262,7 @@ pub struct ExportWriter {
     path: PathBuf,
     channels: usize,
     dither: Dither,
+    metadata: ExportMetadata,
 }
 
 enum Inner {
@@ -208,9 +342,35 @@ impl ExportWriter {
         sample_rate: u32,
         frames: Option<u64>,
     ) -> Result<Self, ExportError> {
-        if channels == 0 || channels > 8 {
+        Self::create_tagged(
+            path,
+            format,
+            channels,
+            sample_rate,
+            frames,
+            ExportMetadata::default(),
+        )
+    }
+
+    /// Like [`Self::create`], writing `metadata` into the file.
+    pub fn create_tagged(
+        path: &Path,
+        format: ExportFormat,
+        channels: usize,
+        sample_rate: u32,
+        frames: Option<u64>,
+        metadata: ExportMetadata,
+    ) -> Result<Self, ExportError> {
+        if channels == 0 || channels > noodle_engine::MAX_LAYOUT_CHANNELS {
             return Err(ExportError::Unsupported(format!(
                 "can't export {channels} channels"
+            )));
+        }
+        if channels > FLAC_MAX_CHANNELS
+            && matches!(format, ExportFormat::Flac24 | ExportFormat::Flac16)
+        {
+            return Err(ExportError::Unsupported(format!(
+                "FLAC holds at most {FLAC_MAX_CHANNELS} channels, not {channels}; use WAV"
             )));
         }
         let mut partial = path.as_os_str().to_owned();
@@ -246,6 +406,15 @@ impl ExportWriter {
                     .stream_info_mut()
                     .set_block_sizes(block, block)
                     .map_err(|e| ExportError::Unsupported(e.to_string()))?;
+                if !metadata.is_empty() {
+                    // A VORBIS_COMMENT block (type 4).
+                    let comments = flacenc::component::MetadataBlockData::new_unknown(
+                        4,
+                        &vorbis_comments(&metadata),
+                    )
+                    .map_err(|e| ExportError::Unsupported(e.to_string()))?;
+                    stream.add_metadata_block(comments);
+                }
                 let mut out = BufWriter::new(File::create(&partial)?);
                 // A placeholder header, the same length as the final one,
                 // overwritten in `finish` once the totals are known.
@@ -274,6 +443,7 @@ impl ExportWriter {
             path: path.to_owned(),
             channels,
             dither: Dither::new(),
+            metadata,
         })
     }
 
@@ -312,6 +482,9 @@ impl ExportWriter {
             Inner::Wav { writer, .. } => {
                 writer.finalize()?;
                 crate::wav::set_wav_channel_mask(&self.partial, self.channels)?;
+                if !self.metadata.is_empty() {
+                    append_wav_info(&self.partial, &self.metadata)?;
+                }
             }
             Inner::Flac(mut state) => {
                 let waiting = state.pending.len() / state.channels;
@@ -406,7 +579,7 @@ mod tests {
     #[test]
     fn a_surround_wav_export_carries_the_layouts_mask() {
         let dir = tempfile::tempdir().unwrap();
-        for (channels, mask) in [(4usize, 0x33u32), (8, 0x63F)] {
+        for (channels, mask) in [(4usize, 0x33u32), (8, 0x63F), (10, 0x563F), (12, 0x2D63F)] {
             let path = dir.path().join(format!("{channels}.wav"));
             let mut writer =
                 ExportWriter::create(&path, ExportFormat::Wav24, channels, 48_000, Some(10))
@@ -619,9 +792,135 @@ mod tests {
     }
 
     #[test]
+    fn isrcs_are_checked_and_tidied() {
+        assert_eq!(
+            normalize_isrc("us-rc1-76-07839").as_deref(),
+            Some("USRC17607839")
+        );
+        assert_eq!(
+            normalize_isrc(" GBAYE 6800011 ").as_deref(),
+            Some("GBAYE6800011")
+        );
+        for bad in [
+            "",
+            "USRC1760783",
+            "USRC176078390",
+            "1SRC17607839",
+            "USRC1760783A",
+            "US_C17607839",
+        ] {
+            assert_eq!(normalize_isrc(bad), None, "{bad:?}");
+        }
+    }
+
+    fn tagged() -> ExportMetadata {
+        ExportMetadata {
+            title: "Night Drive".into(),
+            artist: "The Noodles".into(),
+            isrc: "USRC17607839".into(),
+        }
+    }
+
+    #[test]
+    fn a_wav_carries_its_isrc_and_title_and_still_reads_back() {
+        let dir = tempfile::tempdir().unwrap();
+        // An odd number of 24-bit mono bytes, to meet the padding.
+        for (name, frames) in [("even.wav", 100usize), ("odd.wav", 101)] {
+            let path = dir.path().join(name);
+            let samples = tone(frames, 1);
+            let mut writer = ExportWriter::create_tagged(
+                &path,
+                ExportFormat::Wav24,
+                1,
+                44_100,
+                Some(frames as u64),
+                tagged(),
+            )
+            .unwrap();
+            writer.write(&samples).unwrap();
+            writer.finish().unwrap();
+            let bytes = std::fs::read(&path).unwrap();
+            let riff = u32::from_le_bytes(bytes[4..8].try_into().unwrap()) as usize;
+            assert_eq!(
+                riff,
+                bytes.len() - 8,
+                "{name}: the RIFF size covers the tags"
+            );
+            let text = String::from_utf8_lossy(&bytes);
+            for want in [
+                "LIST",
+                "INFO",
+                "INAM",
+                "Night Drive",
+                "IART",
+                "ISRC",
+                "USRC17607839",
+            ] {
+                assert!(text.contains(want), "{name}: {want}");
+            }
+            let audio = decode_file(&path).unwrap();
+            assert_eq!(audio.samples.len(), samples.len(), "{name}");
+        }
+    }
+
+    #[test]
+    fn a_flac_carries_its_isrc_as_a_vorbis_comment_and_still_decodes() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("tagged.flac");
+        let samples = tone(9_000, 2);
+        let mut writer = ExportWriter::create_tagged(
+            &path,
+            ExportFormat::Flac16,
+            2,
+            44_100,
+            Some(9_000),
+            tagged(),
+        )
+        .unwrap();
+        writer.write(&samples).unwrap();
+        writer.finish().unwrap();
+        let bytes = std::fs::read(&path).unwrap();
+        let text = String::from_utf8_lossy(&bytes[..300]);
+        assert!(text.contains("ISRC=USRC17607839"), "{text}");
+        assert!(text.contains("TITLE=Night Drive"));
+        let audio = decode_file(&path).unwrap();
+        assert_eq!(audio.samples.len(), samples.len());
+        assert_eq!(audio.channels, 2);
+    }
+
+    #[test]
+    fn a_cue_sheet_names_the_file_the_track_and_its_isrc() {
+        let cue = cue_sheet("mix.wav", ExportFormat::Wav16, &tagged());
+        assert_eq!(
+            cue,
+            "PERFORMER \"The Noodles\"\nTITLE \"Night Drive\"\nFILE \"mix.wav\" WAVE\n  TRACK 01 AUDIO\n    TITLE \"Night Drive\"\n    PERFORMER \"The Noodles\"\n    ISRC USRC17607839\n    INDEX 01 00:00:00\n"
+        );
+        // Quotes in a title can't break the sheet; nothing set, nothing written.
+        let plain = ExportMetadata {
+            title: "Say \"hi\"".into(),
+            ..Default::default()
+        };
+        let cue = cue_sheet("a.flac", ExportFormat::Flac16, &plain);
+        assert!(cue.contains("TITLE \"Say 'hi'\"") && cue.contains("FLAC"));
+        assert!(!cue.contains("ISRC") && !cue.contains("PERFORMER"));
+    }
+
+    #[test]
     fn bad_channel_counts_are_refused() {
         let path = std::env::temp_dir().join("noodle-export-never.wav");
         assert!(ExportWriter::create(&path, ExportFormat::Wav16, 0, 44_100, None).is_err());
         assert!(ExportWriter::create(&path, ExportFormat::Flac16, 9, 44_100, None).is_err());
+        assert!(ExportWriter::create(&path, ExportFormat::Wav16, 13, 44_100, None).is_err());
+        // WAV takes the height layouts; FLAC refuses past 8, saying why.
+        let wav = ExportWriter::create(&path, ExportFormat::Wav24, 12, 44_100, None);
+        assert!(wav.is_ok());
+        drop(wav);
+        let flac = ExportWriter::create(&path, ExportFormat::Flac24, 12, 44_100, None);
+        assert!(
+            flac.err()
+                .unwrap()
+                .to_string()
+                .contains("FLAC holds at most 8")
+        );
     }
 }

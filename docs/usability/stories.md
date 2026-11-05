@@ -33,9 +33,9 @@ Under each story are its **late changes**: edits to an early decision, made afte
 - **S06** **Separate a song into stems and remix it.** As a remixer, I want to split a finished stereo track into vocals, drums, bass and other, then mute, re-effect and rearrange those parts, so that I can build a remix from a single file.
   - *Late change:* Rerun separation at a higher quality setting, keeping the arrangement edits.
   - *Late change:* Bring back the original full mix for the last chorus only.
-- **S07** **Restructure an arrangement by section.** As a songwriter, I want to mark the intro, verse, chorus and bridge as named arrangement sections, then duplicate, reorder or delete whole sections across all tracks, with automation, tempo and markers moving with them, so that I can try a new song structure in minutes.
+- **S07** **Restructure an arrangement by section.** As a songwriter, I want to mark the intro, verse, chorus and bridge with named markers, then copy and paste a selection across all tracks (for example all the clips of a verse, put after an existing chorus), with its automation and tempo coming along, so that I can try a new song structure in minutes.
   - *Late change:* Move the bridge before the second chorus after automation is drawn.
-  - *Late change:* Lengthen the chorus by four bars.
+  - *Late change:* Lengthen the chorus by four bars (insert time, then copy).
   - *Late change:* Give the bridge its own tempo.
 
 ## MIDI and composition
@@ -54,7 +54,7 @@ Under each story are its **late changes**: edits to an early decision, made afte
   - *Late change:* Start playback mid-cue after the change.
 - **S11** **Turn an audio phrase into MIDI.** As a producer, I want to convert a hummed melody or a recorded bassline into MIDI notes, then play them through a synth, so that I can reuse a performance with a different sound.
   - *Late change:* Re-record the hum.
-  - *Late change:* Change detection sensitivity after notes have been edited.
+  - *Late change:* Change detection sensitivity after notes have been edited. (Scored as converting again at another setting and replacing the MIDI clip: the conversion is destructive and keeps nothing of its analysis.)
   - *Late change:* Play the MIDI through a different synth.
 
 ## Sound design
@@ -101,14 +101,14 @@ Under each story are its **late changes**: edits to an early decision, made afte
   - *Late change:* Change the vocal EQ in every version at once.
   - *Late change:* Add a fourth version.
   - *Late change:* Rename a version.
-- **S22** **Produce a surround or immersive mix.** As a post-production mixer, I want to set up a 5.1 or 7.1.4 bus structure, pan objects in 3D with automation, fold down to stereo for a check, and export the bed and object stems or an ADM file, so that the mix can be delivered for theatrical and streaming formats.
+- **S22** **Produce a surround or immersive mix.** As a post-production mixer, I want to set up a 5.1 or 7.1.4 bus structure, pan objects in 3D with automation, fold down to stereo for a check, and export the bed, the object stems and a stereo fold-down, so that the mix can be delivered for streaming and handed to an Atmos renderer.
   - *Late change:* Change the layout from 5.1 to 7.1.4.
   - *Late change:* Move one object's path.
   - *Late change:* Re-export the stereo fold-down.
 
 ## Mastering and delivery
 
-- **S23** **Master to loudness targets.** As a mastering engineer, I want to sequence an album of tracks with set gaps and crossfades, apply per-track and master-chain processing, monitor integrated LUFS and true peak, and export 24-bit WAV, 16-bit dithered CD files and a DDP image with ISRC codes, so that the release meets streaming and replication specs.
+- **S23** **Master to loudness targets.** As a mastering engineer, I want to sequence an album of tracks with set gaps and crossfades, apply per-track and master-chain processing, monitor integrated LUFS and true peak, and export 24-bit WAV, 16-bit dithered CD files and a CUE sheet with ISRC codes, so that the release meets streaming and replication specs.
   - *Late change:* The label wants -16 LUFS instead of -14.
   - *Late change:* Swap the order of tracks 3 and 4.
   - *Late change:* Replace track 5 with a new mix.

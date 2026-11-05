@@ -25,6 +25,10 @@ pub const CONTROL_MIME: &str = "application/x.noodle.controls";
 /// Automation points copied from a lane in the arrangement.
 pub const POINT_MIME: &str = "application/x.noodle.points";
 
+/// A section of the arrangement (clips, automation and tempo between two
+/// ticks), copied from the timeline.
+pub const SECTION_MIME: &str = "application/x.noodle.section";
+
 /// Where copied things are put and found.
 trait Backend {
     /// Replaces the clipboard's contents with these (MIME type, bytes) pairs.

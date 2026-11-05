@@ -1,15 +1,16 @@
 //! S23: master to loudness targets.
 //!
 //! Partial. A master chain is a Dynamics node as the limiter and a Normalize
-//! node, and the export dialog normalises the mixdown to a loudness target
-//! and dithers to 16 bits. Choosing the file is a native dialog that a route
-//! cannot drive, so the route sets the options and stops before "Export…".
-//! There is no album sequence with gaps and crossfades, no true-peak
-//! limiter after normalising, and no DDP or ISRC (#360).
+//! node, and the export dialog normalises the mixdown to a loudness target,
+//! holds its true peak under a ceiling, dithers to 16 bits, writes the ISRC
+//! into the file and a CUE sheet beside it. Choosing the file is a native
+//! dialog that a route cannot drive, so the route sets the options and stops
+//! before "Export…". There is no album sequence with gaps and crossfades:
+//! that waits on the setlist design (#360, #366). DDP is not planned.
 
 use std::path::Path;
 
-use egui::Modifiers;
+use egui::{Modifiers, vec2};
 
 use super::super::handle::{Handle, Probe};
 use super::super::{Route, Tag};
@@ -58,6 +59,19 @@ fn steps(h: &mut Handle, _size: usize) {
     // The label is the checkbox's: the step cannot go on without it.
     let normalise = h.find("Normalise mixdown to");
     h.click(normalise, Modifiers::NONE);
+    h.probe().settle();
+    h.step("hold the true peak under the ceiling");
+    let limit = h.find("Limit the mixdown to");
+    h.click(limit, Modifiers::NONE);
+    h.probe().settle();
+    h.step("type the ISRC");
+    // The field sits right of its label.
+    let isrc = h.find("ISRC") + vec2(110.0, 0.0);
+    h.type_text(isrc, "US-RC1-76-07839");
+    h.probe().settle();
+    h.step("ask for a CUE sheet");
+    let cue = h.find("Write one next to the mixdown");
+    h.click(cue, Modifiers::NONE);
     h.probe().settle();
 }
 

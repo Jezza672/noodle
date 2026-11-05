@@ -79,8 +79,11 @@ pub fn paint(
                 area,
                 zoom,
                 layout,
-                values("azimuth"),
-                values("spread"),
+                crate::widgets::panner::Source {
+                    azimuth: values("azimuth"),
+                    elevation: values("elevation"),
+                    spread: values("spread"),
+                },
                 false,
             );
         }

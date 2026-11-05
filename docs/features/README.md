@@ -31,7 +31,9 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [midi-learn.md](midi-learn.md) | Several MIDI inputs, Learn MIDI, MIDI Control encoder and pickup modes |
 | [midi-out.md](midi-out.md) | MIDI Out node, sender thread, output latency, clock and start/stop out |
 | [automate.md](automate.md) | Automate a parameter: shortcut, Automation range and taper, curve tension; recording with arming, Read/Touch/Latch and the `record` input |
+| [markers-and-sections.md](markers-and-sections.md) | Markers, section selection, copy and paste of a section, insert and delete time |
 | [takes-and-punch.md](takes-and-punch.md) | Take folders, loop recording, punch, count-in and pre-roll |
+| [onsets-slicing-and-midi.md](onsets-slicing-and-midi.md) | Onset sensitivity, Slice, transient quantise (regions, Slices mode), audio to MIDI, Pitch Track |
 | [replace-node.md](replace-node.md) | Replace node and missing plugins |
 | [tempo-source-and-monitoring.md](tempo-source-and-monitoring.md) | Tempo source (tap, MIDI clock in) and audio input monitoring |
 | [launch-pads.md](launch-pads.md) | Launch Quantise node, Loop Pads template, S25/S26 retired |

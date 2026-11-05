@@ -57,8 +57,8 @@ pub const STORIES: [Story; 28] = [
     Story {
         id: "S04",
         title: "Tighten a multitrack drum recording",
-        status: Status::Blocked,
-        missing: "No group transient quantize with a strength and crossfades: #347.",
+        status: Status::Partial,
+        missing: "Quantise regions are edited in the panel, not drawn on the warp editor.",
     },
     Story {
         id: "S05",
@@ -75,8 +75,8 @@ pub const STORIES: [Story; 28] = [
     Story {
         id: "S07",
         title: "Restructure an arrangement by section",
-        status: Status::Blocked,
-        missing: "No named arrangement sections: #329.",
+        status: Status::Full,
+        missing: "",
     },
     Story {
         id: "S08",
@@ -99,8 +99,8 @@ pub const STORIES: [Story; 28] = [
     Story {
         id: "S11",
         title: "Turn an audio phrase into MIDI",
-        status: Status::Blocked,
-        missing: "No audio-to-MIDI conversion: #352.",
+        status: Status::Full,
+        missing: "",
     },
     Story {
         id: "S12",
@@ -136,7 +136,7 @@ pub const STORIES: [Story; 28] = [
         id: "S17",
         title: "Resample and mangle audio",
         status: Status::Partial,
-        missing: "No slicing of a clip by transient onto a sampler: #356; rendering to a clip is not routed.",
+        missing: "The live chain through a To Sample node is not built; rendering to a clip is not routed.",
     },
     Story {
         id: "S18",
@@ -166,13 +166,13 @@ pub const STORIES: [Story; 28] = [
         id: "S22",
         title: "Produce a surround or immersive mix",
         status: Status::Partial,
-        missing: "No 3D object panning, 7.1.4 layout or ADM export: #359.",
+        missing: "No ADM export (dropped); the export dialog is a native file dialog, so the route stops before it. A 3D object panner with x, y, z is backlog #379.",
     },
     Story {
         id: "S23",
         title: "Master to loudness targets",
         status: Status::Partial,
-        missing: "No album sequence, true-peak limiter after normalising, DDP or ISRC: #360; the native file dialog stops the export.",
+        missing: "No album sequence with gaps and crossfades (waits on the setlist design, #366); DDP is dropped for a CUE sheet; the native file dialog stops the export.",
     },
     Story {
         id: "S24",

@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub mod automate;
+pub mod convert;
 mod export;
 pub mod learn_midi;
 mod library;
@@ -146,6 +147,18 @@ pub enum Edit {
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
+    /// Convert an audio clip to MIDI at a sensitivity, replacing the MIDI clip
+    /// if one is given.
+    ConvertToMidi(
+        noodle_core::ClipId,
+        convert::Detect,
+        Option<noodle_core::ClipId>,
+    ),
+    /// Slice an audio clip at its transients onto a new Sampler track.
+    SliceToSampler(noodle_core::ClipId),
+    /// Pin the transients of a clip and the clips linked to it, at a
+    /// sensitivity in percent.
+    PinTransients(noodle_core::ClipId, u8),
     /// Splits the clip a clip's stems came from again, at the chosen quality,
     /// and points the stem clips at the new files (see
     /// [`Session::resplit_stems`]). One undo step, when the job is done.
@@ -1663,6 +1676,18 @@ impl Session {
                 }
                 Edit::SplitToStems(clip) => {
                     self.split_to_stems(clip);
+                    continue;
+                }
+                Edit::ConvertToMidi(clip, detect, replace) => {
+                    self.convert_to_midi(clip, detect, replace);
+                    continue;
+                }
+                Edit::SliceToSampler(clip) => {
+                    self.slice_to_sampler(clip);
+                    continue;
+                }
+                Edit::PinTransients(clip, percent) => {
+                    self.pin_transients(clip, percent);
                     continue;
                 }
                 Edit::ResplitStems(clip) => {
