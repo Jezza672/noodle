@@ -108,7 +108,19 @@ pub struct Outcome {
     pub failure: Option<String>,
 }
 
-fn window(app: App) -> AppHarness {
+fn window(mut app: App) -> AppHarness {
+    // Renders go next to the route's project, not in the user's cache folder:
+    // a route that listens must not hear what an earlier run, or another
+    // route's session, left there (entries are keyed by content, not by
+    // whether the session could find its samples).
+    if let Some(dir) = app
+        .session()
+        .path()
+        .and_then(Path::parent)
+        .map(|dir| dir.join("renders"))
+    {
+        app.session_mut().use_cache_dir(dir);
+    }
     // While audio plays the app keeps repainting, so settle a few frames
     // rather than `run` until it stops.
     let mut h = Harness::builder()

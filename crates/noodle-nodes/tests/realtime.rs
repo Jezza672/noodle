@@ -2771,6 +2771,57 @@ fn selector_note_sample_and_spectral_kinds_never_allocate() {
 }
 
 #[test]
+fn launch_quantise_never_allocates_while_notes_wait_and_play() {
+    use noodle_io::Audio;
+    use noodle_nodes::{SAMPLE_KEY, SampleStore, Sampler};
+
+    // A button presses a key; the notes wait on a Launch Quantise (a beat, in
+    // toggle mode and then hold mode) before a looping sampler plays them.
+    let mut s = Session::new();
+    let store = SampleStore::new();
+    s.registry
+        .replace(Sampler::new(&store, &noodle_engine::Telemetry::new()));
+    let hash = store.insert(&Audio {
+        samples: (0..4800).map(|i| (i as f32 * 0.05).sin() * 0.4).collect(),
+        channels: 1,
+        sample_rate: 48_000,
+    });
+    let button = s.add(Node::new("noodle.input.button"));
+    let key = s.add(Node::new("noodle.event.key"));
+    let quantise = s.add(Node::new("noodle.event.launch_quantise").with_param("grid", 1.0));
+    let sampler = s.add(
+        Node::new("noodle.instrument.sampler")
+            .with_config(Config::new().with(SAMPLE_KEY, Value::Text(hash)))
+            .with_param("mode", 1.0)
+            .with_param("loop", 1.0),
+    );
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(button, "out", key, "gate");
+    s.wire(key, "out", quantise, "in");
+    s.wire(quantise, "out", sampler, "in");
+    s.wire(sampler, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..40 {
+        s.controller.set_param(button, "state", (round % 2) as f32);
+        s.controller
+            .set_param(quantise, "mode", ((round / 10) % 2) as f32);
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..8 {
+                s.processor.process(&mut out);
+                heard |= out.iter().any(|&x| x.abs() > 1e-3);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+    assert!(heard, "the launched note never sounded");
+}
+
+#[test]
 fn pitch_track_and_to_notes_never_allocate_while_the_voice_and_sensitivity_change() {
     // saw (its frequency stepped) -> pitch track -> to notes -> mono note ->
     // saw -> output; the first saw is also the voice.
