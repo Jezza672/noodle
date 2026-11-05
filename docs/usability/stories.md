@@ -2,7 +2,7 @@
 
 Thirty goals an experienced user would expect to reach in a serious DAW. Each is a moderately complex, end-to-end task, written from the user's side and not tailored to Noodle's current features. Twenty came from a writer with no knowledge of Noodle; ten were kept from a first draft where they covered ground the other list did not. Difficulty is not assessed yet; the method is in [usability.md](../architecture/usability.md).
 
-Each story has a stable ID so scores, scripts and issues can refer to it. Never renumber: retire a story by marking it retired, and give a new one the next free ID.
+Each story has a stable ID so scores, scripts and issues can refer to it. Never renumber: retire a story by marking it retired (S25 and S26 are, so twenty-eight are live), and give a new one the next free ID.
 
 Under each story are its **late changes**: edits to an early decision, made after the story is finished. Each one measures how costly and how destructive it is to change your mind. They were written before anyone checked how Noodle handles them, on purpose.
 
@@ -54,7 +54,7 @@ Under each story are its **late changes**: edits to an early decision, made afte
   - *Late change:* Start playback mid-cue after the change.
 - **S11** **Turn an audio phrase into MIDI.** As a producer, I want to convert a hummed melody or a recorded bassline into MIDI notes, then play them through a synth, so that I can reuse a performance with a different sound.
   - *Late change:* Re-record the hum.
-  - *Late change:* Change detection sensitivity after notes have been edited.
+  - *Late change:* Change detection sensitivity after notes have been edited. (Scored as converting again at another setting and replacing the MIDI clip: the conversion is destructive and keeps nothing of its analysis.)
   - *Late change:* Play the MIDI through a different synth.
 
 ## Sound design
@@ -116,17 +116,13 @@ Under each story are its **late changes**: edits to an early decision, made afte
   - *Late change:* Split the guitar stem into two stems.
   - *Late change:* Change the tail length.
   - *Late change:* Re-export one stem after a mix fix.
-- **S25** **Exchange a session via interchange formats.** As a post-production editor, I want to import an AAF or OMF from a video editor with embedded media, handles and clip gain intact, and export my edit back with timecode preserved, so that picture and sound departments can work on the same cut.
-  - *Late change:* Picture sends a re-cut AAF; conform the existing edits to it.
-  - *Late change:* Change the frame rate.
-- **S26** **Score and mix to picture.** As a game or film composer, I want to import a video with a timecode offset, lock cues to SMPTE hit points while keeping my musical tempo map flexible, and spot sound effects frame-accurately, so that the music and sound hit the on-screen action exactly.
-  - *Late change:* A picture re-edit moves a scene 2 seconds later.
-  - *Late change:* Change a cue's tempo, keeping its hit points.
+- **S25** *Retired.* Exchange a session via interchange formats. Dropped by the owner (#362): Noodle is not aiming at post-production interchange.
+- **S26** *Retired.* Score and mix to picture. Shelved by the owner (#363): Noodle is not becoming a scoring-to-picture suite.
 
 ## Live
 
-- **S27** **Perform a set live with clips and scenes.** As a live performer, I want to trigger audio and MIDI clips and scenes quantized to the bar, follow a tempo that I can tap or sync to external MIDI clock or Ableton Link, and map controller pads to clips and effects, so that I can improvise a set without stopping the transport.
-  - *Late change:* Add a new clip to a scene during the set.
+- **S27** **Jam live with pads that launch loops and patterns.** As a live performer, I want pads that trigger loops and patterns quantized to the bar, and a tempo that I can tap or sync to external MIDI clock, so that I can improvise a set without stopping the transport.
+  - *Late change:* Add a new loop to a pad during the set.
   - *Late change:* Remap a pad.
   - *Late change:* Switch the tempo source from tap to external MIDI clock.
 - **S28** **Run backing tracks reliably on stage.** As a touring musical director, I want a setlist of songs, each with its own tempo, click, cues and backing stems on separate hardware outputs, plus MIDI program changes sent to the band's gear, all advancing by footswitch, so that the show runs the same every night with no hands on the computer.
@@ -136,8 +132,8 @@ Under each story are its **late changes**: edits to an early decision, made afte
 
 ## Workflow
 
-- **S29** **Organise a large session with templates.** As a working producer, I want to colour-code, group and fold tracks into folders, hide unused ones, save the routing and plugin setup as a project template, and use key commands and macros for repetitive edits, so that I can find my way around a 150-track session fast and start every new project ready to work.
-  - *Late change:* Change the template's routing and update projects made from it.
+- **S29** **Organise a large session with templates.** As a working producer, I want to colour-code, group and fold tracks into folders, shrink unused ones to just their name, save the routing and plugin setup as a project template, and use key commands for repetitive edits, so that I can find my way around a 150-track session fast and start every new project ready to work.
+  - *Late change:* Start the next project from the template.
   - *Late change:* Regroup the folders.
   - *Late change:* Change the colour scheme.
 - **S30** **Keep a large project responsive.** As a producer with a 60-track project, I want to freeze or render heavy tracks and groups, see where CPU is going, and unfreeze to edit later, so that playback stays glitch-free on my laptop.

@@ -55,8 +55,8 @@ fn every_system_preset_fits_its_template() {
         assert!(fitting.len() >= 3, "{} has its presets", template.name);
     }
     assert_eq!(
-        templates, 11,
-        "the instruments, the subtractive voice, two synced effects and the rack"
+        templates, 12,
+        "the instruments, the subtractive voice, two synced effects, the rack and the loop pads"
     );
     assert!(
         library
@@ -78,6 +78,9 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.io.output",
     "noodle.instrument.sample",
     "noodle.instrument.sample_set",
+    "noodle.instrument.slice",
+    "noodle.analysis.pitch_track",
+    "noodle.event.to_notes",
     "noodle.mod.automation",
     "noodle.noise.white",
     "noodle.offline.reverse",

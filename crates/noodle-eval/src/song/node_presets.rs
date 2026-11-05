@@ -712,6 +712,21 @@ fn table() -> Vec<Row> {
             ],
         ),
         row(
+            "noodle.event.launch_quantise",
+            "Bar Toggle",
+            &[("grid", 3.0), ("mode", 1.0)],
+        ),
+        row(
+            "noodle.event.launch_quantise",
+            "Beat Hold",
+            &[("grid", 1.0), ("mode", 0.0)],
+        ),
+        row(
+            "noodle.event.launch_quantise",
+            "Four Bar Toggle",
+            &[("grid", 5.0), ("mode", 1.0)],
+        ),
+        row(
             "noodle.event.swing",
             "Light Sixteenth Swing",
             &[("amount", 0.2), ("grid", 1.0)],

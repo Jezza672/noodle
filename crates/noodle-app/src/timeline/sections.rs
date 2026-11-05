@@ -529,6 +529,7 @@ pub fn insert_time(
         .iter()
         .map(|m| Marker {
             name: m.name.clone(),
+            key: m.key,
             at: if m.at >= at { Tick(m.at.0 + len) } else { m.at },
         })
         .collect();
@@ -598,6 +599,7 @@ pub fn delete_time(project: &Project, range: Range, rate: &dyn Fn(&Clip) -> u32)
         .filter(|m| !range.contains(m.at))
         .map(|m| Marker {
             name: m.name.clone(),
+            key: m.key,
             at: if m.at >= range.end {
                 Tick(m.at.0 - len)
             } else {
@@ -703,6 +705,7 @@ mod tests {
             song.apply(Command::SetTempoMap(map));
             song.apply(Command::SetMarkers(vec![Marker {
                 name: "Chorus".into(),
+                key: None,
                 at: Tick(BAR),
             }]));
             song
@@ -846,6 +849,7 @@ mod tests {
         let mut markers = song.project().markers().to_vec();
         markers.push(Marker {
             name: "Bridge".into(),
+            key: None,
             at: Tick(3 * BAR),
         });
         song.apply(Command::SetMarkers(markers));

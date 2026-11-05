@@ -11,10 +11,28 @@ const MIN_RISE_DB: f32 = 5.0;
 /// whatever it rose from.
 const FLOOR_DB: f32 = -60.0;
 
+/// How readily audio is taken to have a transient, from 0 (only the sharpest
+/// attacks) to 1 (any rise at all). The default is the threshold the warp
+/// engine has always used; the slicer, the transient pins and the note
+/// segmentation all take their sensitivity from this one scale.
+pub const DEFAULT_SENSITIVITY: f32 = 0.5;
+
+/// How much louder, in decibels, a stretch of audio must be than what came
+/// before it to count as an attack, at a sensitivity: 14 dB at 0, the
+/// default 5 dB at 0.5, under 2 dB at 1.
+pub fn rise_db(sensitivity: f32) -> f32 {
+    MIN_RISE_DB * 2.8f32.powf(1.0 - 2.0 * sensitivity.clamp(0.0, 1.0))
+}
+
 /// The frames at which a transient starts in the bass of `mono` (below about
 /// 150 Hz): kicks and the start of bass notes, which a hi-hat over a held bass
 /// note doesn't count as.
 pub fn detect_bass_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
+    detect_bass_onsets_with(mono, rate, DEFAULT_SENSITIVITY)
+}
+
+/// [`detect_bass_onsets`] at a sensitivity (see [`rise_db`]).
+pub fn detect_bass_onsets_with(mono: &[f32], rate: u32, sensitivity: f32) -> Vec<u64> {
     let a = 1.0 - (-std::f32::consts::TAU * 150.0 / rate as f32).exp();
     let (mut p, mut q) = (0.0f32, 0.0f32);
     // The level of the bass, rising at once and falling over 40 ms: the swing
@@ -30,13 +48,18 @@ pub fn detect_bass_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
             level
         })
         .collect();
-    detect_onsets(&bass, rate)
+    detect_onsets_with(&bass, rate, sensitivity)
 }
 
 /// The frames at which a transient starts in the treble of `mono` (above about
 /// 1.5 kHz): bells and plucks over a dark pad, which the full-band level
 /// can't see through.
 pub fn detect_treble_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
+    detect_treble_onsets_with(mono, rate, DEFAULT_SENSITIVITY)
+}
+
+/// [`detect_treble_onsets`] at a sensitivity (see [`rise_db`]).
+pub fn detect_treble_onsets_with(mono: &[f32], rate: u32, sensitivity: f32) -> Vec<u64> {
     let a = 1.0 - (-std::f32::consts::TAU * 1_500.0 / rate as f32).exp();
     let (mut p, mut q) = (0.0f32, 0.0f32);
     let treble: Vec<f32> = mono
@@ -47,7 +70,7 @@ pub fn detect_treble_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
             x - q
         })
         .collect();
-    detect_onsets(&treble, rate)
+    detect_onsets_with(&treble, rate, sensitivity)
 }
 
 /// The frames at which a transient starts in `mono`, at `rate`, in order.
@@ -58,6 +81,14 @@ pub fn detect_treble_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
 /// a tenth of the block's peak and clear of what was sounding before, so it
 /// lands on the attack and not on the block that contains it.
 pub fn detect_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
+    detect_onsets_with(mono, rate, DEFAULT_SENSITIVITY)
+}
+
+/// [`detect_onsets`] at a sensitivity: the jump a block must make to count
+/// is [`rise_db`] of it, so a higher sensitivity finds the softer attacks too
+/// (and, at the top, ripples in a held sound).
+pub fn detect_onsets_with(mono: &[f32], rate: u32, sensitivity: f32) -> Vec<u64> {
+    let min_rise = rise_db(sensitivity);
     let hop = (rate as usize / 200).max(16);
     let blocks = mono.len() / hop;
     if blocks < 3 {
@@ -91,7 +122,7 @@ pub fn detect_onsets(mono: &[f32], rate: u32) -> Vec<u64> {
     let near = ((MIN_GAP * f64::from(rate)) / hop as f64).ceil() as usize;
     let mut found: Vec<(usize, f32)> = Vec::new();
     for b in 1..blocks {
-        if rise[b] < MIN_RISE_DB || level[b] < FLOOR_DB {
+        if rise[b] < min_rise || level[b] < FLOOR_DB {
             continue;
         }
         // The strongest rise within the minimum gap either side.
@@ -465,6 +496,8 @@ pub struct Analysis {
     /// Whether the file is long enough, with transients close enough, that
     /// its beats are worth keeping whole when it is stretched.
     pub percussive: bool,
+    /// The key of the file, as best it can be told (see [`detect_key`]).
+    pub key: Option<noodle_core::Key>,
 }
 
 impl Analysis {
@@ -505,6 +538,7 @@ impl Analysis {
             tempo: grid.filter(TempoEstimate::is_clear).map(|g| g.bpm),
             grid,
             percussive: seconds > 0.0 && onsets.len() as f64 / seconds >= 1.0,
+            key: crate::detect_key(mono, rate),
             onsets,
         }
     }
@@ -530,6 +564,42 @@ mod tests {
     use super::*;
 
     const RATE: u32 = 48_000;
+
+    /// Hits of decreasing loudness, 0.5 s apart: 0 dB, then softer steps.
+    fn soft_hits() -> Vec<f32> {
+        let mut x = vec![0.0f32; 4 * RATE as usize];
+        // A steady bed so the soft hits are a few dB over it, not over silence.
+        for (i, s) in x.iter_mut().enumerate() {
+            *s = 0.02 * (std::f32::consts::TAU * 150.0 * i as f32 / RATE as f32).sin();
+        }
+        for (n, amp) in [0.8f32, 0.05, 0.03, 0.025].into_iter().enumerate() {
+            let start = n * RATE as usize;
+            for i in 0..4_000 {
+                let t = i as f32 / RATE as f32;
+                x[start + 100 + i] +=
+                    amp * (std::f32::consts::TAU * 300.0 * t).sin() * (-t * 40.0).exp();
+            }
+        }
+        x
+    }
+
+    #[test]
+    fn the_default_sensitivity_is_the_old_threshold() {
+        assert_eq!(rise_db(DEFAULT_SENSITIVITY), 5.0);
+        let x = soft_hits();
+        assert_eq!(detect_onsets(&x, RATE), detect_onsets_with(&x, RATE, 0.5));
+    }
+
+    #[test]
+    fn a_higher_sensitivity_finds_the_softer_hits() {
+        let x = soft_hits();
+        let few = detect_onsets_with(&x, RATE, 0.0).len();
+        let some = detect_onsets_with(&x, RATE, 0.5).len();
+        let many = detect_onsets_with(&x, RATE, 1.0).len();
+        assert!(few < many, "{few} {some} {many}");
+        assert!(few <= some && some <= many, "{few} {some} {many}");
+        assert!(rise_db(0.0) > rise_db(0.5) && rise_db(0.5) > rise_db(1.0));
+    }
 
     #[test]
     fn bass_onsets_are_kicks_not_hats_or_the_swing_of_a_low_tone() {

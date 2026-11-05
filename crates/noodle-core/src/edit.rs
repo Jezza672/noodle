@@ -5,7 +5,7 @@ use std::fmt;
 
 use crate::{
     Articulation, AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Connection,
-    Endpoint, ExportSettings, Frame, FrameId, LaneId, Marker, Node, NodeId, Position, Project,
+    Endpoint, ExportSettings, Frame, FrameId, Key, LaneId, Marker, Node, NodeId, Position, Project,
     PunchRange, TempoMap, TransportLoop, Value, WarpId,
 };
 
@@ -93,6 +93,8 @@ pub enum Command {
     SetLoop(TransportLoop),
     /// Replaces the markers.
     SetMarkers(Vec<Marker>),
+    /// Sets the project's key, which holds before the first marker that sets one.
+    SetKey(Key),
     /// Replaces the punch range.
     SetPunch(PunchRange),
     /// Replaces the export settings.
@@ -108,6 +110,8 @@ pub enum Command {
     },
     /// Replaces the articulation list.
     SetArticulations(Vec<Articulation>),
+    /// Replaces the tracks' colours and folders, for display only.
+    SetOrganisation(crate::Organisation),
     /// Freezes or unfreezes a node or group.
     SetFrozen {
         node: NodeId,
@@ -216,6 +220,9 @@ impl Command {
             Command::SetLoop(region) => {
                 return Ok(Command::SetLoop(project.replace_loop(region)));
             }
+            Command::SetKey(key) => {
+                return Ok(Command::SetKey(project.replace_key(key)));
+            }
             Command::SetPunch(range) => {
                 return Ok(Command::SetPunch(project.replace_punch(range)));
             }
@@ -241,6 +248,11 @@ impl Command {
             Command::SetArticulations(list) => {
                 return Ok(Command::SetArticulations(
                     project.replace_articulations(list)?,
+                ));
+            }
+            Command::SetOrganisation(organisation) => {
+                return Ok(Command::SetOrganisation(
+                    project.replace_organisation(organisation),
                 ));
             }
             Command::AddClip { id, clip } => {
@@ -402,11 +414,13 @@ impl Command {
             | Command::SetTempoMap(_)
             | Command::SetLoop(_)
             | Command::SetMarkers(_)
+            | Command::SetKey(_)
             | Command::SetPunch(_)
             | Command::SetExportSettings(_)
             | Command::SetTrackOrder(_)
             | Command::SetVersions { .. }
             | Command::SetArticulations(_)
+            | Command::SetOrganisation(_)
             | Command::SetFrozen { .. }
             | Command::AddClip { .. }
             | Command::RemoveClip { .. }
@@ -437,10 +451,12 @@ enum Target<'a> {
     Loop,
     Markers,
     Punch,
+    Key,
     ExportSettings,
     TrackOrder,
     Versions,
     Articulations,
+    Organisation,
     Frozen(NodeId),
 }
 
@@ -457,10 +473,12 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetLoop(_) => Some(Target::Loop),
         Command::SetMarkers(_) => Some(Target::Markers),
         Command::SetPunch(_) => Some(Target::Punch),
+        Command::SetKey(_) => Some(Target::Key),
         Command::SetExportSettings(_) => Some(Target::ExportSettings),
         Command::SetTrackOrder(_) => Some(Target::TrackOrder),
         Command::SetVersions { .. } => Some(Target::Versions),
         Command::SetArticulations(_) => Some(Target::Articulations),
+        Command::SetOrganisation(_) => Some(Target::Organisation),
         Command::SetFrozen { node, .. } => Some(Target::Frozen(*node)),
         _ => None,
     }
