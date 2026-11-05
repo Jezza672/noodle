@@ -302,11 +302,9 @@ pub fn linked_lanes(
     if members.len() < 2 {
         return None;
     }
-    let tracks = crate::timeline::tracks(project);
-    let colour_of = |id: ClipId| {
-        let node = project.clip(id).map(|c| c.node);
-        let index = tracks.iter().position(|&t| Some(t) == node).unwrap_or(0);
-        colors::track_colour(index)
+    let colour_of = |id: ClipId| match project.clip(id) {
+        Some(clip) => crate::timeline::colour_of(project, clip.node),
+        None => colors::track_colour(0),
     };
     let lanes = members
         .iter()

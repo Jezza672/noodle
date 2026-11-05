@@ -200,6 +200,9 @@ struct Inner {
     /// The fundamental found for a hash, `None` if it has no pitch. The
     /// audio behind a hash never changes, so this is never stale.
     pitch: HashMap<String, Option<f32>>,
+    /// The onsets found in a part of a sample at a sensitivity, as fractions
+    /// of the whole sample. Never stale, for the same reason.
+    onsets: HashMap<(String, u32), Arc<[f32]>>,
 }
 
 /// Samples by content hash. Clones share the store.
@@ -305,6 +308,48 @@ impl SampleStore {
             crate::fundamental::fundamental(&sample.left, &sample.right, sample.sample_rate)
                 .and_then(crate::fundamental::key_of);
         self.inner.lock().unwrap().pitch.insert(cache_key, found);
+        found
+    }
+
+    /// Where the transients are in the part of a sample `reference` names, as
+    /// fractions of the whole sample, in order and strictly inside the part
+    /// (see [`noodle_io::detect_onsets_with`]; `sensitivity` is 0 to 1).
+    /// Empty if the sample isn't there. Remembered by reference and
+    /// sensitivity, so the Slice node can ask every time the project compiles.
+    pub fn onsets(&self, reference: &SampleRef, sensitivity: f32) -> Arc<[f32]> {
+        let cache_key = (
+            reference.to_text(),
+            (sensitivity.clamp(0.0, 1.0) * 1000.0).round() as u32,
+        );
+        if let Some(found) = self.inner.lock().unwrap().onsets.get(&cache_key) {
+            return found.clone();
+        }
+        let found: Arc<[f32]> = match self.get(&reference.hash) {
+            Some(sample) => {
+                let frames = sample.frames();
+                let a =
+                    (f64::from(reference.start.clamp(0.0, 1.0)) * frames as f64).round() as usize;
+                let b = (f64::from(reference.end.clamp(0.0, 1.0)) * frames as f64).round() as usize;
+                let part = sample.window(reference.start, reference.end);
+                let mono: Vec<f32> = part
+                    .left
+                    .iter()
+                    .zip(part.right.iter())
+                    .map(|(l, r)| 0.5 * (l + r))
+                    .collect();
+                noodle_io::detect_onsets_with(&mono, part.sample_rate, sensitivity)
+                    .into_iter()
+                    .map(|frame| ((a as u64 + frame) as f64 / frames.max(1) as f64) as f32)
+                    .filter(|&f| (a..b).contains(&((f64::from(f) * frames as f64) as usize)))
+                    .collect()
+            }
+            None => Arc::from([]),
+        };
+        self.inner
+            .lock()
+            .unwrap()
+            .onsets
+            .insert(cache_key, found.clone());
         found
     }
 

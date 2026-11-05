@@ -4,7 +4,7 @@ An audio clip can be **warped** (CONTEXT.md; ADR 0002 says why it is not nodes).
 The document side is in `noodle-core/src/warp.rs`: a `ClipWarp` holds a
 `TempoCurve` (the clip's tempo along its own seconds, a step function), the
 `WarpMarker`s (each pins a moment of the clip, in source seconds, to a beat),
-the `WarpMode` (Repitch, Grain or Beats) and the switches `tempo_conversion` and
+the `WarpMode` (Repitch, Grain, Beats or Slices) and the switches `tempo_conversion` and
 `use_markers`. It lives in the project's `warps` map and an audio section
 (the code's `Clip`) names it by `WarpId` in `AudioClip::warp`; sections that
 show one clip share an ID, `Project::warp_edit` forks it when a section is
@@ -111,6 +111,14 @@ ends on the transient. A segment's source is cut to the segment before the bass
 is filtered, so the next hit's bass can't leak in ahead of it. The stretcher has
 no I/O; the worker feeds it from its own stream through a window of decoded
 frames (`StreamSource`).
+
+**Slices** (`WarpMode::Slices`, `Stretcher::slices`) cuts the section at the knots
+of its `WarpMap` (the markers), plays each slice at natural speed where the map
+puts it, lets a slice ring on to the next marker's source and then be silent
+where the map leaves a gap, and crossfades overlaps. Nothing is stretched, and
+every clip sharing the warp is cut at the same places, so linked mics stay in
+phase. `ClipWarp::pin_transients` and `WarpQuantise::regions` feed it (see
+[../features/onsets-slicing-and-midi.md](../features/onsets-slicing-and-midi.md)).
 
 **Loops.** `ClipWarp::loop_region` is a `LoopRegion` in clip-tempo beats (at
 least `MIN_LOOP_BEATS`, 1, and a round of it at least `MIN_LOOP_SECONDS`, 0.25 s

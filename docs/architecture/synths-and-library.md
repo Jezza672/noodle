@@ -214,6 +214,10 @@ These are primitives; instruments and racks built from them are groups.
 - **Reverb** (`noodle.effect.reverb`) is a stereo feedback delay network of
   eight lines with a Householder matrix, input allpasses and a slow length
   wobble. One-voice input, stereo output, deterministic.
+- **Slice** (`noodle.instrument.slice`) cuts a sample wire at its transients into
+  a sample set, one slice a key; **Pitch Track** (`noodle.analysis.pitch_track`)
+  and **To Notes** (`noodle.event.to_notes`) turn a monophonic voice into notes
+  live. See [../features/onsets-slicing-and-midi.md](../features/onsets-slicing-and-midi.md).
 - **Arpeggiator** (`noodle.event.arpeggiator`) turns held notes into steps on
   the transport's tick grid (free-running while stopped): up, down, up-down,
   down-up, as played or random (seeded by the node's seed), over 1 to 4

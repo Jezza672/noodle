@@ -332,7 +332,7 @@ scroll area around it.
   and decrement actions work too.
 - **Choices** for stepped parameters with labels: a toggle button when the
   labels are Off and On, radio-style segments when up to four short options
-  fit the row, and otherwise a drop-down. The drop-down is not egui's
+  each fit an equal share of the row, and otherwise a drop-down. The drop-down is not egui's
   `ComboBox` but a button that opens a plain area under it (closed by a pick,
   Escape or a press elsewhere), so it does not depend on how the platform
   delivers a click: the combo box would not open for a Mac user. Every
@@ -429,6 +429,18 @@ that no longer exist are ignored, so deleting then undoing a track keeps its
 place. Dragging a track's header on the arrangement writes it, keeping only the
 groups the arrangement shows. Saving drops IDs of groups that no longer exist,
 so a reused ID can't inherit a deleted track's place.
+
+## Colours, folders and lane height
+
+`Project.organisation` (`Organisation`: colour slots by track group, `Folder`s by `FolderId`, and each track's folder) is display-only, replaced whole by `Command::SetOrganisation` (one undo step, no engine effect, dropped for gone nodes on save). A track's colour is a palette slot; unset, it takes its folder's, else one by when it was made. A folder keeps its tracks in `track_order`; the arrangement draws them together under a strip that folds (`timeline::tracks` lists all, `visible_tracks` the unfolded). There is no track hiding: a lane drags down to just its name (`MIN_LANE`, no controls).
+
+## Command palette and keymap
+
+`app/commands.rs` registers each menu and transport action once (`ENTRIES`: id, name, `Action`, default chord). Cmd+K searches them; "Edit shortcuts" rebinds one. Only changed chords are saved, as `keymap` in the preferences; a chord belongs to one command. Chords the views catch themselves (Cut, Copy, F) keep doing so; a user's binding for them is caught globally.
+
+## Project templates
+
+`Session::save_template` writes `Project::as_template` (the project without clips and clip groups; automation lanes and nodes stay) and its samples to the `templates` folder in the data directory. `new_from_template` starts an untitled copy. A template is a copy, never a link (ADR 0005): it never updates projects made from it.
 
 ## Outputs view
 

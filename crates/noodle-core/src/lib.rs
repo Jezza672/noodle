@@ -12,6 +12,7 @@ mod graph;
 pub mod group;
 mod key;
 pub mod library;
+mod organise;
 mod project;
 pub mod spare;
 mod timeline;
@@ -31,6 +32,7 @@ pub use edit::{Command, EditError, History};
 pub use frame::{Frame, FrameId};
 pub use graph::{Connection, Endpoint, Graph, Node, NodeId, Position};
 pub use key::{Key, KeyTarget, Mode, Transpose};
+pub use organise::{Folder, FolderId, Organisation};
 pub use project::{
     ExportSettings, ExportTail, LoadError, Marker, Project, PunchRange, TransportLoop,
 };
@@ -41,6 +43,6 @@ pub use timeline::{
 pub use warp::{
     ClipWarp, ENGINE_MAX_SPEED, GROOVE_SLOT, GROOVE_SLOTS, Groove, LoopRegion, MAX_CLIP_BPM,
     MAX_GRID_OFFSET, MAX_WARP_SPEED, MIN_CLIP_BPM, MIN_LOOP_BEATS, MIN_LOOP_SECONDS,
-    MIN_WARP_SPEED, PiecewiseLinear, QUANTISE_GRIDS, TempoCurve, TempoPoint, WarpAxis, WarpCurve,
-    WarpId, WarpMarker, WarpMode, WarpQuantise,
+    MIN_WARP_SPEED, PIN_MERGE, PiecewiseLinear, QUANTISE_GRIDS, QuantiseRegion, TempoCurve,
+    TempoPoint, WarpAxis, WarpCurve, WarpId, WarpMarker, WarpMode, WarpQuantise,
 };

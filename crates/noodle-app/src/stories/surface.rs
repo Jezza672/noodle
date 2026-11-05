@@ -112,6 +112,7 @@ pub const CHORDS: &[Chord] = &[
     chord(CMD, Key::O, Surface::Menu, "File > Open"),
     chord(CMD, Key::N, Surface::Menu, "File > New"),
     chord(CMD, Key::Comma, Surface::Menu, "Settings in the menu"),
+    chord(CMD, Key::K, Surface::Menu, "View > Command Palette"),
     chord(
         NONE,
         Key::Space,

@@ -13,6 +13,7 @@ use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
 pub mod automate;
+pub mod convert;
 mod export;
 pub mod learn_midi;
 mod library;
@@ -146,6 +147,18 @@ pub enum Edit {
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
+    /// Convert an audio clip to MIDI at a sensitivity, replacing the MIDI clip
+    /// if one is given.
+    ConvertToMidi(
+        noodle_core::ClipId,
+        convert::Detect,
+        Option<noodle_core::ClipId>,
+    ),
+    /// Slice an audio clip at its transients onto a new Sampler track.
+    SliceToSampler(noodle_core::ClipId),
+    /// Pin the transients of a clip and the clips linked to it, at a
+    /// sensitivity in percent.
+    PinTransients(noodle_core::ClipId, u8),
     /// Splits the clip a clip's stems came from again, at the chosen quality,
     /// and points the stem clips at the new files (see
     /// [`Session::resplit_stems`]). One undo step, when the job is done.
@@ -318,6 +331,9 @@ pub struct Session {
     registry: Registry,
     /// Group templates and presets, system and the user's.
     library: noodle_core::library::Library,
+    /// Where project templates are kept, if anywhere (see
+    /// [`Session::save_template`]).
+    templates_dir: Option<PathBuf>,
     /// The plugin node types in `registry`.
     plugins: noodle_plugins::Catalog,
     /// Where a background plugin scan reports, until it has.
@@ -711,6 +727,7 @@ impl Session {
             history: History::new(),
             registry,
             library: noodle_core::library::Library::in_memory(),
+            templates_dir: None,
             plugins,
             plugin_scan,
             plugin_files,
@@ -1665,6 +1682,18 @@ impl Session {
                     self.split_to_stems(clip);
                     continue;
                 }
+                Edit::ConvertToMidi(clip, detect, replace) => {
+                    self.convert_to_midi(clip, detect, replace);
+                    continue;
+                }
+                Edit::SliceToSampler(clip) => {
+                    self.slice_to_sampler(clip);
+                    continue;
+                }
+                Edit::PinTransients(clip, percent) => {
+                    self.pin_transients(clip, percent);
+                    continue;
+                }
                 Edit::ResplitStems(clip) => {
                     self.resplit_stems(clip);
                     continue;
@@ -1822,8 +1851,12 @@ impl Session {
     /// along.
     fn save_samples(&mut self) {
         self.samples.set_dir(self.base().join("samples"));
-        let hashes: std::collections::BTreeSet<String> = self
-            .project
+        self.write_samples();
+    }
+
+    /// The hashes of the samples the project's nodes name.
+    fn sample_hashes(&self) -> std::collections::BTreeSet<String> {
+        self.project
             .graph()
             .nodes()
             .filter(|(_, node)| {
@@ -1839,13 +1872,107 @@ impl Session {
                 _ => None,
             })
             .flatten()
-            .collect();
-        for hash in hashes {
+            .collect()
+    }
+
+    /// Writes every sample the project names into the store's folder.
+    fn write_samples(&mut self) {
+        for hash in self.sample_hashes() {
             if let Err(error) = self.samples.save(&hash) {
                 self.message = Some(format!(
                     "Couldn't save sample {}: {error}",
                     &hash[..8.min(hash.len())]
                 ));
+            }
+        }
+    }
+
+    /// Where project templates are kept, a folder of project files.
+    pub fn set_templates_dir(&mut self, dir: Option<PathBuf>) {
+        self.templates_dir = dir;
+    }
+
+    /// The saved project templates by name, with their files.
+    pub fn templates(&self) -> Vec<(String, PathBuf)> {
+        let Some(dir) = &self.templates_dir else {
+            return Vec::new();
+        };
+        let mut found: Vec<(String, PathBuf)> = std::fs::read_dir(dir)
+            .into_iter()
+            .flatten()
+            .flatten()
+            .map(|entry| entry.path())
+            .filter(|path| path.extension().is_some_and(|e| e == "ron"))
+            .filter_map(|path| Some((path.file_stem()?.to_string_lossy().into_owned(), path)))
+            .collect();
+        found.sort();
+        found
+    }
+
+    /// Saves the project's routing, plugins and settings, without its clips,
+    /// as a template called `name`. A project made from it is a copy: the
+    /// template changing later never reaches it, and nothing it does reaches
+    /// the template.
+    pub fn save_template(&mut self, name: &str) -> bool {
+        let name = name.trim();
+        let valid = !name.is_empty() && !name.contains(['/', '\\', ':']) && !name.starts_with('.');
+        let Some(dir) = self.templates_dir.clone().filter(|_| valid) else {
+            self.message = Some(if valid {
+                "There is nowhere to keep templates".to_owned()
+            } else {
+                format!("\"{name}\" can't be a template's name")
+            });
+            return false;
+        };
+        if let Err(error) = std::fs::create_dir_all(&dir) {
+            self.message = Some(format!("Couldn't make {}: {error}", dir.display()));
+            return false;
+        }
+        let path = dir.join(format!("{name}.ron"));
+        let kept = self.samples.dir();
+        self.samples.set_dir(dir.join("samples"));
+        self.write_samples();
+        self.samples.set_dir_option(kept);
+        match write_atomically(&path, &self.project.as_template().to_ron()) {
+            Ok(()) => {
+                self.message = Some(format!("Saved template {name}"));
+                true
+            }
+            Err(error) => {
+                self.message = Some(format!("Couldn't save template {name}: {error}"));
+                false
+            }
+        }
+    }
+
+    /// Starts an untitled project that is a copy of a template.
+    pub fn new_from_template(&mut self, path: &Path) -> bool {
+        match load(path) {
+            Ok(project) => {
+                if let Some(dir) = path.parent() {
+                    // Pull its samples in, so they stay with the new project
+                    // until it is saved.
+                    self.samples.set_dir(dir.join("samples"));
+                    for hash in project
+                        .graph()
+                        .nodes()
+                        .filter_map(|(_, node)| match node.config.get("sample") {
+                            Some(noodle_core::Value::Text(text)) => {
+                                Some(noodle_nodes::sample_hashes(text))
+                            }
+                            _ => None,
+                        })
+                        .flatten()
+                    {
+                        let _ = self.samples.get(&hash);
+                    }
+                }
+                self.replace(project, None);
+                true
+            }
+            Err(error) => {
+                self.message = Some(error.to_string());
+                false
             }
         }
     }
@@ -3551,6 +3678,7 @@ impl Effect {
             | Command::SetParamShown { .. }
             | Command::SetPreset { .. }
             | Command::SetTrackOrder(_)
+            | Command::SetOrganisation(_)
             | Command::SetClipGroup { .. }
             | Command::AddFrame { .. }
             | Command::RemoveFrame { .. }
@@ -3838,6 +3966,67 @@ mod tests {
 
     fn error(kind: noodle_io::DeviceErrorKind) -> DeviceError {
         kind.into()
+    }
+
+    #[test]
+    fn a_template_keeps_the_setup_without_the_clips_and_never_follows_the_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.set_templates_dir(Some(dir.path().join("not").join("yet")));
+        let osc = session.new_node_id();
+        session.edit([Edit::Apply(Command::AddNode {
+            id: osc,
+            node: Node::new("noodle.osc.sine"),
+        })]);
+        let clip = session.project().next_clip_id();
+        let track = session.new_node_id();
+        session.edit([
+            Edit::Apply(Command::AddNode {
+                id: track,
+                node: Node::new("noodle.timeline.track_input"),
+            }),
+            Edit::Apply(Command::AddClip {
+                id: clip,
+                clip: noodle_core::Clip::midi(track, noodle_core::Tick(0), noodle_core::Tick(3840)),
+            }),
+        ]);
+        assert!(session.save_template("Band"));
+        assert_eq!(session.templates().len(), 1);
+        assert_eq!(session.templates()[0].0, "Band");
+
+        let (_, path) = session.templates().remove(0);
+        assert!(session.new_from_template(&path));
+        assert!(session.path().is_none(), "a copy, not the template itself");
+        assert!(session.project().graph().node(osc).is_some());
+        assert_eq!(session.project().clips().count(), 0);
+
+        // Changing the new project does not reach the template.
+        session.edit([Edit::Apply(Command::RemoveNode { id: osc })]);
+        let again = Session::new(Nodes::all());
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(
+            Project::from_ron(&text)
+                .unwrap()
+                .graph()
+                .node(osc)
+                .is_some()
+        );
+        drop(again);
+        // And saving the template again does not reach a project made from it.
+        let before = session.project().clone();
+        session.save_template("Band");
+        assert_eq!(session.project(), &before);
+    }
+
+    #[test]
+    fn a_template_name_cannot_be_a_path_or_empty() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.set_templates_dir(Some(dir.path().to_owned()));
+        for name in ["", "  ", "../x", "a/b", ".hidden"] {
+            assert!(!session.save_template(name), "{name:?}");
+        }
+        assert!(session.templates().is_empty());
     }
 
     /// A sine into an output, with the sine in a group.

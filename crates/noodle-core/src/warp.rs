@@ -44,6 +44,12 @@ pub enum WarpMode {
     /// clip's transients, each attack plays at natural speed, and only what
     /// follows is stretched. Best for drums and plucked sounds.
     Beats,
+    /// Cuts the clip at its warp markers and plays each slice at natural
+    /// speed, moved to where the markers put it: nothing is stretched, so
+    /// attacks stay whole and clips that share the markers (the mics of a
+    /// drum kit) stay in phase. Gaps are left to the slice before to ring out;
+    /// overlaps are crossfaded. Best for drums edited by their transients.
+    Slices,
 }
 
 impl WarpMode {
@@ -53,6 +59,10 @@ impl WarpMode {
         !matches!(self, WarpMode::Repitch)
     }
 }
+
+/// Transients this close together in time, in seconds, are one when they are
+/// pinned across a link ([`ClipWarp::pin_transients`]).
+pub const PIN_MERGE: f64 = 0.005;
 
 /// The slowest and fastest a clip may play, as a multiple of natural speed,
 /// between two warp markers. Beyond these the sound is noise. The speed the
@@ -351,6 +361,26 @@ pub struct WarpQuantise {
     /// groove stays.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub groove_from: Option<ClipId>,
+    /// Stretches of the clip with a grid and an amount of their own, which
+    /// override the warp's wherever they reach (a fill in triplets, a bar to
+    /// leave alone with amount 0). The first region that holds a marker's
+    /// beat decides it; the groove is not applied inside one.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub regions: Vec<QuantiseRegion>,
+}
+
+/// A stretch of a clip that quantises on its own terms (see
+/// [`WarpQuantise::regions`]).
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+pub struct QuantiseRegion {
+    /// The stretch, in beats of the clip, markers' stored beats: from `from`
+    /// up to but not including `to`.
+    pub from: f64,
+    pub to: f64,
+    /// The grid, in beats of the clip, as for [`WarpQuantise::grid`].
+    pub grid: f64,
+    /// How far markers in the region are pulled onto it, 0 to 1.
+    pub amount: f64,
 }
 
 fn full() -> f64 {
@@ -368,6 +398,7 @@ impl Default for WarpQuantise {
             groove: None,
             groove_amount: 1.0,
             groove_from: None,
+            regions: Vec::new(),
         }
     }
 }
@@ -381,6 +412,10 @@ impl WarpQuantise {
     /// Where a marker at `beat` is moved to, on a grid whose lines are slid
     /// `origin` beats from the whole ones (see [`ClipWarp::grid_offset`]).
     pub fn apply_from(&self, beat: f64, origin: f64) -> f64 {
+        if let Some(region) = self.regions.iter().find(|r| (r.from..r.to).contains(&beat)) {
+            let line = ((beat - origin) / region.grid).round() * region.grid;
+            return beat + (line + origin - beat) * region.amount;
+        }
         let line = ((beat - origin) / self.grid).round() * self.grid;
         let target = match &self.groove {
             Some(groove) => line + groove.offset_at(line) * self.groove_amount,
@@ -395,6 +430,17 @@ impl WarpQuantise {
         }
         if !(0.0..=1.0).contains(&self.amount) || !(0.0..=1.0).contains(&self.groove_amount) {
             return Some("a quantise amount is outside 0 to 1");
+        }
+        for region in &self.regions {
+            if !(region.grid > 0.0 && region.grid.is_finite()) {
+                return Some("a quantise region's grid is not a length");
+            }
+            if !(0.0..=1.0).contains(&region.amount) {
+                return Some("a quantise region's amount is outside 0 to 1");
+            }
+            if region.from.partial_cmp(&region.to) != Some(std::cmp::Ordering::Less) {
+                return Some("a quantise region ends before it starts");
+            }
         }
         self.groove.as_ref().and_then(Groove::problem)
     }
@@ -619,6 +665,47 @@ impl ClipWarp {
         self.markers
             .iter()
             .position(|m| (m.seconds - seconds).abs() < 1e-3)
+    }
+
+    /// Pins a marker on each of the moments in `seconds` (the transients of the
+    /// clips that share this warp) where it plays now, so nothing moves until
+    /// a marker is moved or quantised. Moments within [`PIN_MERGE`] seconds
+    /// of each other count as one, the earliest standing for them (the close
+    /// mic, before its bleed in the others). A moment on a marker already
+    /// there, or that would leave a warp that can't play, is skipped. Returns
+    /// how many markers were added.
+    pub fn pin_transients(&mut self, seconds: &[f64]) -> usize {
+        let mut moments: Vec<f64> = seconds.iter().copied().filter(|s| s.is_finite()).collect();
+        moments.sort_by(f64::total_cmp);
+        let mut merged: Vec<f64> = Vec::with_capacity(moments.len());
+        for moment in moments {
+            if merged.last().is_none_or(|last| moment - last > PIN_MERGE) {
+                merged.push(moment);
+            }
+        }
+        // Where each moment plays with the markers as they are stored, not as
+        // quantise moves them, and before any of the new ones bend the map.
+        let plain = ClipWarp {
+            quantise: None,
+            ..self.clone()
+        };
+        let mut added = 0;
+        for moment in merged {
+            if moment < 0.0 || self.marker_at(moment).is_some() {
+                continue;
+            }
+            let before = self.markers.clone();
+            self.set_marker(WarpMarker {
+                seconds: moment,
+                beat: plain.beat_at(moment),
+            });
+            if self.problem().is_some() {
+                self.markers = before;
+            } else {
+                added += 1;
+            }
+        }
+        added
     }
 
     /// Adds a marker, keeping them in order. A marker at (nearly) the same
@@ -1107,6 +1194,98 @@ mod tests {
         });
         assert_eq!(warp.markers.len(), 1);
         assert_eq!(warp.markers[0].beat, 2.5);
+    }
+
+    #[test]
+    fn pinning_transients_pins_each_where_it_plays_and_merges_the_close_ones() {
+        let mut warp = ClipWarp::at_tempo(120.0);
+        // The overheads hear the same hits a few milliseconds after the close
+        // mic; the earliest of each pair stands.
+        let added = warp.pin_transients(&[1.003, 0.5, 0.502, 1.0, 1.5]);
+        assert_eq!(added, 3);
+        let seconds: Vec<f64> = warp.markers.iter().map(|m| m.seconds).collect();
+        assert_eq!(seconds, [0.5, 1.0, 1.5]);
+        // At 120 bpm a second is two beats: nothing moves.
+        let beats: Vec<f64> = warp.markers.iter().map(|m| m.beat).collect();
+        assert_eq!(beats, [1.0, 2.0, 3.0]);
+        // Pinning again adds nothing.
+        assert_eq!(warp.pin_transients(&[0.5, 1.0]), 0);
+        assert_eq!(warp.markers.len(), 3);
+    }
+
+    #[test]
+    fn pinning_pins_where_it_plays_not_where_quantise_would_put_it() {
+        let mut warp = ClipWarp::at_tempo(120.0);
+        warp.quantise = Some(WarpQuantise {
+            grid: 1.0,
+            ..WarpQuantise::default()
+        });
+        warp.pin_transients(&[0.6]);
+        assert_eq!(warp.markers[0].beat, 1.2);
+        // It plays on the grid.
+        assert_eq!(warp.marker_beat(0), Some(1.0));
+    }
+
+    #[test]
+    fn a_region_quantises_on_its_own_grid_and_amount() {
+        let mut warp = marked(&[(0.0, 0.0), (0.4, 0.8), (1.6, 3.3), (2.2, 4.4)]);
+        warp.quantise = Some(WarpQuantise {
+            grid: 1.0,
+            amount: 1.0,
+            regions: vec![
+                // A fill in triplets (a third of a beat).
+                QuantiseRegion {
+                    from: 3.0,
+                    to: 4.0,
+                    grid: 1.0 / 3.0,
+                    amount: 1.0,
+                },
+                // Leave the last one as it was played.
+                QuantiseRegion {
+                    from: 4.0,
+                    to: 5.0,
+                    grid: 1.0,
+                    amount: 0.0,
+                },
+            ],
+            ..WarpQuantise::default()
+        });
+        let beats: Vec<f64> = (0..4).filter_map(|i| warp.marker_beat(i)).collect();
+        assert_eq!(beats.len(), 4);
+        assert_eq!(beats[0], 0.0);
+        // 0.8 is on the warp's grid of 1.0.
+        assert_eq!(beats[1], 1.0);
+        // 3.3 is in the triplet region: the nearest third is 10/3.
+        assert!((beats[2] - 10.0 / 3.0).abs() < 1e-9, "{beats:?}");
+        // 4.4 is in the region with amount 0: where it was played.
+        assert_eq!(beats[3], 4.4);
+        // Without the regions both would have gone to the whole beat.
+        warp.quantise.as_mut().unwrap().regions.clear();
+        assert_eq!(warp.marker_beat(2), Some(3.0));
+        assert_eq!(warp.marker_beat(3), Some(4.0));
+    }
+
+    #[test]
+    fn a_bad_region_is_a_problem_and_regions_round_trip() {
+        let mut warp = ClipWarp::at_tempo(120.0);
+        let mut quantise = WarpQuantise::default();
+        quantise.regions.push(QuantiseRegion {
+            from: 2.0,
+            to: 1.0,
+            grid: 0.25,
+            amount: 1.0,
+        });
+        warp.quantise = Some(quantise);
+        assert!(warp.problem().is_some());
+        warp.quantise.as_mut().unwrap().regions[0].to = 3.0;
+        assert_eq!(warp.problem(), None);
+        let text = ron::to_string(&warp).unwrap();
+        assert_eq!(ron::from_str::<ClipWarp>(&text).unwrap(), warp);
+        // A warp saved without regions loads.
+        warp.quantise.as_mut().unwrap().regions.clear();
+        let plain = ron::to_string(&warp).unwrap();
+        assert!(!plain.contains("regions"));
+        assert_eq!(ron::from_str::<ClipWarp>(&plain).unwrap(), warp);
     }
 
     fn marked(beats: &[(f64, f64)]) -> ClipWarp {

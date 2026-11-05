@@ -2615,3 +2615,160 @@ fn dragging_a_joins_handle_sets_its_crossfade_on_every_linked_folder() {
         .crossfade;
     assert_eq!(join, None, "one undo step");
 }
+
+/// Puts the tracks whose groups are given in one folder.
+fn folder_of_tracks(h: &mut H, groups: &[NodeId]) -> noodle_core::FolderId {
+    let session = &mut h.state_mut().session;
+    let org = session
+        .project()
+        .organisation()
+        .clone()
+        .with_new_folder("Drums", groups);
+    let id = org.folder_of(groups[0]).unwrap();
+    session.edit([Edit::Apply(Command::SetOrganisation(org))]);
+    h.run();
+    id
+}
+
+#[test]
+fn a_track_keeps_its_chosen_colour_when_it_moves() {
+    let (mut h, _) = rig();
+    let (group, input, _) = add_real_track(&mut h);
+    let session = &mut h.state_mut().session;
+    let org = session
+        .project()
+        .organisation()
+        .clone()
+        .with_colour(&[group], Some(9));
+    session.edit([Edit::Apply(Command::SetOrganisation(org))]);
+    let before = super::colour_of(h.state().session.project(), input);
+    assert_eq!(before, super::colors::track_colour(9));
+    drag(
+        &mut h,
+        Modifiers::NONE,
+        &[
+            Pos2::new(14.0, header_y(2)),
+            Pos2::new(14.0, header_y(1)),
+            Pos2::new(14.0, header_y(0) - 14.0),
+        ],
+    );
+    let project = h.state().session.project();
+    assert_eq!(super::tracks(project).first(), Some(&input));
+    assert_eq!(super::colour_of(project, input), before);
+}
+
+#[test]
+fn an_unchosen_colour_does_not_follow_the_lane_either() {
+    let (mut h, _) = rig();
+    let (_, input, _) = add_real_track(&mut h);
+    let project = h.state().session.project();
+    let before = super::colour_of(project, input);
+    drag(
+        &mut h,
+        Modifiers::NONE,
+        &[
+            Pos2::new(14.0, header_y(2)),
+            Pos2::new(14.0, header_y(1)),
+            Pos2::new(14.0, header_y(0) - 14.0),
+        ],
+    );
+    assert_eq!(super::colour_of(h.state().session.project(), input), before);
+}
+
+#[test]
+fn folding_a_folder_takes_its_lanes_off_the_screen_and_unfolding_brings_them_back() {
+    let (mut h, _) = rig();
+    let id = folder_of_tracks(&mut h, &[NodeId(1), NodeId(2)]);
+    let project = h.state().session.project();
+    assert_eq!(super::visible_tracks(project).len(), 2);
+    // The folder's strip is the first row; its arrow is at the left.
+    let arrow = Pos2::new(15.0, 8.0 + super::colors::RULER_HEIGHT + 11.0);
+    click(&mut h, arrow, Modifiers::NONE);
+    h.run();
+    let project = h.state().session.project();
+    assert!(project.organisation().folders[&id].folded);
+    assert!(super::visible_tracks(project).is_empty());
+    // Folding is not a routing change: the tracks are all still there.
+    assert_eq!(super::tracks(project).len(), 2);
+    click(&mut h, arrow, Modifiers::NONE);
+    h.run();
+    let project = h.state().session.project();
+    assert!(!project.organisation().folders[&id].folded);
+    assert_eq!(super::visible_tracks(project).len(), 2);
+}
+
+#[test]
+fn a_folded_folder_hides_its_tracks_without_hiding_the_ones_beside_it() {
+    let (mut h, _) = rig();
+    let (_, input, _) = add_real_track(&mut h);
+    let id = folder_of_tracks(&mut h, &[NodeId(1), NodeId(2)]);
+    let session = &mut h.state_mut().session;
+    let org = session
+        .project()
+        .organisation()
+        .clone()
+        .with_folded(id, true);
+    session.edit([Edit::Apply(Command::SetOrganisation(org))]);
+    h.run();
+    assert_eq!(super::visible_tracks(h.state().session.project()), [input]);
+}
+
+#[test]
+fn a_folders_tracks_sit_together_whatever_the_order() {
+    let (mut h, _) = rig();
+    let (group, input, _) = add_real_track(&mut h);
+    // Tracks 1 and 3 in a folder, with 2 between them in the order.
+    folder_of_tracks(&mut h, &[NodeId(1), group]);
+    let project = h.state().session.project();
+    assert_eq!(super::tracks(project), [NodeId(1), input, NodeId(2)]);
+}
+
+#[test]
+fn dropping_a_track_between_a_folders_tracks_puts_it_in_the_folder() {
+    let (mut h, _) = rig();
+    let (group, _, _) = add_real_track(&mut h);
+    let folder = folder_of_tracks(&mut h, &[NodeId(1), NodeId(2)]);
+    // The new track is third; strip, then tracks 1, 2, 3. Drop it between
+    // the folder's two tracks.
+    let strip = super::automation::STRIP;
+    let between = 8.0 + super::colors::RULER_HEIGHT + strip + super::colors::LANE_HEIGHT + 2.0;
+    let from = 8.0 + super::colors::RULER_HEIGHT + strip + 2.0 * super::colors::LANE_HEIGHT + 20.0;
+    drag(
+        &mut h,
+        Modifiers::NONE,
+        &[
+            Pos2::new(14.0, from),
+            Pos2::new(14.0, from - 20.0),
+            Pos2::new(14.0, between),
+        ],
+    );
+    let org = h.state().session.project().organisation().clone();
+    assert_eq!(org.folder_of(group), Some(folder));
+}
+
+#[test]
+fn a_lane_can_be_shrunk_to_just_its_name_and_grown_back() {
+    let (mut h, _) = rig();
+    let (_, input, _) = add_real_track(&mut h);
+    let top = 8.0 + super::colors::RULER_HEIGHT;
+    let grip = Pos2::new(
+        14.0,
+        top + 2.0 * super::colors::LANE_HEIGHT + super::colors::LANE_HEIGHT - 3.0,
+    );
+    assert!(!h.state().timeline.name_only(input));
+    assert!(
+        h.query_by_label("RA").is_some(),
+        "a track shows its controls"
+    );
+    double_click(&mut h, grip);
+    h.run();
+    assert!(h.state().timeline.name_only(input));
+    assert!(
+        h.query_by_label("RA").is_none(),
+        "a name-only lane has none"
+    );
+    h.state_mut().timeline.toggle_name_only(input);
+    h.run();
+    assert!(!h.state().timeline.name_only(input));
+    assert!(h.query_by_label("RA").is_some());
+}

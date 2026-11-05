@@ -102,6 +102,8 @@ pub enum Command {
     /// Replaces the order tracks (their groups) are listed in. Groups it
     /// doesn't name go after the ones it does, in ID order.
     SetTrackOrder(Vec<NodeId>),
+    /// Replaces the tracks' colours and folders, for display only.
+    SetOrganisation(crate::Organisation),
     /// Freezes or unfreezes a node or group.
     SetFrozen {
         node: NodeId,
@@ -230,6 +232,11 @@ impl Command {
             }
             Command::SetTrackOrder(order) => {
                 return Ok(Command::SetTrackOrder(project.replace_track_order(order)));
+            }
+            Command::SetOrganisation(organisation) => {
+                return Ok(Command::SetOrganisation(
+                    project.replace_organisation(organisation),
+                ));
             }
             Command::AddClip { id, clip } => {
                 project.insert_clip(id, clip)?;
@@ -394,6 +401,7 @@ impl Command {
             | Command::SetPunch(_)
             | Command::SetExportSettings(_)
             | Command::SetTrackOrder(_)
+            | Command::SetOrganisation(_)
             | Command::SetFrozen { .. }
             | Command::AddClip { .. }
             | Command::RemoveClip { .. }
@@ -427,6 +435,7 @@ enum Target<'a> {
     Key,
     ExportSettings,
     TrackOrder,
+    Organisation,
     Frozen(NodeId),
 }
 
@@ -446,6 +455,7 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetKey(_) => Some(Target::Key),
         Command::SetExportSettings(_) => Some(Target::ExportSettings),
         Command::SetTrackOrder(_) => Some(Target::TrackOrder),
+        Command::SetOrganisation(_) => Some(Target::Organisation),
         Command::SetFrozen { node, .. } => Some(Target::Frozen(*node)),
         _ => None,
     }

@@ -531,10 +531,12 @@ fn open(
         ),
         None => (map, clip.length),
     };
-    let mut stretcher = Pitcher::new(
-        Stretcher::new(source, map, (cuts, &transients.bass), total, rate as f32),
-        clip.pitch.clone(),
-    );
+    let stretcher = if clip.mode == noodle_core::WarpMode::Slices {
+        Stretcher::slices(source, map, total, rate as f32)
+    } else {
+        Stretcher::new(source, map, (cuts, &transients.bass), total, rate as f32)
+    };
+    let mut stretcher = Pitcher::new(stretcher, clip.pitch.clone());
     let from = from.min(clip.length);
     stretcher.seek(from);
     let (ring, consumer) = RingBuffer::new(RING_FRAMES * 2);

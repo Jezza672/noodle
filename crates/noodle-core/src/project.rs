@@ -7,7 +7,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{
     AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Command, EditError, Endpoint,
-    Frame, FrameId, Graph, Key, LaneId, NodeId, TempoMap, Tick, WarpId,
+    Frame, FrameId, Graph, Key, LaneId, NodeId, Organisation, TempoMap, Tick, WarpId,
 };
 
 /// Everything that gets saved: the graph, the frames drawn around parts of
@@ -38,6 +38,8 @@ pub struct Project {
     lanes: BTreeMap<LaneId, AutomationLane>,
     next_lane_id: u64,
     track_order: Vec<NodeId>,
+    /// Colours and folders for the tracks (see [`Organisation`]).
+    organisation: Organisation,
     /// Nodes and groups whose output plays from a cached render (see
     /// "Caching" in docs/architecture/caching.md).
     frozen: BTreeSet<NodeId>,
@@ -69,6 +71,7 @@ impl Default for Project {
             lanes: BTreeMap::new(),
             next_lane_id: 1,
             track_order: Vec::new(),
+            organisation: Organisation::default(),
             frozen: BTreeSet::new(),
             revision: next_revision(),
         }
@@ -97,6 +100,7 @@ impl PartialEq for Project {
             && self.used_warps() == other.used_warps()
             && self.lanes == other.lanes
             && self.track_order == other.track_order
+            && self.organisation == other.organisation
             && self.frozen == other.frozen
     }
 }
@@ -130,6 +134,8 @@ struct ProjectFile {
     lanes: BTreeMap<LaneId, AutomationLane>,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     track_order: Vec<NodeId>,
+    #[serde(default, skip_serializing_if = "Organisation::is_empty")]
+    organisation: Organisation,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     frozen: BTreeSet<NodeId>,
 }
@@ -366,6 +372,27 @@ impl Project {
         } else {
             self.frozen.remove(&node)
         }
+    }
+
+    /// The tracks' colours and folders.
+    pub fn organisation(&self) -> &Organisation {
+        &self.organisation
+    }
+
+    pub(crate) fn replace_organisation(&mut self, organisation: Organisation) -> Organisation {
+        std::mem::replace(&mut self.organisation, organisation)
+    }
+
+    /// The project as a template: the same routing, plugins and setup, with
+    /// no clips. A project made from it is a copy and never follows it.
+    pub fn as_template(&self) -> Self {
+        let mut template = self.clone();
+        template.clips.clear();
+        template.clip_groups.clear();
+        template.next_clip_id = 1;
+        template.next_clip_group_id = 1;
+        template.revision = next_revision();
+        template
     }
 
     pub(crate) fn replace_track_order(&mut self, order: Vec<NodeId>) -> Vec<NodeId> {
@@ -1090,6 +1117,11 @@ impl Project {
                 .copied()
                 .filter(|id| self.graph.node(*id).is_some())
                 .collect(),
+            organisation: {
+                let mut organisation = self.organisation.clone();
+                organisation.retain_tracks(|id| self.graph.node(id).is_some());
+                organisation
+            },
             frozen: self
                 .frozen
                 .iter()
@@ -1142,6 +1174,7 @@ impl Project {
             lanes,
             next_lane_id,
             track_order: file.track_order,
+            organisation: file.organisation,
             frozen: file.frozen,
             revision: next_revision(),
         };
@@ -1876,6 +1909,38 @@ mod tests {
         history.undo(&mut project).unwrap();
         assert!(project.track_order().is_empty());
         assert!(!project.to_ron().contains("track_order"));
+    }
+
+    #[test]
+    fn colours_and_folders_undo_save_and_drop_gone_tracks() {
+        let (mut project, mut history, ..) = with_timeline();
+        let live = project.graph().nodes().next().unwrap().0;
+        let gone = NodeId(9999);
+        let org = Organisation::default()
+            .with_new_folder("Drums", &[live, gone])
+            .with_colour(&[live, gone], Some(4));
+        apply(
+            &mut project,
+            &mut history,
+            Command::SetOrganisation(org.clone()),
+        );
+        assert_eq!(project.organisation().colour(live), Some(4));
+        let loaded = Project::from_ron(&project.to_ron()).unwrap();
+        assert_eq!(loaded.organisation().colour(gone), None);
+        assert_eq!(loaded.organisation().colour(live), Some(4));
+        assert!(loaded.organisation().folder_of(live).is_some());
+        history.undo(&mut project).unwrap();
+        assert!(project.organisation().is_empty());
+        assert!(!project.to_ron().contains("organisation"));
+    }
+
+    #[test]
+    fn a_template_has_the_setup_and_no_clips() {
+        let (project, ..) = with_timeline();
+        assert!(project.clips().count() > 0);
+        let template = project.as_template();
+        assert_eq!(template.clips().count(), 0);
+        assert_eq!(template.graph(), project.graph());
     }
 
     #[test]

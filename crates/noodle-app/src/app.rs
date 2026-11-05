@@ -6,6 +6,8 @@ use egui::{Key, KeyboardShortcut, Modifiers};
 use noodle_core::{Command, NodeId};
 use noodle_engine::OUTPUT_ID;
 
+mod commands;
+
 use crate::cache_panel::CachePanel;
 use crate::clip_editor::{self, ClipEditor};
 use crate::clip_panel::{self, ClipPanel};
@@ -38,15 +40,14 @@ const FIT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::F);
 /// Shown in the Edit menu. The canvas handles the key itself, with the
 /// pointer over it, so this is not in [`SHORTCUTS`].
 const DELETE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::X);
-/// Turns the computer keyboard into a MIDI source, as in Ableton.
-const KEYBOARD: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::M);
 /// Shown in the Edit menu. The arrangement handles the keys itself, with the
 /// pointer over it, so these are not in [`SHORTCUTS`].
 const CUT: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::X);
 const COPY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::C);
 const PASTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::V);
 const DUPLICATE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::D);
-const PLAY: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::Space);
+/// Opens the command palette.
+const PALETTE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::K);
 /// Taps the tempo. Handled apart from [`SHORTCUTS`], because T is a note on
 /// the computer keyboard while that is on.
 const TAP: KeyboardShortcut = KeyboardShortcut::new(Modifiers::NONE, Key::T);
@@ -56,24 +57,15 @@ fn properties_scroll() -> egui::Id {
     egui::Id::new("properties scroll")
 }
 
-/// Longer shortcuts first: Cmd+Z would also match Cmd+Shift+Z.
-const SHORTCUTS: [(KeyboardShortcut, Action); 9] = [
-    (REDO, Action::Redo),
-    (UNDO, Action::Undo),
-    (SAVE_AS, Action::SaveAs),
-    (SAVE, Action::Save),
-    (OPEN, Action::Open),
-    (NEW, Action::New),
-    (SETTINGS, Action::AudioSettings),
-    (PLAY, Action::TogglePlayback),
-    (KEYBOARD, Action::ToggleKeyboard),
-];
-
 /// The global shortcuts, for the usability scorecard to check that it knows
 /// each one.
 #[cfg(test)]
 pub(crate) fn shortcut_chords() -> Vec<KeyboardShortcut> {
-    SHORTCUTS.iter().map(|(shortcut, _)| *shortcut).collect()
+    commands::ENTRIES
+        .iter()
+        .filter(|e| e.global)
+        .filter_map(|e| e.default)
+        .collect()
 }
 
 pub struct App {
@@ -128,6 +120,13 @@ pub struct App {
     /// An autosave a crashed run left, waiting for the user to recover or
     /// discard it. Nothing is autosaved meanwhile, so it isn't overwritten.
     recovery: Option<crate::autosave::Recovery>,
+    /// The command palette, and the keys the user bound.
+    palette: commands::Palette,
+    keymap: commands::Keymap,
+    /// The saved project templates, listed when the File menu opens.
+    templates: Vec<(String, PathBuf)>,
+    /// A template name being typed, once "Save as Project Template" is chosen.
+    template_name: Option<String>,
 }
 
 /// Something the user asked for, from a menu or a shortcut. Collected during
@@ -141,7 +140,7 @@ enum Focus {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum Action {
+pub(crate) enum Action {
     New,
     Open,
     Save,
@@ -207,12 +206,23 @@ enum Action {
     /// Fits the node editor's view around the whole graph at this level.
     FitGraph,
     Close,
+    /// Opens the command palette.
+    OpenPalette,
+    /// Asks for a name and saves the project as a template.
+    SaveTemplate,
+    /// Starts a project from the nth template listed.
+    NewFromTemplate(usize),
+    /// Folds or unfolds every folder of tracks.
+    FoldFolders(bool),
 }
 
 impl Action {
     /// Whether it throws the current project away.
     fn discards(self) -> bool {
-        matches!(self, Self::New | Self::Open | Self::Close)
+        matches!(
+            self,
+            Self::New | Self::Open | Self::Close | Self::NewFromTemplate(_)
+        )
     }
 
     /// Whether a focused text field gets its key first. Space types a
@@ -246,6 +256,7 @@ fn added_automation_node(edits: &[Edit]) -> Option<noodle_core::NodeId> {
 
 impl App {
     pub fn new(session: Session) -> Self {
+        let templates = session.templates();
         Self {
             session,
             editor: EditorState::default(),
@@ -276,6 +287,10 @@ impl App {
             keyboard: crate::keyboard::KeyboardMidi::default(),
             autosave: None,
             recovery: None,
+            palette: commands::Palette::default(),
+            keymap: commands::Keymap::from_saved(&crate::prefs::keymap()),
+            templates,
+            template_name: None,
         }
     }
 
@@ -708,6 +723,7 @@ impl App {
         self.session.edit(edits);
         self.cache_panel.show(ui.ctx(), &mut self.session);
         self.export.show(ui.ctx(), &mut self.session);
+        self.palette_and_templates(ui.ctx(), &mut actions);
         crate::stems_dialog::show(ui.ctx(), &mut self.session);
         crate::sample_set_dialog::show(ui.ctx(), &mut self.session);
         if self.export.has_choice() {
@@ -754,7 +770,11 @@ impl App {
         }
         let typing = ctx.egui_wants_keyboard_input()
             && ctx.memory(|m| m.focused()) != Some(crate::editor::canvas_id());
-        let dialog = self.devices.is_open() || self.export.is_open() || self.confirming.is_some();
+        let dialog = self.devices.is_open()
+            || self.export.is_open()
+            || self.confirming.is_some()
+            || self.palette.is_open()
+            || self.template_name.is_some();
         let focused = ctx.input(|i| i.focused);
         let mut messages = Vec::new();
         if typing || dialog || !focused {
@@ -806,13 +826,23 @@ impl App {
         // A dialog has the user's attention; shortcuts would act behind it.
         // The editor's own keys are safe too, since they need the pointer
         // over the canvas and a modal's backdrop covers it. Keep it so.
-        let dialog = self.devices.is_open() || self.export.is_open() || self.confirming.is_some();
+        let dialog = self.devices.is_open()
+            || self.export.is_open()
+            || self.confirming.is_some()
+            || self.palette.is_open()
+            || self.template_name.is_some();
         ctx.input_mut(|input| {
             let mut actions = Vec::new();
-            let shortcuts = if dialog { &[][..] } else { &SHORTCUTS[..] };
-            for &(shortcut, action) in shortcuts {
-                if !(typing && action.yields_to_text()) && input.consume_shortcut(&shortcut) {
-                    actions.push(action);
+            let keymap = if dialog {
+                Vec::new()
+            } else {
+                self.keymap.global()
+            };
+            for (shortcut, entry) in keymap {
+                // A bare key is a letter for a text field to type.
+                let yields = entry.action.yields_to_text() || shortcut.modifiers == Modifiers::NONE;
+                if !(typing && yields) && input.consume_shortcut(&shortcut) {
+                    actions.push(entry.action);
                 }
             }
             if !dialog && !typing && !self.keyboard.is_on() && input.consume_shortcut(&TAP) {
@@ -853,11 +883,30 @@ impl App {
                     actions.push(action);
                 }
             };
+        let template = std::cell::Cell::new(None);
         ui.menu_button("File", |ui| {
             item(ui, "New", Some(&NEW), true, Action::New);
             item(ui, "Open…", Some(&OPEN), true, Action::Open);
             item(ui, "Save", Some(&SAVE), true, Action::Save);
             item(ui, "Save As…", Some(&SAVE_AS), true, Action::SaveAs);
+            ui.separator();
+            item(
+                ui,
+                "Save as Project Template…",
+                None,
+                true,
+                Action::SaveTemplate,
+            );
+            ui.add_enabled_ui(!self.templates.is_empty(), |ui| {
+                ui.menu_button("New from Template", |ui| {
+                    for (n, (name, _)) in self.templates.iter().enumerate() {
+                        if ui.button(name).clicked() {
+                            template.set(Some(n));
+                            ui.close();
+                        }
+                    }
+                });
+            });
             ui.separator();
             item(ui, "Import Audio…", None, true, Action::ImportAudio);
             item(ui, "Export Audio…", None, true, Action::ExportAudio);
@@ -936,7 +985,22 @@ impl App {
                 Action::ArrangeNodes,
             );
         });
+        if let Some(n) = template.get() {
+            actions.push(Action::NewFromTemplate(n));
+        }
         ui.menu_button("View", |ui| {
+            if ui
+                .add(
+                    egui::Button::new("Command Palette…")
+                        .shortcut_text(ui.ctx().format_shortcut(&PALETTE)),
+                )
+                .on_hover_text("Find any command by name, and set its key")
+                .clicked()
+            {
+                actions.push(Action::OpenPalette);
+                ui.close();
+            }
+            ui.separator();
             if ui
                 .add(egui::Button::new("Fit Graph").shortcut_text(ui.ctx().format_shortcut(&FIT)))
                 .on_hover_text("Centre the node editor on the whole graph at this level")
@@ -1640,6 +1704,61 @@ impl App {
 
     /// Asks what to do with unsaved changes before an action that would
     /// lose them.
+    /// The command palette, and the box that names a template being saved.
+    fn palette_and_templates(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
+        if self.palette.is_open() || self.template_name.is_some() {
+            self.templates = self.session.templates();
+        }
+        let from_template: Vec<(String, Action)> = self
+            .templates
+            .iter()
+            .enumerate()
+            .map(|(n, (name, _))| {
+                (
+                    format!("New from Template: {name}"),
+                    Action::NewFromTemplate(n),
+                )
+            })
+            .collect();
+        let out = self.palette.show(ctx, &mut self.keymap, &from_template);
+        actions.extend(out.run);
+        if out.keymap_changed {
+            crate::prefs::remember_keymap(self.keymap.saved());
+        }
+        let Some(name) = &mut self.template_name else {
+            return;
+        };
+        let mut done = None;
+        let modal = egui::Modal::new(egui::Id::new("template name")).show(ctx, |ui| {
+            ui.label("Name the project template");
+            let field = ui.add(egui::TextEdit::singleline(name).hint_text("Template name"));
+            if !field.has_focus() {
+                field.request_focus();
+            }
+            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            ui.horizontal(|ui| {
+                if (ui.button("Save").clicked() || enter) && !name.trim().is_empty() {
+                    done = Some(true);
+                }
+                if ui.button("Cancel").clicked() {
+                    done = Some(false);
+                }
+            });
+        });
+        if modal.should_close() {
+            done = Some(false);
+        }
+        match done {
+            Some(true) => {
+                let name = self.template_name.take().unwrap_or_default();
+                self.session.save_template(&name);
+                self.templates = self.session.templates();
+            }
+            Some(false) => self.template_name = None,
+            None => {}
+        }
+    }
+
     fn confirm_dialog(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let Some(action) = self.confirming else {
             return;
@@ -1723,6 +1842,25 @@ impl App {
                 {
                     self.run(ctx, then);
                 }
+            }
+            Action::OpenPalette => self.palette.open(),
+            Action::SaveTemplate => self.template_name = Some(String::new()),
+            Action::NewFromTemplate(n) => {
+                if let Some((_, path)) = self.templates.get(n).cloned()
+                    && self.session.new_from_template(&path)
+                {
+                    self.editor = EditorState::default();
+                }
+            }
+            Action::FoldFolders(folded) => {
+                let organisation = self
+                    .session
+                    .project()
+                    .organisation()
+                    .clone()
+                    .with_all_folded(folded);
+                self.session
+                    .edit([Edit::Apply(Command::SetOrganisation(organisation))]);
             }
             Action::Undo => self.session.undo(),
             Action::Redo => self.session.redo(),
@@ -2185,6 +2323,85 @@ mod tests {
 
     fn empty() -> App {
         App::new(Session::new(crate::session::Nodes::all()))
+    }
+
+    fn folded_app() -> App {
+        let mut app = empty();
+        for n in 1..=2 {
+            app.session.edit([Edit::Apply(Command::AddNode {
+                id: noodle_core::NodeId(n),
+                node: Node::new(crate::timeline::TRACK_INPUT),
+            })]);
+        }
+        let org = noodle_core::Organisation::default()
+            .with_new_folder("Drums", &[noodle_core::NodeId(1), noodle_core::NodeId(2)]);
+        app.session
+            .edit([Edit::Apply(Command::SetOrganisation(org))]);
+        app
+    }
+
+    fn folded(h: &Harness<'static, App>) -> bool {
+        h.state()
+            .session
+            .project()
+            .organisation()
+            .folders
+            .values()
+            .all(|f| f.folded)
+    }
+
+    #[test]
+    fn the_palette_finds_a_command_by_what_it_does_and_runs_it() {
+        let mut h = harness(folded_app());
+        h.run();
+        let at = egui::pos2(300.0, 200.0);
+        crate::testkit::press(&mut h, at, Modifiers::COMMAND, Key::K);
+        h.run();
+        assert!(h.state().palette.is_open());
+        crate::testkit::type_text(&mut h, at, "fold all");
+        h.run();
+        crate::testkit::press(&mut h, at, Modifiers::NONE, Key::Enter);
+        h.run();
+        assert!(!h.state().palette.is_open(), "it closes after running one");
+        assert!(folded(&h));
+    }
+
+    #[test]
+    fn escape_closes_the_palette_without_running_anything() {
+        let mut h = harness(folded_app());
+        h.run();
+        let at = egui::pos2(300.0, 200.0);
+        crate::testkit::press(&mut h, at, Modifiers::COMMAND, Key::K);
+        h.run();
+        crate::testkit::press(&mut h, at, Modifiers::NONE, Key::Escape);
+        h.run();
+        assert!(!h.state().palette.is_open());
+        assert!(!folded(&h));
+    }
+
+    #[test]
+    fn a_key_the_user_binds_runs_its_command_and_the_old_key_stops() {
+        let mut app = empty();
+        app.keymap.bind(
+            "view.mixer",
+            Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::M)),
+        );
+        // Take Save's key for another command: Save no longer answers to it.
+        app.keymap.bind(
+            "view.scope",
+            Some(KeyboardShortcut::new(Modifiers::COMMAND, Key::S)),
+        );
+        let mut h = harness(app);
+        h.run();
+        let at = egui::pos2(300.0, 200.0);
+        assert!(!h.state().mixer_open);
+        crate::testkit::press(&mut h, at, Modifiers::COMMAND, Key::M);
+        h.run();
+        assert!(h.state().mixer_open);
+        assert!(!h.state().scope_open);
+        crate::testkit::press(&mut h, at, Modifiers::COMMAND, Key::S);
+        h.run();
+        assert!(h.state().scope_open, "Cmd+S now toggles the scope");
     }
 
     fn properties_width(harness: &Harness<'static, App>) -> f32 {

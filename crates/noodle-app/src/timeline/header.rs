@@ -11,7 +11,7 @@ use std::collections::BTreeSet;
 
 use egui::{Align, Layout, Pos2, Rect, RichText, Stroke, UiBuilder, vec2};
 use noodle_core::group::{self, Controls};
-use noodle_core::{Command, Graph, NodeId, Value};
+use noodle_core::{Command, Graph, NodeId, Organisation, Value};
 
 use crate::session::Edit;
 use crate::theme::timeline as colors;
@@ -133,6 +133,44 @@ pub struct Lane {
     pub input: NodeId,
     /// The track is selected, so Delete removes it.
     pub selected: bool,
+    /// The colour of the track's edge, and its clips.
+    pub colour: egui::Color32,
+}
+
+/// A lane shorter than this has room for only the track's name.
+pub const CONTROLS_MIN: f32 = 52.0;
+
+/// The colour swatches of a colour menu, and a way back to the default.
+/// Returns the slot picked: `Some(None)` is "Default".
+pub fn colour_menu(ui: &mut egui::Ui, current: Option<u8>) -> Option<Option<u8>> {
+    let mut picked = None;
+    ui.horizontal_wrapped(|ui| {
+        ui.spacing_mut().item_spacing = vec2(4.0, 4.0);
+        for (slot, (name, colour)) in colors::PALETTE.iter().enumerate() {
+            let (rect, response) = ui.allocate_exact_size(vec2(18.0, 18.0), egui::Sense::click());
+            ui.painter().rect_filled(rect, 3.0, *colour);
+            if current == Some(slot as u8) {
+                ui.painter().rect_stroke(
+                    rect,
+                    3.0,
+                    Stroke::new(2.0, colors::TEXT),
+                    egui::StrokeKind::Outside,
+                );
+            }
+            response
+                .widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, *name));
+            if response.on_hover_text(*name).clicked() {
+                picked = Some(Some(slot as u8));
+            }
+        }
+    });
+    if ui.button("Default colour").clicked() {
+        picked = Some(None);
+    }
+    if picked.is_some() {
+        ui.close();
+    }
+    picked
 }
 
 /// What the user did in a header.
@@ -168,12 +206,14 @@ pub fn show(
     track: Option<TrackControls>,
     automated: Automated,
     renaming: &mut Option<Rename>,
+    organisation: &Organisation,
 ) -> Changes {
     let Lane {
         rect: lane,
         index,
         input,
         selected,
+        colour,
     } = lane;
     let mut changes = Changes::default();
     let edits = &mut changes.edits;
@@ -205,6 +245,41 @@ pub fn show(
                 edits.push(Edit::Apply(delete_track(group)));
             }
         }
+        if let Some(group) = group_of_track {
+            ui.menu_button("Colour", |ui| {
+                if let Some(slot) = colour_menu(ui, organisation.colour(group)) {
+                    let organisation = organisation.clone().with_colour(&[group], slot);
+                    edits.push(Edit::Apply(Command::SetOrganisation(organisation)));
+                }
+            });
+            ui.menu_button("Folder", |ui| {
+                if ui.button("New folder with this track").clicked() {
+                    ui.close();
+                    let organisation = organisation.clone().with_new_folder("Folder", &[group]);
+                    edits.push(Edit::Apply(Command::SetOrganisation(organisation)));
+                }
+                for (&id, folder) in &organisation.folders {
+                    if organisation.folder_of(group) == Some(id) {
+                        continue;
+                    }
+                    if ui.button(format!("Move to {}", folder.name)).clicked() {
+                        ui.close();
+                        let organisation = organisation.clone().with_folder(&[group], Some(id));
+                        edits.push(Edit::Apply(Command::SetOrganisation(organisation)));
+                    }
+                }
+                let inside = organisation.folder_of(group).is_some();
+                if ui
+                    .add_enabled(inside, egui::Button::new("Take out of its folder"))
+                    .clicked()
+                {
+                    ui.close();
+                    let organisation = organisation.clone().with_folder(&[group], None);
+                    edits.push(Edit::Apply(Command::SetOrganisation(organisation)));
+                }
+            });
+            ui.separator();
+        }
         for (label, in_loop) in [("Render to clip", false), ("Render loop to clip", true)] {
             if ui
                 .add_enabled(group_of_track.is_some(), egui::Button::new(label))
@@ -229,16 +304,24 @@ pub fn show(
     painter.rect_filled(
         Rect::from_min_size(lane.min, vec2(4.0, lane.height() - 1.0)),
         0.0,
-        colors::track_colour(index),
+        colour,
     );
     painter.hline(
         lane.x_range(),
         lane.bottom() - 0.5,
         Stroke::new(1.0, colors::LANE_EVEN),
     );
+    // A short lane is just the name, with no controls under it.
+    let name_only = lane.height() < CONTROLS_MIN;
     let inner = Rect::from_min_max(
-        Pos2::new(lane.left() + 12.0, lane.top() + 5.0),
-        Pos2::new(lane.right() - 6.0, lane.bottom() - 4.0),
+        Pos2::new(
+            lane.left() + 12.0,
+            lane.top() + if name_only { 1.0 } else { 5.0 },
+        ),
+        Pos2::new(
+            lane.right() - 6.0,
+            lane.bottom() - if name_only { 1.0 } else { 4.0 },
+        ),
     );
     let mut child = ui.new_child(
         UiBuilder::new()
@@ -294,6 +377,9 @@ pub fn show(
                 text: stored.unwrap_or_default(),
             });
         }
+    }
+    if name_only {
+        return changes;
     }
     let Some(TrackControls {
         node,

@@ -11,8 +11,8 @@ use std::time::{Duration, Instant};
 use egui::{Response, RichText, Ui};
 use noodle_core::{
     ClipContent, ClipId, ClipWarp, Command, Key, KeyTarget, LoopRegion, MAX_CLIP_BPM,
-    MAX_GRID_OFFSET, MIN_CLIP_BPM, MIN_LOOP_BEATS, Mode, Project, QUANTISE_GRIDS, TempoCurve,
-    Transpose, WarpMarker, WarpMode, WarpQuantise,
+    MAX_GRID_OFFSET, MIN_CLIP_BPM, MIN_LOOP_BEATS, Mode, Project, QUANTISE_GRIDS, QuantiseRegion,
+    TempoCurve, Transpose, WarpMarker, WarpMode, WarpQuantise,
 };
 
 use noodle_io::TempoEstimate;
@@ -383,6 +383,9 @@ fn grid_name(grid: f64) -> String {
     match grid {
         g if (g - 4.0).abs() < 1e-9 => "Bar".into(),
         g if (g - 1.0).abs() < 1e-9 => "1/4 note".into(),
+        g if (g - 1.0 / 3.0).abs() < 1e-9 => "1/8 triplet".into(),
+        g if (g - 1.0 / 6.0).abs() < 1e-9 => "1/16 triplet".into(),
+        g if (g - 1.0 / 12.0).abs() < 1e-9 => "1/32 triplet".into(),
         g if g > 0.0 && (1.0 / g).fract().abs() < 1e-9 => format!("1/{} note", (4.0 / g).round()),
         g => format!("{g} beats"),
     }
@@ -412,14 +415,41 @@ fn quantise_section(
             };
             edits.extend(command.map(Edit::Apply));
         }
+        let linked = match subject {
+            Subject::Clip(id) => project.linked_with(id).len() > 1,
+            Subject::Sampler(_) => false,
+        };
+        let percent_id = ui.id().with("pin sensitivity");
+        let mut percent: u8 = ui.data(|d| d.get_temp(percent_id)).unwrap_or(50);
         if ui
             .button("Pin transients")
-            .on_hover_text("Put a marker on every transient that has none, where it plays now (with quantise on, they are quantised too), so there is something to quantise")
+            .on_hover_text(if linked {
+                "Put a marker on every transient of every clip in the link that has none, where it plays now (a hit the mics hear a few milliseconds apart is one), so there is something to quantise"
+            } else {
+                "Put a marker on every transient that has none, where it plays now (with quantise on, they are quantised too), so there is something to quantise"
+            })
             .clicked()
         {
-            edits.extend(
-                pin_transients(project, subject, analysis.map_or(&[], |a| &a.onsets)).map(Edit::Apply),
-            );
+            match subject {
+                Subject::Clip(id) => edits.push(Edit::PinTransients(id, percent)),
+                Subject::Sampler(_) => edits.extend(
+                    pin_transients(project, subject, analysis.map_or(&[], |a| &a.onsets))
+                        .map(Edit::Apply),
+                ),
+            }
+        }
+        if matches!(subject, Subject::Clip(_)) {
+            let response = ui
+                .add(
+                    egui::DragValue::new(&mut percent)
+                        .range(0..=100)
+                        .speed(0.5)
+                        .suffix(" %"),
+                )
+                .on_hover_text("How readily a soft hit counts as a transient: the same scale as Slice and Convert to MIDI");
+            if response.changed() {
+                ui.data_mut(|d| d.insert_temp(percent_id, percent));
+            }
         }
     });
     let Some(quantise) = &warp.quantise else {
@@ -456,6 +486,8 @@ fn quantise_section(
             .flatten();
         commit(&response, command, edits);
     });
+
+    regions_section(ui, project, subject, quantise, edits);
 
     // The groove: a feel lent by another clip.
     if let Subject::Clip(id) = subject {
@@ -534,6 +566,115 @@ fn quantise_section(
         edits.extend(bake_quantise(project, subject).map(Edit::Apply));
     }
 }
+
+/// The quantise regions: stretches of the clip with a grid and an amount of
+/// their own (triplets for a fill, amount 0 to leave one alone).
+fn regions_section(
+    ui: &mut Ui,
+    project: &Project,
+    subject: Subject,
+    quantise: &WarpQuantise,
+    edits: &mut Vec<Edit>,
+) {
+    for (i, region) in quantise.regions.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.label("Region");
+            let (mut from, mut to) = (region.from, region.to);
+            let a = ui.add(
+                egui::DragValue::new(&mut from)
+                    .speed(0.05)
+                    .max_decimals(2)
+                    .prefix("beat "),
+            );
+            let b = ui.add(
+                egui::DragValue::new(&mut to)
+                    .speed(0.05)
+                    .max_decimals(2)
+                    .prefix("to "),
+            );
+            let mut grid = region.grid;
+            crate::widgets::Dropdown::from_id_salt(("region grid", i))
+                .selected_text(grid_name(grid))
+                .show_ui(ui, |ui| {
+                    for option in REGION_GRIDS {
+                        ui.selectable_value(&mut grid, option, grid_name(option));
+                    }
+                });
+            let mut percent = region.amount * 100.0;
+            let c = ui.add(
+                egui::DragValue::new(&mut percent)
+                    .range(0.0..=100.0)
+                    .speed(0.5)
+                    .max_decimals(0)
+                    .suffix(" %"),
+            );
+            let set = |q: &mut WarpQuantise| {
+                if let Some(r) = q.regions.get_mut(i) {
+                    r.from = from;
+                    r.to = to.max(from + 0.01);
+                    r.grid = grid;
+                    r.amount = percent / 100.0;
+                }
+            };
+            for response in [&a, &b, &c] {
+                let command = response
+                    .changed()
+                    .then(|| change_quantise(project, subject, set))
+                    .flatten();
+                commit(response, command, edits);
+            }
+            if grid != region.grid {
+                edits.extend(change_quantise(project, subject, set).map(Edit::Apply));
+            }
+            if ui
+                .small_button("x")
+                .on_hover_text("Remove this region")
+                .clicked()
+            {
+                edits.extend(
+                    change_quantise(project, subject, |q| {
+                        if i < q.regions.len() {
+                            q.regions.remove(i);
+                        }
+                    })
+                    .map(Edit::Apply),
+                );
+            }
+        });
+    }
+    if ui
+        .button("Add region")
+        .on_hover_text("Quantise a stretch of the clip on its own grid and amount: triplets for a fill, or amount 0 to leave a bar as it was played")
+        .clicked()
+    {
+        let grid = quantise.grid;
+        edits.extend(
+            change_quantise(project, subject, |q| {
+                let from = q.regions.last().map_or(0.0, |r| r.to);
+                q.regions.push(QuantiseRegion {
+                    from,
+                    to: from + 4.0,
+                    grid,
+                    amount: 1.0,
+                });
+            })
+            .map(Edit::Apply),
+        );
+    }
+}
+
+/// The grids a region offers: the warp's, and the triplets.
+const REGION_GRIDS: [f64; 9] = [
+    4.0,
+    1.0,
+    0.5,
+    1.0 / 3.0,
+    0.25,
+    1.0 / 6.0,
+    0.125,
+    1.0 / 12.0,
+    0.0625,
+];
 
 /// One edit for a widget that may be dragged: a drag's steps are one undo
 /// step, closed when it is let go.
@@ -709,6 +850,7 @@ pub fn warp_controls(
                 WarpMode::Repitch => "Repitch",
                 WarpMode::Grain => "Grain",
                 WarpMode::Beats => "Beats",
+                WarpMode::Slices => "Slices",
             })
             .show_ui(ui, |ui| {
                 ui.selectable_value(&mut mode, WarpMode::Repitch, "Repitch")
@@ -717,6 +859,8 @@ pub fn warp_controls(
                     .on_hover_text("Keeps the pitch: for tonal and sustained sounds");
                 ui.selectable_value(&mut mode, WarpMode::Beats, "Beats")
                     .on_hover_text("Keeps each transient whole: for drums and plucks");
+                ui.selectable_value(&mut mode, WarpMode::Slices, "Slices")
+                    .on_hover_text("Cuts at the markers and plays each slice at natural speed where the markers put it, so linked mics stay in phase: pin the transients first");
             });
         if mode != warp.mode {
             edits.extend(
