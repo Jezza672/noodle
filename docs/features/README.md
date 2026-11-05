@@ -38,3 +38,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [tempo-source-and-monitoring.md](tempo-source-and-monitoring.md) | Tempo source (tap, MIDI clock in) and audio input monitoring |
 | [swing-humanise-midi-ports.md](swing-humanise-midi-ports.md) | Swing node, choke groups, humanise in the piano roll and as a node, View > MIDI ports |
 | [selector.md](selector.md) | Selector node: deterministic N-way selection of signals, notes, samples and spectra |
+| [organise-tracks.md](organise-tracks.md) | Track colours, folders, name-only lanes, command palette and keymap, project templates (#367) |

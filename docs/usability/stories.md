@@ -136,8 +136,8 @@ Under each story are its **late changes**: edits to an early decision, made afte
 
 ## Workflow
 
-- **S29** **Organise a large session with templates.** As a working producer, I want to colour-code, group and fold tracks into folders, hide unused ones, save the routing and plugin setup as a project template, and use key commands and macros for repetitive edits, so that I can find my way around a 150-track session fast and start every new project ready to work.
-  - *Late change:* Change the template's routing and update projects made from it.
+- **S29** **Organise a large session with templates.** As a working producer, I want to colour-code, group and fold tracks into folders, shrink unused ones to just their name, save the routing and plugin setup as a project template, and use key commands for repetitive edits, so that I can find my way around a 150-track session fast and start every new project ready to work.
+  - *Late change:* Start the next project from the template.
   - *Late change:* Regroup the folders.
   - *Late change:* Change the colour scheme.
 - **S30** **Keep a large project responsive.** As a producer with a 60-track project, I want to freeze or render heavy tracks and groups, see where CPU is going, and unfreeze to edit later, so that playback stays glitch-free on my laptop.

@@ -11,6 +11,7 @@ mod frame;
 mod graph;
 pub mod group;
 pub mod library;
+mod organise;
 mod project;
 pub mod spare;
 mod timeline;
@@ -29,6 +30,7 @@ pub use config::{Config, Value};
 pub use edit::{Command, EditError, History};
 pub use frame::{Frame, FrameId};
 pub use graph::{Connection, Endpoint, Graph, Node, NodeId, Position};
+pub use organise::{Folder, FolderId, Organisation};
 pub use project::{
     ExportSettings, ExportTail, LoadError, Marker, Project, PunchRange, TransportLoop,
 };

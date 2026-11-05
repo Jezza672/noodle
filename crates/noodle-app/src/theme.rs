@@ -180,17 +180,27 @@ pub mod timeline {
     pub const AUTOMATION_HEADER: Color32 = Color32::from_rgb(36, 41, 51);
     pub const AUTOMATION_LINE: Color32 = Color32::from_rgb(92, 200, 230);
 
-    /// A track's clip colour: the Canvas palette, then spread around the wheel.
+    /// The colours a track can be given, by slot. A project stores the slot,
+    /// not the colour, so changing this table recolours every track.
+    pub const PALETTE: [(&str, Color32); 12] = [
+        ("Coral", Color32::from_rgb(255, 122, 107)),
+        ("Blue", Color32::from_rgb(109, 140, 255)),
+        ("Violet", Color32::from_rgb(197, 140, 255)),
+        ("Teal", Color32::from_rgb(79, 183, 189)),
+        ("Amber", Color32::from_rgb(240, 160, 64)),
+        ("Green", Color32::from_rgb(91, 209, 138)),
+        ("Pink", Color32::from_rgb(240, 120, 180)),
+        ("Sky", Color32::from_rgb(110, 200, 245)),
+        ("Lime", Color32::from_rgb(190, 220, 90)),
+        ("Sand", Color32::from_rgb(214, 190, 140)),
+        ("Slate", Color32::from_rgb(150, 160, 185)),
+        ("Rose", Color32::from_rgb(200, 90, 100)),
+    ];
+
+    /// A track's clip colour: the palette slot, then spread around the wheel
+    /// for slots past it.
     pub fn track_colour(index: usize) -> Color32 {
-        const PALETTE: [Color32; 6] = [
-            Color32::from_rgb(255, 122, 107),
-            Color32::from_rgb(109, 140, 255),
-            Color32::from_rgb(197, 140, 255),
-            Color32::from_rgb(79, 183, 189),
-            Color32::from_rgb(240, 160, 64),
-            Color32::from_rgb(91, 209, 138),
-        ];
-        if let Some(&c) = PALETTE.get(index) {
+        if let Some(&(_, c)) = PALETTE.get(index) {
             return c;
         }
         let hue = (index as f32 * 0.17 + 0.52).fract();
