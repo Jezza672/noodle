@@ -1172,6 +1172,68 @@
         ),
     )),
     NodePreset((
+        name: "Sixteenth Loop",
+        slug: "pattern-player-sixteenth-loop",
+        node_type: "noodle.events.pattern",
+        values: (
+            params: {
+                "length": 16.0,
+                "mode": 0.0,
+                "step": 4.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Triplet Loop",
+        slug: "pattern-player-triplet-loop",
+        node_type: "noodle.events.pattern",
+        values: (
+            params: {
+                "length": 12.0,
+                "mode": 0.0,
+                "step": 9.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Stepper",
+        slug: "pattern-player-stepper",
+        node_type: "noodle.events.pattern",
+        values: (
+            params: {
+                "length": 8.0,
+                "mode": 3.0,
+                "step": 4.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Pad Loop",
+        slug: "pattern-player-pad-loop",
+        node_type: "noodle.events.pattern",
+        values: (
+            params: {
+                "length": 16.0,
+                "mode": 0.0,
+                "play": 1.0,
+                "step": 4.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Fill One-shot",
+        slug: "pattern-player-fill-one-shot",
+        node_type: "noodle.events.pattern",
+        values: (
+            params: {
+                "length": 8.0,
+                "mode": 1.0,
+                "rate": 5.0,
+                "step": 4.0,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Bar Toggle",
         slug: "launch-quantise-bar-toggle",
         node_type: "noodle.event.launch_quantise",

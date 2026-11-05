@@ -35,6 +35,7 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [takes-and-punch.md](takes-and-punch.md) | Take folders, loop recording, punch, count-in and pre-roll |
 | [onsets-slicing-and-midi.md](onsets-slicing-and-midi.md) | Onset sensitivity, Slice, transient quantise (regions, Slices mode), audio to MIDI, Pitch Track |
 | [replace-node.md](replace-node.md) | Replace node and missing plugins |
+| [pattern-player.md](pattern-player.md) | Pattern Player: a node that owns MIDI clips as patterns, its step grid, templates and routes |
 | [tempo-source-and-monitoring.md](tempo-source-and-monitoring.md) | Tempo source (tap, MIDI clock in) and audio input monitoring |
 | [clip-keys.md](clip-keys.md) | Clip from/to keys, Follow the timeline's key, a key per marker, Detect |
 | [launch-pads.md](launch-pads.md) | Launch Quantise node, Loop Pads template, S25/S26 retired |

@@ -329,6 +329,53 @@ fn families() -> Vec<Family> {
             })
             .collect(),
         ),
+        effect_family(
+            "step-sequencer",
+            "Step Sequencer",
+            [
+                ("Sixteenths", 4.0, 16.0, 0.0),
+                ("Eighths", 3.0, 8.0, 0.0),
+                ("Sixteenth Triplets", 9.0, 12.0, 0.0),
+                ("Octave Up Eighths", 3.0, 8.0, 12.0),
+            ]
+            .into_iter()
+            .map(|(name, division, length, transpose)| {
+                let build: Build =
+                    Box::new(move |p: &mut Patch| step_sequencer(p, division, length, transpose));
+                (name, build)
+            })
+            .collect(),
+        ),
+        effect_family(
+            "step-gate",
+            "Step Gate",
+            [
+                ("Sixteenth Gate", 4.0, 1.0),
+                ("Eighth Chop", 3.0, 0.9),
+                ("Soft Triplets", 9.0, 0.6),
+            ]
+            .into_iter()
+            .map(|(name, step, depth)| {
+                let build: Build = Box::new(move |p: &mut Patch| step_gate(p, step, depth));
+                (name, build)
+            })
+            .collect(),
+        ),
+        effect_family(
+            "pattern-pads",
+            "Pattern Pads",
+            [
+                ("Held Loops", 1.0, 0.0),
+                ("Toggled Loops", 2.0, 0.0),
+                ("Half-time Pads", 1.0, 1.0),
+            ]
+            .into_iter()
+            .map(|(name, play, rate)| {
+                let build: Build = Box::new(move |p: &mut Patch| pattern_pads(p, play, rate));
+                (name, build)
+            })
+            .collect(),
+        ),
         tone_family(
             "drum-rack",
             "Drum Rack",
@@ -367,6 +414,109 @@ fn effect_family(
         slug: file,
         voices,
     }
+}
+
+/// A step sequencer: a Clock steps a Pattern Player through its pattern, one
+/// window of the pattern per pulse. Draw the pattern in the player's
+/// properties (the step grid or the piano roll). Its inputs are `rate` (the
+/// Clock's choice), `length` (steps in the pattern) and `transpose`
+/// (semitones); its outputs are `notes` and `gate`.
+fn step_sequencer(p: &mut Patch, division: f32, length: f32, transpose: f32) -> NodeId {
+    let group = p.enter("Step Sequencer", 0.0, 0.0);
+    let rate = p.input("rate", 0.0);
+    let steps = p.input("length", 1.0);
+    let shift = p.input("transpose", 2.0);
+    let clock = p.add(
+        spec("noodle.generator.clock").param("rate", division),
+        1.0,
+        0.0,
+    );
+    p.connect(rate, (clock, "rate"));
+    let player = p.add(
+        spec("noodle.events.pattern")
+            .param("mode", 3.0)
+            .param("length", length)
+            .param("transpose", transpose),
+        2.0,
+        0.0,
+    );
+    p.connect((clock, "out"), (player, "advance"));
+    p.connect(steps, (player, "length"));
+    p.connect(shift, (player, "transpose"));
+    let notes = p.output("notes", 3.0, 0.0);
+    p.connect((player, "notes"), notes);
+    let gate = p.output("gate", 3.0, 1.0);
+    p.connect((player, "gate"), gate);
+    p.leave(group);
+    group
+}
+
+/// A rhythmic gate: a Pattern Player loops on the bar and opens a VCA where
+/// its pattern has notes. `depth` is how far the gaps close (1 is silence).
+/// Its inputs are `in`, `step` (the player's division) and `depth`; its output
+/// is `out`.
+fn step_gate(p: &mut Patch, step: f32, depth: f32) -> NodeId {
+    let group = p.enter("Step Gate", 0.0, 0.0);
+    let audio = p.input("in", 0.0);
+    let division = p.input("step", 1.0);
+    let amount = p.input("depth", 2.0);
+    let player = p.add(
+        spec("noodle.events.pattern")
+            .param("mode", 0.0)
+            .param("step", step)
+            .param("length", 16.0),
+        1.0,
+        1.0,
+    );
+    p.connect(division, (player, "step"));
+    // The gaps close by `depth`: the level is 1 where the player's gate is
+    // high and 1 - depth where it is low.
+    let level = p.add(
+        spec("noodle.util.math")
+            .config("expr", Value::Text("1 - a * (1 - b)".into()))
+            .param("a", depth),
+        2.0,
+        1.0,
+    );
+    p.connect(amount, (level, "a"));
+    p.connect((player, "gate"), (level, "b"));
+    let vca = p.add(spec("noodle.util.vca"), 3.0, 0.0);
+    p.connect(audio, (vca, "in"));
+    p.connect((level, "out"), (vca, "level"));
+    let out = p.output("out", 4.0, 0.0);
+    p.connect((vca, "out"), out);
+    p.leave(group);
+    group
+}
+
+/// Loop pads for MIDI parts: a pad note into `trigger` starts the player's
+/// pattern, locked to the bar. `play` is 1 to loop while the pad is held, 2 to
+/// toggle it on and off; `rate` picks the player's speed. Its inputs are
+/// `trigger`, `slot` (which pattern plays) and `transpose`; its outputs are
+/// `notes` and `gate`.
+fn pattern_pads(p: &mut Patch, play: f32, rate: f32) -> NodeId {
+    let group = p.enter("Pattern Pads", 0.0, 0.0);
+    let trigger = p.input("trigger", 0.0);
+    let slot = p.input("slot", 1.0);
+    let shift = p.input("transpose", 2.0);
+    let player = p.add(
+        spec("noodle.events.pattern")
+            .param("mode", 0.0)
+            .param("play", play)
+            .param("rate", 3.0 + rate)
+            .param("length", 16.0),
+        1.0,
+        0.0,
+    );
+    p.connect(trigger, (player, "trigger"));
+    p.connect(slot, (player, "slot"));
+    p.connect(shift, (player, "transpose"));
+    let notes = p.output("notes", 2.0, 0.0);
+    p.connect((player, "notes"), notes);
+    let gate = p.output("gate", 2.0, 1.0);
+    p.connect((player, "gate"), gate);
+    p.leave(group);
+    group
 }
 
 /// An echo whose time is a division of the beat: Tempo into a Lag into a
