@@ -378,6 +378,11 @@ pub struct MidiNote {
     /// plays while the note sounds.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub expressions: Vec<NoteExpression>,
+    /// How the note is played, by the ID of one of the project's
+    /// articulations; `None` is the instrument's default. The track sends a
+    /// change of articulation ahead of the note that has it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub articulation: Option<u16>,
     /// The note's stored humanise offsets, each from -1 to 1: timing and
     /// velocity. They only sound when the clip's `humanise_timing` and
     /// `humanise_velocity` amounts are above zero (see
@@ -396,6 +401,7 @@ impl MidiNote {
             key,
             velocity: 0.8,
             expressions: Vec::new(),
+            articulation: None,
             humanise: None,
         }
     }

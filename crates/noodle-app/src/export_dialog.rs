@@ -39,6 +39,9 @@ pub struct ExportDialog {
     /// The groups that can be written, as of when the dialog opened, and
     /// whether each is ticked.
     groups: Vec<(NodeId, String, bool)>,
+    /// The project's mix versions, as of when the dialog opened, and whether
+    /// each is ticked.
+    versions: Vec<(String, bool)>,
     /// Bring the mixdown to `target` LUFS.
     normalize: bool,
     target: f64,
@@ -70,6 +73,7 @@ impl Default for ExportDialog {
             started: false,
             mixdown: true,
             groups: Vec::new(),
+            versions: Vec::new(),
             normalize: false,
             target: -14.0,
             limit: false,
@@ -115,6 +119,17 @@ impl ExportDialog {
             .map(|(id, name)| {
                 let ticked = before.iter().any(|(g, _, on)| *g == id && *on);
                 (id, name, ticked)
+            })
+            .collect();
+        // Likewise for versions, by name.
+        let before = std::mem::take(&mut self.versions);
+        self.versions = session
+            .project()
+            .versions()
+            .iter()
+            .map(|name| {
+                let ticked = before.iter().any(|(n, on)| n == name && *on);
+                (name.clone(), ticked)
             })
             .collect();
         self.tail = session.project().export_settings().tail;
@@ -218,6 +233,13 @@ impl ExportDialog {
                             .map(|(id, _, _)| *id)
                             .collect(),
                         normalize: self.normalize.then_some(self.target),
+                        versions: self
+                            .versions
+                            .iter()
+                            .enumerate()
+                            .filter(|(_, (_, on))| *on)
+                            .map(|(i, _)| i)
+                            .collect(),
                         true_peak_ceiling: self.limit.then_some(self.ceiling),
                         title: self.title.clone(),
                         artist: self.artist.clone(),
@@ -302,6 +324,20 @@ impl ExportDialog {
                         });
                 });
                 ui.end_row();
+                if !self.versions.is_empty() {
+                    ui.label("Versions");
+                    ui.vertical(|ui| {
+                        for (name, on) in &mut self.versions {
+                            ui.checkbox(on, name.as_str());
+                        }
+                    })
+                    .response
+                    .on_hover_text(
+                        "Each ticked version is rendered as its own pass and written as \
+                         <song> - <version>. With none ticked the project is written as it plays now.",
+                    );
+                    ui.end_row();
+                }
                 ui.label("Loudness");
                 ui.horizontal(|ui| {
                     ui.checkbox(&mut self.normalize, "Normalise mixdown to")
@@ -386,6 +422,9 @@ impl ExportDialog {
                 }
             });
         ui.add_space(4.0);
+        if self.versions.iter().any(|(_, on)| *on) {
+            ui.weak("Pick a folder; each version's files are named for the song and the version.");
+        }
         if self.groups.iter().any(|(_, _, on)| *on) {
             ui.weak("Track files are taken after the group's gain and mute, before the master.");
             ui.weak("Pick a folder; each file is named for its group.");

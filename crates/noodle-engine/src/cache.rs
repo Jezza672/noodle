@@ -716,6 +716,11 @@ fn node_key(
             }
         }
     }
+    // The mix version that plays decides what a Version Value outputs, so
+    // renders downstream of one are kept per version.
+    if info.id == noodle_core::VERSION_VALUE_ID {
+        b.u64(env.project.active_version() as u64);
+    }
     node.node_type
         .cache_inputs(node.id, &node.config, env, &mut b)?;
     Ok(b.finish())

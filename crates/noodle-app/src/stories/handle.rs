@@ -387,6 +387,15 @@ impl Probe<'_> {
             .center()
     }
 
+    /// The centre of the one single-line text box on screen (the name field
+    /// of an open menu).
+    pub fn line_box(&self) -> Pos2 {
+        self.h
+            .get_by_role(egui::accesskit::Role::TextInput)
+            .rect()
+            .center()
+    }
+
     /// The first widget showing `value` (a number field with no label).
     pub fn find_value(&self, value: &str) -> Pos2 {
         self.h
@@ -480,6 +489,13 @@ impl Probe<'_> {
     /// Whether anything on screen has a label containing `word`.
     pub fn mentions(&self, word: &str) -> bool {
         self.h.query_all_by_label_contains(word).next().is_some()
+    }
+
+    pub fn labels_like(&self, word: &str) -> Vec<String> {
+        self.h
+            .query_all_by_label_contains(word)
+            .map(|n| format!("{:?}", n))
+            .collect()
     }
 
     /// Whether anything on screen is labelled exactly `label`.

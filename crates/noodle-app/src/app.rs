@@ -73,6 +73,8 @@ pub struct App {
     /// last one clicked in.
     focus: Focus,
     session: Session,
+    /// Changes to the mix version list made in the toolbar this frame.
+    version_edits: std::cell::RefCell<Vec<noodle_core::Command>>,
     editor: EditorState,
     timeline: TimelineState,
     piano_roll: PianoRoll,
@@ -259,6 +261,7 @@ impl App {
         let templates = session.templates();
         Self {
             session,
+            version_edits: std::cell::RefCell::new(Vec::new()),
             editor: EditorState::default(),
             timeline: TimelineState::default(),
             focus: Focus::Graph,
@@ -761,6 +764,9 @@ impl App {
         if let Some(action) = self.discarding.take() {
             self.run(ui.ctx(), action);
         }
+        let versions: Vec<_> = self.version_edits.borrow_mut().drain(..).collect();
+        self.session
+            .edit(versions.into_iter().map(Edit::Apply).collect::<Vec<_>>());
         for action in actions {
             self.request(ui.ctx(), action);
         }
@@ -1119,6 +1125,7 @@ impl App {
             actions.push(Action::TogglePlayback);
         }
         self.engine_button(ui, actions);
+        self.version_menu(ui, actions);
         self.cache_indicator(ui, actions);
         let recording = self.session.is_recording() || self.session.is_counting_in();
         let record = egui::Button::new(egui::RichText::new("⏺").color(if recording {
@@ -1334,6 +1341,66 @@ impl App {
             actions,
             Action::SetPreRoll,
         );
+    }
+
+    /// Which mix version plays. Shown once the project has versions (the
+    /// first comes from "Vary per version" on a parameter); switching needs
+    /// no rebuild, so it can be done while playing.
+    fn version_menu(&self, ui: &mut egui::Ui, _actions: &mut Vec<Action>) {
+        let edits = &self.version_edits;
+        let project = self.session.project();
+        let versions = project.versions();
+        if versions.is_empty() {
+            return;
+        }
+        let active = project.active_version().min(versions.len() - 1);
+        // Stays open while a name is typed into it.
+        let config = egui::containers::menu::MenuConfig::new()
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside);
+        egui::containers::menu::MenuButton::new(format!("Ver {}", versions[active]))
+            .config(config)
+            .ui(ui, |ui| {
+                for (i, name) in versions.iter().enumerate() {
+                    if ui.selectable_label(i == active, name).clicked()
+                        && let Ok(command) = project.select_version_command(i)
+                    {
+                        edits.borrow_mut().push(command);
+                    }
+                }
+                ui.separator();
+                let id = egui::Id::new("rename version");
+                let mut text: String = ui
+                    .data(|d| d.get_temp::<(usize, String)>(id))
+                    .filter(|(i, _)| *i == active)
+                    .map_or_else(|| versions[active].clone(), |(_, t)| t);
+                let edit = ui.text_edit_singleline(&mut text);
+                if edit.lost_focus()
+                    && !text.trim().is_empty()
+                    && text != versions[active]
+                    && let Ok(command) = project.rename_version_command(active, text.trim())
+                {
+                    edits.borrow_mut().push(command);
+                }
+                ui.data_mut(|d| d.insert_temp(id, (active, text)));
+                if ui
+                    .button("Add version")
+                    .on_hover_text("Every Version Value gets a slot holding this version's value")
+                    .clicked()
+                    && let Ok(command) =
+                        project.add_version_command(&format!("Version {}", versions.len() + 1))
+                {
+                    edits.borrow_mut().push(command);
+                }
+                if ui
+                    .add_enabled(versions.len() > 1, egui::Button::new("Remove this version"))
+                    .clicked()
+                    && let Ok(command) = project.remove_version_command(active)
+                {
+                    edits.borrow_mut().push(command);
+                }
+            })
+            .0
+            .on_hover_text("The mix version that plays");
     }
 
     /// How armed Automation nodes write: Read, Touch or Latch.

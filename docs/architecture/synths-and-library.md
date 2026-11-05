@@ -170,6 +170,14 @@ These are primitives; instruments and racks built from them are groups.
   A note goes to every output that matches (layering); note-offs and
   expression follow their note-on; other MIDI goes to all outputs. One output
   and no rest is a note filter.
+- **Articulation Map** (`noodle.event.articulation_map`) turns the articulation
+  a track sends ahead of a note (`ChannelControl::Articulation`, the project's
+  articulation ID) into a keyswitch, a controller or a program change, from a
+  table in its `map` config; see
+  [mix-versions-and-articulations](../features/mix-versions-and-articulations.md).
+- **Version Value** (`noodle.mod.version_value`) outputs the slot of the active
+  mix version (`Transport::version`), one slot per version in the project's
+  list; "Vary per version" on a parameter adds one wired to it.
 - **Random Select** (`noodle.util.randselect`, #211) routes one of `inputs`
   inputs (config, 1 to 64) to its output and picks again, uniformly, on each
   rising edge of `trigger`; the choice holds between triggers and starts on

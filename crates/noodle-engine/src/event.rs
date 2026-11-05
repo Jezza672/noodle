@@ -64,6 +64,7 @@ impl EventKind {
                         let bend = value >> 18;
                         [0xE0 | channel, bend as u8 & 0x7F, (bend >> 7) as u8 & 0x7F]
                     }
+                    ChannelControl::Articulation => return None,
                 })
             }
             _ => None,
@@ -80,6 +81,12 @@ pub enum ChannelControl {
     PitchBend,
     /// Channel pressure (aftertouch).
     Pressure,
+    /// The articulation the notes after it are played with: the `value` is
+    /// the ID of one of the project's articulations, 0 for the instrument's
+    /// default. A track sends it ahead of a note whose articulation differs
+    /// from the last it sent; an Articulation Map node turns it into what the
+    /// instrument understands. It has no MIDI 1.0 form.
+    Articulation,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -2970,3 +2970,69 @@ fn pitch_track_and_to_notes_never_allocate_while_the_voice_and_sensitivity_chang
     }
     assert!(out.iter().all(|x| x.is_finite()));
 }
+
+#[test]
+fn version_values_and_articulation_maps_never_allocate_through_switches_and_edits() {
+    use noodle_core::{ARTICULATION_MAP_ID, ARTICULATION_MAP_KEY, VERSION_VALUE_ID};
+
+    // button -> key -> articulation map (keyswitch on every note) -> mono
+    // note -> sine, whose frequency comes from a Version Value; the version
+    // is switched, the map's table and the slot count are edited.
+    let mut s = Session::new();
+    let button = s.add(Node::new("noodle.input.button").with_param("state", 1.0));
+    let key = s.add(Node::new("noodle.event.key"));
+    let map = s.add(Node::new(ARTICULATION_MAP_ID).with_config(
+        Config::new().with(ARTICULATION_MAP_KEY, Value::Text("0 key 24 100 20".into())),
+    ));
+    let sine = s.add(Node::new("noodle.osc.sine"));
+    let versions = s.add(
+        Node::new(VERSION_VALUE_ID)
+            .with_config(Config::new().with("versions", Value::Int(3)))
+            .with_param("min", 100.0)
+            .with_param("max", 800.0)
+            .with_param("v1", 0.1)
+            .with_param("v2", 0.5)
+            .with_param("v3", 0.9),
+    );
+    let mono = s.add(Node::new("noodle.event.mono"));
+    let mix = s.add(Node::new("noodle.util.mix"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(button, "out", key, "gate");
+    s.wire(key, "out", map, "in");
+    s.wire(map, "out", mono, "in");
+    s.wire(versions, "out", sine, "frequency");
+    s.wire(sine, "out", mix, "in1");
+    s.wire(mono, "gate", mix, "in2");
+    s.wire(mix, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for round in 0..16 {
+        s.controller.transport().set_version(round % 3);
+        s.controller
+            .set_param(button, "state", if round % 2 == 0 { 1.0 } else { 0.0 });
+        s.controller
+            .set_param(versions, "v2", 0.2 + round as f32 * 0.04);
+        if round == 8 {
+            s.edit(Command::SetConfig {
+                node: map,
+                key: ARTICULATION_MAP_KEY.into(),
+                value: Some(Value::Text("0 cc 32 64\n1 program 5".into())),
+            });
+            s.edit(Command::SetConfig {
+                node: versions,
+                key: "versions".into(),
+                value: Some(Value::Int(4)),
+            });
+            s.update();
+        }
+        s.controller.maintain();
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                s.processor.process(&mut out);
+            }
+        });
+        assert_eq!(violations, 0, "allocated in round {round}");
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+}

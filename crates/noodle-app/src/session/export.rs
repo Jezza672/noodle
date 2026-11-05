@@ -6,7 +6,7 @@ use noodle_engine::{Job, JobPanicked};
 use noodle_io::ExportFormat;
 use noodle_io::Loudness;
 use noodle_nodes::{
-    ExportJobError, ExportReport, ExportRequest, RenderRequest, TrackExport, spawn_export,
+    ExportJobError, ExportReport, ExportRequest, RenderRequest, TrackExport, spawn_export_all,
 };
 
 /// What the user chose in the export dialog.
@@ -29,6 +29,10 @@ pub struct ExportChoice {
     /// Brings the mixdown to this loudness in LUFS, by one gain on every
     /// file.
     pub normalize: Option<f64>,
+    /// The mix versions to write, by place in the project's list: each is
+    /// rendered as its own pass and named `<song> - <version>`. Empty writes
+    /// the project as it is, with whichever version is active.
+    pub versions: Vec<usize>,
     /// Holds the mixdown's true peak under this many dBTP, after the
     /// normalising gain.
     pub true_peak_ceiling: Option<f64>,
@@ -56,6 +60,7 @@ impl ExportChoice {
             mixdown: true,
             groups: Vec::new(),
             normalize: None,
+            versions: Vec::new(),
             true_peak_ceiling: None,
             title: String::new(),
             artist: String::new(),
@@ -116,6 +121,15 @@ impl Session {
             .collect()
     }
 
+    /// What the project is called in the names of files it exports: its
+    /// file's name without the extension.
+    pub(super) fn song_name(&self) -> String {
+        self.path.as_ref().and_then(|p| p.file_stem()).map_or_else(
+            || "Untitled".to_owned(),
+            |s| s.to_string_lossy().into_owned(),
+        )
+    }
+
     /// How the last export went, if it wrote anything.
     pub fn last_export(&self) -> Option<&ExportSummary> {
         self.export_summary.as_ref()
@@ -162,39 +176,72 @@ impl Session {
         if choice.cue && !choice.mixdown {
             return Err("A CUE sheet goes with the mixdown: tick Mixdown".into());
         }
-        let folder = !choice.groups.is_empty();
-        let (mixdown, tracks) = if folder {
+        let folder = !choice.groups.is_empty() || !choice.versions.is_empty();
+        // What each pass writes: the version it plays (none for the project
+        // as it is), the mixdown's file and the tracks'.
+        let mut passes: Vec<(Option<usize>, Option<PathBuf>, Vec<TrackExport>)> = Vec::new();
+        if folder {
             let names: std::collections::BTreeMap<NodeId, String> =
                 self.exportable_groups().into_iter().collect();
+            let song = self.song_name();
             let mut taken = Vec::new();
             let mut file = |name: &str| {
                 let file = unique_file_name(name, &taken);
                 taken.push(file.clone());
                 path.join(format!("{file}.{}", choice.format.extension()))
             };
-            let mixdown = choice.mixdown.then(|| file("Mixdown"));
-            let mut tracks = Vec::new();
-            for &group in &choice.groups {
-                let name = names
-                    .get(&group)
-                    .cloned()
-                    .ok_or("A group chosen for export is gone")?;
-                tracks.push(TrackExport {
-                    group,
-                    path: file(&name),
-                    name,
-                });
+            let versions: Vec<Option<usize>> = if choice.versions.is_empty() {
+                vec![None]
+            } else {
+                choice.versions.iter().map(|&v| Some(v)).collect()
+            };
+            for version in versions {
+                let prefix = match version {
+                    Some(v) => {
+                        let name = self
+                            .project
+                            .versions()
+                            .get(v)
+                            .ok_or("A version chosen for export is gone")?;
+                        Some(format!("{song} - {name}"))
+                    }
+                    None => None,
+                };
+                let mixdown = choice
+                    .mixdown
+                    .then(|| file(prefix.as_deref().unwrap_or("Mixdown")));
+                let mut tracks = Vec::new();
+                for &group in &choice.groups {
+                    let name = names
+                        .get(&group)
+                        .cloned()
+                        .ok_or("A group chosen for export is gone")?;
+                    let name = match &prefix {
+                        Some(prefix) => format!("{prefix} - {name}"),
+                        None => name,
+                    };
+                    tracks.push(TrackExport {
+                        group,
+                        path: file(&name),
+                        name,
+                    });
+                }
+                passes.push((version, mixdown, tracks));
             }
             if let Err(e) = std::fs::create_dir_all(&path) {
                 return Err(format!("Couldn't make the folder: {e}"));
             }
-            (mixdown, tracks)
         } else {
-            (Some(path.clone()), Vec::new())
-        };
+            passes.push((None, Some(path.clone()), Vec::new()));
+        }
         let cue = choice
             .cue
-            .then(|| mixdown.as_ref().map(|m| m.with_extension("cue")))
+            .then(|| {
+                passes
+                    .first()
+                    .and_then(|(_, mixdown, _)| mixdown.as_ref())
+                    .map(|m| m.with_extension("cue"))
+            })
             .flatten();
         let rate = self.export_rate();
         let settings = Settings {
@@ -225,28 +272,34 @@ impl Session {
         } else {
             None
         };
-        let request = ExportRequest {
-            render: RenderRequest {
-                project: self.project.clone(),
-                base: self.base().to_owned(),
-                settings,
-                frames: self.freeze_frames(rate),
-                extend_registry: self.extend_registry(),
-            },
-            start,
-            end,
-            mixdown,
-            tracks,
-            format: choice.format,
-            normalize: choice.normalize,
-            true_peak_ceiling: choice.true_peak_ceiling,
-            metadata,
-            cue: choice.cue,
-            freezer,
-            silent_tail,
-        };
+        let requests: Vec<ExportRequest> = passes
+            .into_iter()
+            .map(|(version, mixdown, tracks)| ExportRequest {
+                render: RenderRequest {
+                    project: match version {
+                        Some(v) => self.project.with_active_version(v),
+                        None => self.project.clone(),
+                    },
+                    base: self.base().to_owned(),
+                    settings,
+                    frames: self.freeze_frames(rate),
+                    extend_registry: self.extend_registry(),
+                },
+                start,
+                end,
+                mixdown,
+                tracks,
+                format: choice.format,
+                normalize: choice.normalize,
+                true_peak_ceiling: choice.true_peak_ceiling,
+                metadata: metadata.clone(),
+                cue: choice.cue,
+                freezer: freezer.clone(),
+                silent_tail,
+            })
+            .collect();
         self.exporting = Some(Run {
-            job: spawn_export(request),
+            job: spawn_export_all(requests),
             path,
             rate,
             folder,

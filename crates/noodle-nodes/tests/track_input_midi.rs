@@ -627,3 +627,76 @@ fn a_notes_expressions_play_while_it_sounds_and_not_after_a_jump_into_it() {
         "{events:?}"
     );
 }
+
+/// The articulation changes among them as (sample, articulation ID).
+fn articulations(events: &[(u64, EventKind)]) -> Vec<(u64, u32)> {
+    events
+        .iter()
+        .filter_map(|&(t, kind)| match kind {
+            EventKind::Channel {
+                control: ChannelControl::Articulation,
+                value,
+                ..
+            } => Some((t, value)),
+            _ => None,
+        })
+        .collect()
+}
+
+/// A clip of four quarter-note notes on one key, with these articulations.
+fn articulated(rig: &mut Rig, which: [Option<u16>; 4]) {
+    let id = rig.add_midi_clip(
+        0,
+        4,
+        &[
+            (0, 480, 60),
+            (960, 480, 60),
+            (1920, 480, 60),
+            (2880, 480, 60),
+        ],
+    );
+    midi_of(rig, id, |midi| {
+        for (note, articulation) in midi.notes.iter_mut().zip(which) {
+            note.articulation = articulation;
+        }
+    });
+}
+
+#[test]
+fn a_change_of_articulation_goes_just_before_the_note_that_has_it_and_only_on_a_change() {
+    let mut rig = rig("art-play");
+    articulated(&mut rig, [None, Some(2), Some(2), Some(1)]);
+    let events = all(&mut rig, 0, 4 * BEAT, true);
+    // Playing from the start puts the instrument at its default first.
+    assert_eq!(articulations(&events), [(0, 0), (BEAT, 2), (3 * BEAT, 1)]);
+    // The change comes before the note-on of the same sample.
+    let at = events
+        .iter()
+        .position(|&(t, k)| t == BEAT && matches!(k, EventKind::Channel { .. }))
+        .unwrap();
+    assert!(matches!(events[at + 1].1, EventKind::NoteOn { .. }));
+}
+
+#[test]
+fn starting_mid_cue_sends_the_articulation_in_force_at_the_playhead() {
+    let mut rig = rig("art-chase");
+    articulated(&mut rig, [Some(2), Some(2), Some(1), Some(1)]);
+    // Play from the start, then jump to just before the last note: the
+    // newest note before the playhead has articulation 1, and a jump back
+    // into the second note puts articulation 2 back.
+    all(&mut rig, 0, 4 * BEAT, true);
+    let jump = all(&mut rig, 3 * BEAT - 1, 3 * BEAT + 100, true);
+    assert_eq!(articulations(&jump), [(3 * BEAT - 1, 1)]);
+    let back = all(&mut rig, BEAT + 100, BEAT + 200, true);
+    assert_eq!(articulations(&back), [(BEAT + 100, 2)]);
+}
+
+#[test]
+fn a_track_without_articulations_sends_none_even_after_a_jump() {
+    let mut rig = rig("art-none");
+    articulated(&mut rig, [None; 4]);
+    let events = all(&mut rig, 0, 2 * BEAT, true);
+    assert!(articulations(&events).is_empty());
+    let jump = all(&mut rig, 3 * BEAT, 3 * BEAT + 100, true);
+    assert!(articulations(&jump).is_empty());
+}

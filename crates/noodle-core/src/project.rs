@@ -43,6 +43,12 @@ pub struct Project {
     /// Nodes and groups whose output plays from a cached render (see
     /// "Caching" in docs/architecture/caching.md).
     frozen: BTreeSet<NodeId>,
+    /// The mix versions' names, in order (see [`versions`](crate::versions)).
+    pub(crate) versions: Vec<String>,
+    /// Which of them plays.
+    pub(crate) active_version: usize,
+    /// The articulations notes can have.
+    pub(crate) articulations: Vec<crate::Articulation>,
     /// Names this project's contents, so a view can tell whether it changed
     /// without comparing it. Drawn from one counter for all projects, so a
     /// newly loaded project never has the revision of the one it replaces.
@@ -73,6 +79,9 @@ impl Default for Project {
             track_order: Vec::new(),
             organisation: Organisation::default(),
             frozen: BTreeSet::new(),
+            versions: Vec::new(),
+            active_version: 0,
+            articulations: Vec::new(),
             revision: next_revision(),
         }
     }
@@ -102,6 +111,9 @@ impl PartialEq for Project {
             && self.track_order == other.track_order
             && self.organisation == other.organisation
             && self.frozen == other.frozen
+            && self.versions == other.versions
+            && self.active_version == other.active_version
+            && self.articulations == other.articulations
     }
 }
 
@@ -138,6 +150,16 @@ struct ProjectFile {
     organisation: Organisation,
     #[serde(default, skip_serializing_if = "BTreeSet::is_empty")]
     frozen: BTreeSet<NodeId>,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    versions: Vec<String>,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    active_version: usize,
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    articulations: Vec<crate::Articulation>,
+}
+
+fn is_zero(n: &usize) -> bool {
+    *n == 0
 }
 
 /// The clips and lanes that went with a node.
@@ -1148,6 +1170,9 @@ impl Project {
                 .copied()
                 .filter(|id| self.graph.node(*id).is_some())
                 .collect(),
+            versions: self.versions.clone(),
+            active_version: self.active_version,
+            articulations: self.articulations.clone(),
         };
         // Depth 3 puts each node and each connection on its own line.
         let pretty = ron::ser::PrettyConfig::default().depth_limit(3);
@@ -1196,6 +1221,9 @@ impl Project {
             track_order: file.track_order,
             organisation: file.organisation,
             frozen: file.frozen,
+            versions: file.versions,
+            active_version: file.active_version,
+            articulations: file.articulations,
             revision: next_revision(),
         };
         for (id, warp) in &project.warps {

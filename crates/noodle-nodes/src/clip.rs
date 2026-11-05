@@ -28,8 +28,8 @@ use std::time::{Duration, Instant};
 
 use noodle_core::ClipId;
 use noodle_engine::{
-    Config, ConfigInfo, Context, Event, EventKind, InputTap, Instance, Io, Layout, Node, NodeError,
-    NodeInfo, NodeType, NoteId, ParamInfo, Setup, Shape, SignalOut,
+    ChannelControl, Config, ConfigInfo, Context, Event, EventKind, InputTap, Instance, Io, Layout,
+    Node, NodeError, NodeInfo, NodeType, NoteId, ParamInfo, Setup, Shape, SignalOut,
 };
 use noodle_io::pool::{Bell, Handle};
 use noodle_io::{ClipStream, MidiBus};
@@ -422,6 +422,8 @@ struct TrackInputNode {
     audition_held: [u64; 2],
     /// Live MIDI for monitoring, if the node was given a bus.
     live: Option<LiveMidi>,
+    /// The articulation last sent downstream, 0 for the default.
+    articulation: u16,
     /// The device input to monitor, if the engine gave one.
     tap: Option<Arc<InputTap>>,
     /// The device channels (from 0) heard on the left and right.
@@ -486,6 +488,7 @@ impl TrackInputNode {
             recheck: false,
             audition_held: [0; 2],
             live: None,
+            articulation: 0,
             tap: None,
             channels: [0, 1],
             monitor_level: 0.0,
@@ -1398,6 +1401,9 @@ impl TrackInputNode {
         if playing {
             let current = notes.as_deref().map_or(&[][..], |n| n.notes.as_slice());
             let mut next = current.partition_point(|note| note.start < position);
+            if !continuing {
+                self.chase_articulation(&current[..next], current, out);
+            }
             loop {
                 let on = current.get(next).filter(|note| note.start < block_end);
                 let ending = self
@@ -1432,6 +1438,26 @@ impl TrackInputNode {
             self.play_controls(controls, position, n, continuing, out);
         }
         self.notes = notes;
+    }
+
+    /// After a jump, tells the instrument the articulation in force at the
+    /// playhead: that of the newest note before it, or the default. `before`
+    /// is the notes that start before the playhead. A track whose notes have
+    /// no articulations sends nothing.
+    fn chase_articulation(
+        &mut self,
+        before: &[ScheduledNote],
+        all: &[ScheduledNote],
+        out: &mut noodle_engine::EventsOut<'_>,
+    ) {
+        if !all.iter().any(|n| n.articulation != 0) {
+            self.articulation = 0;
+            return;
+        }
+        let wanted = before.last().map_or(0, |n| n.articulation);
+        if out.insert(articulation_event(wanted, 0)).is_ok() {
+            self.articulation = wanted;
+        }
     }
 
     /// Writes the controller and expression events of the block. After a
@@ -1526,6 +1552,17 @@ impl TrackInputNode {
         if self.sounding.len() == MAX_SOUNDING {
             return;
         }
+        // A change of articulation goes ahead of the note that has it.
+        if note.articulation != self.articulation
+            && out
+                .insert(articulation_event(
+                    note.articulation,
+                    (note.start - position) as u32,
+                ))
+                .is_ok()
+        {
+            self.articulation = note.articulation;
+        }
         let on = Event {
             time: (note.start - position) as u32,
             kind: EventKind::NoteOn {
@@ -1542,6 +1579,19 @@ impl TrackInputNode {
                 end: note.end,
             });
         }
+    }
+}
+
+/// The change to articulation `id` (0 for the default), `time` frames into
+/// the block.
+fn articulation_event(id: u16, time: u32) -> Event {
+    Event {
+        time,
+        kind: EventKind::Channel {
+            channel: 0,
+            control: ChannelControl::Articulation,
+            value: u32::from(id),
+        },
     }
 }
 
@@ -1711,6 +1761,7 @@ impl Node for TrackInputNode {
         self.sounding.clear();
         self.played_to = None;
         self.recheck = false;
+        self.articulation = 0;
         self.abandoned.clear();
         // The engine has faded out and is about to jump: start from silence at
         // the new place, with whatever schedule is waiting.

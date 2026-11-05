@@ -133,6 +133,10 @@ impl Fields {
                         None => Automate::Offered,
                         Some(why) => Automate::Refused(why),
                     })
+                    .vary_per_version(match crate::session::versions::refusal(f.project, &input) {
+                        None => Automate::Offered,
+                        Some(why) => Automate::Refused(why),
+                    })
                     .learn_midi(
                         match crate::session::learn_midi::refusal(f.project, &input) {
                             None => LearnMidi::Offered,

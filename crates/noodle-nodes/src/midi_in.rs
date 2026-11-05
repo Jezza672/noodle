@@ -844,6 +844,7 @@ mod tests {
                     },
                     ChannelControl::PitchBend => Midi2::PitchBend { channel: 3, value },
                     ChannelControl::Pressure => Midi2::ChannelPressure { channel: 3, value },
+                    ChannelControl::Articulation => unreachable!("not in the list above"),
                 },
             );
         }

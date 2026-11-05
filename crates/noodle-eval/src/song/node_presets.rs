@@ -812,6 +812,26 @@ fn table() -> Vec<Row> {
         .int("outputs", 1)
         .int("rest", 1),
         row(
+            "noodle.event.articulation_map",
+            "Keyswitches C0 and D0",
+            &[],
+        )
+        .text("map", "1 key 24 100 50\n2 key 26 100 50"),
+        row("noodle.event.articulation_map", "Controller 32 Switch", &[])
+            .text("map", "1 cc 32 32\n2 cc 32 64\n3 cc 32 96"),
+        row(
+            "noodle.mod.version_value",
+            "Level in dB, Two Versions",
+            &[("min", -24.0), ("max", 6.0), ("v1", 0.8), ("v2", 0.8)],
+        )
+        .int("versions", 2),
+        row(
+            "noodle.mod.version_value",
+            "Cutoff in Hz, Three Versions",
+            &[("min", 20.0), ("max", 20000.0), ("taper", 1.0)],
+        )
+        .int("versions", 3),
+        row(
             "noodle.util.randselect",
             "No Repeats",
             &[("avoid_repeat", 1.0)],

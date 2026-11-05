@@ -171,6 +171,42 @@ pub fn spawn_export(request: ExportRequest) -> Job<Result<ExportReport, ExportJo
     Job::spawn(move |progress| export(&request, progress))
 }
 
+/// Starts the exports in `requests` on a background thread, one after the
+/// other, as one job: a batch export of every mix version. The progress runs
+/// across all of them, and the report is theirs added together: no mixdown of
+/// its own, and every file in `tracks` (mixdowns first in each request).
+pub fn spawn_export_all(requests: Vec<ExportRequest>) -> Job<Result<ExportReport, ExportJobError>> {
+    Job::spawn(move |progress| {
+        let count = requests.len().max(1) as f32;
+        let mut all = ExportReport::default();
+        for (i, request) in requests.iter().enumerate() {
+            progress.set_outer(i as f32 / count, 1.0 / count);
+            let mut report = export(request, progress)?;
+            all.frames = all.frames.max(report.frames);
+            if let Some(mixdown) = report.mixdown {
+                let name = request
+                    .mixdown
+                    .as_ref()
+                    .and_then(|p| p.file_stem())
+                    .map_or_else(String::new, |s| s.to_string_lossy().into_owned());
+                all.tracks.push((name, mixdown));
+            }
+            all.tracks.append(&mut report.tracks);
+            // Each version is brought to the loudness on its own, so there is
+            // no one gain to report for several.
+            if count <= 1.0 {
+                all.gain_db = report.gain_db;
+            }
+            all.diagnostics.append(&mut report.diagnostics);
+            all.problems.append(&mut report.problems);
+            all.errors.append(&mut report.errors);
+            all.underruns += report.underruns;
+        }
+        progress.set_outer(0.0, 1.0);
+        Ok(all)
+    })
+}
+
 /// Runs an export on the calling thread. Progress covers the renders of
 /// offline and frozen nodes first (if any are missing), then the file.
 pub fn export(
