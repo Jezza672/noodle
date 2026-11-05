@@ -16,6 +16,7 @@ use noodle_engine::{ChannelControl, EventKind, Expression, NoteId, TempoTable};
 use noodle_io::{AudioFiles, Decoder, FileInfo, FileStamp, clip_frames};
 
 use super::hub::Shared;
+use super::pitch::PitchPath;
 pub use super::warp::WarpMap;
 
 /// Which part of which file a clip plays.
@@ -50,6 +51,8 @@ pub struct ScheduledClip {
     pub warp: Option<Arc<WarpMap>>,
     /// How the warp is rendered.
     pub mode: WarpMode,
+    /// How the pitch moves along the clip, if it is transposed.
+    pub pitch: Option<Arc<PitchPath>>,
     /// The gain envelope: (frame from the clip's start, dB), sorted. Empty
     /// for a flat clip.
     pub envelope: Option<Arc<[(i64, f32)]>>,
@@ -91,6 +94,7 @@ impl ScheduledClip {
             source,
             warp: None,
             mode: WarpMode::Repitch,
+            pitch: None,
             envelope: None,
             under: None,
             xfade_in: false,
@@ -166,6 +170,9 @@ impl ScheduledClip {
                 tail_src,
             )));
         }
+        if let Some(path) = &self.pitch {
+            clip.pitch = Some(Arc::new(path.shifted(head)));
+        }
         let to_file = |frames: f64| (frames * self.src_ratio).round() as u64;
         let (head_file, tail_file) = (to_file(head_src), to_file(tail_src));
         clip.source.offset = self.source.offset.saturating_sub(head_file);
@@ -201,10 +208,22 @@ impl ScheduledClip {
         self
     }
 
+    /// This clip, transposed along `path`. Transposing is done by stretching,
+    /// so a clip that would only be resampled is stretched instead.
+    pub fn with_pitch(mut self, path: Arc<PitchPath>) -> Self {
+        if !self.mode.keeps_pitch() {
+            self.mode = WarpMode::Grain;
+        }
+        self.pitch = Some(path);
+        self.lane = self.lane_hash();
+        self
+    }
+
     fn lane_hash(&self) -> u64 {
         let mut hasher = DefaultHasher::new();
         self.key.hash(&mut hasher);
         self.mode.hash(&mut hasher);
+        self.pitch.hash(&mut hasher);
         if let Some(map) = &self.warp {
             for (out, source) in map.knots() {
                 out.to_bits().hash(&mut hasher);
@@ -217,7 +236,7 @@ impl ScheduledClip {
     /// Whether the clip is played by stretching ahead of the playhead (Grain
     /// and Beats), and not by resampling in the audio thread.
     pub fn stretched(&self) -> bool {
-        self.warp.is_some() && self.mode.keeps_pitch()
+        self.warp.is_some() && (self.mode.keeps_pitch() || self.pitch.is_some())
     }
 
     /// Identifies the stretched audio of this clip: like
@@ -447,6 +466,31 @@ fn lay_out_folder(
         return lay_out_plain(project, clip, &plain, info, table, rate);
     }
     (pieces, problem)
+}
+
+/// How far, in semitones, the section is carried at each frame from its
+/// start: its warp's transposition, against the timeline's key as it changes
+/// along the section.
+fn transpose_path(
+    project: &Project,
+    audio: &noodle_core::AudioClip,
+    start: Tick,
+    first_start: u64,
+    pieces: &[Piece],
+    table: &TempoTable,
+) -> Option<PitchPath> {
+    let transpose = audio
+        .warp
+        .and_then(|id| project.warp(id))
+        .and_then(|warp| warp.transpose)?;
+    let len = pieces.iter().map(|p| p.from + p.len).max()?;
+    let end = Tick(table.tick_at(first_start + len).round() as i64);
+    let mut shifts = vec![(0, f64::from(transpose.semitones(project.key_at(start))))];
+    for (tick, key) in project.key_changes(start, end) {
+        let at = table.sample_at_tick(tick).saturating_sub(first_start);
+        shifts.push((at, f64::from(transpose.semitones(key))));
+    }
+    PitchPath::from_semitones(&shifts)
 }
 
 fn lay_out_plain(
@@ -1293,6 +1337,8 @@ impl ClipFeeds {
             }
             let first_start = table.sample_at_tick(clip.start);
             let last = pieces.len() - 1;
+            let pitch_path =
+                transpose_path(project, audio, clip.start, first_start, &pieces, table);
             let src_ratio = f64::from(info.sample_rate) / f64::from(rate);
             let after_window = info.frames.map_or(0, |frames| {
                 frames.saturating_sub(audio.offset + audio.length)
@@ -1404,7 +1450,16 @@ impl ClipFeeds {
                     .entry(clip.node)
                     .or_default()
                     .push(match piece.warp {
-                        Some((map, mode)) => scheduled.with_warp(map).with_mode(mode),
+                        Some((map, mode)) => {
+                            let scheduled = scheduled.with_warp(map).with_mode(mode);
+                            match pitch_path
+                                .as_ref()
+                                .and_then(|p| p.slice(piece.from, piece.len))
+                            {
+                                Some(path) => scheduled.with_pitch(Arc::new(path)),
+                                None => scheduled,
+                            }
+                        }
                         None => scheduled,
                     });
             }

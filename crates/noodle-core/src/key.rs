@@ -22,6 +22,13 @@ const NAMES: [&str; 12] = [
     "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
 ];
 
+impl Default for Key {
+    /// C major.
+    fn default() -> Self {
+        Self::new(0, Mode::Major)
+    }
+}
+
 impl Key {
     pub fn new(tonic: u8, mode: Mode) -> Self {
         Self {

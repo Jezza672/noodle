@@ -159,6 +159,27 @@ impl WarpMap {
         Self { knots }
     }
 
+    /// This map for audio that is stretched by `path` before it is read back
+    /// (see [`PitchPath`](super::pitch::PitchPath)): the output axis becomes
+    /// the stretched audio's.
+    pub fn with_pitch(&self, path: &super::pitch::PitchPath) -> Self {
+        let end = self.out_len();
+        let mut outs: Vec<f64> = self.knots.iter().map(|k| k.0).collect();
+        outs.extend(
+            path.steps()
+                .iter()
+                .map(|s| s.0 as f64)
+                .filter(|&o| o > 0.0 && o < end),
+        );
+        outs.sort_by(f64::total_cmp);
+        outs.dedup_by(|a, b| (*a - *b).abs() < 1e-9);
+        let knots = outs
+            .into_iter()
+            .map(|o| (path.inter(o), self.source_at(o)))
+            .collect();
+        Self { knots }
+    }
+
     /// How many source frames the section's window has.
     pub fn source_len(&self) -> f64 {
         self.knots[self.knots.len() - 1].1

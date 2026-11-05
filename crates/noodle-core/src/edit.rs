@@ -5,8 +5,8 @@ use std::fmt;
 
 use crate::{
     AutomationLane, Clip, ClipGroup, ClipGroupId, ClipId, ClipWarp, Connection, Endpoint,
-    ExportSettings, Frame, FrameId, LaneId, Marker, Node, NodeId, Position, Project, PunchRange,
-    TempoMap, TransportLoop, Value, WarpId,
+    ExportSettings, Frame, FrameId, Key, LaneId, Marker, Node, NodeId, Position, Project,
+    PunchRange, TempoMap, TransportLoop, Value, WarpId,
 };
 
 #[derive(Clone, Debug, PartialEq)]
@@ -93,6 +93,8 @@ pub enum Command {
     SetLoop(TransportLoop),
     /// Replaces the markers.
     SetMarkers(Vec<Marker>),
+    /// Sets the project's key, which holds before the first marker that sets one.
+    SetKey(Key),
     /// Replaces the punch range.
     SetPunch(PunchRange),
     /// Replaces the export settings.
@@ -207,6 +209,9 @@ impl Command {
             }
             Command::SetLoop(region) => {
                 return Ok(Command::SetLoop(project.replace_loop(region)));
+            }
+            Command::SetKey(key) => {
+                return Ok(Command::SetKey(project.replace_key(key)));
             }
             Command::SetPunch(range) => {
                 return Ok(Command::SetPunch(project.replace_punch(range)));
@@ -385,6 +390,7 @@ impl Command {
             | Command::SetTempoMap(_)
             | Command::SetLoop(_)
             | Command::SetMarkers(_)
+            | Command::SetKey(_)
             | Command::SetPunch(_)
             | Command::SetExportSettings(_)
             | Command::SetTrackOrder(_)
@@ -418,6 +424,7 @@ enum Target<'a> {
     Loop,
     Markers,
     Punch,
+    Key,
     ExportSettings,
     TrackOrder,
     Frozen(NodeId),
@@ -436,6 +443,7 @@ fn target(command: &Command) -> Option<Target<'_>> {
         Command::SetLoop(_) => Some(Target::Loop),
         Command::SetMarkers(_) => Some(Target::Markers),
         Command::SetPunch(_) => Some(Target::Punch),
+        Command::SetKey(_) => Some(Target::Key),
         Command::SetExportSettings(_) => Some(Target::ExportSettings),
         Command::SetTrackOrder(_) => Some(Target::TrackOrder),
         Command::SetFrozen { node, .. } => Some(Target::Frozen(*node)),

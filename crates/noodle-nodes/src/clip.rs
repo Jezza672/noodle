@@ -17,6 +17,7 @@
 
 mod ahead;
 mod hub;
+mod pitch;
 mod schedule;
 mod stretch;
 mod warp;
@@ -313,6 +314,19 @@ impl NodeType for TrackInput {
                         // The part that repeats when the clip loops.
                         if let Some(region) = warp.loop_region {
                             key.str("loop").f64(region.start).f64(region.end);
+                        }
+                        // The transposition, and the timeline's key it may
+                        // follow (the project's and every marker's).
+                        if let Some(transpose) = warp.transpose {
+                            key.str("transpose").str(&format!("{transpose:?}"));
+                            if transpose.to == noodle_core::KeyTarget::Follow {
+                                key.str(&format!("{:?}", env.project.key()));
+                                for marker in env.project.markers() {
+                                    if let Some(k) = marker.key {
+                                        key.i64(marker.at.0).str(&format!("{k:?}"));
+                                    }
+                                }
+                            }
                         }
                     }
                 }

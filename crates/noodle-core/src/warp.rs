@@ -14,7 +14,7 @@ use std::fmt;
 
 use serde::{Deserialize, Serialize};
 
-use crate::{ClipId, TempoMap, Tick};
+use crate::{ClipId, TempoMap, Tick, Transpose};
 
 /// Identifies a [`ClipWarp`] within a project. Sections that show the same
 /// clip name the same warp, so editing it changes them all; a section that is
@@ -441,6 +441,11 @@ pub struct ClipWarp {
     /// quantise and the groove. What plays is the markers and the clip tempo.
     #[serde(default, skip_serializing_if = "is_zero")]
     pub grid_offset: f64,
+    /// The key the clip is in and the key it is carried to, if it is
+    /// transposed. The pitch moves without the timing changing, so a
+    /// transposed clip is always stretched, whatever `mode` says.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub transpose: Option<Transpose>,
 }
 
 fn is_zero(x: &f64) -> bool {
@@ -459,6 +464,7 @@ impl ClipWarp {
             loop_region: None,
             quantise: None,
             grid_offset: 0.0,
+            transpose: None,
         }
     }
 
@@ -499,7 +505,7 @@ impl ClipWarp {
     /// needs no warping. A looping clip is never left alone: the engine lays
     /// its repeats out.
     pub fn is_identity(&self) -> bool {
-        self.is_natural() && self.loop_region.is_none()
+        self.is_natural() && self.loop_region.is_none() && self.transpose.is_none()
     }
 
     /// The loop region in source seconds, if the clip loops.

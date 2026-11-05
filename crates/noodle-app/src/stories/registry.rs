@@ -64,7 +64,7 @@ pub const STORIES: [Story; 30] = [
         id: "S05",
         title: "Conform audio to a new tempo and key",
         status: Status::Partial,
-        missing: "No clip pitch shift, project key or formant preservation: #348.",
+        missing: "No formant preservation (a later step of #348); the tempo change after the fact is not routed.",
     },
     Story {
         id: "S06",

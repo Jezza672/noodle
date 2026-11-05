@@ -35,5 +35,6 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [takes-and-punch.md](takes-and-punch.md) | Take folders, loop recording, punch, count-in and pre-roll |
 | [replace-node.md](replace-node.md) | Replace node and missing plugins |
 | [tempo-source-and-monitoring.md](tempo-source-and-monitoring.md) | Tempo source (tap, MIDI clock in) and audio input monitoring |
+| [clip-keys.md](clip-keys.md) | Clip from/to keys, Follow the timeline's key, a key per marker, Detect |
 | [swing-humanise-midi-ports.md](swing-humanise-midi-ports.md) | Swing node, choke groups, humanise in the piano roll and as a node, View > MIDI ports |
 | [selector.md](selector.md) | Selector node: deterministic N-way selection of signals, notes, samples and spectra |
