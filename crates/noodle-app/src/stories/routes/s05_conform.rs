@@ -67,12 +67,15 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
         .warp
         .and_then(|w| p.project().warp(w))
         .ok_or("the clip is not warped")?;
-    if warp.transpose
-        != Some(Transpose {
-            from: A_MINOR,
+    // The clip is carried to the project's key. The key it starts from is
+    // whatever the user set or detected, so it is not compared.
+    if !matches!(
+        warp.transpose,
+        Some(Transpose {
             to: KeyTarget::Follow,
+            ..
         })
-    {
+    ) {
         return Err(format!(
             "the clip key is {:?}; warp {:?}",
             warp.transpose,

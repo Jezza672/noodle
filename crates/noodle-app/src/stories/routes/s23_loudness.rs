@@ -14,7 +14,7 @@ use egui::{Modifiers, vec2};
 
 use super::super::handle::{Handle, Probe};
 use super::super::{Route, Tag};
-use super::patch::{Op, Ref, check, run, seeded};
+use super::patch::{Op, Ref, kind, output, param, run, seeded, upstream};
 use crate::app::App;
 
 const SRC: Ref = Ref("osc.saw", 0);
@@ -75,8 +75,26 @@ fn steps(h: &mut Handle, _size: usize) {
     h.probe().settle();
 }
 
+/// The goal: the master is limited and normalised, by whatever nodes do
+/// that. A Dynamics node with a high ratio limits; Normalize normalises.
 fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
-    check(p, CHAIN)
+    let project = p.project();
+    let out = output(project)?;
+    let chain = upstream(project, out);
+    let limited = chain.iter().any(|&n| {
+        kind(project, n) == "effect.dynamics"
+            && param(project, n, "ratio").is_some_and(|r| r >= 10.0)
+    });
+    if !limited {
+        return Err("nothing limits the master".into());
+    }
+    if !chain
+        .iter()
+        .any(|&n| kind(project, n) == "offline.normalize")
+    {
+        return Err("nothing normalises the master".into());
+    }
+    Ok(())
 }
 
 pub fn route() -> Route {

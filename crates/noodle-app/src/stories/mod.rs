@@ -414,7 +414,63 @@ mod tests {
             );
             report::write(Path::new(&dir), &scores, &words).expect("the scorecard is written");
         }
+        // A blocked story's goal cannot be reached, so its route must fail,
+        // and with the tripwire's own message: any other failure, or a pass,
+        // means the registry or the route is out of date.
+        failures.retain(|f| {
+            let id = f.split(' ').next().unwrap_or_default();
+            let blocked = registry::STORIES
+                .iter()
+                .any(|s| s.id == id && s.status == registry::Status::Blocked);
+            !(blocked && f.contains(routes::tripwire::BLOCKED))
+        });
+        for story in registry::STORIES
+            .iter()
+            .filter(|s| s.status == registry::Status::Blocked)
+        {
+            let ran = scores.iter().any(|s| s.story == story.id);
+            let passed = scores.iter().any(|s| s.story == story.id && s.passed);
+            assert!(
+                !passed,
+                "{} is blocked but its route passed: update the registry",
+                story.id
+            );
+            assert!(
+                ran || only.is_some(),
+                "{} is blocked and has no route",
+                story.id
+            );
+        }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A done check must fail when the route did nothing: it is what tells a
+    /// finished story from an agent that gave up. Routes whose fixture
+    /// already holds the goal would make the scorecard lie.
+    #[test]
+    fn every_done_check_fails_on_an_untouched_project() {
+        let only = std::env::var("NOODLE_ROUTE").ok();
+        let mut vacuous = Vec::new();
+        for route in routes::all() {
+            if route.story == "S00" || only.as_deref().is_some_and(|s| s != route.story) {
+                continue;
+            }
+            let dir = tempfile::tempdir().expect("a scratch directory");
+            crate::prefs::init(dir.path().join("prefs.ron"));
+            let mut h = window((route.fixture)(dir.path()));
+            let n = route.size.unwrap_or(1);
+            let checked = catch_unwind(AssertUnwindSafe(|| {
+                (route.done)(&mut Probe::new(&mut h), n)
+            }));
+            if matches!(checked, Ok(Ok(()))) {
+                vacuous.push(format!("{} {}", route.story, route.name));
+            }
+        }
+        assert!(
+            vacuous.is_empty(),
+            "done checks that pass without any steps:\n{}",
+            vacuous.join("\n")
+        );
     }
 
     // --- the scorers, on small routes of their own ---

@@ -8,8 +8,9 @@
 
 use std::path::Path;
 
+use super::super::handle::Probe;
 use super::super::{LateChange, Route, Tag};
-use super::patch::{Op, Ref, audible, check, run, seeded};
+use super::patch::{Op, Ref, audible, check, kind, output, reaches, run, seeded, upstream};
 use crate::app::App;
 
 const CARRIER: Ref = Ref("osc.saw", 0);
@@ -68,6 +69,38 @@ const MORE_BANDS: &[Op] = &[
     Op::Set(CROSS, "bands", 16.0),
 ];
 
+/// The goal: two different sounds meet in a spectral Cross, and the result
+/// reaches the output, whether or not it goes straight there from Synthesize.
+fn crossed(p: &mut Probe) -> Result<(), String> {
+    let project = p.project();
+    let out = output(project)?;
+    let cross = project
+        .graph()
+        .nodes()
+        .map(|(id, _)| id)
+        .find(|&n| kind(project, n) == "spectral.cross" && reaches(project, n, out))
+        .ok_or("no spectral Cross reaches the output")?;
+    let sounds = |port: &str| {
+        project
+            .graph()
+            .source(&noodle_core::Endpoint::new(cross, port))
+            .map(|s| {
+                let mut all = upstream(project, s.node);
+                all.insert(s.node);
+                all
+            })
+            .unwrap_or_default()
+    };
+    let (carrier, modulator) = (sounds("carrier"), sounds("modulator"));
+    if carrier.is_empty() || modulator.is_empty() {
+        return Err("the Cross needs a sound on both its carrier and its modulator".into());
+    }
+    if carrier == modulator {
+        return Err("the carrier and the modulator are the same sound".into());
+    }
+    Ok(())
+}
+
 pub fn route() -> Route {
     Route {
         story: "S16",
@@ -77,7 +110,7 @@ pub fn route() -> Route {
         size: None,
         steps: |h, _| run(h, BUILD),
         done: |p, _| {
-            check(p, BUILD)?;
+            crossed(p)?;
             audible(p)
         },
         late: &[

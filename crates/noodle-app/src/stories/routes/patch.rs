@@ -158,6 +158,55 @@ pub fn check(p: &mut Probe, ops: &[Op]) -> Result<(), String> {
     Ok(())
 }
 
+// --- Outcome checks. A done check should ask whether the goal is met, not
+// whether the route's own nodes are there, so a patch built another way (an
+// LFO set to Random for a Sample & Hold, a different effect for the
+// distortion) still scores.
+
+/// Every node with a chain of wires leading to `node`, not counting itself.
+pub fn upstream(p: &Project, node: NodeId) -> std::collections::HashSet<NodeId> {
+    let mut seen = std::collections::HashSet::new();
+    let mut todo = vec![node];
+    while let Some(n) = todo.pop() {
+        for c in p.graph().connections().filter(|c| c.to.node == n) {
+            if seen.insert(c.from.node) {
+                todo.push(c.from.node);
+            }
+        }
+    }
+    seen
+}
+
+/// Whether a chain of wires leads from `from` to `to`.
+pub fn reaches(p: &Project, from: NodeId, to: NodeId) -> bool {
+    upstream(p, to).contains(&from)
+}
+
+/// The type of a node, without the leading `noodle.`.
+pub fn kind(p: &Project, node: NodeId) -> String {
+    p.graph()
+        .node(node)
+        .map(|n| n.type_id.trim_start_matches("noodle.").to_owned())
+        .unwrap_or_default()
+}
+
+/// A parameter's value, if the node has been given one.
+pub fn param(p: &Project, node: NodeId, key: &str) -> Option<f32> {
+    p.graph()
+        .node(node)
+        .and_then(|n| n.params.get(key))
+        .copied()
+}
+
+/// The first output node.
+pub fn output(p: &Project) -> Result<NodeId, String> {
+    p.graph()
+        .nodes()
+        .find(|(_, n)| n.type_id == noodle_engine::OUTPUT_ID)
+        .map(|(id, _)| id)
+        .ok_or_else(|| "there is no output".into())
+}
+
 /// Hears the output for a moment, for a route that left the transport
 /// running, and fails if it is silent.
 pub fn audible(p: &mut Probe) -> Result<(), String> {

@@ -16,7 +16,7 @@ use noodle_core::Value;
 
 use super::super::handle::{Handle, Probe};
 use super::super::{LateChange, Route, Tag};
-use super::patch::{Op, Ref, audible, check, find, run, seeded};
+use super::patch::{Op, Ref, audible, check, find, kind, output, run, seeded, upstream};
 use crate::app::App;
 
 const SRC: Ref = Ref("osc.saw", 0);
@@ -86,6 +86,27 @@ fn layout_is(p: &mut Probe, name: &str) -> Result<(), String> {
     }
 }
 
+/// The goal: a source is panned in a surround layout and folded down, the
+/// fold-down reaching the output. Which node folds down is not checked.
+fn folded(p: &mut Probe) -> Result<(), String> {
+    let project = p.project();
+    let out = output(project)?;
+    let chain = upstream(project, out);
+    if !chain
+        .iter()
+        .any(|&n| kind(project, n) == "util.surround_pan")
+    {
+        return Err("nothing pans the sound in a surround layout".into());
+    }
+    if !chain
+        .iter()
+        .any(|&n| kind(project, n) == "util.convert_layout")
+    {
+        return Err("nothing folds the surround bed down for the output".into());
+    }
+    Ok(())
+}
+
 pub fn route() -> Route {
     Route {
         story: "S22",
@@ -95,7 +116,7 @@ pub fn route() -> Route {
         size: None,
         steps: |h, _| run(h, BUILD),
         done: |p, _| {
-            check(p, BUILD)?;
+            folded(p)?;
             audible(p)
         },
         late: &[

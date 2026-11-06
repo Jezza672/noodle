@@ -11,7 +11,7 @@ use std::path::Path;
 
 use super::super::handle::{Handle, Probe};
 use super::super::{Keep, LateChange, Route, Tag};
-use super::patch::{Op, Ref, audible, check, nodes_of, run, seeded};
+use super::patch::{Op, Ref, audible, check, kind, nodes_of, output, run, seeded, upstream};
 use crate::app::App;
 use noodle_core::Project;
 
@@ -82,7 +82,7 @@ pub fn route() -> Route {
         size: None,
         steps: |h, _| run(h, BUILD),
         done: |p, _| {
-            check(p, BUILD)?;
+            macro_patch(p)?;
             audible(p)
         },
         late: &[
@@ -120,6 +120,42 @@ const NARROW: &[Op] = &[
 ];
 
 /// Which macro output goes where, for the late changes to leave alone.
+/// The goal: at least two sound sources layered into the output, and one
+/// knob that drives three or more parameters. How the layers are combined
+/// and how each target's range is made is the user's business.
+fn macro_patch(p: &mut Probe) -> Result<(), String> {
+    let project = p.project();
+    let out = output(project)?;
+    let sources = upstream(project, out)
+        .into_iter()
+        .filter(|&n| {
+            kind(project, n).starts_with("osc.") || kind(project, n).starts_with("sampler")
+        })
+        .count();
+    if sources < 2 {
+        return Err(format!(
+            "{sources} sound sources reach the output, wanted 2"
+        ));
+    }
+    let knob = nodes_of(project, KNOB.0);
+    let reached = knob
+        .iter()
+        .map(|&k| {
+            project
+                .graph()
+                .nodes()
+                .filter(|&(n, _)| n != k && upstream(project, n).contains(&k))
+                .filter(|&(n, _)| kind(project, n) != "util.remap")
+                .count()
+        })
+        .max()
+        .unwrap_or(0);
+    if reached < 3 {
+        return Err(format!("the knob drives {reached} devices, wanted 3"));
+    }
+    Ok(())
+}
+
 fn mapping(p: &Project) -> String {
     let remaps = nodes_of(p, "util.remap");
     let mut lines: Vec<String> = p

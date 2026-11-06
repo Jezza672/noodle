@@ -7,8 +7,9 @@
 
 use std::path::Path;
 
+use super::super::handle::Probe;
 use super::super::{LateChange, Route, Tag};
-use super::patch::{Op, Ref, audible, check, run, seeded};
+use super::patch::{Op, Ref, audible, check, find, kind, output, reaches, run, seeded, upstream};
 use crate::app::App;
 
 const SRC: Ref = Ref("osc.saw", 0);
@@ -44,6 +45,29 @@ const CHANGE_EFFECT: &[Op] = &[
     Op::Set(DRIVE, "drive", 3.0),
 ];
 
+/// The goal: a sound reaches the output reversed, after at least one other
+/// effect, whichever effect.
+fn mangled(p: &mut Probe) -> Result<(), String> {
+    let project = p.project();
+    let out = output(project)?;
+    let reverse = find(project, REVERSE).ok_or("nothing is reversed")?;
+    if !reaches(project, reverse, out) {
+        return Err("the reversed sound does not reach the output".into());
+    }
+    let before = upstream(project, reverse);
+    let effects = before
+        .iter()
+        .filter(|&&n| {
+            let k = kind(project, n);
+            k.starts_with("effect.") || k.starts_with("filter.") || k.starts_with("offline.")
+        })
+        .count();
+    if effects == 0 {
+        return Err("no effect processes the sound before it is reversed".into());
+    }
+    Ok(())
+}
+
 pub fn route() -> Route {
     Route {
         story: "S17",
@@ -53,7 +77,7 @@ pub fn route() -> Route {
         size: None,
         steps: |h, _| run(h, BUILD),
         done: |p, _| {
-            check(p, BUILD)?;
+            mangled(p)?;
             audible(p)
         },
         late: &[LateChange {

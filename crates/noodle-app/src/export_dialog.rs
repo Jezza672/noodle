@@ -142,6 +142,19 @@ impl ExportDialog {
         self.open
     }
 
+    #[cfg(test)]
+    /// What is ticked while the dialog is open: whether the mixdown is, and
+    /// the names of the groups that are. For the usability routes.
+    pub fn ticked(&self) -> (bool, Vec<String>) {
+        let groups = self
+            .groups
+            .iter()
+            .filter(|(_, _, on)| *on)
+            .map(|(_, name, _)| name.clone())
+            .collect();
+        (self.mixdown, groups)
+    }
+
     /// Whether "Export…" was chosen and the app has yet to take the choice.
     pub fn has_choice(&self) -> bool {
         self.chosen.is_some()
