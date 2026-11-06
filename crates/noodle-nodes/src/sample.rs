@@ -269,20 +269,20 @@ impl SampleStore {
             if inner.missing.contains(hash) {
                 return None;
             }
-            // Audio shipped inside the program (the system library's
-            // instruments) needs no folder.
-            if let Some(audio) = crate::system_samples::audio(hash) {
-                let sample = Arc::new(Sample::from_audio(&audio));
-                drop(inner);
-                self.inner
-                    .lock()
-                    .unwrap()
-                    .samples
-                    .insert(hash.to_owned(), sample.clone());
-                return Some(sample);
-            }
-            inner.dir.clone()?
+            inner.dir.clone()
         };
+        // Audio shipped inside the program (the system library's
+        // instruments) needs no folder. Decoded with the lock released.
+        if let Some(audio) = crate::system_samples::audio(hash) {
+            let sample = Arc::new(Sample::from_audio(&audio));
+            self.inner
+                .lock()
+                .unwrap()
+                .samples
+                .insert(hash.to_owned(), sample.clone());
+            return Some(sample);
+        }
+        let dir = dir?;
         // Only a hash that looks like one becomes a path.
         if hash.len() != 64 || !hash.bytes().all(|b| b.is_ascii_hexdigit()) {
             return None;
