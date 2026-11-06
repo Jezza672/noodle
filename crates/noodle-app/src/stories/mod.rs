@@ -14,6 +14,7 @@
 //! **A PR that changes how a story is done updates its route in the same
 //! PR.**
 
+mod agent;
 mod effort;
 mod feedback;
 mod handle;
@@ -108,7 +109,13 @@ pub struct Outcome {
     pub failure: Option<String>,
 }
 
-fn window(mut app: App) -> AppHarness {
+fn window(app: App) -> AppHarness {
+    window_with(app, false)
+}
+
+/// [`window`], drawing with the GPU (or its software stand-in) when `render`
+/// is set, so that `Harness::render` can take a screenshot.
+fn window_with(mut app: App, render: bool) -> AppHarness {
     // Renders go next to the route's project, not in the user's cache folder:
     // a route that listens must not hear what an earlier run, or another
     // route's session, left there (entries are keyed by content, not by
@@ -123,9 +130,11 @@ fn window(mut app: App) -> AppHarness {
     }
     // While audio plays the app keeps repainting, so settle a few frames
     // rather than `run` until it stops.
-    let mut h = Harness::builder()
-        .with_size(Vec2::new(1280.0, 800.0))
-        .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+    let mut builder = Harness::builder().with_size(Vec2::new(1280.0, 800.0));
+    if render {
+        builder = builder.wgpu();
+    }
+    let mut h = builder.build_ui_state(|ui, app: &mut App| app.show(ui), app);
     h.run_steps(3);
     h
 }

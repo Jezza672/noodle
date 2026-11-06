@@ -381,12 +381,10 @@ fn sample_picker(
         ui.colored_label(crate::theme::MUTE, error);
     }
     if ui.button("Load sample…").clicked()
-        && let Some(path) = rfd::FileDialog::new()
-            .add_filter(
-                "Audio",
-                &["wav", "flac", "mp3", "ogg", "aif", "aiff", "m4a"],
-            )
-            .pick_file()
+        && let Some(path) = crate::picker::pick_file((
+            "Audio",
+            &["wav", "flac", "mp3", "ogg", "aif", "aiff", "m4a"],
+        ))
     {
         // Kept in memory; saving the project writes it beside the file.
         match store.import(&path) {
@@ -466,17 +464,15 @@ fn sample_set_table(
     let mut result = None;
     ui.horizontal_wrapped(|ui| {
         if ui.button("Load folder…").clicked()
-            && let Some(path) = rfd::FileDialog::new().pick_folder()
+            && let Some(path) = crate::picker::pick_folder()
         {
             result = Some(session.sample_set_load_folder(id, &path));
         }
         if ui.button("Add files…").clicked()
-            && let Some(paths) = rfd::FileDialog::new()
-                .add_filter(
-                    "Audio",
-                    &["wav", "flac", "mp3", "ogg", "aif", "aiff", "m4a"],
-                )
-                .pick_files()
+            && let Some(paths) = crate::picker::pick_files((
+                "Audio",
+                &["wav", "flac", "mp3", "ogg", "aif", "aiff", "m4a"],
+            ))
         {
             result = Some(session.sample_set_add(id, &paths));
         }
