@@ -686,6 +686,10 @@ fn right_click_on_empty_canvas_opens_the_add_search() {
         h.state().editor().is_searching(),
         "right-click opened the add search"
     );
+    assert!(
+        !egui::Popup::is_any_open(&h.ctx),
+        "no empty context menu sits over the search"
+    );
 }
 
 #[test]
