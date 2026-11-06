@@ -154,6 +154,9 @@ pub struct EditorState {
     freeze: BTreeMap<NodeId, Badge>,
     /// The nodes whose monitor button is lit, from the session.
     monitored: Vec<NodeId>,
+    /// The latency badge of each node that adds or holds back delay, from
+    /// the session's plan.
+    latency: std::collections::HashMap<NodeId, String>,
     /// The Automation nodes armed for recording, from the session.
     armed: Vec<NodeId>,
     /// What each Automation node's `value` shows, from the session.
@@ -234,6 +237,7 @@ impl Default for EditorState {
             unused_menu: None,
             freeze: BTreeMap::new(),
             monitored: Vec::new(),
+            latency: std::collections::HashMap::new(),
             armed: Vec::new(),
             auto_values: BTreeMap::new(),
         }
@@ -597,6 +601,7 @@ enum Hit {
 pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Vec<Edit> {
     let dt = ui.input(|i| i.stable_dt);
     state.freeze.clone_from(session.freeze_badges());
+    state.latency = crate::latency::badges(session);
     state.monitored.clear();
     state.monitored.extend_from_slice(session.monitored());
     state.armed.clear();

@@ -17,6 +17,7 @@ mod export_dialog;
 mod freezing;
 mod inline_result;
 mod keyboard;
+mod latency;
 mod metronome;
 mod midi_ports;
 mod midi_take;

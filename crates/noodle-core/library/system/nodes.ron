@@ -2132,6 +2132,26 @@
         ),
     )),
     NodePreset((
+        name: "Smaller",
+        slug: "formant-shift-smaller",
+        node_type: "noodle.spectral.formant",
+        values: (
+            params: {
+                "shift": 4.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Larger",
+        slug: "formant-shift-larger",
+        node_type: "noodle.spectral.formant",
+        values: (
+            params: {
+                "shift": -4.0,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Held",
         slug: "spectral-freeze-held",
         node_type: "noodle.spectral.freeze",

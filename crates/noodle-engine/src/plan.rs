@@ -59,6 +59,10 @@ pub(crate) struct PlanInfo {
     /// Each node's reported latency in samples, so a node that carries over
     /// (its instance arrives later) still counts.
     latency: HashMap<NodeId, u32>,
+    /// How late each node's outputs sound once its inputs are lined up: the
+    /// slowest path to it plus its own latency. Empty when nothing reports
+    /// latency.
+    arrival: HashMap<NodeId, u32>,
     /// Every delay line inserted for compensation, by the node and input it
     /// feeds: (slot, index in the slot's lines, delay in samples). Sorted.
     delays: Vec<DelayRecord>,
@@ -333,6 +337,7 @@ pub(crate) fn build(
         audible: HashMap::new(),
         silent: HashSet::new(),
         latency: HashMap::new(),
+        arrival: HashMap::new(),
         delays: Vec::new(),
         delay_keys: Vec::new(),
         output_latency: 0,
@@ -1910,6 +1915,7 @@ fn compensate(
             .unwrap_or(0)
             .max(spectral);
         if slot.consumes {
+            info.arrival.insert(slot.id, slowest + slot.latency);
             for &b in &slot.outputs {
                 arrival.insert(b, slowest + slot.latency);
             }
@@ -2145,5 +2151,93 @@ mod tests {
         input.settle();
         input.prepare(4);
         assert_eq!(input.constant(), Some(0.5));
+    }
+}
+
+/// One input that delay compensation holds back so it lines up with the
+/// slowest path into the same node.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct HeldInput {
+    /// The input's position among the node's signal inputs, or among its
+    /// spectral inputs when `spectral`.
+    pub input: usize,
+    pub spectral: bool,
+    /// How many samples it is delayed by.
+    pub samples: u32,
+}
+
+/// What delay compensation did at one node.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct NodeLatency {
+    /// The latency the node reports itself (a plugin's, a lookahead's, a
+    /// Synthesize's), in samples.
+    pub own: u32,
+    /// How late the node's outputs sound against the timeline: the slowest
+    /// path into it plus `own`.
+    pub arrival: u32,
+    /// The inputs that were delayed to line up, with by how much.
+    pub held: Vec<HeldInput>,
+}
+
+impl NodeLatency {
+    /// True when compensation did nothing here and the node adds no delay.
+    pub fn is_quiet(&self) -> bool {
+        self.own == 0 && self.arrival == 0 && self.held.is_empty()
+    }
+}
+
+/// The delay compensation of a whole plan, for showing a user where latency
+/// comes from and where it was made up.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct LatencyReport {
+    /// How late the mix sounds against the timeline, in samples.
+    pub output: u32,
+    /// Only the nodes that report latency, are held back or sit downstream
+    /// of one; the rest are quiet.
+    pub nodes: HashMap<NodeId, NodeLatency>,
+}
+
+impl LatencyReport {
+    /// What happened at `id`; all zero for a node nothing delays.
+    pub fn node(&self, id: NodeId) -> NodeLatency {
+        self.nodes.get(&id).cloned().unwrap_or_default()
+    }
+}
+
+impl PlanInfo {
+    pub(crate) fn latency_report(&self) -> LatencyReport {
+        let mut nodes: HashMap<NodeId, NodeLatency> = HashMap::new();
+        for (&id, &own) in &self.latency {
+            let arrival = self.arrival.get(&id).copied().unwrap_or(0);
+            if own != 0 || arrival != 0 {
+                nodes.insert(
+                    id,
+                    NodeLatency {
+                        own,
+                        arrival,
+                        held: Vec::new(),
+                    },
+                );
+            }
+        }
+        for &((id, input), (_, _, samples)) in &self.delays {
+            let (input, spectral) = match input.checked_sub(SPECTRAL_KEY_BASE) {
+                Some(port) => (port, true),
+                None => (input, false),
+            };
+            let entry = nodes.entry(id).or_insert_with(|| NodeLatency {
+                arrival: self.arrival.get(&id).copied().unwrap_or(0),
+                ..NodeLatency::default()
+            });
+            entry.held.push(HeldInput {
+                input,
+                spectral,
+                samples,
+            });
+        }
+        LatencyReport {
+            output: self.output_latency,
+            nodes,
+        }
     }
 }

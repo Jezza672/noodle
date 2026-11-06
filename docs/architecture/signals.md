@@ -108,7 +108,10 @@ reference to a sample instead of signal:
     frequencies), `Spectral Shift` (every partial moved by the same number of
     hertz, rounded to whole bins; the frames are turned by a phase that
     advances `k` bins' worth per frame so the partials stay coherent),
-    `Spectral Freeze` (holds each bin's level and keeps advancing its phase at
+    `Formant Shift` (finds the outline of the magnitudes, smoothed over `smooth`
+    Hz, moves it by `shift` semitones and scales each bin to follow, so the
+    harmonics stay and the formants move; `FormantWarp` in the engine does the
+    work and the clip's Keep formants uses the same function), `Spectral Freeze` (holds each bin's level and keeps advancing its phase at
     the frequency it was caught at), `Spectral Blur` (smooths levels over time,
     keeping the live phases) and `Cross` (the levels of a `modulator` spectrum
     on a `carrier`, blended with `mix`; `bands` (2 to 256, below 2 is off)

@@ -1123,8 +1123,14 @@ fn transpose_section(
             edits.extend(
                 subject
                     .warp_edit(project, |warp| {
-                        let to = warp.transpose.map_or(KeyTarget::Follow, |t| t.to);
-                        warp.transpose = new_from.map(|from| Transpose { from, to });
+                        let (to, keep_formants) = warp
+                            .transpose
+                            .map_or((KeyTarget::Follow, false), |t| (t.to, t.keep_formants));
+                        warp.transpose = new_from.map(|from| Transpose {
+                            from,
+                            to,
+                            keep_formants,
+                        });
                     })
                     .map(Edit::Apply),
             );
@@ -1147,6 +1153,27 @@ fn transpose_section(
                 );
             }
         });
+        let mut keep = transpose.keep_formants;
+        if ui
+            .checkbox(&mut keep, "Keep formants")
+            .on_hover_text(
+                "Shift the pitch without shifting the voice's character: a vocal carried up \
+                 keeps its size instead of sounding smaller (and down, larger). Best for \
+                 voices and solo instruments; shifts over about 6 semitones or a thin, \
+                 noisy clip can sound strained",
+            )
+            .changed()
+        {
+            edits.extend(
+                subject
+                    .warp_edit(project, |warp| {
+                        if let Some(t) = &mut warp.transpose {
+                            t.keep_formants = keep;
+                        }
+                    })
+                    .map(Edit::Apply),
+            );
+        }
     }
 }
 

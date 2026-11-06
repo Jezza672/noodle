@@ -16,6 +16,7 @@
 //! playhead.
 
 mod ahead;
+mod formant;
 mod hub;
 mod pitch;
 mod schedule;

@@ -406,6 +406,18 @@ impl Controller {
             .map_or(0, |info| info.output_latency as usize)
     }
 
+    /// Where the latest plan's latency comes from and where delay
+    /// compensation made it up: per node, what it reports, how late it
+    /// sounds, and which inputs were held back.
+    pub fn latency_report(&self) -> crate::plan::LatencyReport {
+        self.pending
+            .as_ref()
+            .map(|(_, info)| info)
+            .or(self.sent.as_ref())
+            .map(PlanInfo::latency_report)
+            .unwrap_or_default()
+    }
+
     /// How much of the latest plan could run at once, for judging whether
     /// worker threads would help.
     pub fn plan_shape(&self) -> PlanShape {

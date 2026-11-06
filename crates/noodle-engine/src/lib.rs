@@ -75,7 +75,7 @@ pub use offline::{
     render_offline_node,
 };
 pub use param::{Modulation, ParamInfo, ParamKind, Taper, Unit};
-pub use plan::PlanShape;
+pub use plan::{HeldInput, LatencyReport, NodeLatency, PlanShape};
 pub use priority::{Priority, raise_current_thread};
 pub use profile::{NodeProfile, Profile, profile_project};
 pub use registry::Registry;
@@ -89,8 +89,8 @@ pub use runtime::{
 };
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
 pub use spectral::{
-    Analyzer, BINS, Bin, FFT_SIZE, HOP, SYNTH_LATENCY, SpectralBuf, SpectralDelay, SpectralIn,
-    SpectralOut, Synthesizer, bin_frequency, frame_capacity,
+    Analyzer, BINS, Bin, FFT_SIZE, FormantWarp, HOP, SYNTH_LATENCY, SpectralBuf, SpectralDelay,
+    SpectralIn, SpectralOut, Synthesizer, bin_frequency, frame_capacity,
 };
 pub use telemetry::{
     ACTIVITY_FLOOR, BlockStats, BlockWriter, CpuReading, CpuTotals, CpuWriter, LOAD_BUCKETS, Level,

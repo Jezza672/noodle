@@ -490,7 +490,7 @@ fn transpose_path(
         let at = table.sample_at_tick(tick).saturating_sub(first_start);
         shifts.push((at, f64::from(transpose.semitones(key))));
     }
-    PitchPath::from_semitones(&shifts)
+    PitchPath::from_semitones(&shifts).map(|path| path.keeping_formants(transpose.keep_formants))
 }
 
 fn lay_out_plain(

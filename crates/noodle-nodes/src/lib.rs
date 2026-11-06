@@ -192,9 +192,9 @@ pub use slice::{
     cuts as slice_cuts, slice_set,
 };
 pub use spectral::{
-    ANALYZE_ID, Analyze, CROSS_ID, Cross, SPECTRAL_BLUR_ID, SPECTRAL_FILTER_ID, SPECTRAL_FREEZE_ID,
-    SPECTRAL_GATE_ID, SPECTRAL_SHIFT_ID, SYNTHESIZE_ID, SpectralBlur, SpectralFilter,
-    SpectralFreeze, SpectralGate, SpectralShift, Synthesize,
+    ANALYZE_ID, Analyze, CROSS_ID, Cross, FORMANT_SHIFT_ID, FormantShift, SPECTRAL_BLUR_ID,
+    SPECTRAL_FILTER_ID, SPECTRAL_FREEZE_ID, SPECTRAL_GATE_ID, SPECTRAL_SHIFT_ID, SYNTHESIZE_ID,
+    SpectralBlur, SpectralFilter, SpectralFreeze, SpectralGate, SpectralShift, Synthesize,
 };
 pub use spectrum::{
     FLOOR_DB as SPECTRUM_FLOOR_DB, HIGH_HZ as SPECTRUM_HIGH_HZ, LOW_HZ as SPECTRUM_LOW_HZ,
@@ -293,6 +293,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(SpectralGate);
     registry.register(SpectralFilter);
     registry.register(SpectralShift);
+    registry.register(FormantShift);
     registry.register(SpectralFreeze);
     registry.register(SpectralBlur);
     registry.register(Cross);

@@ -4,8 +4,8 @@
 //! tempo from the tempo found in the audio. Its Key row says what key it is
 //! in (Detect key finds it from the audio; the route sets it by hand, since the
 //! fixture is clicks), and it is carried to the timeline's key, which the
-//! ruler's menu sets for the project. Formant preservation is not built, so
-//! the story's wording leaves it out.
+//! ruler's menu sets for the project. Its Keep formants box carries the
+//! voice's formants back after the shift.
 //!
 //! The late change modulates the song: a marker's menu sets a new key from
 //! there on, and the clip follows it.
@@ -45,6 +45,9 @@ fn steps(h: &mut Handle, _size: usize) {
     h.click(from, Modifiers::NONE);
     let key = h.find("A minor");
     h.click(key, Modifiers::NONE);
+    h.step("keep the formants natural");
+    let keep = h.find("Keep formants");
+    h.click(keep, Modifiers::NONE);
     h.step("set the project's key to F minor");
     let at = h.ruler_at(1.0);
     h.right_click(at);
@@ -73,6 +76,7 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
         warp.transpose,
         Some(Transpose {
             to: KeyTarget::Follow,
+            keep_formants: true,
             ..
         })
     ) {

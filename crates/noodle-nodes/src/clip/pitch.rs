@@ -10,6 +10,7 @@
 use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
+use super::formant::{BLOCK, FormantStage, LATENCY, WARMUP};
 use super::stretch::{Source, Stretcher};
 use super::warp::cubic;
 
@@ -22,6 +23,9 @@ const SAME: f64 = 1e-6;
 #[derive(Clone, Debug, PartialEq)]
 pub struct PitchPath {
     steps: Vec<(u64, f64)>,
+    /// Whether the formants are carried back to where they were (see
+    /// `formant`) after the pitch is moved.
+    formants: bool,
 }
 
 impl PitchPath {
@@ -40,7 +44,27 @@ impl PitchPath {
             return None;
         }
         steps[0].0 = 0;
-        Some(Self { steps })
+        Some(Self {
+            steps,
+            formants: false,
+        })
+    }
+
+    /// This path, with the formants kept in place or moved with the pitch.
+    pub fn keeping_formants(mut self, keep: bool) -> Self {
+        self.formants = keep;
+        self
+    }
+
+    /// Whether the formants are kept in place.
+    pub fn formants(&self) -> bool {
+        self.formants
+    }
+
+    /// The pitch ratio at output frame `out`.
+    pub fn ratio_at(&self, out: u64) -> f64 {
+        let at = self.steps.partition_point(|s| s.0 <= out).saturating_sub(1);
+        self.steps[at].1
     }
 
     pub fn steps(&self) -> &[(u64, f64)] {
@@ -65,7 +89,10 @@ impl PitchPath {
         let mut steps: Vec<(u64, f64)> = self.steps.iter().map(|&(a, r)| (a + head, r)).collect();
         steps.insert(0, (0, self.steps[0].1));
         steps.dedup_by(|b, a| (a.1 - b.1).abs() < SAME);
-        Self { steps }
+        Self {
+            steps,
+            formants: self.formants,
+        }
     }
 
     /// The part of this path from output frame `from` for `len` frames, from
@@ -83,7 +110,7 @@ impl PitchPath {
             }
             shifts.push((start - from, ratio.log2() * 12.0));
         }
-        Self::from_semitones(&shifts)
+        Self::from_semitones(&shifts).map(|p| p.keeping_formants(self.formants))
     }
 }
 
@@ -93,6 +120,7 @@ impl Hash for PitchPath {
             at.hash(state);
             ratio.to_bits().hash(state);
         }
+        self.formants.hash(state);
     }
 }
 
@@ -107,13 +135,35 @@ pub struct Pitcher<S> {
     start: i64,
     ended: bool,
     scratch: Vec<f32>,
+    /// Puts the formants back after the shift, if the path asks for it.
+    formants: Option<Formants>,
+}
+
+/// The formant stage and where it is in its stream.
+struct Formants {
+    stage: FormantStage,
+    /// Output frames still to drop: the stage's delay, and after a seek the
+    /// warm-up before the position asked for.
+    skip: usize,
+    /// Zeros still to feed after the audio ends, so its tail comes out.
+    flush: usize,
+    done: bool,
+    block: Vec<f32>,
 }
 
 const CHUNK: usize = 2048;
 
 impl<S: Source> Pitcher<S> {
     pub fn new(stretcher: Stretcher<S>, path: Option<Arc<PitchPath>>) -> Self {
+        let formants = path.as_ref().filter(|p| p.formants()).map(|_| Formants {
+            stage: FormantStage::new(),
+            skip: LATENCY,
+            flush: LATENCY,
+            done: false,
+            block: vec![0.0; BLOCK * 2],
+        });
         Self {
+            formants,
             stretcher,
             path,
             pos: 0,
@@ -126,6 +176,23 @@ impl<S: Source> Pitcher<S> {
 
     /// Moves to output frame `pos`.
     pub fn seek(&mut self, pos: u64) {
+        if self.formants.is_some() {
+            // Start early enough for the stage's window and delay to settle,
+            // and drop what comes out before `pos`.
+            let from = pos.saturating_sub(WARMUP as u64);
+            self.seek_raw(from);
+            if let Some(f) = &mut self.formants {
+                f.stage.reset();
+                f.skip = (pos - from) as usize + LATENCY;
+                f.flush = LATENCY;
+                f.done = false;
+            }
+            return;
+        }
+        self.seek_raw(pos);
+    }
+
+    fn seek_raw(&mut self, pos: u64) {
         let Some(path) = &self.path else {
             self.stretcher.seek(pos);
             return;
@@ -141,6 +208,46 @@ impl<S: Source> Pitcher<S> {
     /// Fills `out` (stereo, interleaved) with the next frames; returns how
     /// many it wrote.
     pub fn read(&mut self, out: &mut [f32]) -> usize {
+        if self.formants.is_none() {
+            return self.read_raw(out);
+        }
+        let want = out.len() / 2;
+        let mut made = 0;
+        while made < want {
+            let n = (want - made).min(BLOCK);
+            let mut block = std::mem::take(&mut self.formants.as_mut().unwrap().block);
+            let start = self.pos;
+            let got = if self.formants.as_ref().unwrap().done {
+                0
+            } else {
+                self.read_raw(&mut block[..n * 2])
+            };
+            let f = self.formants.as_mut().unwrap();
+            if got < n {
+                f.done = true;
+            }
+            let pad = (n - got).min(f.flush);
+            f.flush -= pad;
+            block[got * 2..(got + pad) * 2].fill(0.0);
+            let fed = got + pad;
+            let path = self.path.clone().unwrap();
+            f.stage.process(&mut block[..fed * 2], |t| {
+                (1.0 / path.ratio_at(start + u64::from(t))) as f32
+            });
+            let drop = f.skip.min(fed);
+            f.skip -= drop;
+            let keep = fed - drop;
+            out[made * 2..(made + keep) * 2].copy_from_slice(&block[drop * 2..fed * 2]);
+            made += keep;
+            f.block = block;
+            if fed < n {
+                break;
+            }
+        }
+        made
+    }
+
+    fn read_raw(&mut self, out: &mut [f32]) -> usize {
         let Some(path) = self.path.clone() else {
             return self.stretcher.read(out);
         };

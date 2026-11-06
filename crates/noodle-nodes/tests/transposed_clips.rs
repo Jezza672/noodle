@@ -118,6 +118,7 @@ fn a_clip_carried_up_two_semitones_is_two_semitones_higher_and_as_long() {
     warp.transpose = Some(Transpose {
         from: C,
         to: KeyTarget::Fixed(Key::new(2, Mode::Major)),
+        keep_formants: false,
     });
     let project = project("tone.wav", warp, 4 * RATE as u64);
     let samples = render(&project, &dir, 3 * RATE as usize);
@@ -142,6 +143,7 @@ fn following_the_timeline_changes_pitch_at_a_marker() {
     warp.transpose = Some(Transpose {
         from: C,
         to: KeyTarget::Follow,
+        keep_formants: false,
     });
     let mut project = project("tone.wav", warp, 4 * RATE as u64);
     let mut history = History::new();
@@ -182,10 +184,94 @@ fn a_clip_in_the_timeline_key_is_left_alone() {
     warp.transpose = Some(Transpose {
         from: C,
         to: KeyTarget::Follow,
+        keep_formants: false,
     });
     let project = project("tone.wav", warp, 4 * RATE as u64);
     let samples = render(&project, &dir, 3 * RATE as usize);
     let l = left(&samples);
     let mid = &l[RATE as usize..2 * RATE as usize];
     assert!((hz(mid, 1.0) - 440.0).abs() < 4.0);
+}
+
+/// Four seconds of a "voice": harmonics of `f0` under one broad formant
+/// centred on `centre` Hz.
+fn voice(f0: f32, centre: f32) -> Vec<f32> {
+    (0..4 * RATE as usize)
+        .flat_map(|i| {
+            let t = i as f32 / RATE as f32;
+            let x: f32 = (1..=40)
+                .map(|h| {
+                    let f = f0 * h as f32;
+                    let d = (f - centre) / 600.0;
+                    (-d * d).exp() * (f * t * std::f32::consts::TAU).sin()
+                })
+                .sum::<f32>()
+                * 0.05;
+            [x, x]
+        })
+        .collect()
+}
+
+/// `voice.wav` at 150 Hz and 1 kHz, and `ideal.wav` as that voice would be
+/// with its pitch four semitones up and its formant left at 1 kHz.
+fn voiced_folder(name: &str) -> PathBuf {
+    let dir = std::env::temp_dir().join(format!("noodle-stretched-{name}"));
+    std::fs::create_dir_all(&dir).unwrap();
+    write_wav(&dir.join("voice.wav"), &voice(150.0, 1000.0), 2, RATE).unwrap();
+    let up = 2f32.powf(4.0 / 12.0);
+    write_wav(&dir.join("ideal.wav"), &voice(150.0 * up, 1000.0), 2, RATE).unwrap();
+    dir
+}
+
+/// The spectral centroid in Hz of one second of a signal, by Goertzel at
+/// every 25 Hz.
+fn centroid(signal: &[f32]) -> f32 {
+    let (mut total, mut weighted) = (0.0, 0.0);
+    for step in 4..240 {
+        let f = step as f32 * 25.0;
+        let w = std::f32::consts::TAU * f / RATE as f32;
+        let (mut re, mut im) = (0.0f32, 0.0f32);
+        for (n, &x) in signal.iter().enumerate() {
+            re += x * (w * n as f32).cos();
+            im += x * (w * n as f32).sin();
+        }
+        let power = re * re + im * im;
+        total += power;
+        weighted += power * f;
+    }
+    weighted / total
+}
+
+fn voice_centroid(dir: &Path, file: &str, to: Option<Key>, keep: bool) -> (f32, f32) {
+    let mut warp = natural_at_120();
+    warp.transpose = to.map(|to| Transpose {
+        from: C,
+        to: KeyTarget::Fixed(to),
+        keep_formants: keep,
+    });
+    let project = project(file, warp, 4 * RATE as u64);
+    let samples = render(&project, dir, 3 * RATE as usize);
+    let l = left(&samples);
+    let mid = &l[RATE as usize..2 * RATE as usize];
+    // The loudness too, so a stage that silenced the clip would show.
+    let rms = (mid.iter().map(|x| x * x).sum::<f32>() / mid.len() as f32).sqrt();
+    (centroid(mid), rms)
+}
+
+#[test]
+fn keeping_formants_puts_the_voice_where_a_singer_with_that_pitch_would_be() {
+    let dir = voiced_folder("formants");
+    let up = Some(Key::new(4, Mode::Major));
+    // The voice as it would sound at the new pitch with its formant in place.
+    let (ideal, _) = voice_centroid(&dir, "ideal.wav", None, false);
+    let (moved, _) = voice_centroid(&dir, "voice.wav", up, false);
+    let (kept, level) = voice_centroid(&dir, "voice.wav", up, true);
+    // Without the stage the formant goes up with the pitch: brighter.
+    assert!(moved > ideal * 1.12, "ideal {ideal} Hz, moved {moved} Hz");
+    // With it the brightness is that of the singer at the new pitch.
+    assert!(
+        (kept / ideal - 1.0).abs() < 0.07,
+        "ideal {ideal} Hz, kept {kept} Hz (moved {moved} Hz)"
+    );
+    assert!(level > 0.01, "silent: {level}");
 }

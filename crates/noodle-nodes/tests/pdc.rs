@@ -208,6 +208,34 @@ fn the_controller_reports_the_output_latency() {
 }
 
 #[test]
+fn the_latency_report_names_the_latent_node_and_the_path_held_back() {
+    let (mut controller, _processor) = noodle_engine::engine(SETTINGS).unwrap();
+    controller.update(&parallel(150), &registry());
+    let report = controller.latency_report();
+    assert_eq!(report.output, 150);
+    // The latent node reports its own latency and is not held itself.
+    let latent = report.node(NodeId(2));
+    assert_eq!((latent.own, latent.arrival), (150, 150));
+    assert!(latent.held.is_empty());
+    // The mixer's other input (the dry path) is delayed to match.
+    let mix = report.node(NodeId(3));
+    assert_eq!((mix.own, mix.arrival), (0, 150));
+    assert_eq!(
+        mix.held,
+        [noodle_engine::HeldInput {
+            input: 1,
+            spectral: false,
+            samples: 150
+        }]
+    );
+    // The source is before any latency.
+    assert!(report.node(NodeId(1)).is_quiet());
+    // With nothing latent the report is empty.
+    controller.update(&parallel(0), &registry());
+    assert_eq!(controller.latency_report(), Default::default());
+}
+
+#[test]
 fn two_latent_paths_align_to_the_slower() {
     // 1 -> latent(40) -> mix.in1, 1 -> latent(90) -> mix.in2.
     let graph = Graph::from_parts(
