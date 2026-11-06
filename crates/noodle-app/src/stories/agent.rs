@@ -32,8 +32,10 @@
 //!
 //! The agent is never told whether the done check passed.
 
+use std::cell::Cell;
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
+use std::rc::Rc;
 use std::time::{Duration, Instant};
 
 use egui::{Key, Modifiers, MouseWheelUnit, Pos2, Vec2};
@@ -102,7 +104,9 @@ impl Command {
 fn number(word: Option<&&str>, what: &str) -> Result<f32, String> {
     word.ok_or_else(|| format!("missing {what}"))?
         .parse::<f32>()
-        .map_err(|_| format!("{what} must be a number"))
+        .ok()
+        .filter(|n| n.is_finite())
+        .ok_or_else(|| format!("{what} must be a number"))
 }
 
 fn point(words: &[&str], i: usize) -> Result<Pos2, String> {
@@ -166,9 +170,9 @@ fn parse(line: &str) -> Result<Command, String> {
         }
         "key" => {
             let (mods, name) = rest.rsplit_once('+').unwrap_or(("", rest));
-            // A bare "+" is the plus key.
+            // A trailing "+" is the plus key: `+` or `ctrl++`.
             let (mods, name) = if name.is_empty() {
-                ("", "+")
+                (mods.strip_suffix('+').unwrap_or(mods), "+")
             } else {
                 (mods, name)
             };
@@ -206,7 +210,9 @@ fn parse(line: &str) -> Result<Command, String> {
                 None => 2.0,
                 Some(w) => w
                     .parse::<f32>()
-                    .map_err(|_| format!("listen takes seconds, not {w}"))?,
+                    .ok()
+                    .filter(|n| n.is_finite())
+                    .ok_or_else(|| format!("listen takes seconds, not {w}"))?,
             };
             Command::Listen(Duration::from_secs_f32(secs.clamp(0.5, 5.0)))
         }
@@ -287,18 +293,41 @@ struct Run {
     /// Where the pointer last was, for `type` and the log.
     pointer: Pos2,
     shots: usize,
-    next: usize,
-    /// The last action, which answering a file picker plays again.
-    last: Option<Command>,
-    /// Whether a file picker is waiting for an answer.
-    asked: bool,
+    /// The number of the next command to read. Shared with the file picker's
+    /// handler, which reads the commands while a picker is open.
+    next: Rc<Cell<usize>>,
+    /// The action count, for the picker's handler to log under.
+    at_action: Rc<Cell<usize>>,
+}
+
+fn write_response(dir: &Path, n: usize, text: &str) {
+    let tmp = dir.join(format!("resp.{n}.tmp"));
+    std::fs::write(&tmp, format!("{text}\n")).expect("the response is written");
+    std::fs::rename(&tmp, dir.join(format!("resp.{n}"))).expect("the response is shown");
+}
+
+fn append_log(private: &Path, start: Instant, action: usize, line: &str, result: &str, hit: &str) {
+    let entry = format!(
+        "{{\"t\":{:.1},\"action\":{},\"command\":\"{}\",\"result\":\"{}\"{}}}\n",
+        start.elapsed().as_secs_f64(),
+        action,
+        escape(line),
+        escape(result),
+        hit
+    );
+    use std::io::Write;
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(private.join("log.jsonl"))
+        .expect("the log opens")
+        .write_all(entry.as_bytes())
+        .expect("the log is written");
 }
 
 impl Run {
     fn write_response(&self, n: usize, text: &str) {
-        let tmp = self.dir.join(format!("resp.{n}.tmp"));
-        std::fs::write(&tmp, format!("{text}\n")).expect("the response is written");
-        std::fs::rename(&tmp, self.dir.join(format!("resp.{n}"))).expect("the response is shown");
+        write_response(&self.dir, n, text);
     }
 
     fn log(&self, line: &str, result: &str, rec: &testkit::Recording) {
@@ -324,22 +353,7 @@ impl Run {
                 )
             })
             .unwrap_or_default();
-        let entry = format!(
-            "{{\"t\":{:.1},\"action\":{},\"command\":\"{}\",\"result\":\"{}\"{}}}\n",
-            self.start.elapsed().as_secs_f64(),
-            self.actions,
-            escape(line),
-            escape(result),
-            hit
-        );
-        use std::io::Write;
-        std::fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(self.private.join("log.jsonl"))
-            .expect("the log opens")
-            .write_all(entry.as_bytes())
-            .expect("the log is written");
+        append_log(&self.private, self.start, self.actions, line, result, &hit);
     }
 
     fn shot(&mut self, h: &mut AppHarness) -> String {
@@ -363,17 +377,12 @@ fn execute(h: &mut AppHarness, run: &mut Run, command: Command) -> String {
         Command::Note(_) => "noted".into(),
         Command::Listen(time) => listen(h, time),
         Command::Finish | Command::GiveUp => "ok".into(),
-        Command::Choose(paths) => {
-            let Some(last) = run.last.clone().filter(|_| run.asked) else {
-                return "no file picker is open".into();
-            };
-            run.asked = false;
-            crate::picker::answer(paths);
-            execute(h, run, last)
-        }
+        // A choose or cancel is read by the picker's handler while a picker is
+        // open. Arriving here, none is.
+        Command::Choose(_) => "no file picker is open".into(),
         action => {
             run.actions += 1;
-            run.last = Some(action.clone());
+            run.at_action.set(run.actions);
             match action {
                 Command::Click { at, modifiers } => {
                     run.pointer = at;
@@ -406,24 +415,7 @@ fn execute(h: &mut AppHarness, run: &mut Run, command: Command) -> String {
                 _ => unreachable!("handled above"),
             }
             let shot = run.shot(h);
-            let picker = match crate::picker::take_asked() {
-                Some(what) => {
-                    run.asked = true;
-                    format!(
-                        " A file picker opened ({what}). It is a native dialog that screenshots do \
-                         not show. It starts in {}, which holds: {}. To pick, type the full path \
-                         yourself: `choose /full/path` (several files: separate with ;), or \
-                         `cancel` to close it.",
-                        run.dir.join("world").display(),
-                        listing(&run.dir.join("world"))
-                    )
-                }
-                None => String::new(),
-            };
-            format!(
-                "action {} of {} done. {shot}{picker}",
-                run.actions, run.budget
-            )
+            format!("action {} of {} done. {shot}", run.actions, run.budget)
         }
     }
 }
@@ -510,12 +502,13 @@ fn describe(samples: &[f32], channels: usize, rate: u32) -> String {
     )
 }
 
-/// The fundamental of a steady tone between 50 Hz and 2 kHz, by
+/// The fundamental of a steady tone between 50 Hz and 1 kHz, by
 /// autocorrelation over a loud stretch, or `None` if it is not clearly
 /// periodic.
 fn pitch_of(mono: &[f32], rate: u32) -> Option<f32> {
     let window = 4096.min(mono.len());
-    let lags = (rate as usize / 2000)..(rate as usize / 50).min(window / 2);
+    // Lags below a period of 1 kHz would also fit a tone an octave up.
+    let lags = (rate as usize / 1000)..(rate as usize / 50).min(window / 2);
     if lags.is_empty() {
         return None;
     }
@@ -561,6 +554,59 @@ fn note_name(hz: f32) -> String {
         n.div_euclid(12) - 1,
         cents
     )
+}
+
+/// Makes every file picker the app opens wait for the agent. The action that
+/// opened it is answered at once with what the picker is (the screen cannot
+/// show a native dialog), then the next commands are read here: `choose` or
+/// `cancel` answers it, and the action carries on with the answer, as it does
+/// when a person picks in a dialog. Anything else is told to answer first.
+fn install_picker(run: &Run) {
+    let (dir, private, start) = (run.dir.clone(), run.private.clone(), run.start);
+    let (next, at_action, budget) = (run.next.clone(), run.at_action.clone(), run.budget);
+    crate::picker::set_handler(Box::new(move |what: &str| {
+        let asked = next.get() - 1;
+        let world = dir.join("world");
+        let prompt = format!(
+            "action {} of {budget} done, and a file picker opened ({what}). It is a native \
+             dialog that screenshots do not show, and it starts in {}, which holds: {}. \
+             Answer it by typing the full path yourself: `choose /full/path` (several files: \
+             separate with ;), or `cancel` to close it.",
+            at_action.get(),
+            world.display(),
+            listing(&world)
+        );
+        write_response(&dir, asked, &prompt);
+        loop {
+            let n = next.get();
+            next.set(n + 1);
+            let line = wait_for(&dir.join(format!("cmd.{n}")));
+            let line = line.trim().to_string();
+            match parse(&line) {
+                Ok(Command::Choose(paths)) => {
+                    append_log(
+                        &private,
+                        start,
+                        at_action.get(),
+                        &line,
+                        "answered the picker",
+                        "",
+                    );
+                    return paths;
+                }
+                other => {
+                    let text = match other {
+                        Ok(Command::Note(_)) => "noted".to_string(),
+                        _ => "A file picker is open and nothing else works until it is \
+                              answered: `choose /full/path` or `cancel`."
+                            .to_string(),
+                    };
+                    append_log(&private, start, at_action.get(), &line, &text, "");
+                    write_response(&dir, n, &text);
+                }
+            }
+        }
+    }));
 }
 
 /// The names in a folder, as a file dialog would list them.
@@ -671,16 +717,16 @@ fn drive() {
         budget,
         pointer: Pos2::new(640.0, 400.0),
         shots: 0,
-        next: 1,
-        last: None,
-        asked: false,
+        next: Rc::new(Cell::new(1)),
+        at_action: Rc::new(Cell::new(0)),
     };
+    install_picker(&run);
     let first = run.shot(&mut h);
     std::fs::write(dir.join("ready"), first).expect("ready is written");
 
     let how = loop {
-        let n = run.next;
-        run.next += 1;
+        let n = run.next.get();
+        run.next.set(n + 1);
         let line = wait_for(&dir.join(format!("cmd.{n}")));
         let line = line.trim().to_string();
         let command = match parse(&line) {
@@ -705,7 +751,9 @@ fn drive() {
         };
         let result = execute(&mut h, &mut run, command);
         run.log(&line, &result, &rec);
-        run.write_response(n, &result);
+        // A picker opened by the action read the commands that answered it, so
+        // the result answers the last of them.
+        run.write_response(run.next.get() - 1, &result);
         if let Some(how) = finishing {
             break how;
         }
@@ -743,6 +791,20 @@ mod tests {
             })
             .collect();
         assert!(describe(&noise, 2, 48_000).contains("No single steady pitch"));
+    }
+
+    #[test]
+    fn numbers_must_be_finite_and_ctrl_plus_keeps_its_modifier() {
+        assert!(parse("listen nan").is_err());
+        assert!(parse("click nan 3").is_err());
+        assert!(parse("scroll 1 2 inf 0").is_err());
+        assert_eq!(
+            parse("key ctrl++").unwrap(),
+            Command::Key {
+                key: Key::Plus,
+                modifiers: Modifiers::COMMAND
+            }
+        );
     }
 
     #[test]

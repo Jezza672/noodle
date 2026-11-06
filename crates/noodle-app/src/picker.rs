@@ -12,34 +12,35 @@ use std::path::PathBuf;
 /// What kind of file a picker is for: a name and extensions.
 pub type Filter<'a> = (&'a str, &'a [&'a str]);
 
+/// A handler that answers every picker as it opens. It is given what the picker asks for and returns the paths, or
+/// none to cancel. The agent driver uses it, so the action that opened the
+/// picker carries on with the answer, as it does when a person picks in a
+/// dialog.
+#[cfg(test)]
+pub type Handler = Box<dyn FnMut(&str) -> Vec<PathBuf>>;
+
 #[cfg(test)]
 thread_local! {
-    static ANSWER: std::cell::RefCell<Option<Vec<PathBuf>>> = const { std::cell::RefCell::new(None) };
-    static ASKED: std::cell::RefCell<Option<String>> = const { std::cell::RefCell::new(None) };
+    static HANDLER: std::cell::RefCell<Option<Handler>> = const { std::cell::RefCell::new(None) };
 }
 
-/// Queues what the next picker returns. An empty list is a cancel.
 #[cfg(test)]
-pub fn answer(paths: Vec<PathBuf>) {
-    ANSWER.with(|a| *a.borrow_mut() = Some(paths));
-}
-
-/// What the last unanswered picker was asking for, once.
-#[cfg(test)]
-pub fn take_asked() -> Option<String> {
-    ASKED.with(|a| a.borrow_mut().take())
+pub fn set_handler(handler: Handler) {
+    HANDLER.with(|h| *h.borrow_mut() = Some(handler));
 }
 
 #[cfg(test)]
 fn ask(what: &str) -> Option<Vec<PathBuf>> {
-    match ANSWER.with(|a| a.borrow_mut().take()) {
-        Some(paths) if paths.is_empty() => None,
-        Some(paths) => Some(paths),
-        None => {
-            ASKED.with(|a| *a.borrow_mut() = Some(what.to_owned()));
-            None
-        }
+    // Taken out while it runs, so a picker opened from the handler cannot
+    // borrow it twice.
+    if let Some(mut handler) = HANDLER.with(|h| h.borrow_mut().take()) {
+        let paths = handler(what);
+        HANDLER.with(|h| *h.borrow_mut() = Some(handler));
+        return (!paths.is_empty()).then_some(paths);
     }
+    // No handler: nothing is picked, as if the dialog were cancelled.
+    let _ = what;
+    None
 }
 
 pub fn pick_folder() -> Option<PathBuf> {

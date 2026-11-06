@@ -83,10 +83,13 @@ and all tools, so "only use ctl.sh" is only a request there. Two things help:
   could have found, not what a newcomer finds: rerun it. For another runner,
   make a transcript in the same shape, or record strays by hand.
 
-Native file pickers do not show in screenshots. The driver says when one has
-opened, lists the world folder, and the agent answers with `choose /path` or
-`cancel`. That is a stand-in, and a person would see a dialog; if pickers keep
-confusing agents, an in-app picker panel for agent runs is the next step.
+Native file pickers do not show in screenshots. When an action opens one, the
+driver answers that action with what the picker is and lists the world folder,
+then holds the app until the agent says `choose /path` or `cancel` (anything
+else is told to answer first). The action then carries on with the answer, as
+it does when a person picks in a dialog. That is a stand-in for the dialog; if
+pickers keep confusing agents, an in-app picker panel for agent runs is the
+next step.
 
 ## Clues
 

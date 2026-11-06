@@ -11,6 +11,7 @@ runners (non-Claude) can produce a transcript in the same shape, or write their
 own audit.json with {"stray": [...]}.
 """
 import json
+import os
 import re
 import sys
 from pathlib import Path
@@ -39,8 +40,9 @@ def stray_calls(lines, agent: Path):
                 if not ok:
                     stray.append({"tool": name, "input": cmd})
             elif name == "Read":
-                path = args.get("file_path", "")
-                if not path.startswith(screens):
+                # Resolve first: screens/../../private/result.json starts with screens/.
+                path = os.path.normpath(args.get("file_path", ""))
+                if not path.startswith(screens) or not path.endswith(".png"):
                     stray.append({"tool": name, "input": path})
             else:
                 stray.append({"tool": name, "input": json.dumps(args)[:200]})
