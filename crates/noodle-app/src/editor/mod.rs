@@ -15,7 +15,7 @@
 //! | Ctrl+right-drag | Cut the wires crossed |
 //! | Shift+right-drag | Add a reroute on each wire crossed |
 //! | Shift+A, right-click or double-click on empty canvas | Search for a node to add |
-//! | X, Delete, Backspace | Delete the selection |
+//! | X, Delete, Backspace | Delete the selection, or the selected cable (click a cable to select it) |
 //! | Double-click a wire | Break it |
 //! | Ctrl/Cmd+C, X, V | Copy, cut and paste the selection, at the pointer |
 //! | Shift+D | Duplicate the selection (a frame with what is in it) |
@@ -88,6 +88,8 @@ pub struct EditorState {
     /// The node the properties panel shows. Always one of `selected`.
     pub active: Option<NodeId>,
     pub selected_frames: BTreeSet<FrameId>,
+    /// The wire a click selected, until another click or a delete.
+    pub selected_wire: Option<Connection>,
     pub view: View,
     /// The group being edited, or `None` for the top level. The editor shows
     /// only the nodes directly inside it.
@@ -127,6 +129,8 @@ pub struct EditorState {
     dropped_files: Option<DroppedFiles>,
     /// Why the last wire was refused, for the app to say.
     refused: Option<String>,
+    /// Something the app should say about what a drop just did.
+    notice: Option<String>,
     /// Set by View → Fit Graph, done on the next frame like arranging.
     fit_requested: bool,
     /// A node whose view was asked for with a double-click, until the app
@@ -201,6 +205,7 @@ impl Default for EditorState {
             selected: BTreeSet::new(),
             active: None,
             selected_frames: BTreeSet::new(),
+            selected_wire: None,
             view: View::default(),
             group: None,
             path: Vec::new(),
@@ -218,6 +223,7 @@ impl Default for EditorState {
             dropped: None,
             dropped_files: None,
             refused: None,
+            notice: None,
             fit_requested: false,
             view_request: None,
             open_request: None,
@@ -286,7 +292,7 @@ pub enum DropOn {
 impl EditorState {
     /// Why the last wire was refused, if one was since the last call.
     pub fn take_refusal(&mut self) -> Option<String> {
-        self.refused.take()
+        self.refused.take().or_else(|| self.notice.take())
     }
 
     /// The files dropped from the desktop onto the canvas since the last
@@ -443,6 +449,7 @@ impl EditorState {
         self.selected = nodes.into_iter().collect();
         self.active = self.selected.iter().next_back().copied();
         self.selected_frames.clear();
+        self.selected_wire = None;
     }
 
     /// Whether the add-node search is open.
@@ -475,6 +482,7 @@ impl EditorState {
     fn clear_selection(&mut self) {
         self.selected.clear();
         self.selected_frames.clear();
+        self.selected_wire = None;
         self.active = None;
     }
 }
@@ -1132,6 +1140,57 @@ fn drop_target(
         }
     }
     None
+}
+
+/// When a wire is dropped on a port row that can't take it, why it is
+/// refused. Without this the drop would fall through to another port on the
+/// node, which isn't what the pointer was on.
+fn incompatible_row_under(
+    f: &Frame_<'_>,
+    p: Pos2,
+    anchor: &Endpoint,
+    side: Side,
+    kind: &PortKind,
+) -> Option<String> {
+    let g = f.t.to_graph(p);
+    // Only the node in front matters, as it hides those behind.
+    let node = f
+        .order
+        .iter()
+        .rev()
+        .map(|&i| &f.scene.nodes[i])
+        .find(|n| n.rect.contains(g))?;
+    if node.id == anchor.node {
+        return None;
+    }
+    let port = node
+        .ports
+        .iter()
+        .find(|port| port.side != side && port.row.contains(g))?;
+    let fits = match side {
+        Side::Output => kind.feeds(&port.kind),
+        Side::Input => port.kind.feeds(kind),
+    };
+    (!fits).then(|| format!("{} {} can't take that wire", node.title, port.name))
+}
+
+/// What to say when a wire dropped on a node ended up on a port the pointer
+/// wasn't on (the node's first free port that suits it), or on a parameter,
+/// which it modulates.
+fn landing_note(f: &Frame_<'_>, p: Pos2, target: Option<&Endpoint>) -> Option<String> {
+    let target = target?;
+    let node = f.scene.node(target.node)?;
+    let port = node.ports.iter().find(|port| port.key == target.port)?;
+    let g = f.t.to_graph(p);
+    let exact =
+        port.row.contains(g) || f.t.to_screen(port.socket).distance(p) <= socket_reach(f, node);
+    if !exact {
+        Some(format!("Wired to {} {}", node.title, port.name))
+    } else if matches!(port.kind, PortKind::Param(_)) && port.side == Side::Input {
+        Some(format!("Now modulating {} {}", node.title, port.name))
+    } else {
+        None
+    }
 }
 
 fn pointer(
@@ -1942,6 +2001,17 @@ fn finish(
                 };
                 // In the move's undo step, so one undo puts both back.
                 if let Some(splice) = splice {
+                    let title = |node: NodeId| {
+                        f.scene
+                            .node(node)
+                            .map_or_else(String::new, |n| n.title.clone())
+                    };
+                    state.refused = Some(format!(
+                        "Put {} into the wire from {} to {}. Hold Alt when dropping to leave the wire alone.",
+                        title(splice.node),
+                        title(splice.wire.from.node),
+                        title(splice.wire.to.node),
+                    ));
                     edits.push(Edit::Drag(Command::Batch(splice.commands())));
                 }
                 edits.push(Edit::EndDrag);
@@ -1958,7 +2028,14 @@ fn finish(
             kind,
             detached,
         } => {
+            if let Some(why) = incompatible_row_under(f, p, &anchor, side, &kind) {
+                state.refused = Some(why);
+                return;
+            }
             let target = drop_target(f, p, &anchor, side, &kind);
+            if let Some(note) = landing_note(f, p, target.as_ref()) {
+                state.notice = Some(note);
+            }
             let target_end = target.clone().unwrap_or_else(|| anchor.clone());
             let connect = |target: Endpoint| {
                 Command::Connect(match side {
@@ -2299,6 +2376,8 @@ fn click(state: &mut EditorState, f: &Frame_<'_>, p: Pos2, modifiers: Modifiers)
         Hit::Nothing => {
             if !modifiers.shift {
                 state.clear_selection();
+                // A click on a cable selects it, for Delete.
+                state.selected_wire = wire_at(f, p).map(|wire| wire.connection.clone());
             }
         }
     }
@@ -2348,6 +2427,13 @@ fn keyboard(
         delete |= pressed(Modifiers::NONE, key);
     }
     if delete {
+        let wire = state
+            .selected_wire
+            .take()
+            .and_then(|c| f.scene.wires.iter().find(|w| w.connection == c));
+        if let Some(wire) = wire {
+            edits.push(Edit::Apply(wire.cut()));
+        }
         edits.extend(state.delete_selection());
     }
     if pressed(Modifiers::SHIFT, Key::D) {
@@ -3010,6 +3096,11 @@ fn popups(
                                 add
                             },
                         ));
+                        if type_id == noodle_nodes::TRACK_INPUT_ID {
+                            state.notice = Some(
+                                "A Track Input is a track of its own: it shows in the timeline as a new track".into(),
+                            );
+                        }
                         state.select_only([id]);
                     }
                     Choice::Template(entry) => {

@@ -1546,6 +1546,37 @@ pub fn show(
             if background.clicked() && !hit_clip {
                 state.selected.clear();
             }
+            // Double-clicking an empty lane starts a MIDI clip there and
+            // opens it in the piano roll.
+            if background.double_clicked()
+                && !hit_clip
+                && !tracks.is_empty()
+                && let Some(at) = background
+                    .interact_pointer_pos()
+                    .filter(|p| content.contains(*p))
+            {
+                let id = project.next_clip_id();
+                state.selected = BTreeSet::from([id]);
+                edits.push(Edit::Apply(Command::AddClip {
+                    id,
+                    clip: Clip::midi(
+                        tracks[rows.track_at(at.y - content.top() + state.scroll_y)],
+                        axis.snap(axis.tick(at.x).max(Tick::ZERO)),
+                        Tick(NEW_MIDI_CLIP),
+                    ),
+                }));
+                open_midi = Some(id);
+            }
+            // With no clip anywhere, say how to start one.
+            if !tracks.is_empty() && project.clips().next().is_none() {
+                ui.painter_at(content).text(
+                    content.center_top() + vec2(0.0, 24.0),
+                    egui::Align2::CENTER_CENTER,
+                    "Double-click a lane to add a MIDI clip and open the piano roll",
+                    egui::FontId::proportional(13.0),
+                    colors::TEXT_WEAK,
+                );
+            }
             // A focused button (a clicked header) isn't a text field; typing is.
             let delete_pressed = hovered
                 && !ui.ctx().egui_wants_keyboard_input()
@@ -3185,6 +3216,7 @@ fn draw_headers(
         })
         .collect();
     let mut drop = None;
+    let mut grips: Vec<(NodeId, Rect)> = Vec::new();
     for (index, &input) in tracks.iter().enumerate() {
         let top = content.top() - scroll_y + rows.top(index);
         let lane = Rect::from_min_size(
@@ -3233,29 +3265,7 @@ fn draw_headers(
             &mut state.renaming,
             session.project().organisation(),
         );
-        // The lane's bottom edge drags to resize the track. Inside the lane, since
-        // the next header is drawn over anything below it.
-        let grip = Rect::from_min_size(
-            Pos2::new(lane.left(), lane.bottom() - GRIP),
-            vec2(lane.width(), GRIP),
-        );
-        let resize = ui.interact(
-            grip,
-            ui.id().with(("resize", input)),
-            Sense::click_and_drag(),
-        );
-        if resize.hovered() || resize.dragged() {
-            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
-        }
-        if resize.dragged() {
-            state.resize_track(input, resize.drag_delta().y);
-        }
-        if resize
-            .on_hover_text("Drag to resize. Double-click to shrink to just the name.")
-            .double_clicked()
-        {
-            state.toggle_name_only(input);
-        }
+        grips.push((input, lane));
         edits.extend(changes.edits);
         arm.extend(changes.arm_audio.map(|on| (input, ArmKind::Audio, on)));
         arm.extend(changes.arm_midi.map(|on| (input, ArmKind::Midi, on)));
@@ -3282,6 +3292,32 @@ fn draw_headers(
                 &controls.mute_target,
                 controls.controls,
             ));
+        }
+    }
+    // Each lane's bottom edge drags to resize the track, and double-clicking
+    // it shrinks the track to its name. The grip straddles the edge, and is
+    // made after every header so the next header's top can't cover it.
+    for (input, lane) in grips {
+        let grip = Rect::from_min_max(
+            Pos2::new(lane.left(), lane.bottom() - GRIP),
+            Pos2::new(lane.right(), lane.bottom() + GRIP / 2.0),
+        );
+        let resize = ui.interact(
+            grip,
+            ui.id().with(("resize", input)),
+            Sense::click_and_drag(),
+        );
+        if resize.hovered() || resize.dragged() {
+            ui.ctx().set_cursor_icon(egui::CursorIcon::ResizeVertical);
+        }
+        if resize.dragged() {
+            state.resize_track(input, resize.drag_delta().y);
+        }
+        if resize
+            .on_hover_text("Drag to resize. Double-click to shrink to just the name.")
+            .double_clicked()
+        {
+            state.toggle_name_only(input);
         }
     }
     for (k, strip) in strips.iter().enumerate() {

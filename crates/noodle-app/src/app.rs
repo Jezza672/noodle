@@ -1852,10 +1852,12 @@ impl App {
         let modal = egui::Modal::new(egui::Id::new("template name")).show(ctx, |ui| {
             ui.label("Name the project template");
             let field = ui.add(egui::TextEdit::singleline(name).hint_text("Template name"));
-            if !field.has_focus() {
+            // Read Enter before asking for the focus back: asking again
+            // would cancel the focus loss Enter causes.
+            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            if !field.has_focus() && !enter {
                 field.request_focus();
             }
-            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
             ui.horizontal(|ui| {
                 if (ui.button("Save").clicked() || enter) && !name.trim().is_empty() {
                     done = Some(true);
@@ -3553,6 +3555,50 @@ mod tests {
             assert!(seen, "{modifiers:?}+A is left for the app");
         }
         assert_eq!(heard.pop(), None);
+    }
+
+    /// Cmd+Shift+S is Save As, not Save: a dirty saved project stays dirty,
+    /// because Save As only asks for a file (and a headless run answers none).
+    #[test]
+    fn cmd_shift_s_is_save_as_not_save() {
+        let dir = std::env::temp_dir().join(format!("noodle-app-{}-saveas", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let mut app = empty();
+        assert!(app.session.save_as(&dir.join("project.ron")));
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id: noodle_core::NodeId(1),
+            node: Node::new("noodle.osc.sine"),
+        })]);
+        assert!(app.session.is_dirty());
+        let mut harness = harness(app);
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
+        harness.run();
+        assert!(
+            harness.state().session().is_dirty(),
+            "Save As ran, not Save"
+        );
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::S);
+        harness.run();
+        assert!(!harness.state().session().is_dirty(), "Cmd+S saves");
+        std::fs::remove_dir_all(&dir).ok();
+    }
+
+    /// Issue #420: Enter in the template dialog saves it, and Ctrl+A selects
+    /// the name being typed.
+    #[test]
+    fn enter_confirms_the_template_dialog() {
+        let mut app = empty();
+        app.template_name = Some(String::new());
+        let mut harness = harness(app);
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        harness.event(egui::Event::Text("Band".into()));
+        harness.run();
+        assert_eq!(harness.state().template_name.as_deref(), Some("Band"));
+        harness.key_press(Key::Enter);
+        harness.run();
+        assert_eq!(harness.state().template_name, None);
     }
 
     #[test]

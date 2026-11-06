@@ -31,7 +31,11 @@ It has these views:
   - **A custom canvas**, not `egui-snarl`, so the interactions can follow
     Blender's exactly: picking a wire up off an input, cutting and rerouting
     with a stroke, frames that carry their nodes. The full list of inputs is
-    at the top of `editor/mod.rs`.
+    at the top of `editor/mod.rs`. A drop that does something the pointer
+    didn't point at says so in the status bar (a node spliced into a wire, a
+    wire landing on the node's first free port, a modulation); a wire dropped
+    on a row that can't take it is refused, not moved to another port. A click
+    selects a cable, and Delete cuts it through the same `Disconnect`.
   - **Rebuilt every frame.** `layout::Scene` works out every node's box,
     port and wire end from the project and the registry each frame, so
     nothing is cached that an undo or a recompile could make stale. Input is
