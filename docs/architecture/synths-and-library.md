@@ -243,8 +243,17 @@ These are primitives; instruments and racks built from them are groups.
   one grid unit; in *Toggle* mode a press starts the note and the next press
   of that key ends it, and a second press before the start cancels the launch.
   Raw MIDI passes straight through. The **Loop Pads** library template is this
-  node in front of a Note Split and eight looping Samplers (keys 36 to 43),
-  so pads launch loops on the bar. There is no clip grid or session view (#364).
+  node per pad, after a Note Split (keys 36 to 43), each in front of a looping
+  Sampler. Each pad has its own `Pad n grid`, `Pad n mode`, `Pad n loop` and
+  `Pad n level` group inputs, so one pad can launch on the beat and another on
+  the bar. There is no clip grid or session view (#364).
+- **Group controls (#432, #433).** A group's panel lists its **Controls**: each
+  group input that feeds a parameter inside, as a field that sets that
+  parameter (`properties::group_controls`), greyed with the source's name when
+  something is wired to the input. Names like `Slot 3 choke` or `Pad 2 loop`
+  are sectioned under `Slot 3` or `Pad 2`. The Drum Rack and Loop Pads panels
+  add a line saying what the controls do and how to reach a pattern (a track's
+  MIDI into `notes`, New MIDI clip on the lane, then the piano roll).
 - **Swing** (`noodle.event.swing`) delays the notes that fall on the odd steps
   of a `grid` (1/8, 1/16, 1/32) by `amount` of a step (0 to 0.75, the
   Arpeggiator's definition). It reads the transport's tick, so it works on

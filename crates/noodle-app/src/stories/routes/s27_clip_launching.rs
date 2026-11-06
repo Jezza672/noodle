@@ -1,7 +1,8 @@
 //! S27: jam live with pads that launch loops and patterns.
 //!
 //! Partial. The Loop Pads library template is a Launch Quantise note-wire node
-//! in front of eight looping Samplers, so a pad pressed anywhere in the bar
+//! and a looping Sampler for each of eight pads, with the pad's launch grid,
+//! mode, loop and level as controls in the group's panel (#432), so a pad pressed anywhere in the bar
 //! starts its loop on the next bar line, and pressing it again stops it on a
 //! later one. There is no clip grid or session view, on purpose (#364). The
 //! pad here is a Button into a Key; a controller's notes come in the same
@@ -103,6 +104,14 @@ fn button_of(p: &Project) -> NodeId {
         .expect("the pad's Button")
 }
 
+fn pads_of(p: &Project) -> NodeId {
+    p.graph()
+        .nodes()
+        .find(|(_, n)| n.parent.is_none() && n.type_id == noodle_core::group::GROUP)
+        .map(|(id, _)| id)
+        .expect("the Loop Pads group")
+}
+
 pub fn route() -> Route {
     Route {
         story: "S27",
@@ -112,6 +121,19 @@ pub fn route() -> Route {
         size: None,
         steps: |h, _| {
             let _busy = crate::testkit::playing_mode();
+            h.step("open the first pad's settings");
+            let pads = pads_of(h.probe().project());
+            let title = h.port_row(pads, false, "notes");
+            h.click(title, Modifiers::NONE);
+            h.probe().settle();
+            let pad = h.find("Pad 1");
+            h.click(pad, Modifiers::NONE);
+            h.probe().settle();
+            let shown = ["grid", "mode", "loop", "level"].map(|l| h.probe().has(l));
+            assert!(
+                shown.iter().all(|s| *s),
+                "the pad's settings are not in the panel: {shown:?}"
+            );
             h.step("start the transport");
             h.press_playing(Pos2::new(640.0, 760.0), Modifiers::NONE, Key::Space);
             h.step("press the pad");

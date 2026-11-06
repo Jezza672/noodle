@@ -10,3 +10,7 @@ Story S27 is reworded to "jam live with pads that launch loops and patterns, qua
 - **S25 and S26 retired** (#362 and #363 closed): marked retired in `docs/usability/stories.md`, IDs not reused, and removed from the registry and the routes. The scorecard now counts 28 stories.
 
 Not done: a controller-note pad template with LEDs or feedback, and following the tempo of a synced clock to the beat phase (see [tempo-source-and-monitoring.md](tempo-source-and-monitoring.md)).
+
+## Per-pad settings and group controls (#432, #433)
+
+Loop Pads now has a Launch Quantise per pad, with `Pad n grid`, `Pad n mode`, `Pad n loop` and `Pad n level` as group inputs (the global `grid` and `mode` are gone). A group's panel has a **Controls** section that lists every group input feeding a parameter inside, so these (and the Drum Rack's `Swing` and `Slot n choke`) are set from the panel instead of by wiring a node into the group. See [../architecture/synths-and-library.md](../architecture/synths-and-library.md). The S09 route sets Swing in the panel, and S27 checks the pad's settings are shown.
