@@ -96,7 +96,12 @@ impl Fields {
                 // shows the lane, and takes moves while the node is armed.
                 let ride =
                     port.key == noodle_nodes::AUTOMATION_VALUE && shown.contains_key(&node.id);
-                if port.side != Side::Input || (f.project.lane_for(&input).is_some() && !ride) {
+                // A wired input with no field of its own has its socket on the
+                // header; its row is the title bar, so no meter goes there.
+                if port.in_header
+                    || port.side != Side::Input
+                    || (f.project.lane_for(&input).is_some() && !ride)
+                {
                     continue;
                 }
                 let idle_ride = ride && !armed.contains(&node.id);
