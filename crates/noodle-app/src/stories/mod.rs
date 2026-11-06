@@ -132,7 +132,13 @@ fn window_with(mut app: App, render: bool) -> AppHarness {
     // rather than `run` until it stops.
     let mut builder = Harness::builder().with_size(Vec2::new(1280.0, 800.0));
     if render {
-        builder = builder.wgpu();
+        // egui calls two clicks a double click if they come within 0.3 s by
+        // the frame clock. The harness advances it 0.25 s a pass and the app
+        // takes two passes a step, so the two steps of `double_click` were
+        // 0.5 s apart and no double click ever registered: not on a lane, a
+        // track name, nor the canvas. A short pass fixes that for an agent,
+        // whose double clicks must work as a person's do.
+        builder = builder.wgpu().with_step_dt(0.05);
     }
     let mut h = builder.build_ui_state(|ui, app: &mut App| app.show(ui), app);
     h.run_steps(3);
