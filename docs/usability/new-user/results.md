@@ -105,3 +105,58 @@ Passes that mean something: S11, S12, S27. Several "no" rows are a different
 valid method (S14, S16, S19, S22, S23): a route's done check is stricter than
 the story. Fixing the vacuous checks and loosening the method-specific ones
 is its own piece of work.
+
+## Round 2: the same stories after the first batch of fixes
+
+Haiku, medium effort, 80 actions, zero docs, each run **contained** (only
+`ctl.sh`, `head`/`tail`/`sleep` and the screenshots allowed; see
+[new-user-runs.md](../new-user-runs.md)) and audited. Built from main after
+the issues from round 1 (#396-#435) were merged. Differences from round 1 to
+keep in mind: the done checks were tightened (#434, #435), so some round-1
+passes no longer pass; and agents can no longer `ls` their folder, so they use
+`files`.
+
+| Story | Round 1 | Round 2 | Round 2: where it ended |
+|---|---|---|---|
+| S01 comp | no | no | looped recording does not wrap into takes (verify) |
+| S02 punch | yes | **yes** | punch found via the palette; stopped short of recording over a take |
+| S03 external synth | no | no | no MIDI in the cloud; could not make a MIDI part |
+| S04 tighten drums | yes (weak) | **yes** | used Quantise hits at 70% with crossfade: the new feature, found |
+| S05 conform | no | no | key and formants set; playback silent, no route to output found |
+| S06 stems | yes (vacuous) | no | model download fails certificate check in the cloud |
+| S07 sections | no | no | arrangement edited, markers not as wanted |
+| S08 MIDI detail | no | no | could not create a MIDI clip |
+| S09 drum pattern | no | no | Drum Rack slot has no sample field; swing not reached |
+| S10 articulations | no | no | made three articulations; could not create a MIDI clip |
+| S11 audio to MIDI | yes | **yes** | |
+| S12 multisampler | yes | **yes** | built the instrument; could not make a clip to test it |
+| S13 macro patch | no | no | no macro found ("Make external" is on a port) |
+| S14 shared modulation | no | no | found Sample & Hold; no control for per-link depth found |
+| S15 rhythmic gate | no | no | out of actions, gate not chopping |
+| S16 spectral cross | no | no | no node found that makes a spectrum |
+| S17 resample, slice | no | no | render reports the track silent (no instrument) |
+| S18 plugins | yes (vacuous) | no | no plugins in the cloud; plugin browser never opened |
+| S19 drum bus | no | no | Dynamics ports too small to tell the sidechain port apart |
+| S20 automation | no | no | Touch/Latch recorded nothing (verify) |
+| S21 mix versions | no | no | Export button clipped out of reach when a range is set |
+| S22 surround | no | no | same clipped Export button |
+| S23 loudness | no | no | "nothing to export": the fixture has no clips |
+| S24 stems export | yes (vacuous) | no | the fixture has no clips to export |
+| S27 clip launching | yes | no | could not get a loop onto a pad |
+| S28 setlist | yes (vacuous) | no | blocked (no setlist; #366) |
+| S29 organise | no | no | found Ctrl+Shift+F; the described 150-track session is not in the fixture |
+| S30 freeze | no | no | the described 60-track project is not in the fixture |
+
+Meaningful passes: 4 of 28 (S02, S04, S11, S12), against 3 in round 1 (S11,
+S12, S27). The four vacuous round-1 passes are now honest failures.
+
+**Improved:** Add via right-click now works (S12 found the Add menu at once);
+the punch commands are in the palette; Quantise hits at a strength is found
+and finishes S04; S14 found Sample & Hold.
+
+**Still hard:** creating a MIDI clip (S08, S10, S12, S09, S03), the macro and
+per-link depth features (S13, S14), and getting sound out of a track.
+
+**Harness gaps this round exposed:** the fixtures for S23, S24, S29 and S30 do
+not hold the project the story describes (no clips, 3 tracks, an empty
+`project.ron`); fixing them is a scorecard issue.
