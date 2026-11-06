@@ -1080,7 +1080,7 @@ pub fn add_menu(
             .max_rect(spot)
             .layout(egui::Layout::left_to_right(egui::Align::Center)),
     );
-    child.menu_button("~", |ui| {
+    let menu = child.menu_button("~", |ui| {
         let (node, port) = mute;
         let target = Endpoint::new(*node, port.as_str());
         let taken = project.lane_for(&target).is_some();
@@ -1101,6 +1101,8 @@ pub fn add_menu(
             ui.close();
         }
     });
+    menu.response
+        .on_hover_text("Automate this track's mute over time");
     edits
 }
 

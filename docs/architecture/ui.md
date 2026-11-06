@@ -6,7 +6,7 @@ all in `theme.rs`), with
 Blender's keyboard-driven editing.
 It has these views:
 
-- **Node editor** (`noodle-app/src/editor`): pan and zoom, Shift+A to search
+- **Node editor** (`noodle-app/src/editor`): pan and zoom, Shift+A (or right-click, or double-click empty canvas) to search
   for and add a node, box select, drag to connect, Ctrl+right-drag to cut
   wires, reroute points, frames, and groups: Tab (or a double-click) enters the selected group
   and leaves the current one, Ctrl+G folds the selection into a group, and a

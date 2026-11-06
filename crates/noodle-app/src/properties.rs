@@ -333,7 +333,23 @@ fn sample_picker(
     let reference = SampleRef::parse(&info.get_text(&node.config));
     let hash = reference.hash.clone();
     ui.label(info.name);
-    let mut status = if hash.is_empty() {
+    // A Sampler fed by a wire gets its sound from there, not from its own
+    // sample.
+    let wired = sampler
+        .then(|| {
+            let graph = session.project().graph();
+            let from = graph.source(&noodle_core::Endpoint::new(id, "sample"))?;
+            graph.node(from.node)
+        })
+        .flatten();
+    let mut status = if let Some(source) = wired {
+        if source.type_id == noodle_nodes::SAMPLE_SET_ID {
+            let n = noodle_nodes::rows_of(&source.config).len();
+            format!("Sound comes from a Sample Set ({n} samples) wired to the Sample input")
+        } else {
+            "Sound comes from the node wired to the Sample input".to_owned()
+        }
+    } else if hash.is_empty() {
         "No sample loaded".to_owned()
     } else if let Some(sample) = store.get(&hash) {
         format!(
