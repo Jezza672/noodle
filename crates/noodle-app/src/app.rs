@@ -318,6 +318,13 @@ impl App {
         &self.timeline
     }
 
+    /// The export dialog's ticks (see [`ExportDialog::ticked`]) and whether it is open.
+    #[cfg(test)]
+    pub fn export_ticks(&self) -> (bool, bool, Vec<String>) {
+        let (mixdown, groups) = self.export.ticked();
+        (self.export.is_open(), mixdown, groups)
+    }
+
     #[cfg(test)]
     pub fn session(&self) -> &Session {
         &self.session

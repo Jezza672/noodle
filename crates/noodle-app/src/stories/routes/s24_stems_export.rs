@@ -10,6 +10,8 @@
 
 use std::path::Path;
 
+use std::cell::RefCell;
+
 use egui::Modifiers;
 use noodle_core::{NodeId, Position, Project};
 
@@ -42,7 +44,14 @@ fn rack(dir: &Path) -> App {
     finished(session, dir)
 }
 
+thread_local! {
+    /// What the export dialog had ticked when the steps ended: the dialog is
+    /// not in a saved project, so the check cannot look after the reopen.
+    static TICKED: RefCell<Option<(bool, bool, Vec<String>)>> = const { RefCell::new(None) };
+}
+
 fn steps(h: &mut Handle, _size: usize) {
+    TICKED.with(|t| *t.borrow_mut() = None);
     h.step("open the export dialog");
     let file = h.find("File");
     h.click(file, Modifiers::NONE);
@@ -57,6 +66,8 @@ fn steps(h: &mut Handle, _size: usize) {
     let group = h.find("Drum Rack");
     h.click(group, Modifiers::NONE);
     h.probe().settle();
+    let ticks = h.probe().export_ticks();
+    TICKED.with(|t| *t.borrow_mut() = Some(ticks));
 }
 
 fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
@@ -69,7 +80,22 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
     if groups(p.project()) == 0 {
         return Err("the project has no group to export".into());
     }
-    Ok(())
+    // The dialog was left asking for the group as its own file, and for no
+    // mixdown.
+    match TICKED.with(|t| t.borrow().clone()) {
+        None => Err("the export dialog was never set up".into()),
+        Some((open, mixdown, ticked)) => {
+            if !open {
+                Err("the export dialog was closed".into())
+            } else if mixdown {
+                Err("the mixdown is still ticked".into())
+            } else if ticked != ["Drum Rack"] {
+                Err(format!("groups ticked: {ticked:?}, wanted the Drum Rack"))
+            } else {
+                Ok(())
+            }
+        }
+    }
 }
 
 pub fn route() -> Route {

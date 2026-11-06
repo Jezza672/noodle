@@ -35,12 +35,18 @@ pub fn look(h: &mut Handle, words: &[&str]) {
     }
 }
 
-/// Fails if `look` found any of the words.
-pub fn nothing_found(_: &mut Probe, story: &str) -> Result<(), String> {
+/// The done check of a blocked story. It always fails, since the story's
+/// goal cannot be reached: a pass would score a project nobody built
+/// anything in. The message starts with [`BLOCKED`] while the feature is
+/// still absent, so the runner can tell that expected failure from the
+/// feature turning up in a menu.
+pub fn blocked(_: &mut Probe, story: &str) -> Result<(), String> {
     FOUND.with(|f| {
         let found = f.borrow();
         if found.is_empty() {
-            Ok(())
+            Err(format!(
+                "{BLOCKED} {story} has no menu entry for it yet, so nothing can be built"
+            ))
         } else {
             Err(format!(
                 "{story} has what the route looked for ({}): write the real route and update the registry",
@@ -49,3 +55,6 @@ pub fn nothing_found(_: &mut Probe, story: &str) -> Result<(), String> {
         }
     })
 }
+
+/// How the failure of a blocked story's route begins.
+pub const BLOCKED: &str = "blocked:";

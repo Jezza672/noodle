@@ -486,6 +486,12 @@ impl Probe<'_> {
         self.h.state().session().freeze_pending()
     }
 
+    /// Whether the export dialog is open, with the mixdown ticked, and the
+    /// groups ticked.
+    pub fn export_ticks(&self) -> (bool, bool, Vec<String>) {
+        self.h.state().export_ticks()
+    }
+
     /// Whether anything on screen has a label containing `word`.
     pub fn mentions(&self, word: &str) -> bool {
         self.h.query_all_by_label_contains(word).next().is_some()
