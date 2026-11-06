@@ -676,25 +676,15 @@ fn multisample_instrument(p: &mut Patch, release: f32, bend: f32) -> NodeId {
     group
 }
 
-/// Eight loop pads: Launch Quantise into a Note Split (keys 36 to 43) and a
-/// looping, gated Sampler for each, mixed. Its inputs are `notes`, `grid`
-/// and `mode` (the Launch Quantise's) and a level for each pad (decibels);
-/// its output is `out`. The loops are loaded after adding it.
+/// Eight loop pads: a Note Split (keys 36 to 43) into a Launch Quantise and a
+/// looping, gated Sampler for each, mixed. Each pad has its own settings as
+/// inputs: `Pad n level` (decibels), `Pad n loop`, `Pad n grid` (when it
+/// launches) and `Pad n mode` (hold or toggle), so one pad can launch on the
+/// beat and another on the bar. The input is `notes` and the output `out`.
+/// The loops are loaded after adding it.
 fn loop_pads(p: &mut Patch, grid: f32, mode: f32) -> NodeId {
     let group = p.enter("Loop Pads", 0.0, 0.0);
     let notes = p.input("notes", 0.0);
-    let grid_in = p.input("grid", 1.0);
-    let mode_in = p.input("mode", 2.0);
-    let quantise = p.add(
-        spec("noodle.event.launch_quantise")
-            .param("grid", grid)
-            .param("mode", mode),
-        1.0,
-        0.0,
-    );
-    p.connect(notes, (quantise, "in"));
-    p.connect(grid_in, (quantise, "grid"));
-    p.connect(mode_in, (quantise, "mode"));
     let mut split = spec("noodle.event.note_split").config("outputs", Value::Int(8));
     for n in 1..=8u32 {
         let key = 35.0 + n as f32;
@@ -702,31 +692,45 @@ fn loop_pads(p: &mut Patch, grid: f32, mode: f32) -> NodeId {
             .param(Box::leak(format!("low{n}").into_boxed_str()), key)
             .param(Box::leak(format!("high{n}").into_boxed_str()), key);
     }
-    let split = p.add(split, 2.0, 0.0);
-    p.connect((quantise, "out"), (split, "in"));
+    let split = p.add(split, 1.0, 0.0);
+    p.connect(notes, (split, "in"));
     let mix = p.add(
         spec("noodle.util.mix").config("inputs", Value::Int(8)),
-        5.0,
+        6.0,
         0.0,
     );
-    let out = p.output("out", 6.0, 0.0);
+    let out = p.output("out", 7.0, 0.0);
     p.connect((mix, "out"), out);
     for n in 1..=8u32 {
         let row = n as f32 - 1.0;
-        let level = p.input(&format!("Pad {n} level"), 2.0 + row);
+        let level = p.input(&format!("Pad {n} level"), 3.0 + row);
+        let looping = p.input(&format!("Pad {n} loop"), 3.0 + row);
+        let grid_in = p.input(&format!("Pad {n} grid"), 3.0 + row);
+        let mode_in = p.input(&format!("Pad {n} mode"), 3.0 + row);
+        let quantise = p.add(
+            spec("noodle.event.launch_quantise")
+                .param("grid", grid)
+                .param("mode", mode),
+            2.0,
+            row,
+        );
         let sampler = p.add(
             spec("noodle.instrument.sampler")
                 .param("keytrack", 0.0)
                 .param("mode", 1.0)
                 .param("loop", 1.0)
                 .param("gain", 0.0),
-            3.0,
+            4.0,
             row,
         );
         let out_key: &'static str = Box::leak(format!("out{n}").into_boxed_str());
         let in_key: &'static str = Box::leak(format!("in{n}").into_boxed_str());
-        p.connect((split, out_key), (sampler, "in"));
+        p.connect((split, out_key), (quantise, "in"));
+        p.connect(grid_in, (quantise, "grid"));
+        p.connect(mode_in, (quantise, "mode"));
+        p.connect((quantise, "out"), (sampler, "in"));
         p.connect(level, (sampler, "gain"));
+        p.connect(looping, (sampler, "loop"));
         p.connect((sampler, "out"), (mix, in_key));
     }
     p.leave(group);

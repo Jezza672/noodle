@@ -57,6 +57,9 @@ pub fn show<'a>(
     freeze_status(ui, session, id);
     problems(ui, session, id);
     presets(ui, session, id, node, &mut edits);
+    if node.type_id == GROUP {
+        group_controls(ui, session, id, &mut edits);
+    }
     plugin_editor(ui, session, id, &mut edits);
     if node_type.is_some_and(|t| t.view(&node.config) == NodeView::Spectrum) {
         spectrum_views(ui, session, spectra(id));
@@ -204,6 +207,142 @@ fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut 
             d.insert_temp(naming, name);
         }),
         None => ui.data_mut(|d| d.remove::<String>(naming)),
+    }
+    ui.separator();
+}
+
+/// What a group's controls are: its inputs that feed a parameter inside, with
+/// the first such parameter. An input left unwired leaves that parameter at
+/// the value set inside, so the control here sets it there.
+fn group_control_targets(
+    session: &Session,
+    group: NodeId,
+) -> Vec<(String, Vec<Endpoint>, noodle_engine::ParamInfo)> {
+    let graph = session.project().graph();
+    let mut found = Vec::new();
+    for port in graph.group_ports(group).inputs {
+        let from = Endpoint::new(port.node, port.key());
+        let mut targets = Vec::new();
+        let mut first_info = None;
+        for c in graph.connections().filter(|c| c.from == from) {
+            let Some(node) = graph.node(c.to.node) else {
+                continue;
+            };
+            let Some(layout) = session
+                .registry()
+                .get(&node.type_id)
+                .and_then(|t| t.layout(&node.config).ok())
+            else {
+                continue;
+            };
+            let info = layout.inputs.iter().find_map(|input| match &input.kind {
+                InputKind::Param(info) if input.key == c.to.port => Some(info.clone()),
+                _ => None,
+            });
+            if let Some(info) = info {
+                first_info.get_or_insert(info);
+                targets.push(c.to.clone());
+            }
+        }
+        if let Some(info) = first_info {
+            found.push((port.name, targets, info));
+        }
+    }
+    found
+}
+
+/// What to say about a group the library makes, from its name.
+fn group_hint(title: &str) -> Option<&'static str> {
+    match title {
+        "Drum Rack" => Some(
+            "Swing delays the off-beat notes. Slots with the same non-zero choke group cut \
+             each other off (the closed and open hat share group 1). Slots play keys 36, \
+             38, 42, 46, 39, 45, 50 and 49. To program a pattern: wire a track's MIDI into \
+             notes, right-click the track's lane and choose New MIDI clip, then open the \
+             clip (double-click) for the piano roll.",
+        ),
+        "Loop Pads" => Some(
+            "Each pad has its own launch grid and mode, and plays on keys 36 to 43. Drag an \
+             audio clip onto a Sampler inside the group to load a loop.",
+        ),
+        _ => None,
+    }
+}
+
+/// The Controls section of a group's panel: each group input that feeds a
+/// parameter inside it, as a field, so the group is set from outside (a rack's
+/// swing and choke, a pad's loop and launch grid) without opening it.
+/// "Slot 3 level" and "Slot 3 tune" are listed together under "Slot 3".
+fn group_controls(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Edit>) {
+    let controls = group_control_targets(session, id);
+    let title = crate::editor::group_title(session.project().graph(), id);
+    if controls.is_empty() {
+        return;
+    }
+    ui.label(RichText::new("Controls").strong());
+    if let Some(hint) = group_hint(&title) {
+        ui.label(RichText::new(hint).weak().small());
+    }
+    // "Slot 3 level" splits into the section "Slot 3" and the label "level".
+    let split = |name: &str| match name.rsplit_once(' ') {
+        Some((head, tail)) if head.ends_with(|c: char| c.is_ascii_digit()) => {
+            Some((head.to_owned(), tail.to_owned()))
+        }
+        _ => None,
+    };
+    let mut sections: Vec<(Option<String>, Vec<usize>)> = Vec::new();
+    for (i, (name, ..)) in controls.iter().enumerate() {
+        let head = split(name).map(|(head, _)| head);
+        match sections.iter_mut().find(|(h, _)| *h == head) {
+            Some((_, list)) => list.push(i),
+            None => sections.push((head, vec![i])),
+        }
+    }
+    let graph = session.project().graph();
+    let mut field = |ui: &mut Ui, index: usize| {
+        let (name, targets, info) = &controls[index];
+        let to = &targets[0];
+        let label = split(name).map_or_else(|| name.clone(), |(_, tail)| tail);
+        let value = graph
+            .node(to.node)
+            .and_then(|n| n.params.get(&to.port))
+            .copied()
+            .unwrap_or(info.default);
+        let outer = graph
+            .group_ports(id)
+            .input(name)
+            .and_then(|_| graph.source(&Endpoint::new(id, name.clone())).cloned());
+        ui.add_enabled_ui(outer.is_none(), |ui| {
+            let out = ParamField::new(&label, info, value)
+                .id_salt(("group control", id, name.clone()))
+                .width(ui.available_width())
+                .show(ui);
+            if let Some(from) = &outer {
+                out.response
+                    .on_disabled_hover_text(format!("Driven by {}", describe(session, from)));
+            } else {
+                edits.extend(out.edits(to.node, &to.port));
+                // The input feeds more than one parameter: set the rest too.
+                for other in &targets[1..] {
+                    edits.extend(
+                        out.edits(other.node, &other.port)
+                            .into_iter()
+                            .filter(|e| matches!(e, Edit::Apply(_) | Edit::Drag(_))),
+                    );
+                }
+            }
+        });
+    };
+    for (head, list) in &sections {
+        match head {
+            None => list.iter().for_each(|&i| field(ui, i)),
+            Some(head) => {
+                egui::CollapsingHeader::new(head)
+                    .id_salt(("group controls", id, head.clone()))
+                    .default_open(sections.len() <= 2)
+                    .show(ui, |ui| list.iter().for_each(|&i| field(ui, i)));
+            }
+        }
     }
     ui.separator();
 }
@@ -801,7 +940,29 @@ fn articulation_map_editor(
         .num_columns(3)
         .show(ui, |ui| {
             for (art, name) in rows {
-                ui.label(name);
+                if art == 0 {
+                    ui.label(name);
+                } else {
+                    // The name is edited here; notes and the map hold the ID,
+                    // so a rename keeps both.
+                    let key = egui::Id::new(("rename articulation", art));
+                    let mut text: String = ui.data(|d| d.get_temp(key)).unwrap_or(name.clone());
+                    let edit = ui.add(egui::TextEdit::singleline(&mut text).desired_width(90.0));
+                    // Not being typed in: show the current name (after an undo).
+                    if !edit.has_focus() && !edit.lost_focus() {
+                        text = name.clone();
+                    }
+                    if edit.lost_focus()
+                        && !text.trim().is_empty()
+                        && text.trim() != name
+                        && let Ok(command) = session
+                            .project()
+                            .rename_articulation_command(art, text.trim())
+                    {
+                        edits.push(Edit::Apply(command));
+                    }
+                    ui.data_mut(|d| d.insert_temp(key, text));
+                }
                 let at = entries.iter().position(|e| e.id == art);
                 let kind = |e: Option<&Entry>| match e.map(|e| e.action) {
                     None => 0,
@@ -854,7 +1015,9 @@ fn articulation_map_editor(
                             velocity,
                             length_ms,
                         } => {
+                            ui.weak("key");
                             changed |= drag(ui, key, "Keyswitch key");
+                            ui.weak("vel");
                             changed |= drag(ui, velocity, "Velocity");
                             changed |= ui
                                 .add(
@@ -866,10 +1029,15 @@ fn articulation_map_editor(
                                 .changed();
                         }
                         Action::Controller { number, value } => {
+                            ui.weak("cc");
                             changed |= drag(ui, number, "Controller number");
+                            ui.weak("value");
                             changed |= drag(ui, value, "Value");
                         }
-                        Action::Program(n) => changed |= drag(ui, n, "Program"),
+                        Action::Program(n) => {
+                            ui.weak("program");
+                            changed |= drag(ui, n, "Program");
+                        }
                     }
                 });
                 ui.end_row();
@@ -884,10 +1052,33 @@ fn articulation_map_editor(
             )),
         }));
     }
+    // Name a new articulation here, without opening a piano roll.
+    let new_id = egui::Id::new(("new articulation", id));
+    let mut name: String = ui.data(|d| d.get_temp(new_id)).unwrap_or_default();
+    ui.horizontal(|ui| {
+        let edit = ui.add(
+            egui::TextEdit::singleline(&mut name)
+                .hint_text("New articulation (legato, staccato...)")
+                .desired_width(170.0),
+        );
+        let enter = edit.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter));
+        let clicked = ui
+            .add_enabled(!name.trim().is_empty(), egui::Button::new("Add"))
+            .clicked();
+        if (clicked || enter)
+            && !name.trim().is_empty()
+            && let Ok(command) = session.project().add_articulation_command(name.trim())
+        {
+            edits.push(Edit::Apply(command));
+            name.clear();
+        }
+    });
+    ui.data_mut(|d| d.insert_temp(new_id, name));
     ui.label(
         RichText::new(
-            "How the instrument is asked for each articulation. The track sends the change \
-             just before a note that has it, and again after a jump.",
+            "How the instrument is asked for each articulation. Give notes one from the \
+             piano roll's Articulation menu (select notes first). The track sends the \
+             change just before a note that has it, and again after a jump.",
         )
         .weak()
         .small(),
@@ -2553,6 +2744,50 @@ mod tests {
                 .count(),
             1,
             "overwritten, not added"
+        );
+    }
+
+    #[test]
+    fn a_drum_rack_panel_sets_its_swing_and_choke_inside() {
+        let mut session = Session::new(crate::session::Nodes::all());
+        let (group, command) = session
+            .library()
+            .template("system:template:drum-rack")
+            .unwrap()
+            .instantiate(
+                "system:template:drum-rack",
+                None,
+                noodle_core::Position::default(),
+                || session.new_node_id(),
+            );
+        session.edit([Edit::Apply(command)]);
+        let state = State {
+            session,
+            active: Some(group),
+        };
+        let mut h = crate::testkit::harness(state, vec2(300.0, 900.0), |ui, state: &mut State| {
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                let edits = show(ui, &state.session, state.active, &|_, _| None, &|_| None);
+                state.session.edit(edits);
+            });
+        });
+        h.run();
+        // Swing is a control of the panel; typing a value sets the Swing node.
+        h.get_by_label("Swing").click();
+        h.run();
+        h.get_by_label("Slot 4").click();
+        h.run();
+        h.get_by_label("choke");
+        let names: Vec<_> = group_control_targets(&h.state().session, group)
+            .into_iter()
+            .map(|(name, ..)| name)
+            .collect();
+        assert!(names.contains(&"Swing".to_owned()));
+        assert!(names.contains(&"Slot 4 choke".to_owned()));
+        assert_eq!(
+            names.len(),
+            33,
+            "swing and four controls for each of eight slots"
         );
     }
 

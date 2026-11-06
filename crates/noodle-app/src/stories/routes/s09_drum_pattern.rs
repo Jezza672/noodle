@@ -1,9 +1,10 @@
 //! S09: program a drum pattern.
 //!
-//! Partial. The Drum Rack and the piano roll cover the pattern. Swing is a
-//! knob on the rack (a Swing node in front of its Note Split, #330), and the
-//! closed and open hat share a choke group in the template, so a closed hat
-//! cuts the open one off with no setting to make. Loading the samples into
+//! Partial. The Drum Rack and the piano roll cover the pattern. Swing and each
+//! slot's choke group are controls in the rack's panel (#433): Swing sets a
+//! Swing node in front of the Note Split (#330), and the closed and open hat
+//! share a choke group in the template, so a closed hat cuts the open one off
+//! with no setting to make. Loading the samples into
 //! the rack's slots is not routed: a sample reaches a slot by dragging an
 //! audio clip across from the timeline onto a Sampler inside the group,
 //! which no route reaches yet, so the fixture starts with the kit loaded.
@@ -18,7 +19,7 @@ use noodle_nodes::{SAMPLER_ID, TRACK_INPUT_ID};
 
 use super::super::handle::{Handle, Probe, peak};
 use super::super::{LateChange, Route, Tag};
-use super::{add_node, add_node_playing, finished, reveal, virtual_session};
+use super::{add_node, finished, reveal, virtual_session};
 use crate::app::App;
 use crate::session::Edit;
 
@@ -172,20 +173,22 @@ fn rack_of(p: &Project) -> NodeId {
 
 const SWING: f32 = 0.3;
 
-/// Swing is a knob on the rack: a `Swing` group input, which a Math node
-/// holding the amount feeds (a Math node with no expression passes its `a`
-/// through). The closed and open hats already share a choke group in the
-/// template, so the choke needs no step.
+/// Swing is a control in the rack's panel, under Controls. It sets the Swing
+/// node's amount inside the group. The closed and open hats already share a
+/// choke group in the template, shown there as the slots' choke controls.
 fn swing(h: &mut Handle) {
+    h.step("select the rack");
     let rack = rack_of(h.probe().project());
-    let _busy = crate::testkit::playing_mode();
-    h.step("add a Math node to hold the swing");
-    let math = add_node_playing(h, Pos2::new(300.0, 520.0), "math");
-    super::patch::set(h, math, "a", SWING);
-    h.step("wire it into the rack's Swing");
-    let from = h.socket(math, true, "out");
-    let to = h.socket(rack, false, "Swing");
-    h.drag(Modifiers::NONE, &[from, to]);
+    let title = h.port_row(rack, false, "Swing");
+    h.click(title, Modifiers::NONE);
+    h.probe().settle();
+    h.step("set its swing in the panel");
+    let field = h.find("Swing");
+    h.double_click(field);
+    h.press(field, Modifiers::COMMAND, Key::A);
+    h.type_text(field, &format!("{SWING}"));
+    h.press(field, Modifiers::NONE, Key::Enter);
+    h.probe().settle();
 }
 
 fn steps(h: &mut Handle, _size: usize) {
@@ -244,16 +247,11 @@ fn title_of(h: &mut Handle, node: NodeId, key: &str) -> Pos2 {
 static LEVEL: std::sync::Mutex<f32> = std::sync::Mutex::new(0.0);
 
 fn swung_and_choked(p: &Project) -> Result<(), String> {
-    let rack = rack_of(p);
-    let source = p
-        .graph()
-        .source(&Endpoint::new(rack, "Swing"))
-        .ok_or("nothing is wired into the rack's Swing")?;
+    let swing = node_of(p, noodle_nodes::SWING_ID);
     let amount = p
         .graph()
-        .node(source.node)
-        .filter(|n| n.type_id == noodle_nodes::MATH_ID)
-        .and_then(|n| n.params.get("a"))
+        .node(swing)
+        .and_then(|n| n.params.get("amount"))
         .copied()
         .unwrap_or(0.0);
     if (amount - SWING).abs() > 0.01 {

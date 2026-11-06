@@ -25,3 +25,11 @@ Not done: MIDI 2.0 note attributes as a way to ask, a lane under the roll (the m
 ## Tests
 
 `noodle-core` (`versions.rs`: the commands and the save round trip), `noodle-nodes` (`version_value.rs`, `articulation_map.rs`, `tests/track_input_midi.rs` for the order and the chase, `tests/realtime.rs` for no allocation), `noodle-app` (`session/versions.rs`, the effect of the commands, routes S10 and S21).
+
+## Naming articulations from the Articulation Map (#431)
+
+The map's panel names articulations without opening a piano roll: each
+articulation's name is a text field (a rename keeps notes and map, which hold
+the ID), an *Add* field with a hint adds one, and the keyswitch, controller and
+program values are labelled `key`, `vel`, `cc`, `value` and `program`. Notes get
+an articulation from the piano roll's Articulation menu, as before.
