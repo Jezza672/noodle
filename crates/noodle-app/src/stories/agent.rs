@@ -433,7 +433,9 @@ fn execute(h: &mut AppHarness, run: &mut Run, command: Command) -> String {
                 Command::Hover(at) => {
                     run.pointer = at;
                     h.hover_at(at);
-                    h.run_steps(3);
+                    // A tooltip shows 0.5 s after the pointer stops; a pass is
+                    // 0.05 s of frame time, so step well past that.
+                    h.run_steps(16);
                 }
                 Command::Key { key, modifiers } => testkit::press(h, run.pointer, modifiers, key),
                 Command::Type(text) => testkit::type_text(h, run.pointer, &text),
