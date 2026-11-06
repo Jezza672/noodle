@@ -1077,6 +1077,8 @@ fn table() -> Vec<Row> {
             "Down a Little",
             &[("shift", -40.0)],
         ),
+        row("noodle.spectral.formant", "Smaller", &[("shift", 4.0)]),
+        row("noodle.spectral.formant", "Larger", &[("shift", -4.0)]),
         row("noodle.spectral.freeze", "Held", &[("freeze", 1.0)]),
         row("noodle.spectral.freeze", "Live", &[("freeze", 0.0)]),
         row("noodle.spectral.blur", "Soften", &[("amount", 0.5)]),

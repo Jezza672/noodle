@@ -232,9 +232,9 @@ fn rendering_never_allocates_even_while_editing() {
     assert!(out.iter().any(|&x| x != 0.0), "should be making sound");
 }
 
-/// sine → Analyze → gate → shift → blur → freeze → Cross (with a second,
+/// sine → Analyze → gate → shift → formant → blur → freeze → Cross (with a second,
 /// noise analysis as the modulator) → Synthesize → output.
-fn spectral_session() -> (Session, [NodeId; 4]) {
+fn spectral_session() -> (Session, [NodeId; 5]) {
     let mut s = Session::new();
     let sine = s.add(Node::new("noodle.osc.sine").with_param("frequency", 220.0));
     let noise = s.add(Node::new("noodle.noise.white"));
@@ -244,6 +244,7 @@ fn spectral_session() -> (Session, [NodeId; 4]) {
     );
     let gate = s.add(Node::new("noodle.spectral.gate"));
     let shift = s.add(Node::new("noodle.spectral.shift"));
+    let formant = s.add(Node::new("noodle.spectral.formant"));
     let blur = s.add(Node::new("noodle.spectral.blur"));
     let freeze = s.add(Node::new("noodle.spectral.freeze"));
     let cross = s.add(Node::new("noodle.spectral.cross"));
@@ -253,25 +254,27 @@ fn spectral_session() -> (Session, [NodeId; 4]) {
     s.wire(noise, "out", b, "in");
     s.wire(a, "spectrum", gate, "spectrum");
     s.wire(gate, "out", shift, "spectrum");
-    s.wire(shift, "out", blur, "spectrum");
+    s.wire(shift, "out", formant, "spectrum");
+    s.wire(formant, "out", blur, "spectrum");
     s.wire(blur, "out", freeze, "spectrum");
     s.wire(freeze, "out", cross, "carrier");
     s.wire(b, "spectrum", cross, "modulator");
     s.wire(cross, "out", synth, "spectrum");
     s.wire(synth, "out", output, "in");
     s.update();
-    (s, [shift, freeze, cross, a])
+    (s, [shift, freeze, cross, a, formant])
 }
 
 #[test]
 fn spectral_chains_never_allocate_even_while_editing() {
-    let (mut s, [shift, freeze, cross, a]) = spectral_session();
+    let (mut s, [shift, freeze, cross, a, formant]) = spectral_session();
     let mut out = vec![0.0; 1000 * SETTINGS.channels];
     for round in 0..8 {
         for (node, key, value) in [
             (shift, "shift", 40.0 * round as f32),
             (freeze, "freeze", (round % 2) as f32),
             (cross, "mix", round as f32 / 8.0),
+            (formant, "shift", round as f32 - 4.0),
         ] {
             s.edit(Command::SetParam {
                 node,

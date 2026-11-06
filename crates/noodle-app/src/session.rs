@@ -426,6 +426,8 @@ pub struct Session {
     /// The same, for [`Session::new_frame_id`].
     next_frame_id: Cell<u64>,
     diagnostics: Vec<Diagnostic>,
+    /// Where the engine's plan delays signals, refreshed with each compile.
+    latency: noodle_engine::LatencyReport,
     /// The device to play on.
     audio_config: AudioConfig,
     /// The nodes being listened to, and how (see [`NodeMonitor`]).
@@ -783,6 +785,7 @@ impl Session {
             next_id: Cell::new(0),
             next_frame_id: Cell::new(0),
             diagnostics: Vec::new(),
+            latency: noodle_engine::LatencyReport::default(),
             audio_config: AudioConfig::default(),
             node_monitor: NodeMonitor::default(),
             audio: None,
@@ -1594,6 +1597,13 @@ impl Session {
     /// happened.
     pub fn diagnostics(&self) -> &[Diagnostic] {
         &self.diagnostics
+    }
+
+    /// What delay compensation does in the current plan: each node's own
+    /// latency and the inputs held back to line up with it. Empty when no
+    /// node reports latency or the engine isn't running.
+    pub fn plan_latency(&self) -> &noodle_engine::LatencyReport {
+        &self.latency
     }
 
     /// Shows the user `text` until the next message replaces it.
@@ -3697,6 +3707,11 @@ impl Session {
         if let Some(plan) = plan {
             self.diagnostics.extend(plan.diagnostics);
         }
+        self.latency = self
+            .audio
+            .as_ref()
+            .map(|audio| audio.controller.latency_report())
+            .unwrap_or_default();
         self.feed_clips();
     }
 }
@@ -5430,6 +5445,44 @@ mod tests {
         session.undo();
         assert_eq!(param(&session, sine, "frequency"), None);
         assert!(session.project().graph().node(sine).is_some());
+    }
+
+    #[test]
+    fn the_plan_says_which_node_adds_latency_and_which_input_is_held_back() {
+        use noodle_core::{Endpoint, spare};
+        let mut session = Session::new(Nodes::all());
+        session.set_audio_config(virtual_config());
+        let osc = add(&mut session, Node::new("noodle.osc.sine"));
+        let analyze = add(&mut session, Node::new(noodle_nodes::ANALYZE_ID));
+        let synth = add(&mut session, Node::new(noodle_nodes::SYNTHESIZE_ID));
+        let mix = add(&mut session, Node::new(spare::MIXER));
+        let out = add(&mut session, Node::new(noodle_engine::OUTPUT_ID));
+        let wire = |session: &mut Session, a: (NodeId, &str), b: (NodeId, &str)| {
+            session.edit([Edit::Apply(spare::wire(
+                Endpoint::new(a.0, a.1),
+                Endpoint::new(b.0, b.1),
+            ))]);
+        };
+        wire(&mut session, (osc, "out"), (analyze, "in"));
+        wire(&mut session, (analyze, "spectrum"), (synth, "spectrum"));
+        wire(&mut session, (synth, "out"), (mix, "in1"));
+        wire(&mut session, (osc, "out"), (mix, "in2"));
+        wire(&mut session, (mix, "out"), (out, "in"));
+        session.start_engine();
+        assert!(session.engine_running(), "{:?}", session.message());
+        let report = session.plan_latency();
+        let latency = noodle_engine::SYNTH_LATENCY;
+        assert_eq!(report.output, latency);
+        assert_eq!(report.node(synth).own, latency);
+        assert_eq!(report.node(mix).held.len(), 1);
+        assert_eq!(report.node(mix).held[0].samples, latency);
+        // The words the editor shows say the same.
+        let reading = crate::latency::reading(&session, mix).unwrap();
+        assert_eq!(reading.held, [("In 2".to_owned(), latency)]);
+        assert!(crate::latency::badges(&session).contains_key(&synth));
+        // Remove the latent path and nothing is reported.
+        session.edit([Edit::Apply(Command::RemoveNode { id: synth })]);
+        assert!(session.plan_latency().nodes.is_empty());
     }
 
     #[test]

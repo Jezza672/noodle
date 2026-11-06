@@ -73,6 +73,10 @@ pub enum KeyTarget {
 pub struct Transpose {
     pub from: Key,
     pub to: KeyTarget,
+    /// Carry the formants back to where they were after the shift, so a
+    /// voice shifted up keeps its character instead of sounding smaller.
+    #[serde(default)]
+    pub keep_formants: bool,
 }
 
 impl Transpose {
@@ -110,6 +114,7 @@ mod tests {
         let t = Transpose {
             from: Key::new(0, Mode::Major),
             to: KeyTarget::Follow,
+            keep_formants: false,
         };
         assert_eq!(t.semitones(Key::new(3, Mode::Major)), 3);
     }

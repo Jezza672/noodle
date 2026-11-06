@@ -11,9 +11,9 @@
 //! meets a path that doesn't have it).
 
 use noodle_engine::{
-    Analyzer, BINS, Bin, Config, Context, FFT_SIZE, HOP, Instance, Io, Layout, Node, NodeError,
-    NodeInfo, NodeType, ParamInfo, Ports, SYNTH_LATENCY, Setup, Shape, SignalIn, Synthesizer, Unit,
-    bin_frequency,
+    Analyzer, BINS, Bin, Config, Context, FFT_SIZE, FormantWarp, HOP, Instance, Io, Layout, Node,
+    NodeError, NodeInfo, NodeType, ParamInfo, Ports, SYNTH_LATENCY, Setup, Shape, SignalIn,
+    Synthesizer, Unit, bin_frequency,
 };
 
 const CATEGORY: &str = "Spectral";
@@ -456,6 +456,82 @@ impl Node for ShiftNode {
 
     fn reset(&mut self) {
         self.turns.fill(0.0);
+    }
+}
+
+// ----------------------------------------------------------- Formant Shift
+
+/// Moves the formants, the broad humps of the spectrum that make a voice or
+/// an instrument sound like itself, without moving the pitch. Up makes a
+/// voice smaller or brighter, down larger or darker.
+///
+/// It finds the spectrum's outline (the magnitude smoothed over `smooth` Hz),
+/// moves the outline by `shift` and scales each bin to follow, so the
+/// harmonics stay where they were. Put it after a pitch shifter, set to the
+/// opposite of the shift, and the voice keeps its character. Keep `smooth`
+/// wider than the gap between harmonics (about the pitch in Hz, or a little
+/// more), or the outline follows single harmonics. A formant can only be
+/// lifted or cut by 24 dB, so extreme shifts of narrow features fall short.
+pub struct FormantShift;
+
+pub const FORMANT_SHIFT_ID: &str = "noodle.spectral.formant";
+
+#[derive(Ports)]
+struct FormantPorts {
+    #[spectral_input("spectrum", "Spectrum")]
+    spectrum: (),
+    #[param(
+        "shift",
+        "Shift",
+        ParamInfo::new(-12.0, 12.0, 0.0)
+            .unit(Unit::Semitones)
+            .offset()
+    )]
+    shift: (),
+    #[param("smooth", "Smooth", ParamInfo::new(50.0, 2000.0, 400.0).unit(Unit::Hertz))]
+    smooth: (),
+    #[spectral_output("out", "Out")]
+    out: (),
+}
+
+static FORMANT_INFO: NodeInfo = NodeInfo {
+    id: FORMANT_SHIFT_ID,
+    version: 1,
+    name: "Formant Shift",
+    category: CATEGORY,
+};
+
+impl NodeType for FormantShift {
+    fn info(&self) -> &NodeInfo {
+        &FORMANT_INFO
+    }
+
+    fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
+        Ok(FormantPorts::layout())
+    }
+
+    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        Ok(Instance::realtime(FormantNode {
+            warp: FormantWarp::new(),
+        }))
+    }
+}
+
+struct FormantNode {
+    warp: FormantWarp,
+}
+
+impl Node for FormantNode {
+    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
+        let inputs = io.inputs;
+        let bin_width = bin_frequency(1, ctx.sample_rate);
+        let warp = &mut self.warp;
+        map_frames(io, |time, voice, _lane, input, out| {
+            let semitones = param(inputs, FormantPorts::SHIFT, voice, time);
+            let smooth = param(inputs, FormantPorts::SMOOTH, voice, time);
+            let width = (smooth / bin_width / 2.0).round().max(1.0) as usize;
+            warp.apply(input, out, (semitones / 12.0).exp2(), width);
+        });
     }
 }
 
@@ -1042,6 +1118,62 @@ mod tests {
             assert!(m[kept] > 0.4, "mode {mode}: kept {}", m[kept]);
             assert!(m[cut] < 1e-6, "mode {mode}: cut {}", m[cut]);
         }
+    }
+
+    /// Six identical frames: harmonics every 10 bins under one broad hump
+    /// centred on bin 200.
+    fn voiced_frames() -> SpectralBuf {
+        let shape = Shape::MONO;
+        let mut buf = SpectralBuf::new(1, 6 * HOP);
+        let mut out = buf.as_out(shape);
+        for f in 0..6 {
+            let at = out.push((f * HOP) as u32).unwrap();
+            for (k, bin) in out.frame_mut(at, 0, 0).iter_mut().enumerate() {
+                if k % 10 == 0 {
+                    let d = (k as f32 - 200.0) / 80.0;
+                    *bin = Bin::new((-d * d).exp(), 0.0);
+                }
+            }
+        }
+        buf
+    }
+
+    fn hump(m: &[f32]) -> usize {
+        (20..m.len() - 20)
+            .max_by(|&a, &b| {
+                let sum = |k: usize| m[k - 20..=k + 20].iter().sum::<f32>();
+                sum(a).total_cmp(&sum(b))
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn formant_shift_moves_the_hump_and_leaves_the_harmonics() {
+        let mut h = harness(&FormantShift, 1);
+        h.set(FormantPorts::SHIFT, 4.0);
+        h.set(FormantPorts::SMOOTH, 800.0);
+        feed(&mut h, 0, &voiced_frames());
+        h.run(6 * HOP).unwrap();
+        let frames = h.spectral(0);
+        let m = magnitudes(frames, last_frame(&frames));
+        let up = hump(&m);
+        // 4 semitones is a factor of 1.26: the hump from 200 to about 252.
+        assert!((up as i32 - 252).abs() < 14, "hump at {up}");
+        assert!(
+            m.iter().enumerate().all(|(k, &x)| k % 10 == 0 || x == 0.0),
+            "a bin between the harmonics sounds"
+        );
+    }
+
+    #[test]
+    fn formant_shift_of_nothing_passes_the_frames_unchanged() {
+        let mut h = harness(&FormantShift, 1);
+        feed(&mut h, 0, &voiced_frames());
+        h.run(6 * HOP).unwrap();
+        let frames = h.spectral(0);
+        let m = magnitudes(frames, last_frame(&frames));
+        let want = magnitudes(voiced_frames().as_in(Shape::MONO), 5);
+        assert_eq!(m, want);
     }
 
     #[test]

@@ -56,6 +56,7 @@ pub fn show<'a>(
     });
     freeze_status(ui, session, id);
     problems(ui, session, id);
+    latency(ui, session, id);
     presets(ui, session, id, node, &mut edits);
     if node.type_id == GROUP {
         group_controls(ui, session, id, &mut edits);
@@ -436,6 +437,34 @@ fn freeze_status(ui: &mut Ui, session: &Session, id: NodeId) {
             ui.add(egui::Label::new(RichText::new(why).color(ui.visuals().error_fg_color)).wrap());
         }
     }
+}
+
+/// What this node adds to the path's latency and which of its inputs delay
+/// compensation holds back so the paths line up.
+fn latency(ui: &mut Ui, session: &Session, id: NodeId) {
+    let Some(reading) = crate::latency::reading(session, id) else {
+        return;
+    };
+    let rate = session.engine_sample_rate().unwrap_or(48_000.0);
+    let ms = |samples| crate::latency::ms(samples, rate);
+    egui::CollapsingHeader::new("Latency")
+        .default_open(true)
+        .show(ui, |ui| {
+            if reading.own > 0 {
+                ui.label(format!(
+                    "Adds {} ({} samples)",
+                    ms(reading.own),
+                    reading.own
+                ));
+            }
+            ui.label(format!("Sounds {} late at its output", ms(reading.arrival)));
+            for (name, samples) in &reading.held {
+                ui.label(format!(
+                    "{name} is delayed {} ({samples} samples) to line up",
+                    ms(*samples)
+                ));
+            }
+        });
 }
 
 fn problems(ui: &mut Ui, session: &Session, id: NodeId) {

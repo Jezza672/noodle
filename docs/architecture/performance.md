@@ -41,6 +41,13 @@ them from the front, so what they write lines up with the timeline.
 `noodle-plugins/tests/latency.rs` that CLAP and VST3 plugins report theirs
 (the test plugins read `NOODLE_TEST_PLUGIN_LATENCY`).
 
+`Controller::latency_report` says where the delay is: per node, what it
+reports (`own`), how late its outputs sound (`arrival`) and which inputs were
+held back and by how much. The editor shows it on a node's header (`+43 ms`
+for a node that adds latency, `holds 43 ms` for one that lines paths up), and
+the properties panel has a Latency section with the samples and the names of
+the delayed inputs. A group shows the longest latency of what is inside it.
+
 ## CPU meters
 
 When a `Telemetry` hub is set, each node's step is timed

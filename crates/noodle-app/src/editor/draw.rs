@@ -265,6 +265,16 @@ fn boxed(
             );
             right += galley.width() / z + 6.0;
         }
+        if let Some(label) = state.latency.get(&node.id) {
+            let galley = painter.text(
+                header.right_center() - Vec2::new(right * z, 0.0),
+                Align2::RIGHT_CENTER,
+                label,
+                FontId::monospace(9.0 * z),
+                colors::TEXT_WEAK,
+            );
+            right += galley.width() / z + 6.0;
+        }
         if let Some(badge) = badge {
             let (label, color) = badge_label(badge);
             if !label.is_empty() {

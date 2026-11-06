@@ -525,6 +525,77 @@ impl Synthesizer {
     }
 }
 
+/// The farthest [`FormantWarp`] lifts or cuts a bin, as an amplitude ratio
+/// (24 dB), so a hole in the envelope never becomes a spike.
+const FORMANT_GAIN_LIMIT: f32 = 16.0;
+
+/// Moves a frame's spectral envelope (its formants) up or down in frequency
+/// and leaves the fine structure (the harmonics, so the pitch) where it is.
+///
+/// The envelope is the magnitude smoothed over `width` bins either side.
+/// Moving it by `ratio` means scaling each bin by `E(f / ratio) / E(f)`, which
+/// keeps the phases. Following a pitch shift of `r` with a warp of `1 / r`
+/// puts the formants back where they were.
+pub struct FormantWarp {
+    /// Running totals of the magnitudes, one longer than the bins.
+    prefix: Vec<f32>,
+    envelope: Vec<f32>,
+}
+
+impl Default for FormantWarp {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl FormantWarp {
+    /// Allocates; call off the audio thread.
+    pub fn new() -> Self {
+        Self {
+            prefix: vec![0.0; BINS + 1],
+            envelope: vec![0.0; BINS],
+        }
+    }
+
+    /// Writes `input` to `out` with its envelope moved by `ratio` (above 1
+    /// is up). A ratio near 1 copies the frame.
+    pub fn apply(&mut self, input: &[Bin], out: &mut [Bin], ratio: f32, width: usize) {
+        debug_assert!(input.len() == BINS && out.len() == BINS);
+        if (ratio - 1.0).abs() < 1e-4 || !ratio.is_finite() || ratio <= 0.0 {
+            out.copy_from_slice(input);
+            return;
+        }
+        let width = width.max(1);
+        let mut sum = 0.0;
+        for (k, bin) in input.iter().enumerate() {
+            self.prefix[k] = sum;
+            sum += bin.magnitude();
+        }
+        self.prefix[BINS] = sum;
+        for (k, e) in self.envelope.iter_mut().enumerate() {
+            let lo = k.saturating_sub(width);
+            let hi = (k + width + 1).min(BINS);
+            *e = (self.prefix[hi] - self.prefix[lo]) / (hi - lo) as f32;
+        }
+        // A floor under the envelope, so silence stays silent.
+        let floor = self.envelope.iter().copied().fold(0.0, f32::max) * 1e-5 + 1e-12;
+        for (k, (bin, slot)) in input.iter().zip(out.iter_mut()).enumerate() {
+            let at = k as f32 / ratio;
+            let below = at.floor() as usize;
+            let e_new = if below >= BINS - 1 {
+                // Above the top the envelope has nothing to move down.
+                self.envelope[BINS - 1]
+            } else {
+                let t = at - below as f32;
+                self.envelope[below] * (1.0 - t) + self.envelope[below + 1] * t
+            };
+            let gain = ((e_new + floor) / (self.envelope[k] + floor))
+                .clamp(1.0 / FORMANT_GAIN_LIMIT, FORMANT_GAIN_LIMIT);
+            *slot = bin.scaled(gain);
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -592,6 +663,60 @@ mod tests {
                 (state >> 8) as f32 / (1 << 24) as f32 * 2.0 - 1.0
             })
             .collect()
+    }
+
+    /// A frame with harmonics every `spacing` bins under a single broad
+    /// peak (a formant) centred on `centre`.
+    fn voiced(spacing: usize, centre: f32) -> Vec<Bin> {
+        (0..BINS)
+            .map(|k| {
+                if k % spacing != 0 {
+                    return Bin::default();
+                }
+                let d = (k as f32 - centre) / 80.0;
+                Bin::new((-d * d).exp(), 0.0)
+            })
+            .collect()
+    }
+
+    fn peak_bin(frame: &[Bin]) -> usize {
+        // The middle of the busiest 41 bins, which follows the formant and
+        // ignores which harmonic happens to be largest.
+        let mag: Vec<f32> = frame.iter().map(|b| b.magnitude()).collect();
+        (20..BINS - 20)
+            .max_by(|&a, &b| {
+                let sum = |k: usize| mag[k - 20..=k + 20].iter().sum::<f32>();
+                sum(a).total_cmp(&sum(b))
+            })
+            .unwrap()
+    }
+
+    #[test]
+    fn a_formant_warp_moves_the_envelope_and_keeps_the_harmonics() {
+        let frame = voiced(10, 200.0);
+        let mut warp = FormantWarp::new();
+        let mut out = vec![Bin::default(); BINS];
+        warp.apply(&frame, &mut out, 1.25, 20);
+        let before = peak_bin(&frame);
+        let after = peak_bin(&out);
+        assert!(
+            (before as f32 * 1.25 - after as f32).abs() < 12.0,
+            "{before} -> {after}"
+        );
+        // Bins between the harmonics stay empty: the pitch did not move.
+        assert!(
+            out.iter()
+                .enumerate()
+                .all(|(k, b)| k % 10 == 0 || b.magnitude() == 0.0)
+        );
+    }
+
+    #[test]
+    fn a_formant_warp_of_one_copies_the_frame() {
+        let frame = voiced(7, 100.0);
+        let mut out = vec![Bin::default(); BINS];
+        FormantWarp::new().apply(&frame, &mut out, 1.0, 20);
+        assert_eq!(out, frame);
     }
 
     #[test]
