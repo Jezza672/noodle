@@ -11,11 +11,16 @@ running app, nothing from `docs/`. Never run per PR: each run costs model time.
 - One helper, `ctl.sh`, to look (screenshot, accessibility tree) and act
   (click, right click, double click, drag, hover, scroll, type, key). Its
   commands are the same input events `testkit` gives a route.
-- An action budget (80 by default). Looking and note-taking are free.
+- `listen [seconds]`, because an agent cannot hear: it renders what is playing
+  and describes it in words (loudness in four parts, brightness, a steady
+  pitch if there is one, or silence). Something must be playing. It is a
+  measurement, not hearing, and the prompt says so.
+- An action budget (80 by default). Looking, listening and note-taking are free.
 - In a clue run, the clues so far, worded as a friend who uses Noodle would.
 
 It is told to think aloud with `note`, and not to read any other file. That
-rule is only an instruction: check the transcript, not just the log.
+rule is only an instruction unless the runner enforces it: see "Containing the
+agent" below.
 
 ## Making a run
 
@@ -51,6 +56,27 @@ kept in the repo: rebuild one with the same `--story` and `--clues`.
 
 The driver is `crates/noodle-app/src/stories/agent.rs`, an ignored test. Its
 start state is the route's fixture, so the done check is the route's.
+
+## Containing the agent
+
+A subagent made with the Agent tool inherits the repo as its working directory
+and all tools, so "only use ctl.sh" is only a request there. Two things help:
+
+- **`scripts/new_user/run_claude.sh <run folder> [model]`** starts the app and
+  runs Claude Code (Haiku by default) from an empty directory with only the
+  Bash and Read tools, only `bash .../ctl.sh ...` and the run's screenshots
+  allowed, and everything else denied. It then audits the transcript.
+- **`scripts/new_user/audit.py <run folder> [transcript.jsonl]`** reads a Claude
+  Code stream-json transcript and writes `private/audit.json`: any call that is
+  not exactly one `ctl.sh` command or a screenshot read is listed as stray, and
+  the run is marked **contaminated**. A contaminated run says what the agent
+  could have found, not what a newcomer finds: rerun it. For another runner,
+  make a transcript in the same shape, or record strays by hand.
+
+Native file pickers do not show in screenshots. The driver says when one has
+opened, lists the world folder, and the agent answers with `choose /path` or
+`cancel`. That is a stand-in, and a person would see a dialog; if pickers keep
+confusing agents, an in-app picker panel for agent runs is the next step.
 
 ## Clues
 

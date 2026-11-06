@@ -63,6 +63,7 @@ You can only see and use Noodle through one helper script. Every command is
 | `key NAME` | One key press, with the pointer where you last put it: `key Enter`, `key Escape`, `key Delete`, `key Space`, `key ctrl+z`, `key shift+a`. |
 | `choose /full/path` | Answers a file picker that has opened (the program's reply tells you when one has). Pickers are native dialogs that screenshots do not show, so you type the path you want. Several files: separate paths with `;`. A folder picker takes a folder. |
 | `cancel` | Closes a file picker without choosing. |
+| `listen [seconds]` | Listens to what is playing (default 2 s, at most 5) and describes it in words: loudness, brightness, any steady pitch, or silence. You cannot hear, so this is as close as you get. Something has to be playing: start the transport first. |
 | `note your thoughts` | Writes down what you are thinking. Free, and does not touch the program. |
 | `finish` | Say you believe the task is done. This ends the session. |
 | `giveup` | Say you cannot do it. This ends the session. |
@@ -72,7 +73,7 @@ the path of a fresh screenshot. The first screenshot is `{first}`.
 The pointer starts in the middle of the window.
 
 You have **{budget} actions** (clicks, drags, typing, keys, scrolls and
-hovers). `look`, `tree` and `note` are free. When they run out the session is
+hovers). `look`, `tree`, `listen` and `note` are free. When they run out the session is
 over.
 
 ## Rules
@@ -191,8 +192,12 @@ def main() -> None:
 1. `bash {private}/start.sh` builds and starts Noodle and waits until it is up.
 2. Give the agent `{private}/prompt.md` as its whole prompt (it needs a shell,
    and a way to look at PNG files if it can see images). Give it nothing else,
-   and run it from an empty directory, not a checkout: it is only asked not to
-   read other files.
+   and run it from an empty directory, not a checkout. With Claude Code,
+   `scripts/new_user/run_claude.sh {out}` does this contained (only ctl.sh and
+   the screenshots are allowed) and audits the transcript. With any other
+   runner, the agent is only asked not to read other files: afterwards run
+   `scripts/new_user/audit.py {out} <transcript.jsonl>` if the transcript has
+   the same shape, or note by hand if it strayed.
 3. When the agent ends (it says finish or giveup, or runs out of actions),
    `{private}/result.json` holds whether the story's done check passed.
    `{private}/log.jsonl` has every command, what it hit, and the agent's notes.

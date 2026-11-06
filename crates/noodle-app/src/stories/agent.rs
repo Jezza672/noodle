@@ -75,6 +75,10 @@ enum Command {
     Note(String),
     /// Answers the file picker that opened: the paths, or none to cancel.
     Choose(Vec<PathBuf>),
+    /// Listens to what is playing for this long, and describes it in words.
+    /// Free: an agent cannot hear, and a person would listen as often as they
+    /// liked.
+    Listen(Duration),
     Finish,
     GiveUp,
 }
@@ -88,6 +92,7 @@ impl Command {
                 | Command::Tree
                 | Command::Note(_)
                 | Command::Choose(_)
+                | Command::Listen(_)
                 | Command::Finish
                 | Command::GiveUp
         )
@@ -196,6 +201,15 @@ fn parse(line: &str) -> Result<Command, String> {
             Command::Choose(rest.split(';').map(|p| PathBuf::from(p.trim())).collect())
         }
         "cancel" => Command::Choose(Vec::new()),
+        "listen" => {
+            let secs = match words.first() {
+                None => 2.0,
+                Some(w) => w
+                    .parse::<f32>()
+                    .map_err(|_| format!("listen takes seconds, not {w}"))?,
+            };
+            Command::Listen(Duration::from_secs_f32(secs.clamp(0.5, 5.0)))
+        }
         "note" => Command::Note(rest.to_string()),
         "finish" | "done" => Command::Finish,
         "giveup" => Command::GiveUp,
@@ -347,6 +361,7 @@ fn execute(h: &mut AppHarness, run: &mut Run, command: Command) -> String {
         Command::Screenshot => run.shot(h),
         Command::Tree => tree(h),
         Command::Note(_) => "noted".into(),
+        Command::Listen(time) => listen(h, time),
         Command::Finish | Command::GiveUp => "ok".into(),
         Command::Choose(paths) => {
             let Some(last) = run.last.clone().filter(|_| run.asked) else {
@@ -411,6 +426,141 @@ fn execute(h: &mut AppHarness, run: &mut Run, command: Command) -> String {
             )
         }
     }
+}
+
+/// Listens to the output for `time` and says what it heard. Only what is
+/// playing can be heard, so a stopped transport says so.
+fn listen(h: &mut AppHarness, time: Duration) -> String {
+    let (rate, channels) = {
+        let config = h.state().session().audio_config();
+        (
+            config.sample_rate.unwrap_or(48_000),
+            usize::from(config.channels.unwrap_or(2)),
+        )
+    };
+    let mut probe = Probe::new(h);
+    if !probe.transport_running() {
+        return "Nothing is playing: the transport is stopped. Start it (Space, or the play \
+                button), then listen again."
+            .into();
+    }
+    let heard = probe.hear(time);
+    describe(&heard, channels, rate)
+}
+
+/// Describes interleaved samples in words, the way someone listening might:
+/// how loud, whether it is steady, how bright, and the note if there is one.
+/// A stand-in for hearing, not hearing itself.
+fn describe(samples: &[f32], channels: usize, rate: u32) -> String {
+    let channels = channels.max(1);
+    let mono: Vec<f32> = samples
+        .chunks_exact(channels)
+        .map(|f| f.iter().sum::<f32>() / channels as f32)
+        .collect();
+    if mono.is_empty() {
+        return "Heard nothing: the audio engine is not running.".into();
+    }
+    let db = |x: f32| {
+        if x <= 1e-6 {
+            "silent".to_string()
+        } else {
+            format!("{:.0} dB", 20.0 * x.log10())
+        }
+    };
+    let rms = |part: &[f32]| (part.iter().map(|x| x * x).sum::<f32>() / part.len() as f32).sqrt();
+    let peak = samples.iter().fold(0.0f32, |a, &x| a.max(x.abs()));
+    if peak < 1e-4 {
+        return format!(
+            "Heard {:.1} s of silence. Nothing is reaching the output: check that something \
+             makes sound, is wired to an Output, and is not muted.",
+            mono.len() as f32 / rate as f32
+        );
+    }
+    let quarter = (mono.len() / 4).max(1);
+    let levels: Vec<String> = mono.chunks(quarter).take(4).map(|c| db(rms(c))).collect();
+    let bright: Vec<String> = mono
+        .chunks(quarter)
+        .take(4)
+        .map(|c| {
+            let crossings = c
+                .windows(2)
+                .filter(|w| (w[0] < 0.0) != (w[1] < 0.0))
+                .count();
+            let hz = crossings as f32 * rate as f32 / (2.0 * c.len() as f32);
+            format!("{hz:.0} Hz")
+        })
+        .collect();
+    let clipping = if peak > 0.999 {
+        " It reaches full scale, so it may be clipping."
+    } else {
+        ""
+    };
+    let pitch = match pitch_of(&mono, rate) {
+        Some(hz) => format!(" A steady pitch of about {hz:.0} Hz ({}).", note_name(hz)),
+        None => " No single steady pitch.".into(),
+    };
+    format!(
+        "Heard {:.1} s. Loudness (RMS) in four equal parts: {}. Peak {}.{clipping} \
+         Brightness (dominant frequency by zero-crossings) in the same four parts: {}.{pitch} \
+         This is a measurement, not hearing: it cannot tell you whether it sounds good.",
+        mono.len() as f32 / rate as f32,
+        levels.join(", "),
+        db(peak),
+        bright.join(", "),
+    )
+}
+
+/// The fundamental of a steady tone between 50 Hz and 2 kHz, by
+/// autocorrelation over a loud stretch, or `None` if it is not clearly
+/// periodic.
+fn pitch_of(mono: &[f32], rate: u32) -> Option<f32> {
+    let window = 4096.min(mono.len());
+    let lags = (rate as usize / 2000)..(rate as usize / 50).min(window / 2);
+    if lags.is_empty() {
+        return None;
+    }
+    // The loudest window, so a tail of silence does not hide a note.
+    let start = (0..=mono.len() - window)
+        .step_by((window / 2).max(1))
+        .max_by(|&a, &b| {
+            let e = |i: usize| mono[i..i + window].iter().map(|x| x * x).sum::<f32>();
+            e(a).total_cmp(&e(b))
+        })?;
+    let x = &mono[start..start + window];
+    let energy: f32 = x.iter().map(|v| v * v).sum();
+    if energy < 1e-6 {
+        return None;
+    }
+    let corr = |lag: usize| {
+        let n = x.len() - lag;
+        x[..n]
+            .iter()
+            .zip(&x[lag..])
+            .map(|(a, b)| a * b)
+            .sum::<f32>()
+            / energy
+    };
+    let (lag, best) = lags
+        .map(|l| (l, corr(l)))
+        .max_by(|a, b| a.1.total_cmp(&b.1))?;
+    (best > 0.8).then(|| rate as f32 / lag as f32)
+}
+
+/// The nearest note, such as "A4 +3 cents".
+fn note_name(hz: f32) -> String {
+    const NAMES: [&str; 12] = [
+        "C", "C#", "D", "D#", "E", "F", "F#", "G", "G#", "A", "A#", "B",
+    ];
+    let midi = 69.0 + 12.0 * (hz / 440.0).log2();
+    let near = midi.round();
+    let cents = ((midi - near) * 100.0).round();
+    let n = near as i32;
+    format!(
+        "{}{} {:+} cents",
+        NAMES[n.rem_euclid(12) as usize],
+        n.div_euclid(12) - 1,
+        cents
+    )
 }
 
 /// The names in a folder, as a file dialog would list them.
@@ -566,6 +716,44 @@ fn drive() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn sine(hz: f32, secs: f32, amp: f32) -> Vec<f32> {
+        (0..(48_000.0 * secs) as usize)
+            .flat_map(|i| {
+                let v = amp * (std::f32::consts::TAU * hz * i as f32 / 48_000.0).sin();
+                [v, v]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn listening_finds_the_note_and_says_when_it_is_silent() {
+        let text = describe(&sine(440.0, 1.0, 0.5), 2, 48_000);
+        assert!(text.contains("A4"), "{text}");
+        assert!(text.contains("about 440 Hz"), "{text}");
+        let text = describe(&vec![0.0; 96_000], 2, 48_000);
+        assert!(text.contains("silence"), "{text}");
+        let mut x = 0x1234_5678u32;
+        let noise: Vec<f32> = (0..96_000)
+            .map(|_| {
+                x ^= x << 13;
+                x ^= x >> 17;
+                x ^= x << 5;
+                (x % 2000) as f32 / 1000.0 - 1.0
+            })
+            .collect();
+        assert!(describe(&noise, 2, 48_000).contains("No single steady pitch"));
+    }
+
+    #[test]
+    fn listen_is_free_and_clamped() {
+        assert!(!parse("listen").unwrap().is_action());
+        assert_eq!(
+            parse("listen 99").unwrap(),
+            Command::Listen(Duration::from_secs(5))
+        );
+        assert!(parse("listen soon").is_err());
+    }
 
     #[test]
     fn commands_parse() {
