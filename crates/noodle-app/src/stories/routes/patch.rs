@@ -160,7 +160,19 @@ pub fn check(p: &mut Probe, ops: &[Op]) -> Result<(), String> {
 
 /// Hears the output for a moment, for a route that left the transport
 /// running, and fails if it is silent.
+///
+/// An offline or frozen node plays a background render, which is silent until
+/// it is ready (on a slow runner that can outlast any fixed listening
+/// window), so this first waits for the renders to finish, as the user would
+/// before judging the sound.
 pub fn audible(p: &mut Probe) -> Result<(), String> {
+    p.settle();
+    let mut polls = 0;
+    while p.freezing() && polls < 1200 {
+        p.settle();
+        std::thread::sleep(Duration::from_millis(25));
+        polls += 1;
+    }
     let level = peak(&p.hear(Duration::from_millis(300)));
     if level < 0.01 {
         return Err(format!("nothing is heard (peak {level})"));
