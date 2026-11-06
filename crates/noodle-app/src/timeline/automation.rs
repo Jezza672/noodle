@@ -7,7 +7,7 @@
 //!
 //! Click an empty spot to add a point, drag a point to move it, and
 //! right-click it (or press Delete with it selected) to remove it. Each is
-//! one undo step. A small toolbar on every lane picks the tool: **Edit** (the
+//! one undo step. A small toolbar on every lane picks the tool: **Points** (the
 //! above), **Draw** (drag across the lane to paint a curve, replacing the
 //! points under the stroke) and **Pick** (drag across empty space to pick a
 //! span; right-click it to Trim, Cut or Move its points). A track's header has a menu to add a gain or mute lane, and
@@ -1030,7 +1030,7 @@ fn toolbar(ui: &mut egui::Ui, state: &mut State, visible: Rect) {
     let tools = [
         (
             Tool::Edit,
-            "Edit",
+            "Points",
             "Click to add a point, drag a point to move it. Shift-drag picks a span",
         ),
         (
