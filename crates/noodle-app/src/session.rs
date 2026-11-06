@@ -17,6 +17,7 @@ pub mod convert;
 mod export;
 pub mod learn_midi;
 mod library;
+pub mod make_external;
 pub mod map_to;
 pub mod record_automation;
 mod render_clip;
@@ -123,6 +124,15 @@ pub enum Edit {
     MapTo {
         from: noodle_core::Endpoint,
         to: noodle_core::Endpoint,
+        /// Commands that go first, in the same undo step (a spare port made
+        /// real).
+        prepare: Vec<Command>,
+    },
+    /// Make external on a parameter: a variable (macro) node wired through a
+    /// new Remap matching the parameter's range, set so the value is
+    /// unchanged, as one undo step (see [`make_external`]).
+    MakeExternal {
+        target: noodle_core::Endpoint,
         /// Commands that go first, in the same undo step (a spare port made
         /// real).
         prepare: Vec<Command>,
@@ -1770,6 +1780,29 @@ impl Session {
                         }
                         Err(error) => {
                             self.message = Some(format!("Couldn't map: {error}"));
+                            continue;
+                        }
+                    }
+                }
+                Edit::MakeExternal { target, prepare } => {
+                    self.history.end_group();
+                    let variable = self.new_node_id();
+                    let remap = self.new_node_id();
+                    match make_external::command(
+                        &self.project,
+                        &self.registry,
+                        &target,
+                        variable,
+                        remap,
+                    ) {
+                        Ok(command) if prepare.is_empty() => command,
+                        Ok(command) => {
+                            let mut all = prepare;
+                            all.push(command);
+                            Command::Batch(all)
+                        }
+                        Err(error) => {
+                            self.message = Some(format!("Couldn't make external: {error}"));
                             continue;
                         }
                     }

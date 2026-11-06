@@ -141,6 +141,9 @@ pub struct EditorState {
     monitor_menu: Option<NodeId>,
     /// The node whose right-click menu offers Replace with....
     replace_menu: Option<NodeId>,
+    /// The parameter port a right-click landed on, which its menu offers to
+    /// make external.
+    external_menu: Option<Endpoint>,
     /// The node the context menu offers to remove unused ports of.
     unused_menu: Option<NodeId>,
     /// Which nodes are frozen or offline, and how their renders are doing.
@@ -221,6 +224,7 @@ impl Default for EditorState {
             port_menu: None,
             monitor_menu: None,
             replace_menu: None,
+            external_menu: None,
             unused_menu: None,
             freeze: BTreeMap::new(),
             monitored: Vec::new(),
@@ -1213,6 +1217,15 @@ fn pointer(
             .and_then(|p| boundary_port_at(f, p));
     }
     if response.secondary_clicked() {
+        state.external_menu =
+            latest
+                .filter(|_| state.monitor_menu.is_none())
+                .and_then(|p| match hit(f, p) {
+                    Hit::Port(end, Side::Input) if is_param(f, &end) => Some(end),
+                    _ => None,
+                });
+    }
+    if response.secondary_clicked() {
         state.replace_menu = latest
             .filter(|_| state.monitor_menu.is_none())
             .and_then(|p| match hit(f, p) {
@@ -1268,6 +1281,7 @@ fn pointer(
     let monitored = state.monitored.clone();
     let unused = state.unused_menu;
     let replace = state.replace_menu;
+    let external = state.external_menu.clone();
     let mut replace_clicked = None;
     // The group the menu is about, and the name being typed for it, if it is
     // about one. The name is taken out of the state for the menu to work on,
@@ -1291,6 +1305,19 @@ fn pointer(
                     .clicked()
             {
                 remove = true;
+                ui.close();
+            }
+            if let Some(target) = &external
+                && ui
+                    .button("Make external")
+                    .on_hover_text("Add a macro knob that drives this parameter through a Remap")
+                    .clicked()
+            {
+                let prepare = make_real(f, target, Side::Input, inputs);
+                edits.push(Edit::MakeExternal {
+                    target: target.clone(),
+                    prepare,
+                });
                 ui.close();
             }
             if unused.is_some() && ui.button("Remove unused ports").clicked() {
@@ -1346,6 +1373,7 @@ fn pointer(
             if port.is_none()
                 && unused.is_none()
                 && monitor.is_none()
+                && external.is_none()
                 && group.is_none()
                 && replace.is_none()
             {
