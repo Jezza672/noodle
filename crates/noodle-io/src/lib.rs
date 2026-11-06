@@ -69,4 +69,4 @@ pub use record::{RecordError, RecordTap, Recorder, Take, record_path};
 pub use resample::{ResampleError, StreamResampler, resample};
 pub use stream::{ClipStream, StreamSpec, StreamWorker, clip_frames, open_stream};
 pub use ump::{Attribute, Midi2, Packet, PacketReader, packet_words, widen};
-pub use wav::{Audio, WavError, WavStreamWriter, read_wav, write_wav};
+pub use wav::{Audio, WavError, WavStreamWriter, read_wav, read_wav_bytes, write_wav};

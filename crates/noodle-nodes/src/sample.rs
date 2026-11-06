@@ -269,6 +269,18 @@ impl SampleStore {
             if inner.missing.contains(hash) {
                 return None;
             }
+            // Audio shipped inside the program (the system library's
+            // instruments) needs no folder.
+            if let Some(audio) = crate::system_samples::audio(hash) {
+                let sample = Arc::new(Sample::from_audio(&audio));
+                drop(inner);
+                self.inner
+                    .lock()
+                    .unwrap()
+                    .samples
+                    .insert(hash.to_owned(), sample.clone());
+                return Some(sample);
+            }
             inner.dir.clone()?
         };
         // Only a hash that looks like one becomes a path.

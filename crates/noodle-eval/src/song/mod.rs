@@ -12,6 +12,7 @@
 //! with this code (`UPDATE_SONGS=1 cargo test -p noodle-eval --test songs`
 //! rewrites them).
 
+mod instruments;
 pub mod kit;
 pub mod library;
 pub mod music;

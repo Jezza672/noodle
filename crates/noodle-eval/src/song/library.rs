@@ -71,6 +71,7 @@ fn racked(mut song: Song) -> Song {
                 song.name,
                 part.name.to_lowercase().replace(' ', "-")
             ),
+            label: None,
             drum,
             key,
             db: part.db,

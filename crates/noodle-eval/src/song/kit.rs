@@ -201,6 +201,9 @@ pub struct Slot {
     /// The sample's name in `songs/samples/index.txt`; empty for a slot to be
     /// filled by the user (the library's Drum Rack).
     pub sample: String,
+    /// What the slot's controls are called ("Stomp level"); a slot without
+    /// one is named after its drum.
+    pub label: Option<&'static str>,
     pub drum: Drum,
     /// The key that plays it.
     pub key: u8,
@@ -308,7 +311,9 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
         let key = f32::from(slot.key);
         set_param(p, split, &format!("low{}", i + 1), key);
         set_param(p, split, &format!("high{}", i + 1), key);
-        let label = if slot.sample.is_empty() {
+        let label = if let Some(label) = slot.label {
+            label.to_owned()
+        } else if slot.sample.is_empty() {
             format!("Slot {}", i + 1)
         } else {
             format!("{} {}", drum_label(slot.drum), i + 1)
@@ -351,6 +356,9 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
 fn sample_hash(name: &str) -> String {
     if name.is_empty() {
         String::new()
+    } else if let Some(shipped) = name.strip_prefix("system:") {
+        // Audio shipped inside the program (`noodle_nodes::system_samples`).
+        noodle_nodes::system_samples::hash(shipped).to_owned()
     } else {
         super::samples::hash(name)
     }

@@ -1,0 +1,135 @@
+[
+    Template((
+        name: "Steel Drum",
+        slug: "steel-drum",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Steel Drum"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:tune\n3:bend range\n4:release\n5:gain\n6:cutoff"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.instrument.sample_set",
+                config: {"sample": "1ac5a3c33f1e037e427b982e9ae0104241c09cb59a612889978dc45036f00498@60;65db50119ad64b740b06619f7a7adc608bcdbd846fa525dd59354a4a3404df12@63;a1836d3d0e1fbfe6fa13ea6133fa25ff2f8734e3cdb9576b3a12646d20d7fac4@66;44f443791a0785d82efd1de638a2a2494a45c24f35872832b56b75b60dfc401e@69;08db0eb90355df382a998728f1a599aef9aea9ad0e49f2e6762a2e6fcc000be0@72;92704e0eda6f2edd0e23dafc0a0bd4ea061ffe0f0c2242ab1a646231df0257fd@75;ce374aa67e6e57847cdc638018b6230199054b3b9dda6d6226340e59902be531@78;287ec22d04bead1393c41050fb15e8e1e33ccb2f9f8668ee392ffe93e62e455e@81"},
+                position: (x: 220.0, y: 260.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.instrument.sampler",
+                params: {"bend_range": 2.0, "gain": -10.0, "mode": 1.0, "release": 0.5},
+                position: (x: 440.0, y: 0.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.filter.svf",
+                params: {"cutoff": 20000.0},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 910.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 4, port: "bend_range"),
+            ),
+            (
+                from: (node: 2, port: "p5"),
+                to: (node: 4, port: "gain"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 4, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 4, port: "release"),
+            ),
+            (
+                from: (node: 3, port: "sample"),
+                to: (node: 4, port: "sample"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 4, port: "tune"),
+            ),
+            (
+                from: (node: 2, port: "p6"),
+                to: (node: 5, port: "cutoff"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "in"),
+            ),
+            (
+                from: (node: 5, port: "low"),
+                to: (node: 6, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Open",
+        slug: "steel-drum-open",
+        topology: "e8ac31468ca95be1",
+        nodes: [
+            (
+                params: {"bend_range": 2.0, "gain": -10.0, "mode": 1.0, "release": 0.5},
+            ),
+            (),
+            (
+                params: {"cutoff": 20000.0},
+            ),
+            (
+                config: {"sample": "1ac5a3c33f1e037e427b982e9ae0104241c09cb59a612889978dc45036f00498@60;65db50119ad64b740b06619f7a7adc608bcdbd846fa525dd59354a4a3404df12@63;a1836d3d0e1fbfe6fa13ea6133fa25ff2f8734e3cdb9576b3a12646d20d7fac4@66;44f443791a0785d82efd1de638a2a2494a45c24f35872832b56b75b60dfc401e@69;08db0eb90355df382a998728f1a599aef9aea9ad0e49f2e6762a2e6fcc000be0@72;92704e0eda6f2edd0e23dafc0a0bd4ea061ffe0f0c2242ab1a646231df0257fd@75;ce374aa67e6e57847cdc638018b6230199054b3b9dda6d6226340e59902be531@78;287ec22d04bead1393c41050fb15e8e1e33ccb2f9f8668ee392ffe93e62e455e@81"},
+            ),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Muted",
+        slug: "steel-drum-muted",
+        topology: "e8ac31468ca95be1",
+        nodes: [
+            (
+                params: {"bend_range": 2.0, "gain": -10.0, "mode": 1.0, "release": 0.08},
+            ),
+            (),
+            (
+                params: {"cutoff": 3500.0},
+            ),
+            (
+                config: {"sample": "1ac5a3c33f1e037e427b982e9ae0104241c09cb59a612889978dc45036f00498@60;65db50119ad64b740b06619f7a7adc608bcdbd846fa525dd59354a4a3404df12@63;a1836d3d0e1fbfe6fa13ea6133fa25ff2f8734e3cdb9576b3a12646d20d7fac4@66;44f443791a0785d82efd1de638a2a2494a45c24f35872832b56b75b60dfc401e@69;08db0eb90355df382a998728f1a599aef9aea9ad0e49f2e6762a2e6fcc000be0@72;92704e0eda6f2edd0e23dafc0a0bd4ea061ffe0f0c2242ab1a646231df0257fd@75;ce374aa67e6e57847cdc638018b6230199054b3b9dda6d6226340e59902be531@78;287ec22d04bead1393c41050fb15e8e1e33ccb2f9f8668ee392ffe93e62e455e@81"},
+            ),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Mellow",
+        slug: "steel-drum-mellow",
+        topology: "e8ac31468ca95be1",
+        nodes: [
+            (
+                params: {"bend_range": 2.0, "gain": -10.0, "mode": 1.0, "release": 0.3},
+            ),
+            (),
+            (
+                params: {"cutoff": 1800.0},
+            ),
+            (
+                config: {"sample": "1ac5a3c33f1e037e427b982e9ae0104241c09cb59a612889978dc45036f00498@60;65db50119ad64b740b06619f7a7adc608bcdbd846fa525dd59354a4a3404df12@63;a1836d3d0e1fbfe6fa13ea6133fa25ff2f8734e3cdb9576b3a12646d20d7fac4@66;44f443791a0785d82efd1de638a2a2494a45c24f35872832b56b75b60dfc401e@69;08db0eb90355df382a998728f1a599aef9aea9ad0e49f2e6762a2e6fcc000be0@72;92704e0eda6f2edd0e23dafc0a0bd4ea061ffe0f0c2242ab1a646231df0257fd@75;ce374aa67e6e57847cdc638018b6230199054b3b9dda6d6226340e59902be531@78;287ec22d04bead1393c41050fb15e8e1e33ccb2f9f8668ee392ffe93e62e455e@81"},
+            ),
+            (),
+        ],
+    )),
+]

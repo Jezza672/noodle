@@ -69,6 +69,7 @@ mod stage;
 mod surround;
 mod svf;
 mod swing;
+pub mod system_samples;
 mod tempo;
 mod time_stretch;
 mod vca;
