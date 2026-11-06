@@ -64,9 +64,9 @@ impl FormantStage {
     pub fn process(&mut self, io: &mut [f32], ratio_at: impl Fn(u32) -> f32) {
         let n = io.len() / 2;
         assert!(n <= BLOCK);
-        for (i, pair) in io.chunks_exact(2).enumerate() {
-            self.planar[i] = pair[0];
-            self.planar[n + i] = pair[1];
+        for i in 0..n {
+            self.planar[i] = io[i * 2];
+            self.planar[n + i] = io[i * 2 + 1];
         }
         self.analyzer.process(
             &SignalIn::new(&self.planar[..n * 2], Shape::STEREO, n),
@@ -89,9 +89,9 @@ impl FormantStage {
             &self.warped.as_in(Shape::STEREO),
             &mut SignalOut::new(&mut self.result[..n * 2], Shape::STEREO, n),
         );
-        for (i, pair) in io.chunks_exact_mut(2).enumerate() {
-            pair[0] = self.result[i];
-            pair[1] = self.result[n + i];
+        for i in 0..n {
+            io[i * 2] = self.result[i];
+            io[i * 2 + 1] = self.result[n + i];
         }
     }
 }
@@ -110,7 +110,7 @@ mod tests {
         for chunk in padded.chunks(BLOCK) {
             let mut io: Vec<f32> = chunk.iter().flat_map(|&x| [x, x]).collect();
             stage.process(&mut io, |_| ratio);
-            out.extend(io.chunks_exact(2).map(|p| p[0]));
+            out.extend(io.iter().step_by(2));
         }
         out.drain(..LATENCY);
         out
