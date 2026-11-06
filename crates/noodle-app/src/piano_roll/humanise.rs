@@ -66,7 +66,7 @@ pub(super) fn controls(
         }
         crate::inline_result::remember(
             ui,
-            "humanise",
+            &format!("humanise {id:?}"),
             format!(
                 "Humanised {} note{}: up to {} ticks and {:.0}% velocity either way",
                 ids.len(),
@@ -77,7 +77,7 @@ pub(super) fn controls(
         );
         out.edits.push(set_midi(id, clip, changed, false));
     }
-    crate::inline_result::show(ui, "humanise");
+    crate::inline_result::show(ui, &format!("humanise {id:?}"));
     let mut timing = midi.humanise_timing.0;
     let mut velocity = midi.humanise_velocity * 100.0;
     ui.label("Timing");
