@@ -110,8 +110,10 @@ mod tests {
         if std::env::var_os("UPDATE_SAMPLE_INDEX").is_some() {
             std::fs::write(&path, &made).unwrap();
         }
+        // A Windows checkout may have turned the line ends into CRLF.
         assert_eq!(
-            INDEX, made,
+            INDEX.replace("\r\n", "\n"),
+            made,
             "index.txt is out of date: UPDATE_SAMPLE_INDEX=1 cargo test -p noodle-nodes system_samples"
         );
     }
