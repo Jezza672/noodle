@@ -1,8 +1,9 @@
 //! S03: drive external hardware like an internal instrument.
 //!
 //! Partial. A MIDI part goes to the synth through a MIDI Out node, and the
-//! port is chosen in View > MIDI ports (#346), which lists every MIDI node
-//! with a drop-down of the ports (the test build lists two fake ones).
+//! port is chosen in a drop-down on the node's own panel (#427; View > MIDI
+//! ports (#346) lists every MIDI node for changing them all in one place; the
+//! test build lists two fake ports).
 //! Recording the synth's audio back in is not routed because a route cannot
 //! supply an audio input (#334); round-trip latency compensation for the
 //! recording is therefore not scored either. The route builds the sending
@@ -21,24 +22,11 @@ use crate::app::App;
 
 const SYNTH: &str = "Test Synth";
 
-/// Opens View > MIDI ports and picks the synth for the MIDI Out.
+/// Picks the synth in the MIDI Out node's own panel, which the added node
+/// opens.
 fn pick_port(h: &mut Handle) {
-    h.step("open the MIDI ports view");
-    let view = h.find("View");
-    h.click(view, Modifiers::NONE);
-    let item = h.find("MIDI ports");
-    h.click(item, Modifiers::NONE);
-    h.probe().settle();
     h.step("choose the synth's port");
-    let node = h
-        .probe()
-        .project()
-        .graph()
-        .nodes()
-        .find(|(_, n)| n.type_id == MIDI_OUT_ID)
-        .map(|(id, _)| id)
-        .expect("the MIDI Out node");
-    let combo = h.find(&format!("MIDI Out {}", node.0));
+    let combo = h.find("Port");
     h.click(combo, Modifiers::NONE);
     let port = h.find(SYNTH);
     h.click(port, Modifiers::NONE);

@@ -90,7 +90,9 @@ pre-roll, punch refused past its range, the count-in waiting and cancelling).
   the old file first so every `offset` and the warp still point at the same
   audio, and the folder's clip names it; the old file stays for undo. The comp
   is left as it was. A recording over a different stretch, or in a different
-  sample rate or channel count, is a clip of its own as before.
+  sample rate or channel count, is a clip of its own as before. The new takes
+  play through the folder's existing warp, so if the tempo map changed between
+  the passes they are warped with the old one.
 - **Lanes open themselves (#423).** A recording that makes a take folder, or adds
   takes to one, opens its take lanes (`Session::opened_takes`,
   `takes::State::open_recorded`), so the takes to swipe from are on screen as

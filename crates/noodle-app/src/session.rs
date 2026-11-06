@@ -3417,8 +3417,13 @@ impl Session {
         }
         if joined > 0 {
             notices.push(format!(
-                "Added {joined} take{} to the take folder",
-                if joined == 1 { "" } else { "s" }
+                "Added {joined} take{} to the take folder{}",
+                if joined == 1 { "" } else { "s" },
+                if separate > 0 {
+                    " (other tracks got clips of their own)"
+                } else {
+                    ""
+                }
             ));
         } else if let (Some(relative), Some(take)) = (&recording.relative, &take) {
             let count = folder

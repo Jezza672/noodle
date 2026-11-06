@@ -210,8 +210,17 @@ impl DevicePicker {
         ui.vertical(|ui| {
             if let Err(error) = &self.midi_ports {
                 ui.label(format!("Unavailable: {error}"));
+                ui.weak(
+                    "MIDI keyboards can't be used until this is fixed. You can still play with \
+                     the computer keyboard (press M, or search \"Computer Keyboard as MIDI\" in the \
+                     command palette) or draw notes in the piano roll.",
+                );
             } else if ports.is_empty() && self.draft.midi_inputs.is_empty() {
                 ui.label("None found");
+                ui.weak(
+                    "Plug a MIDI keyboard in, then reopen this window. Until then the computer \
+                     keyboard plays notes (the M key).",
+                );
             }
             let mut chosen = std::mem::take(&mut self.draft.midi_inputs);
             fn toggle(ui: &mut egui::Ui, chosen: &mut Vec<String>, name: &str, text: String) {

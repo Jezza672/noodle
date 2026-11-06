@@ -1784,6 +1784,25 @@ fn double_clicking_a_midi_clip_opens_it_and_audio_clips_do_not() {
     assert_eq!(h.state().opened, [id]);
 }
 
+/// Issue #419: a double-click on empty lane space starts a MIDI clip, as the
+/// menu does.
+#[test]
+fn double_clicking_an_empty_lane_makes_a_midi_clip_and_opens_it() {
+    let (mut h, _) = rig();
+    let before = h.state().session.project().clips().count();
+    let pos = Pos2::new(150.0 + 130.0, 22.0 + 64.0 + 30.0);
+    double_click(&mut h, pos);
+    let project = h.state().session.project();
+    assert_eq!(project.clips().count(), before + 1);
+    let (id, made) = project
+        .clips()
+        .find(|(_, c)| c.as_midi().is_some())
+        .expect("a MIDI clip");
+    assert_eq!(made.node, NodeId(2));
+    assert_eq!(made.start, Tick(1920));
+    assert_eq!(h.state().opened, [id]);
+}
+
 #[test]
 fn the_lane_menu_makes_a_midi_clip_where_it_was_clicked() {
     let (mut h, _) = rig();
@@ -2788,6 +2807,20 @@ fn dropping_a_track_between_a_folders_tracks_puts_it_in_the_folder() {
     );
     let org = h.state().session.project().organisation().clone();
     assert_eq!(org.folder_of(group), Some(folder));
+}
+
+#[test]
+fn double_clicking_right_on_the_lane_edge_shrinks_the_track() {
+    // Issue #422: on the edge itself, either side of it, and just inside.
+    for dy in [-3.0, -0.5, 0.5, 2.0] {
+        let (mut h, _) = rig();
+        let (_, input, _) = add_real_track(&mut h);
+        let top = 8.0 + super::colors::RULER_HEIGHT;
+        let edge = Pos2::new(14.0, top + 3.0 * super::colors::LANE_HEIGHT + dy);
+        double_click(&mut h, edge);
+        h.run();
+        assert!(h.state().timeline.name_only(input), "dy = {dy}");
+    }
 }
 
 #[test]
