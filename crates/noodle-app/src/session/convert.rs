@@ -5,7 +5,9 @@
 use super::*;
 use crate::timeline::add_track;
 use noodle_core::group::{GROUP_OUTPUT, PORT_NAME, port_key};
-use noodle_core::{Clip, ClipContent, Config, Endpoint, MidiClip, MidiNote, Node, Position, Value};
+use noodle_core::{
+    Clip, ClipContent, ClipWarp, Config, Endpoint, MidiClip, MidiNote, Node, Position, Value,
+};
 use noodle_io::{Transcription, decode_file, transcribe};
 use noodle_nodes::{
     MONO_NOTE_ID, SAMPLE_INPUT_ID, SAMPLE_KEY, SAMPLER_ID, SLICE_ID, SLICE_SENSITIVITY_KEY,
@@ -13,6 +15,71 @@ use noodle_nodes::{
 
 /// The factory synth Convert to MIDI plays its notes with.
 const SYNTH: &str = "system:template:mono-synth";
+
+/// What quantising a clip's transients does to its warp.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct QuantiseHits {
+    /// The grid, in beats of the clip.
+    pub grid: f64,
+    /// The strength, 0 to 1: how far each hit is pulled onto the grid.
+    pub amount: f64,
+    /// How the slices are joined once they have moved.
+    pub join: SliceJoin,
+}
+
+impl QuantiseHits {
+    fn apply(self, warp: &mut ClipWarp) {
+        let settings = warp.quantise.get_or_insert_with(Default::default);
+        settings.grid = self.grid;
+        settings.amount = self.amount.clamp(0.0, 1.0);
+        if let Some(mode) = self.join.mode() {
+            warp.mode = mode;
+        }
+    }
+}
+
+/// How the slices of a quantised clip join where they have been moved.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SliceJoin {
+    /// Leave the warp's mode as it is.
+    Keep,
+    /// Slices mode: each slice plays at its natural speed where the hit now
+    /// is, and slices that overlap are crossfaded. Where a slice moved late
+    /// it leaves a gap, which the slice before runs on into and then goes
+    /// silent.
+    Crossfade,
+    /// Beats mode: the audio between two hits is stretched to fill the gap
+    /// the move left (or squeezed to fit), so nothing overlaps and nothing is
+    /// silent.
+    FillGaps,
+}
+
+impl SliceJoin {
+    pub const ALL: [Self; 3] = [Self::Crossfade, Self::FillGaps, Self::Keep];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Self::Keep => "Keep the warp mode",
+            Self::Crossfade => "Crossfade slices",
+            Self::FillGaps => "Fill gaps by stretching",
+        }
+    }
+
+    pub fn mode(self) -> Option<noodle_core::WarpMode> {
+        match self {
+            Self::Keep => None,
+            Self::Crossfade => Some(noodle_core::WarpMode::Slices),
+            Self::FillGaps => Some(noodle_core::WarpMode::Beats),
+        }
+    }
+}
+
+/// Why pinning came to nothing.
+enum PinError {
+    /// Every hit already has a marker.
+    NothingNew,
+    Other(String),
+}
 
 /// How readily Convert to MIDI hears a note, as the menu offers it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -255,7 +322,54 @@ impl Session {
         }
     }
 
+    /// Quantises the transients of `clip` and of every clip linked to it, in
+    /// one undo step: the hits that have no marker yet are pinned where they
+    /// play now, then warp quantise is turned on (or its grid and strength
+    /// changed) and the warp's mode is set to `join`. `amount` is the
+    /// strength, 0 to 1: how far each marker is pulled onto the grid.
+    pub fn quantise_transients(&mut self, clip: ClipId, percent: u8, quantise: QuantiseHits) {
+        let result = match self.pinning_with(clip, percent, |warp| quantise.apply(warp)) {
+            // Already pinned is not a failure here: the quantise still applies.
+            Err(PinError::NothingNew) => self
+                .project
+                .warp_edit(clip, |warp| quantise.apply(warp))
+                .map(|command| (command, 0))
+                .map_err(|e| e.to_string()),
+            Ok(done) => Ok(done),
+            Err(PinError::Other(why)) => Err(why),
+        };
+        match result {
+            Ok((command, pinned)) => {
+                self.edit([Edit::Apply(command)]);
+                let pins = match pinned {
+                    0 => String::new(),
+                    1 => ", pinning 1 new transient".into(),
+                    n => format!(", pinning {n} new transients"),
+                };
+                self.message = Some(format!(
+                    "Quantised to {} at {:.0} %{pins}",
+                    crate::clip_panel::grid_name(quantise.grid),
+                    quantise.amount * 100.0,
+                ));
+            }
+            Err(why) => self.message = Some(why),
+        }
+    }
+
     fn pinning(&self, id: ClipId, percent: u8) -> Result<(Command, usize), String> {
+        self.pinning_with(id, percent, |_| {}).map_err(|e| match e {
+            PinError::NothingNew => "No new transients to pin".into(),
+            PinError::Other(why) => why,
+        })
+    }
+
+    fn pinning_with(
+        &self,
+        id: ClipId,
+        percent: u8,
+        after: impl FnOnce(&mut ClipWarp),
+    ) -> Result<(Command, usize), PinError> {
+        let other = |why: String| PinError::Other(why);
         let project = &self.project;
         let sensitivity = f32::from(percent.min(100)) / 100.0;
         let mut moments: Vec<f64> = Vec::new();
@@ -267,8 +381,8 @@ impl Session {
                 Some(dir) => dir.join(&audio.source),
                 None => PathBuf::from(&audio.source),
             };
-            let file =
-                decode_file(&path).map_err(|e| format!("Couldn't read {}: {e}", audio.source))?;
+            let file = decode_file(&path)
+                .map_err(|e| other(format!("Couldn't read {}: {e}", audio.source)))?;
             let channels = file.channels.max(1);
             let frames = file.samples.len() / channels;
             let from = (audio.offset as usize).min(frames);
@@ -290,10 +404,13 @@ impl Session {
         }
         let mut pinned = 0;
         let command = project
-            .warp_edit(id, |warp| pinned = warp.pin_transients(&moments))
-            .map_err(|e| e.to_string())?;
+            .warp_edit(id, |warp| {
+                pinned = warp.pin_transients(&moments);
+                after(warp);
+            })
+            .map_err(|e| other(e.to_string()))?;
         if pinned == 0 {
-            return Err("No new transients to pin".into());
+            return Err(PinError::NothingNew);
         }
         Ok((command, pinned))
     }
@@ -634,5 +751,57 @@ mod tests {
                 .warp_of(a)
                 .is_none_or(|(_, w)| w.markers.is_empty())
         );
+    }
+
+    #[test]
+    fn quantising_transients_pins_and_quantises_at_a_strength_in_one_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let x = hits(&[0.52, 1.03, 1.49], 2.0);
+        let (mut session, id, _) = rig(dir.path(), &x);
+        let before = session.project().clone();
+        let quantise = QuantiseHits {
+            grid: 1.0,
+            amount: 0.5,
+            join: SliceJoin::Crossfade,
+        };
+        session.quantise_transients(id, 50, quantise);
+        assert!(
+            session
+                .message()
+                .is_some_and(|m| m.starts_with("Quantised to 1/4 note at 50 %, pinning 3")),
+            "{:?}",
+            session.message()
+        );
+        let (_, warp) = session.project().warp_of(id).unwrap();
+        assert_eq!(warp.markers.len(), 3);
+        assert_eq!(warp.mode, noodle_core::WarpMode::Slices);
+        let settings = warp.quantise.as_ref().unwrap();
+        assert_eq!((settings.grid, settings.amount), (1.0, 0.5));
+        // Each marker plays halfway to its beat line, so none sits where it
+        // was pinned (these hits are not on the grid) nor on a line.
+        let played = warp.effective_markers();
+        for (stored, moved) in warp.markers.iter().zip(played.iter()) {
+            let line = stored.beat.round();
+            if (stored.beat - line).abs() > 1e-6 {
+                let want = stored.beat + (line - stored.beat) * 0.5;
+                assert!((moved.beat - want).abs() < 1e-6, "{stored:?} {moved:?}");
+            }
+        }
+        // Quantising again, with every hit already pinned, still applies the
+        // new strength and join.
+        let again = QuantiseHits {
+            amount: 1.0,
+            join: SliceJoin::FillGaps,
+            ..quantise
+        };
+        session.quantise_transients(id, 50, again);
+        let (_, warp) = session.project().warp_of(id).unwrap();
+        assert_eq!(warp.markers.len(), 3);
+        assert_eq!(warp.quantise.as_ref().unwrap().amount, 1.0);
+        assert_eq!(warp.mode, noodle_core::WarpMode::Beats);
+        // Each is one undo step.
+        session.undo();
+        session.undo();
+        assert_eq!(*session.project(), before);
     }
 }

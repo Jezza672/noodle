@@ -378,8 +378,74 @@ pub fn drop_groove(project: &Project, id: ClipId) -> Option<Command> {
     })
 }
 
+/// The form that quantises a clip's hits: the grid, the strength and how the
+/// slices join once they have moved, with one button that pins the transients
+/// that have no marker and does it all as one undo step. What was picked is
+/// kept between uses. Returns whether the button was pressed.
+pub fn quantise_hits_form(ui: &mut Ui, clip: ClipId, edits: &mut Vec<Edit>) -> bool {
+    use crate::session::convert::{QuantiseHits, SliceJoin};
+    let slot = egui::Id::new("quantise hits form");
+    let (mut grid, mut percent, mut join, sensitivity): (f64, u8, SliceJoin, u8) = ui
+        .data(|d| d.get_temp(slot))
+        .unwrap_or((0.25, 100, SliceJoin::Crossfade, 50));
+    ui.label("Grid");
+    ui.horizontal_wrapped(|ui| {
+        for option in QUANTISE_GRIDS {
+            if ui
+                .selectable_label((grid - option).abs() < 1e-9, grid_name(option))
+                .clicked()
+            {
+                grid = option;
+            }
+        }
+    });
+    ui.horizontal(|ui| {
+        ui.label("Strength");
+        ui.add(
+            egui::DragValue::new(&mut percent)
+                .range(0..=100)
+                .speed(0.5)
+                .suffix(" %"),
+        )
+        .on_hover_text(
+            "How far each hit is pulled onto the grid: 100 % puts it on the line, 50 % halfway",
+        );
+    });
+    ui.label("Join the slices");
+    for option in SliceJoin::ALL {
+        if ui
+            .selectable_label(join == option, option.name())
+            .on_hover_text(match option {
+                SliceJoin::Crossfade => "Each slice plays at its natural speed where its hit now is, and slices that overlap are crossfaded (Slices mode)",
+                SliceJoin::FillGaps => "The audio between two hits is stretched to fill the gap a move leaves, or squeezed to fit (Beats mode)",
+                SliceJoin::Keep => "Leave the clip's warp mode as it is",
+            })
+            .clicked()
+        {
+            join = option;
+        }
+    }
+    let pressed = ui
+        .button("Quantise hits")
+        .on_hover_text("Pin a marker on every hit that has none (where it plays now), then pull them onto the grid at this strength. One undo step; the strength can be changed later in the clip panel")
+        .clicked();
+    ui.data_mut(|d| d.insert_temp(slot, (grid, percent, join, sensitivity)));
+    if pressed {
+        edits.push(Edit::QuantiseTransients(
+            clip,
+            sensitivity,
+            QuantiseHits {
+                grid,
+                amount: f64::from(percent) / 100.0,
+                join,
+            },
+        ));
+    }
+    pressed
+}
+
 /// The name of a grid, for the menu.
-fn grid_name(grid: f64) -> String {
+pub(crate) fn grid_name(grid: f64) -> String {
     match grid {
         g if (g - 4.0).abs() < 1e-9 => "Bar".into(),
         g if (g - 1.0).abs() < 1e-9 => "1/4 note".into(),
@@ -467,6 +533,14 @@ fn quantise_section(
             }
         }
     });
+    if let Subject::Clip(id) = subject {
+        egui::CollapsingHeader::new("Quantise transients")
+            .id_salt("quantise hits")
+            .default_open(warp.quantise.is_none())
+            .show(ui, |ui| {
+                quantise_hits_form(ui, id, edits);
+            });
+    }
     let pin_key = format!("pin transients {subject:?}");
     if crate::inline_result::recall(ui, &pin_key).is_some_and(|t| !t.is_empty()) {
         crate::inline_result::show(ui, &pin_key);

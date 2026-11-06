@@ -24,6 +24,7 @@ mod render_clip;
 pub mod replace;
 pub mod sample_set;
 mod stems;
+mod take_merge;
 mod transport_tempo;
 pub mod versions;
 pub use export::{ExportChoice, ExportSummary};
@@ -174,6 +175,10 @@ pub enum Edit {
     /// Pin the transients of a clip and the clips linked to it, at a
     /// sensitivity in percent.
     PinTransients(noodle_core::ClipId, u8),
+    /// Pin the transients of a clip and the clips linked to it, then
+    /// quantise them at a strength and join the slices, as one undo step
+    /// (see [`Session::quantise_transients`]).
+    QuantiseTransients(noodle_core::ClipId, u8, convert::QuantiseHits),
     /// Splits the clip a clip's stems came from again, at the chosen quality,
     /// and points the stem clips at the new files (see
     /// [`Session::resplit_stems`]). One undo step, when the job is done.
@@ -440,6 +445,9 @@ pub struct Session {
     armed_midi: BTreeSet<NodeId>,
     /// The take being recorded, if there is one.
     recording: Option<Recording>,
+    /// The take folders the last recording made or added to, and a count that
+    /// goes up with each, for the arrangement to open their take lanes.
+    opened_takes: (u64, Vec<ClipId>),
     /// A recording waiting out its count-in.
     counting_in: Option<CountIn>,
     /// Bars of metronome before a recording starts (0 to 2), and bars of the
@@ -793,6 +801,7 @@ impl Session {
             armed_audio: BTreeSet::new(),
             armed_midi: BTreeSet::new(),
             recording: None,
+            opened_takes: (0, Vec::new()),
             counting_in: None,
             count_in_bars: 0,
             pre_roll_bars: 0,
@@ -1722,6 +1731,10 @@ impl Session {
                 }
                 Edit::PinTransients(clip, percent) => {
                     self.pin_transients(clip, percent);
+                    continue;
+                }
+                Edit::QuantiseTransients(clip, percent, quantise) => {
+                    self.quantise_transients(clip, percent, quantise);
                     continue;
                 }
                 Edit::ResplitStems(clip) => {
@@ -3293,8 +3306,35 @@ impl Session {
             (self.project.next_warp_id(), warp)
         });
         let mut taken: Vec<ClipId> = Vec::new();
+        // A take that covers the stretch of a take folder joins it: its
+        // passes become more takes of that folder.
+        let mut combined = take_merge::Combined::new();
+        let mut joined = 0;
+        let mut separate = 0;
+        let mut warp_added = false;
+        let mut opened: Vec<ClipId> = Vec::new();
+        let single = [noodle_core::Take { delta: 0 }];
         for &track in &audio_tracks {
             if let (Some(take), Some(relative)) = (&take, &recording.relative) {
+                let skip = offset.min(take.frames.saturating_sub(1));
+                let window = match &folder {
+                    Some((_, _, window)) => *window,
+                    None => length.min(take.frames - skip).max(1),
+                };
+                let covers = take_merge::Recording {
+                    at: keep_from,
+                    relative,
+                    skip,
+                    window,
+                    takes: folder.as_ref().map_or(&single[..], |f| &f.0[..]),
+                };
+                if let Some((id, command)) = self.add_to_folder(track, &covers, &mut combined) {
+                    opened.push(id);
+                    joined = covers.takes.len();
+                    commands.push(command);
+                    continue;
+                }
+                separate += 1;
                 let mut clip = match &folder {
                     Some((_, _, window)) => {
                         recorded_clip(track, keep_from, relative, take.frames, offset, *window)
@@ -3310,7 +3350,8 @@ impl Session {
                 if let (Some((id, warp)), noodle_core::ClipContent::Audio(audio)) =
                     (&warp, &mut clip.content)
                 {
-                    if commands.is_empty() {
+                    if !warp_added {
+                        warp_added = true;
                         commands.push(Command::AddWarp {
                             id: *id,
                             warp: warp.clone(),
@@ -3320,6 +3361,9 @@ impl Session {
                 }
                 let id = self.project.new_clip_id();
                 taken.push(id);
+                if folder.is_some() {
+                    opened.push(id);
+                }
                 commands.push(Command::AddClip { id, clip });
             }
         }
@@ -3355,6 +3399,7 @@ impl Session {
                 }
                 let id = self.project.new_clip_id();
                 taken.push(id);
+                opened.push(id);
                 commands.push(Command::AddClip { id, clip });
             }
         }
@@ -3369,7 +3414,28 @@ impl Session {
             });
         }
         self.edit([Edit::Apply(Command::Batch(commands))]);
-        if let (Some(relative), Some(take)) = (&recording.relative, &take) {
+        // The takes of what was just recorded are what is wanted next, to
+        // swipe from.
+        if !opened.is_empty() {
+            self.opened_takes = (self.opened_takes.0 + 1, opened);
+        }
+        if joined > 0 && separate == 0 {
+            // Everything of the take is in the combined file.
+            if let Some(done) = &take {
+                let _ = std::fs::remove_file(&done.path);
+            }
+        }
+        if joined > 0 {
+            notices.push(format!(
+                "Added {joined} take{} to the take folder{}",
+                if joined == 1 { "" } else { "s" },
+                if separate > 0 {
+                    " (other tracks got clips of their own)"
+                } else {
+                    ""
+                }
+            ));
+        } else if let (Some(relative), Some(take)) = (&recording.relative, &take) {
             let count = folder
                 .as_ref()
                 .map_or(String::new(), |f| format!(" as {} takes", f.0.len()));
@@ -3385,6 +3451,12 @@ impl Session {
             notices.push(format!("Recorded MIDI as {} takes", passes.len()));
         }
         self.message = Some(notices.join("; "));
+    }
+
+    /// The take folders the last recording made or added to, and a count that
+    /// changes with each recording, so a view can open their take lanes once.
+    pub fn opened_takes(&self) -> (u64, &[ClipId]) {
+        (self.opened_takes.0, &self.opened_takes.1)
     }
 
     /// Clips the track inputs couldn't play, with the reason. Empty while
@@ -6247,8 +6319,98 @@ mod tests {
         let ids: Vec<_> = clips.iter().map(|(id, _)| *id).collect();
         assert_eq!(session.project().linked_with(ids[0]), ids);
         assert!(session.message().unwrap().contains("4 takes"));
+        assert_eq!(session.opened_takes(), (1, &ids[..]));
         session.undo();
         assert_eq!(session.project().clips().count(), 0);
+    }
+
+    #[test]
+    fn recording_again_over_a_take_folder_adds_takes_to_it() {
+        const CYCLE: usize = 24_000;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 2);
+        session.arm(tracks[0], true);
+        session.arm(tracks[1], true);
+        session.set_loop(LoopRegion {
+            on: true,
+            start: Tick(0),
+            end: Tick(960),
+        });
+        let level =
+            |base: f32| move |i: usize| (i / CYCLE) as f32 * 0.1 + base + (i % CYCLE) as f32 * 1e-7;
+        session.record();
+        feed(&mut tap, 2 * CYCLE + CYCLE / 2, level(0.1));
+        session.stop_recording();
+        let before = session.project().clone();
+        assert_eq!(before.clips().count(), 2);
+        // Again over the same bar: two cycles and a half, so three takes.
+        session.record();
+        feed(&mut tap, 2 * CYCLE + CYCLE / 2, level(0.5));
+        session.stop_recording();
+
+        let clips: Vec<_> = session.project().clips().collect();
+        assert_eq!(clips.len(), 2, "{:?}", session.message());
+        for (_, clip) in &clips {
+            let audio = clip.as_audio().unwrap();
+            let folder = audio.takes.as_ref().unwrap();
+            assert_eq!(folder.takes.len(), 6);
+            // The comp is as it was.
+            assert_eq!(folder.comp.len(), 1);
+            assert_eq!(folder.comp[0].take, 1);
+            // Every take, old and new, is its cycle's samples.
+            let file = noodle_io::read_wav(&dir.path().join(&audio.source)).unwrap();
+            for (k, take) in folder.takes.iter().enumerate() {
+                let expect = if k < 3 {
+                    0.1 + k as f32 * 0.1
+                } else {
+                    0.5 + (k - 3) as f32 * 0.1
+                };
+                let at = (audio.offset + take.delta) as usize + 100;
+                assert!(
+                    (file.samples[at] - (expect + 100.0 * 1e-7)).abs() < 1e-6,
+                    "take {k}"
+                );
+            }
+        }
+        assert!(session.message().unwrap().contains("Added 3 takes"));
+        // The folders are opened for swiping: the same two clips as before.
+        let (count, opened) = session.opened_takes();
+        assert_eq!(count, 2);
+        let ids: Vec<_> = clips.iter().map(|(id, _)| *id).collect();
+        assert_eq!(opened, ids);
+        // The old file is still there for undo, and one undo puts the folders
+        // back.
+        session.undo();
+        assert_eq!(session.project().clips().count(), 2);
+        for ((_, a), (_, b)) in session.project().clips().zip(before.clips()) {
+            assert_eq!(a, b);
+        }
+    }
+
+    #[test]
+    fn a_recording_over_a_different_stretch_is_its_own_clip() {
+        const CYCLE: usize = 24_000;
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, mut tap, tracks) = recording_session(dir.path(), 1);
+        session.arm(tracks[0], true);
+        session.set_loop(LoopRegion {
+            on: true,
+            start: Tick(0),
+            end: Tick(960),
+        });
+        session.record();
+        feed(&mut tap, 2 * CYCLE + CYCLE / 2, |_| 0.1);
+        session.stop_recording();
+        // The loop is two beats now, so the stretch is not the same.
+        session.set_loop(LoopRegion {
+            on: true,
+            start: Tick(0),
+            end: Tick(1920),
+        });
+        session.record();
+        feed(&mut tap, 4 * CYCLE + CYCLE / 2, |_| 0.2);
+        session.stop_recording();
+        assert_eq!(session.project().clips().count(), 2);
     }
 
     #[test]

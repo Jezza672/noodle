@@ -763,3 +763,91 @@ fn shift_dragging_a_range_picks_its_points_and_dragging_one_moves_them_all() {
     assert_eq!(moved(3), 0.0);
     assert_eq!(after.points[1].tick, before.points[1].tick);
 }
+
+fn press_tool(h: &mut H, name: &str) {
+    h.get_by_label(name).click();
+    h.run();
+}
+
+#[test]
+fn the_draw_tool_paints_a_curve_in_one_undo_step() {
+    let (mut h, output) = rig();
+    let id = add_lane(
+        &mut h,
+        gain(output),
+        vec![point(0, -6.0, Curve::Linear), point(6, -6.0, Curve::Linear)],
+    );
+    assert_eq!(
+        h.state().timeline.automation().tool(),
+        super::automation::Tool::Edit
+    );
+    press_tool(&mut h, "Draw");
+    assert_eq!(
+        h.state().timeline.automation().tool(),
+        super::automation::Tool::Draw
+    );
+    assert!(
+        h.state()
+            .timeline
+            .automation()
+            .texts()
+            .contains(&"Drag to draw".to_string())
+    );
+    let before = h.state().session.project().clone();
+    // A ramp up over beats 1 to 3, then back down by beat 4.
+    let path: Vec<Pos2> = [(1.0, 0.1), (2.0, 0.5), (3.0, 0.9), (4.0, 0.2)]
+        .iter()
+        .map(|&(beat, along)| spot(&h, id, beat, along))
+        .collect();
+    testkit::drag(&mut h, Modifiers::NONE, &path);
+    let drawn = lane(&h, id).unwrap();
+    assert!(drawn.points.len() > 2, "{:?}", drawn.points);
+    // The first and last points outside the stroke stay.
+    assert_eq!(drawn.points.first().unwrap().tick, Tick(0));
+    assert_eq!(drawn.points.last().unwrap().tick, Tick(6 * 960));
+    let at = |beat: f64| drawn.value_at(beat * 960.0).unwrap();
+    assert!(
+        at(3.0) > at(2.0) && at(2.0) > at(1.0),
+        "{} {} {}",
+        at(1.0),
+        at(2.0),
+        at(3.0)
+    );
+    assert!(at(3.0) > at(4.0));
+    // One undo puts the lane back.
+    h.state_mut().session.undo();
+    h.run();
+    assert_eq!(h.state().session.project().lane(id), before.lane(id));
+}
+
+#[test]
+fn the_pick_tool_picks_a_span_and_the_menu_cuts_it() {
+    let (mut h, output) = rig();
+    let id = add_lane(
+        &mut h,
+        gain(output),
+        vec![
+            point(0, -6.0, Curve::Linear),
+            point(2, -3.0, Curve::Linear),
+            point(3, -2.0, Curve::Linear),
+            point(5, -6.0, Curve::Linear),
+        ],
+    );
+    press_tool(&mut h, "Pick");
+    // A plain drag over empty space (no Shift) picks beats 1.5 to 3.5.
+    let from = spot(&h, id, 1.5, 0.05);
+    let to = spot(&h, id, 3.5, 0.05);
+    testkit::drag(&mut h, Modifiers::NONE, &[from, to]);
+    assert_eq!(lane(&h, id).unwrap().points.len(), 4);
+    let menu_at = spot(&h, id, 1.0, 0.05);
+    testkit::click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, menu_at);
+    h.run();
+    h.get_by_label("Cut").click();
+    h.run();
+    let after = ticks(&h, id);
+    assert!(
+        !after.contains(&(2 * 960)) && !after.contains(&(3 * 960)),
+        "{after:?}"
+    );
+    assert!(after.contains(&0) && after.contains(&(5 * 960)));
+}

@@ -161,13 +161,9 @@ fn steps(h: &mut Handle, _size: usize) {
     let engine = h.find("Audio");
     h.drag_playing(&[engine]);
     h.probe().settle();
+    // The recording opens its take lanes, one under another, to swipe from.
     let id = folder_id(h);
-    h.step("open the takes");
     h.probe().settle();
-    let at = h.clip_rect(id).center();
-    h.right_click(at);
-    let show = h.find("Show takes");
-    h.click(show, egui::Modifiers::NONE);
     h.step("swipe the first phrase from take 4");
     swipe(h, id, 3, 0.0, 0.5);
     h.step("swipe the second phrase from take 7");
@@ -200,9 +196,13 @@ fn repicked(p: &mut Probe, _size: usize) -> Result<(), String> {
     Ok(())
 }
 
-/// Records again over the loop, the way the first eight passes were. The
-/// virtual input starts its file again when the engine opens.
+/// Records again over the loop, the way the first eight passes were: from the
+/// start of the bar, so the takes cover the folder's stretch. The virtual
+/// input starts its file again when the engine opens.
 fn ninth(h: &mut Handle, _size: usize) {
+    h.step("go back to the start");
+    let rewind = h.find("⏮");
+    h.drag_playing(&[rewind]);
     h.step("record another take");
     let record = h.find("⏺");
     h.drag_playing(&[record]);
@@ -221,11 +221,23 @@ fn ninth(h: &mut Handle, _size: usize) {
 }
 
 fn ninth_done(p: &mut Probe, _size: usize) -> Result<(), String> {
-    // The app does not yet add a recording to the folder it records over
-    // (a new clip holds it), so the take is counted as a second clip.
+    // The recording covers the same bar as the folder, so its passes are
+    // more takes of that folder, not a clip of their own.
     let n = audio_clips(p.project());
-    if n < 2 {
-        return Err(format!("{n} audio clip after recording again"));
+    if n != 1 {
+        return Err(format!(
+            "{n} audio clips after recording again, wanted one folder"
+        ));
+    }
+    let (_, clip) = folder(p.project());
+    let takes = clip
+        .as_audio()
+        .and_then(|a| a.takes.as_ref())
+        .map_or(0, |t| t.takes.len());
+    if takes <= TAKES as usize {
+        return Err(format!(
+            "the folder has {takes} takes after recording again"
+        ));
     }
     Ok(())
 }

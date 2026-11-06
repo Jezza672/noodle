@@ -1,18 +1,18 @@
 //! S04: tighten a multitrack drum recording.
 //!
 //! Partial. Two mics (a close one and the overheads, a few milliseconds
-//! later) are linked clips, so they share one warp. Select a clip, Warp, Pin
-//! transients (one marker per hit across the link, the hits the mics hear
-//! apart merged) from the clip's menu. Quantise (the 16th grid at 70% is the
-//! panel's grid and amount, with regions for the fill) and the warp mode
-//! Slices, which cuts every mic at the shared markers so they stay in phase
-//! and crossfades overlaps, are set in the clip panel, which a route cannot
-//! reach for a linked pair yet (the panel shows for one selected clip).
+//! later) are linked clips, so they share one warp. Right-click a clip and
+//! "Quantise transients…" pins one marker per hit across the link (the hits
+//! the mics hear apart merged), pulls them onto the 16th grid at a strength
+//! (70% here) and joins the slices by crossfading them (Slices mode, which cuts
+//! every mic at the shared markers so they stay in phase), as one undo step.
+//! The markers are drawn on the clips. What is still missing is the quantise
+//! regions for a fill, which are edited in the panel, not on the clip.
 //!
-//! The done check covers the pinning only: the clips share one warp, and its
-//! markers sit on the hits (one per hit across both mics), not just somewhere.
-//! Whether the hits then move to the grid is not checked until quantise is
-//! routed.
+//! The done check covers the pinning (the clips share one warp, and its
+//! markers sit on the hits, one per hit across both mics, not just somewhere)
+//! and the quantise: on, at the grid and strength asked for, in Slices mode.
+//! A late change turns the strength down and fills the gaps instead.
 
 use std::path::Path;
 
@@ -21,7 +21,7 @@ use noodle_core::{Clip, Command, Node, Project, Tick};
 use noodle_nodes::TRACK_INPUT_ID;
 
 use super::super::handle::{Handle, Probe};
-use super::super::{Route, Tag};
+use super::super::{Keep, LateChange, Route, Tag};
 use super::{finished, virtual_session};
 use crate::app::App;
 use crate::session::Edit;
@@ -72,12 +72,22 @@ fn first_clip(p: &Project) -> noodle_core::ClipId {
 }
 
 fn steps(h: &mut Handle, _size: usize) {
-    h.step("pin the hits across both mics");
+    h.step("quantise the hits across both mics");
     let id = first_clip(h.probe().project());
     let at = h.clip_rect(id).center();
     h.right_click(at);
-    let pin = h.find("Pin transients");
-    h.click(pin, Modifiers::NONE);
+    let quantise = h.find_like("Quantise transients");
+    h.click(quantise, Modifiers::NONE);
+    h.probe().settle();
+    // The strength starts at 100 %; dragging its number left turns it down.
+    let strength = h.field_after("Strength");
+    h.drag_between(
+        Modifiers::NONE,
+        strength,
+        strength - egui::Vec2::new(60.0, 0.0),
+    );
+    let go = h.find("Quantise hits");
+    h.click(go, Modifiers::NONE);
     h.probe().settle();
 }
 
@@ -106,7 +116,66 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
             return Err(format!("a marker at {:.3} s is not on a hit", m.seconds));
         }
     }
+    let quantise = warp.quantise.as_ref().ok_or("quantise is off")?;
+    if (quantise.grid, (quantise.amount * 100.0).round()) != (0.25, 70.0) {
+        return Err(format!(
+            "quantised to {} beats at {:.0} %, wanted the 16th grid at 70 %",
+            quantise.grid,
+            quantise.amount * 100.0
+        ));
+    }
+    if warp.mode != noodle_core::WarpMode::Slices {
+        return Err(format!("the warp mode is {:?}, wanted Slices", warp.mode));
+    }
     Ok(())
+}
+
+/// The strength and join, as one setting of the same action.
+fn loosen(h: &mut Handle, _size: usize) {
+    h.step("quantise again, half as hard, filling the gaps");
+    let id = first_clip(h.probe().project());
+    let at = h.clip_rect(id).center();
+    h.right_click(at);
+    let quantise = h.find_like("Quantise transients");
+    h.click(quantise, Modifiers::NONE);
+    h.probe().settle();
+    let strength = h.field_after("Strength");
+    h.drag_between(
+        Modifiers::NONE,
+        strength,
+        strength - egui::Vec2::new(70.0, 0.0),
+    );
+    let fill = h.find("Fill gaps by stretching");
+    h.click(fill, Modifiers::NONE);
+    let go = h.find("Quantise hits");
+    h.click(go, Modifiers::NONE);
+    h.probe().settle();
+}
+
+fn loosened(p: &mut Probe, _size: usize) -> Result<(), String> {
+    let id = first_clip(p.project());
+    let (_, warp) = p.project().warp_of(id).ok_or("the clips are not warped")?;
+    let quantise = warp.quantise.as_ref().ok_or("quantise is off")?;
+    if (quantise.amount * 100.0).round() != 35.0 {
+        return Err(format!("the strength is {:.0} %", quantise.amount * 100.0));
+    }
+    if warp.mode != noodle_core::WarpMode::Beats {
+        return Err(format!("the warp mode is {:?}, wanted Beats", warp.mode));
+    }
+    Ok(())
+}
+
+fn marker_times(p: &Project) -> String {
+    let id = first_clip(p);
+    p.warp_of(id).map_or(String::new(), |(_, w)| {
+        format!(
+            "{:?}",
+            w.markers
+                .iter()
+                .map(|m| (m.seconds * 1000.0).round())
+                .collect::<Vec<_>>()
+        )
+    })
 }
 
 pub fn route() -> Route {
@@ -118,6 +187,14 @@ pub fn route() -> Route {
         size: None,
         steps,
         done,
-        late: &[],
+        late: &[LateChange {
+            name: "quantise again, half as hard, filling the gaps",
+            steps: loosen,
+            done: loosened,
+            keep: &[Keep {
+                name: "the pinned hits",
+                of: marker_times,
+            }],
+        }],
     }
 }

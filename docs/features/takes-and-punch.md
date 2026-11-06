@@ -81,6 +81,23 @@ pre-roll, punch refused past its range, the count-in waiting and cancelling).
 - **Joins.** While the lanes are open each audio join has a handle on the clip;
   dragging it widens or narrows the crossfade (symmetric), on every linked
   folder, as one undo step (`comp::set_join`).
+- **Recording again over a folder (#375).** A recording that starts where an
+  audio take folder on the same track starts and is as long as its window
+  (record from the start of the loop again) adds its passes to that folder as
+  new takes, as part of the same `Batch`, instead of making a clip of its own
+  (`session/take_merge.rs`). Takes are windows into one file, so the folder's
+  file and the new recording are written out together as a new `take-NNN.wav`,
+  the old file first so every `offset` and the warp still point at the same
+  audio, and the folder's clip names it; the old file stays for undo. The comp
+  is left as it was. A recording over a different stretch, or in a different
+  sample rate or channel count, is a clip of its own as before. The new takes
+  play through the folder's existing warp, so if the tempo map changed between
+  the passes they are warped with the old one.
+- **Lanes open themselves (#423).** A recording that makes a take folder, or adds
+  takes to one, opens its take lanes (`Session::opened_takes`,
+  `takes::State::open_recorded`), so the takes to swipe from are on screen as
+  soon as recording stops; "Show takes" in the folder's menu still opens and
+  closes them.
 - **MIDI takes.** A loop recording of MIDI makes a take per pass when the
   Takes or Merge setting (in the Q dropdown, an app preference) says Takes,
   and one merged clip when it says Merge. A MIDI take folder is a `MidiClip`
@@ -93,7 +110,8 @@ renders the swiped take, in one undo step; linked folders with different windows
 join crossfade on every link; MIDI swipe, hand edit drops takes, flatten),
 `midi_take.rs` (passes become takes; a sliver is dropped; a silent pass is
 empty), the take lanes' gestures in `timeline/tests.rs`, and `session.rs` (a
-loop recording comped by swipes plays and exports the comp's samples).
+loop recording comped by swipes plays and exports the comp's samples; recording
+again over a folder adds takes to it, and over another stretch does not).
 
 **Not done.** Starting a loop recording from outside the loop; a loop recording
 that starts partway through the loop does not keep the earlier part of the later

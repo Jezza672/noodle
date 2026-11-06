@@ -20,6 +20,8 @@ pub const LANE: f32 = 36.0;
 pub struct State {
     /// The take folders whose takes are shown.
     pub shown: BTreeSet<ClipId>,
+    /// The count of the session's last recording whose folders were opened.
+    opened: u64,
     swipe: Option<Swipe>,
     join: Option<(ClipId, usize)>,
 }
@@ -39,6 +41,15 @@ pub fn count(clip: &Clip) -> Option<usize> {
 }
 
 impl State {
+    /// Opens the lanes of the take folders a recording has just made or
+    /// added to, once.
+    pub fn open_recorded(&mut self, session: &crate::session::Session) {
+        let (count, folders) = session.opened_takes();
+        if count != self.opened {
+            self.opened = count;
+            self.shown.extend(folders.iter().copied());
+        }
+    }
     /// How many take lanes each of `tracks` shows: the most of any of its
     /// open folders.
     pub fn lanes(&self, project: &Project, tracks: &[noodle_core::NodeId]) -> Vec<usize> {

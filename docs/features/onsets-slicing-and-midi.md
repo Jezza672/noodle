@@ -33,6 +33,18 @@ to MIDI). The three share one onset detector with one sensitivity scale.
   `ClipWarp::pin_transients` pins a marker on the hits of every clip in a link
   where they play now; hits within `PIN_MERGE` (5 ms) are one, the earliest
   standing for them.
+- **Quantise transients (#430)** (clip menu, a submenu, and a section of the clip
+  panel): `Edit::QuantiseTransients` pins the hits that have no marker yet, turns
+  warp quantise on at a grid and a strength (0 to 100 %), and sets how the slices
+  join, as one undo step (`Session::quantise_transients`). The join is a choice
+  of warp mode: **Crossfade slices** is Slices (each slice at its natural speed
+  where its hit now is, overlaps crossfaded, a gap after a slice that moved
+  early left silent once the slice has run on), **Fill gaps by stretching** is
+  Beats (the audio between two hits stretched or squeezed to fill the space), or
+  leave the mode. Nothing in the sound code is new; the strength stays editable
+  as the panel's Amount. The markers are drawn on the clip in the arrangement
+  (`timeline/pins.rs`: a line and a flag where each pinned moment plays now, so
+  with quantise on they sit at the moved places).
 - **Quantise regions** (`WarpQuantise::regions`, edited in the clip panel):
   stretches of the clip with their own grid and amount (triplets for a fill,
   amount 0 to leave a bar alone). The groove is not applied inside one.
