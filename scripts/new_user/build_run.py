@@ -193,11 +193,12 @@ def main() -> None:
 2. Give the agent `{private}/prompt.md` as its whole prompt (it needs a shell,
    and a way to look at PNG files if it can see images). Give it nothing else,
    and run it from an empty directory, not a checkout. With Claude Code,
-   `scripts/new_user/run_claude.sh {out}` does this contained (only ctl.sh and
-   the screenshots are allowed) and audits the transcript. With any other
-   runner, the agent is only asked not to read other files: afterwards run
-   `scripts/new_user/audit.py {out} <transcript.jsonl>` if the transcript has
-   the same shape, or note by hand if it strayed.
+   `scripts/new_user/run_agent.sh {out} <runner> [model]` does this with a
+   runner (`claude` is contained: only ctl.sh and the screenshots are allowed;
+   `command` runs any command you give). Where the runner can't contain the
+   agent it is only asked not to read other files: check the transcript, with
+   `scripts/new_user/audit.py {out} <transcript.jsonl>` if it is Claude Code
+   stream-json, or by hand.
 3. When the agent ends (it says finish or giveup, or runs out of actions),
    `{private}/result.json` holds whether the story's done check passed.
    `{private}/log.jsonl` has every command, what it hit, and the agent's notes.

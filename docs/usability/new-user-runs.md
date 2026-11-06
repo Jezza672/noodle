@@ -62,12 +62,22 @@ start state is the route's fixture, so the done check is the route's.
 A subagent made with the Agent tool inherits the repo as its working directory
 and all tools, so "only use ctl.sh" is only a request there. Two things help:
 
-- **`scripts/new_user/run_claude.sh <run folder> [model]`** starts the app and
-  runs Claude Code (Haiku by default) from an empty directory with only the
-  Bash and Read tools, only `bash .../ctl.sh ...` and the run's screenshots
-  allowed, and everything else denied. It then audits the transcript.
+- **`scripts/new_user/run_agent.sh <run folder> <runner> [model]`** starts the
+  app, runs the agent from an empty directory, stops the app, audits the
+  transcript if there is one, and prints the summary. It is not tied to any
+  model or tool: the runner (a script in `scripts/new_user/runners/`) is the
+  only part that knows the tool. It gets the prompt file and `ctl.sh` in
+  `NOODLE_PROMPT`, `NOODLE_CTL`, `NOODLE_AGENT`, `NOODLE_MODEL`, and writes a
+  transcript to `NOODLE_TRANSCRIPT`.
+  - `claude` runs Claude Code (Haiku by default), contained: only the Bash and
+    Read tools, only `bash .../ctl.sh ...` and the run's screenshots allowed,
+    everything else denied.
+  - `command` runs whatever you put in `NOODLE_AGENT_CMD`, the prompt on its
+    standard input. Nothing is contained, so the agent is only asked.
+  - For any other tool, copy `runners/command.sh` and call its CLI, ideally
+    with an allow-list like `claude.sh` has.
 - **`scripts/new_user/audit.py <run folder> [transcript.jsonl]`** reads a Claude
-  Code stream-json transcript and writes `private/audit.json`: any call that is
+  Code stream-json transcript (the shape `claude.sh` writes) and writes `private/audit.json`: any call that is
   not exactly one `ctl.sh` command or a screenshot read is listed as stray, and
   the run is marked **contaminated**. A contaminated run says what the agent
   could have found, not what a newcomer finds: rerun it. For another runner,
