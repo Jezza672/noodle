@@ -14,7 +14,7 @@
 //! | Drag from a socket | Connect; from a connected input, pick the wire up |
 //! | Ctrl+right-drag | Cut the wires crossed |
 //! | Shift+right-drag | Add a reroute on each wire crossed |
-//! | Shift+A | Search for a node to add |
+//! | Shift+A, right-click or double-click on empty canvas | Search for a node to add |
 //! | X, Delete, Backspace | Delete the selection, or the selected cable (click a cable to select it) |
 //! | Double-click a wire | Break it |
 //! | Ctrl/Cmd+C, X, V | Copy, cut and paste the selection, at the pointer |
@@ -446,6 +446,12 @@ impl EditorState {
         self.active = self.selected.iter().next_back().copied();
         self.selected_frames.clear();
         self.selected_wire = None;
+    }
+
+    /// Whether the add-node search is open.
+    #[cfg(test)]
+    pub(crate) fn is_searching(&self) -> bool {
+        self.search.is_some()
     }
 
     pub fn has_selection(&self) -> bool {
@@ -887,7 +893,8 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
 
     if f.scene.nodes.is_empty() && f.scene.frames.is_empty() {
         let hint = egui::Label::new(
-            egui::RichText::new("No nodes yet. Shift+A adds one.").color(theme::editor::TEXT_WEAK),
+            egui::RichText::new("No nodes yet. Right-click or press Shift+A to add one.")
+                .color(theme::editor::TEXT_WEAK),
         )
         .selectable(false);
         ui.put(
@@ -1307,6 +1314,14 @@ fn pointer(
                 _ => None,
             });
     }
+    // Right-click on empty canvas opens the same Add search as Shift+A, as
+    // double-click does below.
+    if response.secondary_clicked()
+        && let Some(p) = latest
+        && matches!(hit(f, p), Hit::Nothing)
+    {
+        open_add_search(state, f, p);
+    }
     let port = state.port_menu.clone();
     let monitor = state.monitor_menu;
     let monitored = state.monitored.clone();
@@ -1482,6 +1497,8 @@ fn pointer(
             Hit::Nothing => {
                 if let Some(wire) = wire_at(f, p) {
                     edits.push(Edit::Apply(wire.cut()));
+                } else {
+                    open_add_search(state, f, p);
                 }
             }
             // Any other node: the app opens its own window if it has one
@@ -2338,6 +2355,11 @@ fn click(state: &mut EditorState, f: &Frame_<'_>, p: Pos2, modifiers: Modifiers)
     }
 }
 
+/// Opens the add-node search at the screen point `at`.
+fn open_add_search(state: &mut EditorState, f: &Frame_<'_>, at: Pos2) {
+    state.search = Some(Search::new(f.t.to_graph(at), at, state.group.is_some()));
+}
+
 fn keyboard(
     ui: &egui::Ui,
     state: &mut EditorState,
@@ -2368,11 +2390,7 @@ fn keyboard(
         ui.ctx().request_repaint();
     }
     if pressed(Modifiers::SHIFT, Key::A) {
-        state.search = Some(Search::new(
-            f.t.to_graph(pointer),
-            pointer,
-            state.group.is_some(),
-        ));
+        open_add_search(state, f, pointer);
     }
     // Backspace too: it's the key a Mac calls Delete.
     // Every key is checked, so each press is consumed.

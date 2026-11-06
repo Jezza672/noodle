@@ -1,0 +1,8 @@
+{
+  "S12": [
+    {
+      "clue": "Noodle has a node made for loading a whole folder of recordings at once, and it reads each note from the file names. It is among the instruments in the Add menu (Shift+A over the node canvas).",
+      "why": "Run 2 (zero docs) gave up after building a multisampler by hand from a Note Split and single Samplers; it never found the Sample Set. Run 1 found it by searching \"sampl\"."
+    }
+  ]
+}

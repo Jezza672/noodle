@@ -23,6 +23,7 @@ mod mixer;
 mod outputs;
 mod pattern_panel;
 mod piano_roll;
+mod picker;
 mod pill_buttons;
 mod plugin_browser;
 mod prefs;

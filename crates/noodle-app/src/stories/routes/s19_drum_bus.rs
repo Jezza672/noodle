@@ -181,12 +181,18 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
     if !feeds(project, snare, &Endpoint::new(bus, "in2")) {
         return Err("the snare does not reach the drum bus".into());
     }
-    let fader = gain_after(project, bus)?;
-    if feeds_node(project, bus, master) {
-        return Err("the drum bus bypasses its Gain fader".into());
-    }
-    if !feeds_node(project, fader, master) {
-        return Err("the drum bus Gain does not reach the master".into());
+    // A fader after the bus is how the route mixes it, not what the story
+    // asks for. With one, the send must not come from after it.
+    let fader = gain_after(project, bus).ok();
+    if let Some(fader) = fader {
+        if feeds_node(project, bus, master) {
+            return Err("the drum bus bypasses its Gain fader".into());
+        }
+        if !feeds_node(project, fader, master) {
+            return Err("the drum bus Gain does not reach the master".into());
+        }
+    } else if !super::patch::reaches(project, bus, master) {
+        return Err("the drum bus does not reach the master".into());
     }
     let dynamics = sidechain_dynamics(project)?;
     if !feeds(project, kick, &Endpoint::new(dynamics, "sidechain")) {
@@ -199,7 +205,7 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
     if !feeds(project, bus, &Endpoint::new(parallel, "in1")) {
         return Err("the send does not come from the drum bus before its fader".into());
     }
-    if feeds_node(project, fader, parallel) {
+    if fader.is_some_and(|f| feeds_node(project, f, parallel)) {
         return Err("the send comes from after the drum bus fader".into());
     }
     hard(project, squash)?;
@@ -305,7 +311,7 @@ fn hard(p: &Project, squash: NodeId) -> Result<(), String> {
 
 fn reaches_master(p: &Project, node: NodeId) -> Result<(), String> {
     let master = master(p)?;
-    if feeds_node(p, node, master) {
+    if super::patch::reaches(p, node, master) {
         Ok(())
     } else {
         Err("the parallel bus does not reach the master".into())

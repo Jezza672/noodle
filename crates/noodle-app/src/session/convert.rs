@@ -15,7 +15,7 @@ use noodle_nodes::{
 const SYNTH: &str = "system:template:mono-synth";
 
 /// How readily Convert to MIDI hears a note, as the menu offers it.
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Detect {
     /// Fewer notes: only clear, loud pitches.
     Clean,

@@ -8,6 +8,11 @@
 //! Slices, which cuts every mic at the shared markers so they stay in phase
 //! and crossfades overlaps, are set in the clip panel, which a route cannot
 //! reach for a linked pair yet (the panel shows for one selected clip).
+//!
+//! The done check covers the pinning only: the clips share one warp, and its
+//! markers sit on the hits (one per hit across both mics), not just somewhere.
+//! Whether the hits then move to the grid is not checked until quantise is
+//! routed.
 
 use std::path::Path;
 
@@ -92,6 +97,14 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
     // pair count once.
     if !(5..=8).contains(&warp.markers.len()) {
         return Err(format!("{} markers pinned", warp.markers.len()));
+    }
+    // The kicks fall every 0.6 s from 0, the overheads 3 ms later. A marker
+    // anywhere else is not on a hit.
+    for m in &warp.markers {
+        let off = (m.seconds / 0.6 - (m.seconds / 0.6).round()).abs() * 0.6;
+        if off > 0.01 {
+            return Err(format!("a marker at {:.3} s is not on a hit", m.seconds));
+        }
     }
     Ok(())
 }

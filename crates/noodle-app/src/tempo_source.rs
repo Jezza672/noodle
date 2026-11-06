@@ -34,7 +34,7 @@ impl TempoSource {
 
     pub fn label(self) -> &'static str {
         match self {
-            Self::Map => "Map",
+            Self::Map => "Tempo map",
             Self::Tap => "Tap",
             Self::MidiClock => "MIDI clock",
         }

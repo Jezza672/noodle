@@ -35,7 +35,7 @@ mod s27_clip_launching;
 mod s28_setlist;
 mod s29_organise;
 mod s30_freeze;
-mod tripwire;
+pub mod tripwire;
 
 use std::path::Path;
 

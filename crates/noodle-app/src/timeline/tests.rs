@@ -1609,6 +1609,21 @@ fn the_header_menu_deletes_a_track() {
     assert!(h.state().session.project().graph().node(group).is_none());
 }
 
+#[test]
+fn right_clicking_the_track_name_opens_the_same_menu_with_freeze() {
+    let (mut h, _) = rig();
+    let (group, _, _) = add_real_track(&mut h);
+    let on_name = Pos2::new(
+        40.0,
+        8.0 + super::colors::RULER_HEIGHT + 2.0 * super::colors::LANE_HEIGHT + 10.0,
+    );
+    click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, on_name);
+    h.get_by_label("Delete track");
+    h.get_by_label("Freeze track").click();
+    h.run();
+    assert!(h.state().session.project().is_frozen(group));
+}
+
 fn header_y(index: usize) -> f32 {
     8.0 + super::colors::RULER_HEIGHT + index as f32 * super::colors::LANE_HEIGHT + 20.0
 }

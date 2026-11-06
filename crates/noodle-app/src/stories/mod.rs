@@ -14,6 +14,7 @@
 //! **A PR that changes how a story is done updates its route in the same
 //! PR.**
 
+mod agent;
 mod effort;
 mod feedback;
 mod handle;
@@ -108,7 +109,13 @@ pub struct Outcome {
     pub failure: Option<String>,
 }
 
-fn window(mut app: App) -> AppHarness {
+fn window(app: App) -> AppHarness {
+    window_with(app, false)
+}
+
+/// [`window`], drawing with the GPU (or its software stand-in) when `render`
+/// is set, so that `Harness::render` can take a screenshot.
+fn window_with(mut app: App, render: bool) -> AppHarness {
     // Renders go next to the route's project, not in the user's cache folder:
     // a route that listens must not hear what an earlier run, or another
     // route's session, left there (entries are keyed by content, not by
@@ -123,9 +130,11 @@ fn window(mut app: App) -> AppHarness {
     }
     // While audio plays the app keeps repainting, so settle a few frames
     // rather than `run` until it stops.
-    let mut h = Harness::builder()
-        .with_size(Vec2::new(1280.0, 800.0))
-        .build_ui_state(|ui, app: &mut App| app.show(ui), app);
+    let mut builder = Harness::builder().with_size(Vec2::new(1280.0, 800.0));
+    if render {
+        builder = builder.wgpu();
+    }
+    let mut h = builder.build_ui_state(|ui, app: &mut App| app.show(ui), app);
     h.run_steps(3);
     h
 }
@@ -414,7 +423,63 @@ mod tests {
             );
             report::write(Path::new(&dir), &scores, &words).expect("the scorecard is written");
         }
+        // A blocked story's goal cannot be reached, so its route must fail,
+        // and with the tripwire's own message: any other failure, or a pass,
+        // means the registry or the route is out of date.
+        failures.retain(|f| {
+            let id = f.split(' ').next().unwrap_or_default();
+            let blocked = registry::STORIES
+                .iter()
+                .any(|s| s.id == id && s.status == registry::Status::Blocked);
+            !(blocked && f.contains(routes::tripwire::BLOCKED))
+        });
+        for story in registry::STORIES
+            .iter()
+            .filter(|s| s.status == registry::Status::Blocked)
+        {
+            let ran = scores.iter().any(|s| s.story == story.id);
+            let passed = scores.iter().any(|s| s.story == story.id && s.passed);
+            assert!(
+                !passed,
+                "{} is blocked but its route passed: update the registry",
+                story.id
+            );
+            assert!(
+                ran || only.is_some(),
+                "{} is blocked and has no route",
+                story.id
+            );
+        }
         assert!(failures.is_empty(), "{}", failures.join("\n"));
+    }
+
+    /// A done check must fail when the route did nothing: it is what tells a
+    /// finished story from an agent that gave up. Routes whose fixture
+    /// already holds the goal would make the scorecard lie.
+    #[test]
+    fn every_done_check_fails_on_an_untouched_project() {
+        let only = std::env::var("NOODLE_ROUTE").ok();
+        let mut vacuous = Vec::new();
+        for route in routes::all() {
+            if route.story == "S00" || only.as_deref().is_some_and(|s| s != route.story) {
+                continue;
+            }
+            let dir = tempfile::tempdir().expect("a scratch directory");
+            crate::prefs::init(dir.path().join("prefs.ron"));
+            let mut h = window((route.fixture)(dir.path()));
+            let n = route.size.unwrap_or(1);
+            let checked = catch_unwind(AssertUnwindSafe(|| {
+                (route.done)(&mut Probe::new(&mut h), n)
+            }));
+            if matches!(checked, Ok(Ok(()))) {
+                vacuous.push(format!("{} {}", route.story, route.name));
+            }
+        }
+        assert!(
+            vacuous.is_empty(),
+            "done checks that pass without any steps:\n{}",
+            vacuous.join("\n")
+        );
     }
 
     // --- the scorers, on small routes of their own ---

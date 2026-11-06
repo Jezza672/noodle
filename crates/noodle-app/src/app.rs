@@ -141,6 +141,15 @@ enum Focus {
     Graph,
 }
 
+/// What the palette can do to the selected audio clip.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SelectedClipAction {
+    SplitToStems,
+    SliceToSampler,
+    PinTransients,
+    ConvertToMidi(crate::session::convert::Detect),
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     New,
@@ -204,6 +213,11 @@ pub(crate) enum Action {
     DeleteSelection,
     /// Cuts, copies, pastes or duplicates arrangement clips.
     Clips(timeline::ClipAction),
+    /// Does an audio-clip action to the selected audio clip, so the
+    /// palette can reach what the clip's right-click menu and panel offer.
+    OnSelectedClip(SelectedClipAction),
+    /// Starts the project's list of mix versions, or adds one to it.
+    AddMixVersion,
     ArrangeNodes,
     /// Fits the node editor's view around the whole graph at this level.
     FitGraph,
@@ -316,6 +330,13 @@ impl App {
     #[cfg(test)]
     pub fn timeline(&self) -> &TimelineState {
         &self.timeline
+    }
+
+    /// The export dialog's ticks (see [`ExportDialog::ticked`]) and whether it is open.
+    #[cfg(test)]
+    pub fn export_ticks(&self) -> (bool, bool, Vec<String>) {
+        let (mixdown, groups) = self.export.ticked();
+        (self.export.is_open(), mixdown, groups)
     }
 
     #[cfg(test)]
@@ -1584,7 +1605,7 @@ impl App {
                     theme::timeline::TEXT
                 },
                 *on,
-                "Metronome".to_owned(),
+                "Metronome: click to turn the click on or off".to_owned(),
             ),
             metronome::Binding::Missing => (
                 theme::editor::TEXT_WEAK,
@@ -1640,16 +1661,42 @@ impl App {
     fn status_bar(&mut self, ui: &mut egui::Ui) {
         ui.horizontal(|ui| {
             let problems = self.session.diagnostics().len();
-            match problems {
-                0 => ui.weak("No problems"),
-                1 => ui.colored_label(ui.visuals().warn_fg_color, "1 problem"),
-                n => ui.colored_label(ui.visuals().warn_fg_color, format!("{n} problems")),
-            }
-            .on_hover_ui(|ui| {
-                for diagnostic in self.session.diagnostics() {
-                    ui.label(diagnostic.to_string());
+            let label = match problems {
+                0 => egui::Label::new(egui::RichText::new("No problems").weak()),
+                1 => egui::Label::new(
+                    egui::RichText::new("1 problem").color(ui.visuals().warn_fg_color),
+                ),
+                n => egui::Label::new(
+                    egui::RichText::new(format!("{n} problems")).color(ui.visuals().warn_fg_color),
+                ),
+            };
+            let response = if problems == 0 {
+                ui.add(label)
+            } else {
+                ui.add(label.sense(egui::Sense::click()))
+                    .on_hover_cursor(egui::CursorIcon::PointingHand)
+                    .on_hover_text("Click to list the problems")
+            };
+            if problems > 0 {
+                // Clicking the status lists the problems; picking one shows
+                // the node it is about.
+                let mut reveal = None;
+                egui::Popup::menu(&response).show(|ui| {
+                    for diagnostic in self.session.diagnostics() {
+                        let node = match &diagnostic.location {
+                            noodle_engine::Location::Node(id) => *id,
+                            noodle_engine::Location::Wire(endpoint) => endpoint.node,
+                        };
+                        if ui.button(diagnostic.to_string()).clicked() {
+                            reveal = Some(node);
+                            ui.close();
+                        }
+                    }
+                });
+                if let Some(node) = reveal {
+                    self.editor.reveal_top_level(node);
                 }
-            });
+            }
             let clips = self.session.clip_problems();
             if !clips.is_empty() {
                 ui.separator();
@@ -1897,7 +1944,7 @@ impl App {
                 self.editor = EditorState::default();
             }
             Action::Open => {
-                if let Some(path) = dialog().pick_file()
+                if let Some(path) = crate::picker::pick_file(("Noodle project", &["ron"]))
                     && self.session.load(&path)
                 {
                     self.editor = EditorState::default();
@@ -1911,7 +1958,8 @@ impl App {
             Action::SaveAs => {
                 let then = self.after_save.take();
                 let name = format!("{}.ron", self.session.name());
-                if let Some(path) = dialog().set_file_name(name).save_file()
+                if let Some(path) =
+                    crate::picker::save_file(&name, ("Noodle project", &["ron"]), None)
                     && self.session.save_as(&with_extension(path))
                     && let Some(then) = then
                 {
@@ -2113,6 +2161,46 @@ impl App {
                 Focus::Notes => self.piano_roll.request(action),
                 Focus::Graph => self.editor.request_clip(action),
             },
+            Action::AddMixVersion => {
+                let project = self.session.project();
+                let command = if project.versions().is_empty() {
+                    Ok(Command::SetVersions {
+                        names: crate::session::versions::STARTING_VERSIONS
+                            .iter()
+                            .map(|s| (*s).to_owned())
+                            .collect(),
+                        active: 0,
+                    })
+                } else {
+                    project
+                        .add_version_command(&format!("Version {}", project.versions().len() + 1))
+                };
+                match command {
+                    Ok(command) => self.session.edit([crate::session::Edit::Apply(command)]),
+                    Err(error) => self.session.notify(error.to_string()),
+                }
+            }
+            Action::OnSelectedClip(what) => {
+                match self.timeline.selected_audio_clip(self.session.project()) {
+                    Some(clip) => self.session.edit([match what {
+                        SelectedClipAction::SplitToStems => {
+                            crate::session::Edit::SplitToStems(clip)
+                        }
+                        SelectedClipAction::SliceToSampler => {
+                            crate::session::Edit::SliceToSampler(clip)
+                        }
+                        SelectedClipAction::PinTransients => {
+                            crate::session::Edit::PinTransients(clip, 50)
+                        }
+                        SelectedClipAction::ConvertToMidi(detect) => {
+                            crate::session::Edit::ConvertToMidi(clip, detect, None)
+                        }
+                    }]),
+                    None => self
+                        .session
+                        .notify("Select an audio clip in the arrangement first".to_string()),
+                }
+            }
             Action::DeleteSelection => {
                 if let Some(edit) = self.editor.delete_selection() {
                     self.session.edit([edit]);
@@ -2188,14 +2276,12 @@ impl App {
         // One file is a file to save; several go in a folder.
         let path = if choice.groups.is_empty() {
             let name = format!("{}.{}", self.session.name(), choice.format.extension());
-            let mut dialog = rfd::FileDialog::new().set_file_name(name);
-            if let Some(dir) = self.session.directory() {
-                dialog = dialog.set_directory(dir);
-            }
-            let Some(path) = dialog
-                .add_filter(choice.format.label(), &[choice.format.extension()])
-                .save_file()
-            else {
+            let dir = self.session.directory().map(std::path::Path::to_path_buf);
+            let Some(path) = crate::picker::save_file(
+                &name,
+                (choice.format.label(), &[choice.format.extension()]),
+                dir.as_deref(),
+            ) else {
                 self.export.declined();
                 return;
             };
@@ -2206,11 +2292,10 @@ impl App {
                 path
             }
         } else {
-            let mut dialog = rfd::FileDialog::new().set_title("Folder for the exported files");
-            if let Some(dir) = self.session.directory() {
-                dialog = dialog.set_directory(dir);
-            }
-            let Some(path) = dialog.pick_folder() else {
+            let dir = self.session.directory().map(std::path::Path::to_path_buf);
+            let Some(path) =
+                crate::picker::pick_folder_in("Folder for the exported files", dir.as_deref())
+            else {
                 self.export.declined();
                 return;
             };
@@ -2354,24 +2439,22 @@ impl App {
     }
 
     fn import_audio(&mut self, target: timeline::Target) {
-        let picked = rfd::FileDialog::new()
-            .add_filter("Audio", &["wav", "flac", "mp3", "ogg", "m4a", "aac"])
-            .pick_files();
+        let picked =
+            crate::picker::pick_files(("Audio", &["wav", "flac", "mp3", "ogg", "m4a", "aac"]));
         let Some(files) = picked else {
             return;
         };
         let added = timeline::import::import(&self.session, &files, target.track, target.at);
         if let Some(command) = added.command {
+            // The clip appearing is feedback enough, and an earlier notice
+            // ("Add a track before importing audio") is now out of date.
+            self.session.clear_message();
             self.session.edit([crate::session::Edit::Apply(command)]);
         }
         if let Some(notice) = added.notice {
             self.session.notify(notice);
         }
     }
-}
-
-fn dialog() -> rfd::FileDialog {
-    rfd::FileDialog::new().add_filter("Noodle project", &["ron"])
 }
 
 /// Adds `.ron` if the save dialog didn't.
@@ -2738,7 +2821,7 @@ mod tests {
     fn an_empty_project_says_so() {
         let mut harness = harness(empty());
         harness.run();
-        harness.get_by_label("No nodes yet. Shift+A adds one.");
+        harness.get_by_label("No nodes yet. Right-click or press Shift+A to add one.");
         harness.get_by_label("No problems");
         harness.get_by_label("▶");
     }
@@ -2920,7 +3003,7 @@ mod tests {
         harness.get_by_label("Export Audio");
         harness.get_by_label("Format");
         // Nothing to export in an empty project, and it says so.
-        harness.get_by_label("There is nothing to export yet");
+        harness.get_by_label("Nothing to export yet: the project has no clips, automation or tempo changes, so it has no length. Import or record a clip on a track, or set Part to Range and choose how many seconds to render from the graph.");
         harness.get_by_label("Close").click();
         harness.run();
         assert!(harness.query_by_label("Export Audio").is_none());

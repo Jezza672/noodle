@@ -13,7 +13,7 @@ use egui::{Modifiers, Pos2};
 
 use super::super::handle::{Handle, Probe};
 use super::super::{Keep, LateChange, Route, Tag};
-use super::patch::{Op, Ref, audible, check, find, nodes_of, run, seeded};
+use super::patch::{Op, Ref, audible, check, find, kind, nodes_of, run, seeded};
 use crate::app::App;
 use noodle_core::Project;
 
@@ -77,7 +77,7 @@ pub fn route() -> Route {
         size: None,
         steps: |h, _| run(h, BUILD),
         done: |p, _| {
-            check(p, BUILD)?;
+            shared(p)?;
             audible(p)
         },
         late: &[
@@ -116,6 +116,50 @@ pub fn route() -> Route {
             },
         ],
     }
+}
+
+/// The goal, whatever made it: at least three modulation sources (an LFO
+/// set to Random does as well as a Sample & Hold), each driving something,
+/// at least one of them driving several parameters on different devices.
+/// A Remap on the way is the source's own depth, so it is looked through.
+fn shared(p: &mut Probe) -> Result<(), String> {
+    let project = p.project();
+    let is_source = |k: &str| k.starts_with("mod.") || k == "events.pattern";
+    let mut sources = 0;
+    let mut shared_one = false;
+    for (id, _) in project.graph().nodes() {
+        if !is_source(&kind(project, id)) {
+            continue;
+        }
+        let mut targets = std::collections::HashSet::new();
+        let mut todo = vec![id];
+        let mut seen = std::collections::HashSet::new();
+        while let Some(n) = todo.pop() {
+            for c in project.graph().connections().filter(|c| c.from.node == n) {
+                let k = kind(project, c.to.node);
+                if k == "util.remap" {
+                    if seen.insert(c.to.node) {
+                        todo.push(c.to.node);
+                    }
+                } else if !is_source(&k) && k != "io.output" {
+                    targets.insert(c.to.node);
+                }
+            }
+        }
+        if !targets.is_empty() {
+            sources += 1;
+        }
+        shared_one |= targets.len() >= 2;
+    }
+    if sources < 3 {
+        return Err(format!(
+            "{sources} modulation sources drive something, wanted 3"
+        ));
+    }
+    if !shared_one {
+        return Err("no source drives parameters on more than one device".into());
+    }
+    Ok(())
 }
 
 /// Right-clicks the LFO, chooses "Replace with...", picks the Pattern Player,
