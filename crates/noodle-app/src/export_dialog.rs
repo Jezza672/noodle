@@ -42,6 +42,8 @@ pub struct ExportDialog {
     /// The project's mix versions, as of when the dialog opened, and whether
     /// each is ticked.
     versions: Vec<(String, bool)>,
+    /// "Add mix versions" was pressed and the dialog has yet to start the list.
+    start_versions: bool,
     /// Bring the mixdown to `target` LUFS.
     normalize: bool,
     target: f64,
@@ -74,6 +76,7 @@ impl Default for ExportDialog {
             mixdown: true,
             groups: Vec::new(),
             versions: Vec::new(),
+            start_versions: false,
             normalize: false,
             target: -14.0,
             limit: false,
@@ -189,6 +192,21 @@ impl ExportDialog {
                 return;
             }
             ui.add_enabled_ui(running.is_none(), |ui| self.fields(ui));
+            if std::mem::take(&mut self.start_versions) {
+                session.edit([crate::session::Edit::Apply(Command::SetVersions {
+                    names: crate::session::versions::STARTING_VERSIONS
+                        .iter()
+                        .map(|s| (*s).to_owned())
+                        .collect(),
+                    active: 0,
+                })]);
+                self.versions = session
+                    .project()
+                    .versions()
+                    .iter()
+                    .map(|name| (name.clone(), false))
+                    .collect();
+            }
             if self.tail != session.project().export_settings().tail {
                 session.edit([crate::session::Edit::Apply(Command::SetExportSettings(
                     ExportSettings { tail: self.tail },
@@ -266,7 +284,10 @@ impl ExportDialog {
                     } else if !chosen {
                         "Choose the mixdown or a track to export"
                     } else {
-                        "There is nothing to export yet"
+                        "Nothing to export yet: the project has no clips, automation or \
+                         tempo changes, so it has no length. Import or record a clip on a \
+                         track, or set Part to Range and choose how many seconds to render \
+                         from the graph."
                     },
                 );
             }
@@ -324,7 +345,25 @@ impl ExportDialog {
                         });
                 });
                 ui.end_row();
-                if !self.versions.is_empty() {
+                if self.versions.is_empty() {
+                    // Mix versions are found here, where they are exported,
+                    // not only through a knob's right-click menu.
+                    ui.label("Versions");
+                    ui.vertical(|ui| {
+                        ui.weak("Export the same song as several mixes");
+                        if ui
+                            .button("Add mix versions")
+                            .on_hover_text(
+                                "Starts a list of versions (Main, Alt). Then right-click a \
+                                 parameter and choose Vary per version to give each its own value.",
+                            )
+                            .clicked()
+                        {
+                            self.start_versions = true;
+                        }
+                    });
+                    ui.end_row();
+                } else {
                     ui.label("Versions");
                     ui.vertical(|ui| {
                         for (name, on) in &mut self.versions {

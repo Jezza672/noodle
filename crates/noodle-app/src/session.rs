@@ -1591,6 +1591,11 @@ impl Session {
         self.message = Some(text);
     }
 
+    /// Drops the current message, such as one a later success has outdated.
+    pub fn clear_message(&mut self) {
+        self.message = None;
+    }
+
     pub fn message(&self) -> Option<&str> {
         self.message.as_deref()
     }

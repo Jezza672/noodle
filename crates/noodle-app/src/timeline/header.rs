@@ -135,6 +135,8 @@ pub struct Lane {
     pub selected: bool,
     /// The colour of the track's edge, and its clips.
     pub colour: egui::Color32,
+    /// The track's group is frozen.
+    pub frozen: bool,
 }
 
 /// A lane shorter than this has room for only the track's name.
@@ -196,6 +198,92 @@ pub struct HeaderDrag {
     pub released: bool,
 }
 
+/// The menu a right-click on any part of a track's header opens: the name,
+/// the buttons and the empty background all show this one.
+fn track_menu(
+    ui: &mut egui::Ui,
+    group_of_track: Option<NodeId>,
+    frozen: bool,
+    organisation: &Organisation,
+    edits: &mut Vec<Edit>,
+) {
+    if ui
+        .add_enabled(group_of_track.is_some(), egui::Button::new("Delete track"))
+        .clicked()
+    {
+        ui.close();
+        if let Some(group) = group_of_track {
+            edits.push(Edit::Apply(delete_track(group)));
+        }
+    }
+    if let Some(group) = group_of_track {
+        ui.menu_button("Colour", |ui| {
+            if let Some(slot) = colour_menu(ui, organisation.colour(group)) {
+                let organisation = organisation.clone().with_colour(&[group], slot);
+                edits.push(Edit::Apply(Command::SetOrganisation(organisation)));
+            }
+        });
+        ui.menu_button("Folder", |ui| {
+            if ui.button("New folder with this track").clicked() {
+                ui.close();
+                let organisation = organisation.clone().with_new_folder("Folder", &[group]);
+                edits.push(Edit::Apply(Command::SetOrganisation(organisation)));
+            }
+            for (&id, folder) in &organisation.folders {
+                if organisation.folder_of(group) == Some(id) {
+                    continue;
+                }
+                if ui.button(format!("Move to {}", folder.name)).clicked() {
+                    ui.close();
+                    let organisation = organisation.clone().with_folder(&[group], Some(id));
+                    edits.push(Edit::Apply(Command::SetOrganisation(organisation)));
+                }
+            }
+            let inside = organisation.folder_of(group).is_some();
+            if ui
+                .add_enabled(inside, egui::Button::new("Take out of its folder"))
+                .clicked()
+            {
+                ui.close();
+                let organisation = organisation.clone().with_folder(&[group], None);
+                edits.push(Edit::Apply(Command::SetOrganisation(organisation)));
+            }
+        });
+        ui.separator();
+    }
+    if ui
+        .add_enabled(
+            group_of_track.is_some(),
+            egui::Button::new(if frozen {
+                "Unfreeze track"
+            } else {
+                "Freeze track"
+            }),
+        )
+        .on_hover_text("Render the track once and play the result, so it costs no CPU")
+        .clicked()
+    {
+        ui.close();
+        if let Some(group) = group_of_track {
+            edits.push(Edit::Apply(Command::SetFrozen {
+                node: group,
+                frozen: !frozen,
+            }));
+        }
+    }
+    for (label, in_loop) in [("Render to clip", false), ("Render loop to clip", true)] {
+        if ui
+            .add_enabled(group_of_track.is_some(), egui::Button::new(label))
+            .clicked()
+        {
+            ui.close();
+            if let Some(group) = group_of_track {
+                edits.push(Edit::RenderToClip { group, in_loop });
+            }
+        }
+    }
+}
+
 /// Draws one track's header in `lane` and returns what the user changed.
 /// `armed_audio` and `armed_midi` are whether the track is armed for
 /// recording each kind of input.
@@ -214,6 +302,7 @@ pub fn show(
         input,
         selected,
         colour,
+        frozen,
     } = lane;
     let mut changes = Changes::default();
     let edits = &mut changes.edits;
@@ -235,63 +324,7 @@ pub fn show(
         });
     }
     let group_of_track = graph.node(input).and_then(|n| n.parent);
-    background.context_menu(|ui| {
-        if ui
-            .add_enabled(group_of_track.is_some(), egui::Button::new("Delete track"))
-            .clicked()
-        {
-            ui.close();
-            if let Some(group) = group_of_track {
-                edits.push(Edit::Apply(delete_track(group)));
-            }
-        }
-        if let Some(group) = group_of_track {
-            ui.menu_button("Colour", |ui| {
-                if let Some(slot) = colour_menu(ui, organisation.colour(group)) {
-                    let organisation = organisation.clone().with_colour(&[group], slot);
-                    edits.push(Edit::Apply(Command::SetOrganisation(organisation)));
-                }
-            });
-            ui.menu_button("Folder", |ui| {
-                if ui.button("New folder with this track").clicked() {
-                    ui.close();
-                    let organisation = organisation.clone().with_new_folder("Folder", &[group]);
-                    edits.push(Edit::Apply(Command::SetOrganisation(organisation)));
-                }
-                for (&id, folder) in &organisation.folders {
-                    if organisation.folder_of(group) == Some(id) {
-                        continue;
-                    }
-                    if ui.button(format!("Move to {}", folder.name)).clicked() {
-                        ui.close();
-                        let organisation = organisation.clone().with_folder(&[group], Some(id));
-                        edits.push(Edit::Apply(Command::SetOrganisation(organisation)));
-                    }
-                }
-                let inside = organisation.folder_of(group).is_some();
-                if ui
-                    .add_enabled(inside, egui::Button::new("Take out of its folder"))
-                    .clicked()
-                {
-                    ui.close();
-                    let organisation = organisation.clone().with_folder(&[group], None);
-                    edits.push(Edit::Apply(Command::SetOrganisation(organisation)));
-                }
-            });
-            ui.separator();
-        }
-        for (label, in_loop) in [("Render to clip", false), ("Render loop to clip", true)] {
-            if ui
-                .add_enabled(group_of_track.is_some(), egui::Button::new(label))
-                .clicked()
-            {
-                ui.close();
-                if let Some(group) = group_of_track {
-                    edits.push(Edit::RenderToClip { group, in_loop });
-                }
-            }
-        }
-    });
+    background.context_menu(|ui| track_menu(ui, group_of_track, frozen, organisation, edits));
     let painter = ui.painter_at(lane);
     if selected {
         painter.rect_stroke(
@@ -368,7 +401,12 @@ pub fn show(
         let label = child.add(egui::Label::new(name).sense(egui::Sense::click()));
         if silenced {
             label.clone().on_hover_text("Muted by solo");
+        } else {
+            label
+                .clone()
+                .on_hover_text("Double-click to rename. Right-click for colour, folder, freeze");
         }
+        label.context_menu(|ui| track_menu(ui, group_of_track, frozen, organisation, edits));
         if let Some(group) = group
             && label.double_clicked()
         {
@@ -394,15 +432,26 @@ pub fn show(
         return changes;
     };
     let (arm_audio, arm_midi) = (&mut changes.arm_audio, &mut changes.arm_midi);
+    let mut menu_edits = Vec::new();
     child.horizontal(|ui| {
-        let button = |ui: &mut egui::Ui, text: &str, on: bool, tip: &str| {
+        let mut button = |ui: &mut egui::Ui, text: &str, on: bool, tip: &str| {
             let text = RichText::new(text).size(10.0);
             let width = if text.text().len() > 1 { 23.0 } else { 18.0 };
-            ui.add_sized(vec2(width, 18.0), egui::Button::new(text).selected(on))
-                .on_hover_text(tip)
-                .clicked()
+            let response = ui
+                .add_sized(vec2(width, 18.0), egui::Button::new(text).selected(on))
+                .on_hover_text(tip);
+            // Right-click here opens the track menu, as on the name.
+            response.context_menu(|ui| {
+                track_menu(ui, group_of_track, frozen, organisation, &mut menu_edits)
+            });
+            response.clicked()
         };
-        if button(ui, "RA", armed_audio, "Arm for recording audio") {
+        if button(
+            ui,
+            "RA",
+            armed_audio,
+            "Arm for recording audio (record audio onto this track)",
+        ) {
             *arm_audio = Some(!armed_audio);
         }
         if button(
@@ -414,7 +463,9 @@ pub fn show(
             *arm_midi = Some(!armed_midi);
         }
         let mute = ui
-            .add_enabled_ui(!automated.mute, |ui| button(ui, "M", controls.mute, "Mute"))
+            .add_enabled_ui(!automated.mute, |ui| {
+                button(ui, "M", controls.mute, "Mute (silence this track)")
+            })
             .inner;
         if mute {
             edits.push(Edit::Apply(set(
@@ -423,7 +474,7 @@ pub fn show(
                 Some(f32::from(!controls.mute)),
             )));
         }
-        if button(ui, "S", controls.solo, "Solo") {
+        if button(ui, "S", controls.solo, "Solo (hear only this track)") {
             edits.push(Edit::Apply(solo_edit(
                 graph,
                 input,
@@ -433,5 +484,6 @@ pub fn show(
             )));
         }
     });
+    edits.extend(menu_edits);
     changes
 }

@@ -12,6 +12,8 @@ use std::collections::BTreeMap;
 use egui::{Key, KeyboardShortcut, Modifiers};
 
 use super::Action;
+use super::SelectedClipAction;
+use crate::session::convert::Detect;
 use crate::timeline::ClipAction;
 
 /// A named action the palette can run and a key can be bound to.
@@ -221,6 +223,41 @@ pub static ENTRIES: &[Entry] = &[
         "tracks.fold",
         "Fold All Folders",
         Action::FoldFolders(true),
+        None,
+        false,
+    ),
+    entry(
+        "clip.stems",
+        "Split Selected Clip to Stems",
+        Action::OnSelectedClip(SelectedClipAction::SplitToStems),
+        None,
+        false,
+    ),
+    entry(
+        "clip.slice",
+        "Slice Selected Clip to Sampler",
+        Action::OnSelectedClip(SelectedClipAction::SliceToSampler),
+        None,
+        false,
+    ),
+    entry(
+        "clip.pin",
+        "Pin Transients on Selected Clip",
+        Action::OnSelectedClip(SelectedClipAction::PinTransients),
+        None,
+        false,
+    ),
+    entry(
+        "clip.midi",
+        "Convert Selected Clip to MIDI",
+        Action::OnSelectedClip(SelectedClipAction::ConvertToMidi(Detect::Normal)),
+        None,
+        false,
+    ),
+    entry(
+        "export.version",
+        "Add Mix Version (export the song in several mixes)",
+        Action::AddMixVersion,
         None,
         false,
     ),

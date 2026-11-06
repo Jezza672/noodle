@@ -446,6 +446,16 @@ impl TimelineState {
         self.pending = Some(action);
     }
 
+    /// The selected clip an audio-clip action (Split to stems, Slice to
+    /// Sampler, Pin transients, Convert to MIDI) applies to: the first
+    /// selected audio clip.
+    pub fn selected_audio_clip(&self, project: &Project) -> Option<ClipId> {
+        self.selected
+            .iter()
+            .copied()
+            .find(|c| project.clip(*c).is_some_and(|c| c.as_audio().is_some()))
+    }
+
     /// Whether there are selected clips to copy, cut or duplicate.
     pub fn can_copy(&self) -> bool {
         !self.selected.is_empty() || self.automation.selected().is_some() || self.range.is_some()
@@ -3213,6 +3223,10 @@ fn draw_headers(
                 input,
                 selected: state.selected_track == Some(input),
                 colour: colours[index],
+                frozen: graph
+                    .node(input)
+                    .and_then(|n| n.parent)
+                    .is_some_and(|group| session.project().is_frozen(group)),
             },
             controls.clone(),
             automated,
