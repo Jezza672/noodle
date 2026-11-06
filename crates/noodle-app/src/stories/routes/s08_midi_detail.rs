@@ -53,7 +53,7 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
             KEYS.len()
         ));
     }
-    if got.first() == got.last() {
+    if got.iter().all(|&k| k == got[0]) {
         return Err("every note is the same pitch".into());
     }
     Ok(())

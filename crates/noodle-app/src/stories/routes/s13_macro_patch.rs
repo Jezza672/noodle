@@ -137,21 +137,29 @@ fn macro_patch(p: &mut Probe) -> Result<(), String> {
             "{sources} sound sources reach the output, wanted 2"
         ));
     }
-    let knob = nodes_of(project, KNOB.0);
-    let reached = knob
-        .iter()
-        .map(|&k| {
-            project
-                .graph()
-                .nodes()
-                .filter(|&(n, _)| n != k && upstream(project, n).contains(&k))
-                .filter(|&(n, _)| kind(project, n) != "util.remap")
-                .count()
-        })
-        .max()
-        .unwrap_or(0);
+    // The parameters the knob drives itself, through any Remaps that give
+    // each target its range.
+    let mut reached = 0;
+    for k in nodes_of(project, KNOB.0) {
+        let mut targets = std::collections::HashSet::new();
+        let mut seen = std::collections::HashSet::new();
+        let mut todo = vec![k];
+        while let Some(n) = todo.pop() {
+            for c in project.graph().connections().filter(|c| c.from.node == n) {
+                let to = kind(project, c.to.node);
+                if to == "util.remap" {
+                    if seen.insert(c.to.node) {
+                        todo.push(c.to.node);
+                    }
+                } else if to != "io.output" {
+                    targets.insert((c.to.node, c.to.port.clone()));
+                }
+            }
+        }
+        reached = reached.max(targets.len());
+    }
     if reached < 3 {
-        return Err(format!("the knob drives {reached} devices, wanted 3"));
+        return Err(format!("the knob drives {reached} parameters, wanted 3"));
     }
     Ok(())
 }

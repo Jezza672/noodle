@@ -15,6 +15,7 @@ use super::super::handle::{Handle, Probe};
 use super::super::{Route, Tag};
 use super::empty_project;
 
+// Steps and check run on the same thread, so a thread-local carries the record.
 thread_local! {
     /// Whether the browser opened and said how many plugins it found. The
     /// browser is not in a saved project, so the check cannot look for it
@@ -44,7 +45,7 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
     if !LISTED.with(Cell::get) {
         return Err("the plugin browser was never opened".into());
     }
-    if !p.project().graph().nodes().next().is_none() {
+    if p.project().graph().nodes().next().is_some() {
         return Err("browsing the plugins changed the graph".into());
     }
     Ok(())
