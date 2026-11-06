@@ -59,7 +59,7 @@ You can only see and use Noodle through one helper script. Every command is
 | `dclick X Y` | Double click. |
 | `drag X1 Y1 X2 Y2 [more X Y pairs] [shift\\|ctrl\\|alt]` | Press at the first point, move through the rest, release at the last. |
 | `hover X Y` | Move the pointer without clicking (tooltips). |
-| `scroll X Y DX DY` | Mouse wheel at X, Y. Negative DY scrolls down. |
+| `scroll X Y DX DY` | Mouse wheel at X, Y, in points: one notch of a real wheel is about 50. Negative DY scrolls down. |
 | `type some text` | Types the text into whatever has keyboard focus (click a field first). |
 | `key NAME` | One key press, with the pointer where you last put it: `key Enter`, `key Escape`, `key Delete`, `key Space`, `key ctrl+z`, `key shift+a`. |
 | `choose /full/path` | Answers a file picker that has opened (the program's reply tells you when one has). Pickers are native dialogs that screenshots do not show, so you type the path you want. Several files: separate paths with `;`. A folder picker takes a folder. |
