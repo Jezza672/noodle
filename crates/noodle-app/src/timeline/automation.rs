@@ -7,7 +7,10 @@
 //!
 //! Click an empty spot to add a point, drag a point to move it, and
 //! right-click it (or press Delete with it selected) to remove it. Each is
-//! one undo step. A track's header has a menu to add a gain or mute lane, and
+//! one undo step. A small toolbar on every lane picks the tool: **Edit** (the
+//! above), **Draw** (drag across the lane to paint a curve, replacing the
+//! points under the stroke) and **Pick** (drag across empty space to pick a
+//! span; right-click it to Trim, Cut or Move its points). A track's header has a menu to add a gain or mute lane, and
 //! each lane's header has a button to remove it. A lane on solo can't work,
 //! because solo is read when the project is compiled; it is drawn greyed out
 //! and says so.
@@ -35,9 +38,34 @@ const REFUSED: &str = "Solo can't be automated";
 /// The gain range, matching the track headers' slider.
 const GAIN_RANGE: (f32, f32) = (-60.0, 24.0);
 
+/// What a drag on empty lane space does.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum Tool {
+    /// Click adds a point, a drag moves one (Shift-drag picks a span).
+    #[default]
+    Edit,
+    /// A drag paints a curve.
+    Draw,
+    /// A drag picks a span of time, whose points can be trimmed, cut or moved.
+    Pick,
+}
+
+/// A stroke being drawn on a lane.
+struct Drawing {
+    lane: LaneId,
+    /// The lane as it was when the stroke began.
+    original: AutomationLane,
+    /// What the pointer has crossed, in order.
+    path: Vec<(Tick, f32)>,
+}
+
 /// What the user is doing to which point.
 #[derive(Default)]
 pub struct State {
+    tool: Tool,
+    stroke: Option<Drawing>,
+    /// The amount, in beats, typed in the Move menu.
+    move_by: f32,
     /// The selected point: a lane and an index into its points.
     selected: Option<(LaneId, usize)>,
     /// The points picked together with Shift-click, in one lane, with the
@@ -106,10 +134,100 @@ pub fn trimmed(
     if delta == 0.0 || !lane.points.iter().any(|p| (from..=to).contains(&p.tick)) {
         return None;
     }
+    let mut out = guarded(lane, from, to);
+    for point in out
+        .points
+        .iter_mut()
+        .filter(|p| (from..=to).contains(&p.tick))
+    {
+        point.value = (point.value + delta).clamp(limits.0, limits.1);
+    }
+    Some(out)
+}
+
+/// `lane` with the points under a drawn stroke replaced by the stroke: each
+/// `(tick, value)` of `path` becomes a point (a later one at the same tick
+/// wins), and every point of the lane between the stroke's first and last
+/// tick goes. A switch lane draws holds, the others lines. `None` if the
+/// stroke is empty.
+pub fn painted(
+    lane: &AutomationLane,
+    path: &[(Tick, f32)],
+    limits: (f32, f32),
+    hold: bool,
+) -> Option<AutomationLane> {
+    let low = path.iter().map(|&(t, _)| t).min()?;
+    let high = path.iter().map(|&(t, _)| t).max()?;
+    let curve = if hold { Curve::Hold } else { Curve::Linear };
+    let mut drawn = std::collections::BTreeMap::new();
+    for &(tick, value) in path {
+        drawn.insert(tick.max(Tick::ZERO), value.clamp(limits.0, limits.1));
+    }
     let mut out = lane.clone();
-    let insert = |out: &mut AutomationLane, tick: Tick| {
+    out.points.retain(|p| p.tick < low || p.tick > high);
+    out.points
+        .extend(
+            drawn
+                .into_iter()
+                .map(|(tick, value)| AutomationPoint { tick, value, curve }),
+        );
+    out.points.sort_by_key(|p| p.tick);
+    Some(out)
+}
+
+/// `lane` with the points from `from` to `to` (inclusive) taken out. The
+/// lane's value just outside each edge is kept as a point of its own, so
+/// nothing outside the span changes and the span itself is left to run
+/// straight from one edge to the other. `None` if no point falls in it.
+pub fn cut(lane: &AutomationLane, from: Tick, to: Tick) -> Option<AutomationLane> {
+    if !lane.points.iter().any(|p| (from..=to).contains(&p.tick)) {
+        return None;
+    }
+    let mut out = guarded(lane, from, to);
+    out.points.retain(|p| !(from..=to).contains(&p.tick));
+    Some(out)
+}
+
+/// `lane` with the points from `from` to `to` (inclusive) moved `by` ticks
+/// along, and whatever they land on replaced. As for [`cut`] the shape
+/// outside the span is kept. Points can't go before the beginning. `None` if
+/// nothing is picked or `by` is zero.
+pub fn slid(lane: &AutomationLane, from: Tick, to: Tick, by: i64) -> Option<AutomationLane> {
+    if by == 0 || !lane.points.iter().any(|p| (from..=to).contains(&p.tick)) {
+        return None;
+    }
+    let guarded = guarded(lane, from, to);
+    let (inside, outside): (Vec<_>, Vec<_>) = guarded
+        .points
+        .into_iter()
+        .partition(|p| (from..=to).contains(&p.tick));
+    let mut moved: Vec<AutomationPoint> = inside
+        .into_iter()
+        .map(|p| AutomationPoint {
+            tick: Tick(p.tick.0 + by),
+            ..p
+        })
+        .filter(|p| p.tick >= Tick::ZERO)
+        .collect();
+    let (low, high) = (moved.first()?.tick, moved.last()?.tick);
+    let mut points: Vec<AutomationPoint> = outside
+        .into_iter()
+        .filter(|p| p.tick < low || p.tick > high)
+        .collect();
+    points.append(&mut moved);
+    points.sort_by_key(|p| p.tick);
+    let mut out = lane.clone();
+    out.points = points;
+    Some(out)
+}
+
+/// `lane` with its value at `from` and `to` and just outside them kept as
+/// points of their own (what [`trimmed`] does before it changes anything).
+fn guarded(lane: &AutomationLane, from: Tick, to: Tick) -> AutomationLane {
+    let mut out = lane.clone();
+    for tick in [Tick(from.0 - 1), Tick(to.0 + 1), from, to] {
         if tick < Tick::ZERO || out.points.iter().any(|p| p.tick == tick) {
-            return;
+            continue;
         }
         let value = lane.value_at(tick.0 as f64).unwrap_or(0.0);
         let at = out.points.partition_point(|p| p.tick < tick);
@@ -121,20 +239,8 @@ pub fn trimmed(
             });
         out.points
             .insert(at, AutomationPoint { tick, value, curve });
-    };
-    // Guards first, so the edges' own points land between them.
-    insert(&mut out, Tick(from.0 - 1));
-    insert(&mut out, Tick(to.0 + 1));
-    insert(&mut out, from);
-    insert(&mut out, to);
-    for point in out
-        .points
-        .iter_mut()
-        .filter(|p| (from..=to).contains(&p.tick))
-    {
-        point.value = (point.value + delta).clamp(limits.0, limits.1);
     }
-    Some(out)
+    out
 }
 
 /// The points of `lane` from `from` to `to`, inclusive.
@@ -210,6 +316,11 @@ impl State {
     #[cfg(test)]
     pub fn texts(&self) -> &[String] {
         &self.texts
+    }
+
+    #[cfg(test)]
+    pub fn tool(&self) -> Tool {
+        self.tool
     }
 
     pub fn deselect(&mut self) {
@@ -614,11 +725,24 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                 let press = ui
                     .input(|i| i.pointer.press_origin())
                     .or(response.interact_pointer_pos());
-                if press.and_then(near).is_none()
-                    && shift
+                if state.tool == Tool::Draw
                     && let Some(pos) = press
                 {
-                    // Shift-drag on empty space picks a range of time.
+                    // Drawing: the stroke starts where the press was.
+                    state.selected = None;
+                    state.range = None;
+                    state.marked.clear();
+                    state.stroke = Some(Drawing {
+                        lane: id,
+                        original: lane.clone(),
+                        path: vec![(snap(pos.x), value_at(row, key, pos.y))],
+                    });
+                } else if press.and_then(near).is_none()
+                    && (shift || state.tool == Tool::Pick)
+                    && let Some(pos) = press
+                {
+                    // Shift-drag, or any drag with the Pick tool, on empty
+                    // space picks a range of time.
                     let tick = snap(pos.x);
                     state.range_from = Some(tick);
                     state.range = Some((id, tick, tick));
@@ -662,6 +786,26 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                         }),
                     });
                 }
+            }
+            if response.dragged()
+                && let (Some(stroke), Some(pos)) =
+                    (state.stroke.as_mut(), response.interact_pointer_pos())
+                && stroke.lane == id
+            {
+                stroke.path.push((snap(pos.x), value_at(row, key, pos.y)));
+                if let Some(drawn) =
+                    painted(&stroke.original, &stroke.path, range(key), is_switch(key))
+                    && drawn != *lane
+                {
+                    edits.push(Edit::Drag(Command::SetLane { id, lane: drawn }));
+                }
+            }
+            if response.drag_stopped() && state.stroke.as_ref().is_some_and(|s| s.lane == id) {
+                state.stroke = None;
+                edits.push(Edit::EndDrag);
+            }
+            if state.tool != Tool::Edit && response.hovered() {
+                ui.ctx().set_cursor_icon(egui::CursorIcon::Crosshair);
             }
             if response.dragged()
                 && let (Some(from), Some(pos)) = (state.range_from, response.interact_pointer_pos())
@@ -772,6 +916,8 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                     ""
                 };
                 let mut apply = None;
+                let mut cut_it = false;
+                let mut slide = None;
                 egui::Popup::context_menu(&response).show(|ui| {
                     ui.label("Trim the picked points by");
                     ui.add(
@@ -779,16 +925,56 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                             .speed(if high - low > 10.0 { 0.1 } else { 0.01 })
                             .suffix(unit),
                     );
-                    if ui.button("Trim").clicked() {
+                    if ui
+                        .button("Trim")
+                        .on_hover_text("Raise or lower the picked points by this amount")
+                        .clicked()
+                    {
                         apply = Some(state.trim_by);
                         ui.close();
                     }
+                    ui.separator();
+                    ui.label("Move the picked points later by");
+                    ui.add(
+                        egui::DragValue::new(&mut state.move_by)
+                            .speed(0.05)
+                            .suffix(" beats"),
+                    );
+                    if ui
+                        .button("Move")
+                        .on_hover_text("Slide the picked points along in time (a negative amount moves them earlier)")
+                        .clicked()
+                    {
+                        slide = Some(state.move_by);
+                        ui.close();
+                    }
+                    ui.separator();
+                    if ui
+                        .button("Cut")
+                        .on_hover_text("Take the picked points out; the lane outside the span stays as it is")
+                        .clicked()
+                    {
+                        cut_it = true;
+                        ui.close();
+                    }
                 });
-                if let (Some(delta), Some((l, from, to))) = (apply, state.range)
+                if let Some((l, from, to)) = state.range
                     && l == id
-                    && let Some(trimmed) = trimmed(lane, from, to, delta, (low, high))
                 {
-                    edits.push(Edit::Apply(Command::SetLane { id, lane: trimmed }));
+                    let edited = if let Some(delta) = apply {
+                        trimmed(lane, from, to, delta, (low, high))
+                    } else if let Some(beats) = slide {
+                        slid(lane, from, to, (f64::from(beats) * 960.0).round() as i64)
+                    } else if cut_it {
+                        cut(lane, from, to)
+                    } else {
+                        None
+                    };
+                    if let Some(edited) = edited {
+                        state.range = None;
+                        state.marked.clear();
+                        edits.push(Edit::Apply(Command::SetLane { id, lane: edited }));
+                    }
                 }
             }
             let delete = if response.secondary_clicked() {
@@ -822,17 +1008,81 @@ pub fn show(ui: &mut egui::Ui, state: &mut State, view: &View<'_>) -> Vec<Edit> 
                 .collect();
             let picked: Vec<usize> = marked.into_iter().chain(selected).collect();
             paint(ui, row, visible, lane, &screen, &picked, dimmed);
+            toolbar(ui, state, visible);
         }
     }
     // A drag whose widget never saw its release would leave the undo group
     // open.
-    if state.drag.is_some() && !ui.input(|i| i.pointer.any_down()) {
+    if (state.drag.is_some() || state.stroke.is_some()) && !ui.input(|i| i.pointer.any_down()) {
         state.drag = None;
+        state.stroke = None;
         if !edits.contains(&Edit::EndDrag) {
             edits.push(Edit::EndDrag);
         }
     }
     edits
+}
+
+/// The tool buttons in a lane's top right corner, and a line saying what the
+/// tool does.
+fn toolbar(ui: &mut egui::Ui, state: &mut State, visible: Rect) {
+    const BUTTON: egui::Vec2 = vec2(38.0, 16.0);
+    let tools = [
+        (
+            Tool::Edit,
+            "Edit",
+            "Click to add a point, drag a point to move it. Shift-drag picks a span",
+        ),
+        (
+            Tool::Draw,
+            "Draw",
+            "Drag across the lane to paint a curve; the points under the stroke are replaced",
+        ),
+        (
+            Tool::Pick,
+            "Pick",
+            "Drag across the lane to pick a span of time, then right-click it to Trim, Move or Cut its points",
+        ),
+    ];
+    let width = BUTTON.x * tools.len() as f32 + 6.0;
+    if visible.width() < width + 80.0 || visible.height() < BUTTON.y + 4.0 {
+        return;
+    }
+    let mut left = visible.right() - width - 4.0;
+    for (tool, name, tip) in tools {
+        let spot = Rect::from_min_size(Pos2::new(left, visible.top() + 3.0), BUTTON);
+        left += BUTTON.x + 3.0;
+        let label = egui::RichText::new(name).size(10.0);
+        if ui
+            .put(
+                spot,
+                egui::Button::new(label)
+                    .selected(state.tool == tool)
+                    .small(),
+            )
+            .on_hover_text(tip)
+            .clicked()
+        {
+            state.tool = tool;
+            if tool != Tool::Pick {
+                state.range = None;
+            }
+        }
+    }
+    let hint = match state.tool {
+        Tool::Edit => return,
+        Tool::Draw => "Drag to draw",
+        Tool::Pick => "Drag to pick a span",
+    };
+    #[cfg(test)]
+    state.texts.push(hint.into());
+    ui.painter_at(visible).text(
+        Pos2::new(visible.right() - width - 10.0, visible.top() + 5.0),
+        Align2::RIGHT_TOP,
+        hint,
+        FontId::proportional(10.0),
+        colors::TEXT_WEAK,
+    );
 }
 
 fn paint(
@@ -1143,6 +1393,74 @@ mod trim_tests {
         // Just outside the edges is untouched.
         assert_eq!(at(99), lane.value_at(99.0).unwrap());
         assert_eq!(at(301), lane.value_at(301.0).unwrap());
+    }
+
+    #[test]
+    fn a_stroke_replaces_the_points_under_it() {
+        let lane = lane(&[(0, 0.0), (100, 1.0), (200, 2.0), (300, 3.0), (400, 4.0)]);
+        let stroke = [
+            (Tick(250), 9.0),
+            (Tick(150), 8.0),
+            (Tick(200), 7.0),
+            (Tick(150), 6.0),
+        ];
+        let out = painted(&lane, &stroke, (0.0, 8.0), false).unwrap();
+        let drawn: Vec<(i64, f32)> = out.points.iter().map(|p| (p.tick.0, p.value)).collect();
+        // 100 and 400 are outside the stroke's span (150 to 250) and stay; 200
+        // is under it and goes; the later 150 wins; values stay in range.
+        assert_eq!(
+            drawn,
+            [
+                (0, 0.0),
+                (100, 1.0),
+                (150, 6.0),
+                (200, 7.0),
+                (250, 8.0),
+                (300, 3.0),
+                (400, 4.0)
+            ]
+        );
+        assert!(painted(&lane, &[], (0.0, 8.0), false).is_none());
+        let switch = painted(&lane, &stroke, (0.0, 1.0), true).unwrap();
+        assert!(switch.points.iter().any(|p| p.curve == Curve::Hold));
+    }
+
+    #[test]
+    fn cutting_takes_the_points_out_and_keeps_the_outside() {
+        let lane = lane(&[
+            (0, -6.0),
+            (100, -6.0),
+            (200, -3.0),
+            (300, -6.0),
+            (400, -6.0),
+        ]);
+        let out = cut(&lane, Tick(100), Tick(300)).unwrap();
+        let ticks: Vec<i64> = out.points.iter().map(|p| p.tick.0).collect();
+        assert!(!ticks.contains(&200));
+        // The span runs straight from the lane's value on one side to the
+        // other; outside it nothing changed.
+        assert_eq!(out.value_at(0.0), lane.value_at(0.0));
+        assert_eq!(out.value_at(99.0), lane.value_at(99.0));
+        assert_eq!(out.value_at(301.0), lane.value_at(301.0));
+        assert_eq!(out.value_at(400.0), lane.value_at(400.0));
+        assert!(cut(&lane, Tick(500), Tick(600)).is_none());
+    }
+
+    #[test]
+    fn moving_slides_the_picked_points_and_keeps_the_outside() {
+        let lane = lane(&[(0, 0.0), (100, 0.0), (200, 5.0), (300, 0.0), (400, 0.0)]);
+        let out = slid(&lane, Tick(100), Tick(300), 50).unwrap();
+        // The peak that was at 200 is at 250.
+        assert_eq!(out.value_at(250.0), Some(5.0));
+        assert_eq!(out.value_at(200.0).map(|v| v < 5.0), Some(true));
+        // The lane outside the span is as it was.
+        assert_eq!(out.value_at(0.0), lane.value_at(0.0));
+        assert_eq!(out.value_at(400.0), lane.value_at(400.0));
+        assert!(slid(&lane, Tick(100), Tick(300), 0).is_none());
+        // Nothing goes before the beginning.
+        let early = slid(&lane, Tick(0), Tick(300), -150).unwrap();
+        assert!(early.points.iter().all(|p| p.tick >= Tick::ZERO));
+        assert!(early.points.windows(2).all(|w| w[0].tick < w[1].tick));
     }
 
     #[test]

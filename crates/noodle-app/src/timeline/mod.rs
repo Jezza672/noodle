@@ -17,6 +17,7 @@ pub(crate) mod grid;
 pub(crate) mod header;
 pub mod import;
 mod midi_preview;
+mod pins;
 mod sections;
 mod sources;
 mod take;
@@ -166,6 +167,9 @@ pub struct TimelineState {
     /// How many clips drew a waveform last frame.
     #[cfg(test)]
     waveforms_drawn: usize,
+    /// Warp markers drawn on clips last frame.
+    #[cfg(test)]
+    pins_drawn: usize,
 }
 
 impl Default for TimelineState {
@@ -214,6 +218,8 @@ impl Default for TimelineState {
             drawn_text: Vec::new(),
             #[cfg(test)]
             waveforms_drawn: 0,
+            #[cfg(test)]
+            pins_drawn: 0,
         }
     }
 }
@@ -359,6 +365,11 @@ impl TimelineState {
     #[cfg(test)]
     pub fn automation(&self) -> &automation::State {
         &self.automation
+    }
+
+    #[cfg(test)]
+    pub fn pins(&self) -> usize {
+        self.pins_drawn
     }
 
     #[cfg(test)]
@@ -718,6 +729,7 @@ pub fn show(
     state.retain_existing(project);
     let tracks = state.tracks(project);
     let heights: Vec<f32> = tracks.iter().map(|&t| state.lane_height(t)).collect();
+    state.takes.open_recorded(session);
     state.takes.retain(project);
     let take_lanes = state.takes.lanes(project, &tracks);
     let all_tracks = self::tracks(project);
@@ -787,6 +799,10 @@ pub fn show(
         state.fade_handles.clear();
         state.drawn_text.clear();
         state.waveforms_drawn = 0;
+        #[cfg(test)]
+        {
+            state.pins_drawn = 0;
+        }
     }
 
     // The lanes and headers scroll together in a vertical scroll area, below
@@ -1144,6 +1160,18 @@ pub fn show(
                                 ui.close();
                                 edits.push(Edit::PinTransients(id, 50));
                             }
+                            // The form has a number to edit, which a click in
+                            // the menu must not close.
+                            egui::containers::menu::SubMenuButton::new("Quantise transients…")
+                                .config(egui::containers::menu::MenuConfig::new().close_behavior(
+                                    egui::PopupCloseBehavior::CloseOnClickOutside,
+                                ))
+                                .ui(ui, |ui| {
+                                    ui.label("Pins every hit, then moves them onto a grid");
+                                    if crate::clip_panel::quantise_hits_form(ui, id, &mut edits) {
+                                        ui.close();
+                                    }
+                                });
                             if ui
                                 .button("Slice to Sampler")
                                 .on_hover_text(
@@ -1374,6 +1402,17 @@ pub fn show(
                                 }
                                 #[cfg(not(test))]
                                 let _ = drawn;
+                            }
+                            if let Some(warp) = warp_of(project, clip)
+                                && !missing
+                            {
+                                let pins = pins::draw(&painter, axis, map, clip, rate, warp, (full, visible));
+                                #[cfg(test)]
+                                {
+                                    state.pins_drawn += pins;
+                                }
+                                #[cfg(not(test))]
+                                let _ = pins;
                             }
                             let name = std::path::Path::new(&audio.source).file_name().map_or_else(
                                 || audio.source.clone(),

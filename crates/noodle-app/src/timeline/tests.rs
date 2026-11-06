@@ -1987,6 +1987,35 @@ fn warp_clip(h: &mut H, id: ClipId, warp: noodle_core::ClipWarp) {
 }
 
 #[test]
+fn pinned_transients_are_drawn_on_the_clip_as_markers() {
+    let (mut h, id) = rig();
+    h.run();
+    assert_eq!(h.state().timeline.pins(), 0, "an unwarped clip has none");
+    let mut warp = noodle_core::ClipWarp::at_tempo(60.0);
+    warp.markers = vec![
+        noodle_core::WarpMarker {
+            seconds: 0.25,
+            beat: 0.25,
+        },
+        noodle_core::WarpMarker {
+            seconds: 0.5,
+            beat: 0.5,
+        },
+    ];
+    warp_clip(&mut h, id, warp.clone());
+    h.run_steps(3);
+    assert_eq!(h.state().timeline.pins(), 2);
+    // Markers that are switched off are not drawn.
+    warp.use_markers = false;
+    let (warp_id, _) = h.state().session.project().warp_of(id).unwrap();
+    h.state_mut()
+        .session
+        .edit([Edit::Apply(Command::SetWarp { id: warp_id, warp })]);
+    h.run_steps(3);
+    assert_eq!(h.state().timeline.pins(), 0);
+}
+
+#[test]
 fn a_warped_section_shows_its_waveform_at_once_and_then_the_rendered_one() {
     let (mut h, id) = rig();
     warp_clip(&mut h, id, noodle_core::ClipWarp::at_tempo(60.0));

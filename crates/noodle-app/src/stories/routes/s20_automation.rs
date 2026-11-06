@@ -65,6 +65,12 @@ pub fn route() -> Route {
                 keep: &[],
             },
             LateChange {
+                name: "draw a fade-out over the lane's tail",
+                steps: draw_fade,
+                done: faded,
+                keep: &[],
+            },
+            LateChange {
                 name: "trim the whole chorus by -2 dB",
                 steps: trim_chorus,
                 done: chorus_trimmed,
@@ -198,6 +204,52 @@ fn rode_again(p: &mut Probe, _size: usize) -> Result<(), String> {
 }
 
 const BEAT: i64 = 960;
+
+/// Where the drawn fade-out starts and ends, in beats.
+const FADE: (i64, i64) = (4, 8);
+
+fn performed_lane(p: &Project) -> Option<noodle_core::LaneId> {
+    let auto = node_of(p, AUTOMATION_NODE_ID);
+    p.lane_for(&Endpoint::new(auto, noodle_nodes::AUTOMATION_VALUE))
+        .map(|(id, _)| id)
+}
+
+/// Picks the lane's Draw tool and paints a ramp down to nothing past the
+/// pass, a stroke a person could not place point by point.
+fn draw_fade(h: &mut Handle, _size: usize) {
+    h.step("pick the Draw tool on the lane");
+    h.probe().settle();
+    let draw = h.find_first("Draw");
+    h.click(draw, Modifiers::NONE);
+    h.step("draw a fade-out");
+    let lane = performed_lane(h.probe().project()).expect("the performed lane");
+    let path: Vec<Pos2> = (FADE.0..=FADE.1)
+        .map(|beat| {
+            let along = 0.9 - 0.9 * (beat - FADE.0) as f32 / (FADE.1 - FADE.0) as f32;
+            h.probe()
+                .lane_point(lane, beat * BEAT, along)
+                .expect("the lane is on screen")
+        })
+        .collect();
+    h.drag(Modifiers::NONE, &path);
+}
+
+fn faded(p: &mut Probe, _size: usize) -> Result<(), String> {
+    let lane = performed_lane(p.project()).ok_or("the lane is gone")?;
+    let lane = p.project().lane(lane).ok_or("the lane is gone")?;
+    let at = |beat: i64| lane.value_at((beat * BEAT) as f64).unwrap_or(f32::NAN);
+    let (start, end) = (at(FADE.0 + 1), at(FADE.1));
+    if !(start > 0.4 && end < 0.2 && start > end) {
+        return Err(format!(
+            "the lane is {start:.2} a beat into the fade and {end:.2} at its end"
+        ));
+    }
+    if lane.points.len() < 5 {
+        return Err(format!("{} points on the lane", lane.points.len()));
+    }
+    Ok(())
+}
+
 /// The chorus: bars 3 and 4.
 const CHORUS: (i64, i64) = (8 * BEAT, 16 * BEAT);
 const TRIM_DB: f32 = -2.0;
