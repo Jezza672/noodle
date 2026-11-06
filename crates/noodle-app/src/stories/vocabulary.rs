@@ -1,13 +1,13 @@
 //! Group E of the scorecard, part two: does searching for a feature by the
 //! name other DAWs give it find it?
 //!
-//! Each term is typed into the add-node search (`editor::search::entries`,
+//! Each node term is typed into the add-node search (`editor::search::entries`,
 //! the same function the search box calls) and the top three results are
 //! compared with what the term should find. Features that are not nodes
-//! (bounce, freeze, comp, consolidate, flatten, quantize, warp) live in menus
-//! of the arrangement and the piano roll, and there is no command search to
-//! type them into, so they are reported as not searchable. What the node
-//! search offers for them anyway is listed: a wrong result is worse than none.
+//! (bounce, freeze, comp, punch, markers...) are typed into the command
+//! palette's search (`app::commands::search`) and must find the palette
+//! command that runs the feature or says where it lives. A feature with
+//! neither is reported as not searchable.
 //!
 //! The terms are the ones other DAWs use for what Noodle does; add a term
 //! whenever a user story or a review turns up a new name.
@@ -21,7 +21,12 @@ use crate::editor::search_entries as entries;
 pub enum Home {
     /// A node. These names, any of them, are the right result.
     Node(&'static [&'static str]),
-    /// Somewhere that is not a node, and so cannot be found by this search.
+    /// A command of the command palette, by id: any of them in the top three
+    /// is the right result. The palette has no selection to act on, so for a
+    /// feature that works on a clip or a track the entry says where it lives.
+    Command(&'static [&'static str]),
+    /// Somewhere that is neither a node nor a palette command, and so cannot
+    /// be found by search.
     Elsewhere(&'static str),
 }
 
@@ -38,6 +43,14 @@ const fn node(term: &'static str, names: &'static [&'static str]) -> Term {
     }
 }
 
+const fn command(term: &'static str, ids: &'static [&'static str]) -> Term {
+    Term {
+        term,
+        home: Home::Command(ids),
+    }
+}
+
+#[allow(dead_code)]
 const fn elsewhere(term: &'static str, place: &'static str) -> Term {
     Term {
         term,
@@ -68,14 +81,23 @@ pub const TERMS: &[Term] = &[
     node("arpeggio", &["Arpeggiator"]),
     node("click track", &["Metronome"]),
     node("oscillator", &["Sine", "Saw", "Square", "Triangle"]),
-    // Not nodes.
-    elsewhere("bounce", "Render to clip, in the clip and track menus"),
-    elsewhere("freeze", "Freeze, in the track menu (Shift+F)"),
-    elsewhere("comp", "take folders in the arrangement"),
-    elsewhere("consolidate", "Render to clip, in the clip menu"),
-    elsewhere("flatten", "Flatten takes, in the take folder's menu"),
-    elsewhere("quantize", "Quantise, in the piano roll"),
-    elsewhere("warp", "Warp markers, in the clip editor"),
+    // Not nodes: commands of the palette (Cmd+K), several of which say where
+    // the feature lives.
+    command("bounce", &["guide.render", "file.export"]),
+    command("freeze", &["guide.freeze"]),
+    command("comp", &["guide.takes"]),
+    command("consolidate", &["guide.render", "guide.takes"]),
+    command("flatten", &["guide.takes"]),
+    command("quantize", &["guide.quantise"]),
+    command("warp", &["guide.warp"]),
+    command("punch", &["punch.toggle", "punch.in", "punch.out"]),
+    command("marker", &["markers.add"]),
+    command("render", &["guide.render", "file.export"]),
+    command("stem", &["guide.stems", "file.export"]),
+    command("transient", &["guide.transients"]),
+    command("version", &["file.export"]),
+    command("lufs", &["file.export"]),
+    command("lane", &["guide.lanes"]),
     node("keyswitch", &["Articulation Map"]),
 ];
 
@@ -122,6 +144,24 @@ pub fn check(registry: &noodle_engine::Registry, library: &Library, terms: &[Ter
                     .iter()
                     .position(|n| names.iter().any(|w| n.eq_ignore_ascii_case(w)))
                     .map_or(Verdict::Missed, |i| Verdict::Found(i + 1)),
+                Home::Command(ids) => {
+                    let commands = crate::app::commands::search(t.term);
+                    let top_commands: Vec<String> = commands
+                        .iter()
+                        .take(3)
+                        .map(|e| e.name.to_string())
+                        .collect();
+                    let position = commands
+                        .iter()
+                        .take(3)
+                        .position(|e| ids.contains(&e.id))
+                        .map_or(Verdict::Missed, |i| Verdict::Found(i + 1));
+                    return Row {
+                        term: t.term.into(),
+                        verdict: position,
+                        top: top_commands,
+                    };
+                }
                 Home::Elsewhere(place) => Verdict::NotSearchable((*place).into()),
             };
             Row {
@@ -226,6 +266,25 @@ mod tests {
             r[0].top
         );
         assert!(!r[0].ok());
+    }
+
+    #[test]
+    fn every_term_that_is_a_command_is_found_by_the_palette_in_the_top_three() {
+        let commands: Vec<Term> = TERMS
+            .iter()
+            .filter(|t| matches!(t.home, Home::Command(_)))
+            .map(|t| Term {
+                term: t.term,
+                home: match &t.home {
+                    Home::Command(ids) => Home::Command(ids),
+                    _ => unreachable!(),
+                },
+            })
+            .collect();
+        assert!(commands.len() >= 10);
+        for row in rows(&commands) {
+            assert!(row.ok(), "{}: {:?}", row.term, row.top);
+        }
     }
 
     #[test]

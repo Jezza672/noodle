@@ -114,6 +114,9 @@ impl PluginBrowser {
             found.len(),
             session.plugins().len()
         ));
+        if session.plugins().is_empty() && !session.plugin_scanning() {
+            empty_guidance(ui);
+        }
         let mut chosen = None;
         egui::ScrollArea::vertical()
             .max_height(ui.available_height() - 60.0)
@@ -169,6 +172,18 @@ impl PluginBrowser {
             );
         }
     }
+}
+
+/// What to do when no plugin was found: which formats Noodle loads and which
+/// folders it looks in.
+fn empty_guidance(ui: &mut egui::Ui) {
+    ui.add_space(4.0);
+    ui.label("No plugins found yet.");
+    ui.weak("Noodle loads CLAP and VST3 plugins. Install one, then press Rescan. It looks in:");
+    for dir in noodle_plugins::standard_dirs() {
+        ui.weak(format!("  {}", dir.display()));
+    }
+    ui.weak("To look somewhere else, set CLAP_PATH or VST3_PATH to the folder and restart Noodle.");
 }
 
 #[cfg(test)]

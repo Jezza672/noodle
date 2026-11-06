@@ -485,7 +485,11 @@ pub(crate) fn block_label(stats: &BlockStats) -> (String, Color32) {
         )
     } else if stats.misses > 0 {
         (
-            format!("worst block {worst}%, {} over budget", stats.misses),
+            format!(
+                "{} block{} ran too slow (worst {worst}% of its time)\nFreeze a track, or raise the buffer in Audio Settings",
+                stats.misses,
+                if stats.misses == 1 { "" } else { "s" }
+            ),
             colors::CPU_HIGH,
         )
     } else {

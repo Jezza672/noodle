@@ -61,13 +61,17 @@ pub fn paint(
 ) {
     let area = rect.shrink2(Vec2::new(10.0, 4.0) * zoom);
     match view {
-        NodeView::Meter | NodeView::GroupMeter => meter(
-            painter,
-            area,
-            zoom,
-            bodies.input_meters(node),
-            MeterAxis::Horizontal,
-        ),
+        NodeView::Meter | NodeView::GroupMeter => {
+            let channels = bodies.input_meters(node);
+            meter(painter, area, zoom, channels, MeterAxis::Horizontal);
+            painter.text(
+                area.right_center() - Vec2::new(3.0 * zoom, 0.0),
+                egui::Align2::RIGHT_CENTER,
+                meter_readout(channels),
+                egui::FontId::monospace((9.0 * zoom).max(6.0)),
+                colors::TEXT,
+            );
+        }
         NodeView::Scope => scope(painter, area, zoom, bodies.scopes.get(&node)),
         NodeView::Spectrum => spectrum(painter, area, zoom, bodies.spectra.get(&node)),
         NodeView::Panner => {
@@ -764,6 +768,17 @@ impl MeterChannel {
     }
 }
 
+/// The number a meter shows beside its bars: the highest held peak of any
+/// channel, in dB.
+fn meter_readout(channels: &[MeterChannel]) -> String {
+    let peak = channels.iter().map(|c| c.hold).fold(0.0f32, f32::max);
+    if peak < 1e-5 {
+        "-inf dB".to_owned()
+    } else {
+        format!("{:.1} dB", 20.0 * peak.log10())
+    }
+}
+
 /// Where `amplitude` sits on a meter's scale, from 0 to 1.
 fn meter_fraction(amplitude: f32) -> f32 {
     let db = 20.0 * amplitude.max(1e-9).log10();
@@ -1001,6 +1016,20 @@ mod tests {
             (total - 0.7).abs() < 0.01,
             "groups aren't counted twice: {total}"
         );
+    }
+
+    #[test]
+    fn a_meter_reads_out_its_held_peak_in_db() {
+        assert_eq!(meter_readout(&[]), "-inf dB");
+        let loud = MeterChannel {
+            hold: 0.5,
+            ..Default::default()
+        };
+        let quiet = MeterChannel {
+            hold: 0.1,
+            ..Default::default()
+        };
+        assert_eq!(meter_readout(&[quiet, loud]), "-6.0 dB");
     }
 
     #[test]
