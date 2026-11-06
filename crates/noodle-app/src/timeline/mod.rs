@@ -2207,42 +2207,29 @@ pub fn show(
         ui.separator();
         let punch = session.project().punch();
         ui.menu_button("Punch", |ui| {
+            let mut on = punch.on;
             if ui
-                .button(if punch.on { "Punch off" } else { "Punch on" })
+                .checkbox(&mut on, "Punch on")
+                .on_hover_text("Record only between the punch-in and the punch-out")
                 .clicked()
             {
                 ui.close();
                 edits.push(Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
-                    on: !punch.on,
+                    on,
                     ..punch
                 })));
             }
             if ui.button("Set punch in here").clicked() {
                 ui.close();
-                let end = if punch.end > here {
-                    punch.end
-                } else {
-                    bar_tick(map, bar + 2)
-                };
-                edits.push(Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
-                    start: here,
-                    end,
-                    ..punch
-                })));
+                edits.push(Edit::Apply(Command::SetPunch(punch_in_at(
+                    punch, here, map,
+                ))));
             }
             if ui.button("Set punch out here").clicked() {
                 ui.close();
-                let start = if punch.start < here {
-                    punch.start
-                } else {
-                    Tick::ZERO
-                };
-                let end = if here > start { here } else { bar_tick(map, 2) };
-                edits.push(Edit::Apply(Command::SetPunch(noodle_core::PunchRange {
-                    start,
-                    end,
-                    ..punch
-                })));
+                edits.push(Edit::Apply(Command::SetPunch(punch_out_at(
+                    punch, here, map,
+                ))));
             }
         });
         ui.separator();
@@ -2266,15 +2253,7 @@ pub fn show(
                 .clicked()
             {
                 ui.close();
-                let mut markers = session.project().markers().to_vec();
-                if markers.iter().all(|m| m.at != here) {
-                    markers.push(noodle_core::Marker {
-                        name: sections::next_name(session.project()),
-                        key: None,
-                        at: here,
-                    });
-                    edits.push(Edit::Apply(Command::SetMarkers(markers)));
-                }
+                edits.extend(add_marker_at(session.project(), here).map(Edit::Apply));
             }
             if ui
                 .button("Start selection here")
@@ -2508,6 +2487,59 @@ fn select_range(state: &mut TimelineState, range: sections::Range) {
     state.automation.deselect();
     state.tempo.deselect();
     state.range = Some(range);
+}
+
+/// The punch range with its start moved to `here`. A range that would end
+/// before it ends one bar later instead.
+pub(crate) fn punch_in_at(
+    punch: noodle_core::PunchRange,
+    here: Tick,
+    map: &noodle_core::TempoMap,
+) -> noodle_core::PunchRange {
+    let end = if punch.end > here {
+        punch.end
+    } else {
+        bar_tick(map, map.position(here).bar + 2)
+    };
+    noodle_core::PunchRange {
+        start: here,
+        end,
+        ..punch
+    }
+}
+
+/// The punch range with its end moved to `here`. A range that would start
+/// after it starts at the beginning instead.
+pub(crate) fn punch_out_at(
+    punch: noodle_core::PunchRange,
+    here: Tick,
+    map: &noodle_core::TempoMap,
+) -> noodle_core::PunchRange {
+    let start = if punch.start < here {
+        punch.start
+    } else {
+        Tick::ZERO
+    };
+    let end = if here > start { here } else { bar_tick(map, 2) };
+    noodle_core::PunchRange {
+        start,
+        end,
+        ..punch
+    }
+}
+
+/// The command that names `here` as a marker, unless one is already there.
+pub(crate) fn add_marker_at(project: &Project, here: Tick) -> Option<Command> {
+    let mut markers = project.markers().to_vec();
+    if markers.iter().any(|m| m.at == here) {
+        return None;
+    }
+    markers.push(noodle_core::Marker {
+        name: sections::next_name(project),
+        key: None,
+        at: here,
+    });
+    Some(Command::SetMarkers(markers))
 }
 
 fn bar_tick(map: &noodle_core::TempoMap, bar: u32) -> Tick {

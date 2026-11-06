@@ -48,6 +48,48 @@ pub struct Entry {
 /// The category the library's group templates are listed under.
 pub const GROUPS: &str = "Groups";
 
+/// Other words for a node, by its name, that the search also finds it by: the
+/// names other programs use, and the plain words for what it does.
+const SYNONYMS: &[(&str, &str)] = &[
+    ("Mix", "bus sum submix group blend"),
+    ("Voice Mix", "bus sum submix poly"),
+    ("Adder", "bus sum add"),
+    ("Voices", "multi poly polyphony unison"),
+    ("Mono Note", "monophonic legato single"),
+    ("Sampler", "multi multisample multi-sample"),
+    ("Split Channels", "multi multiple channels separate"),
+    ("Merge Channels", "multi multiple channels combine"),
+    ("Selector", "multi switch choose route"),
+    ("Remap", "range scale map curve rescale"),
+    ("Normalize", "range level loudness"),
+    ("Math", "range clamp add multiply formula"),
+    ("Output", "out speakers master main"),
+    ("MIDI Out", "send port external synth"),
+    ("Random Select", "random chance probability shuffle"),
+    ("White Noise", "random hiss"),
+    ("Sample & Hold", "random stepped"),
+    ("Humanise", "random loose feel"),
+    (
+        "Dynamics",
+        "compressor limiter gate expander sidechain duck",
+    ),
+    ("Parametric EQ", "equalizer tone"),
+    ("Delay", "echo"),
+    ("Distortion", "saturation overdrive drive"),
+    (
+        "State Variable Filter",
+        "lowpass highpass bandpass cutoff lpf hpf",
+    ),
+    ("Ladder Filter", "lowpass moog cutoff lpf"),
+];
+
+fn synonyms(name: &str) -> &'static str {
+    SYNONYMS
+        .iter()
+        .find(|(n, _)| *n == name)
+        .map_or("", |(_, words)| words)
+}
+
 /// Everything that can be added that matches every word of `query`, by name,
 /// category or ID. Those whose name matches come first, then they're ordered
 /// by category and name.
@@ -110,7 +152,13 @@ pub fn entries(registry: &Registry, library: &Library, query: &str, in_group: bo
                 Choice::Template(id) => id.as_str(),
                 Choice::Frame => "",
             };
-            let haystack = format!("{} {} {id}", entry.name, entry.category).to_lowercase();
+            let haystack = format!(
+                "{} {} {id} {}",
+                entry.name,
+                entry.category,
+                synonyms(&entry.name)
+            )
+            .to_lowercase();
             words.iter().all(|word| haystack.contains(word.as_str()))
         })
         .collect();

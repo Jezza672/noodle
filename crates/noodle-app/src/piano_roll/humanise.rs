@@ -64,8 +64,20 @@ pub(super) fn controls(
             changed.humanise_timing = Tick(FIRST_TIMING);
             changed.humanise_velocity = FIRST_VELOCITY;
         }
+        crate::inline_result::remember(
+            ui,
+            "humanise",
+            format!(
+                "Humanised {} note{}: up to {} ticks and {:.0}% velocity either way",
+                ids.len(),
+                if ids.len() == 1 { "" } else { "s" },
+                changed.humanise_timing.0,
+                changed.humanise_velocity * 100.0,
+            ),
+        );
         out.edits.push(set_midi(id, clip, changed, false));
     }
+    crate::inline_result::show(ui, "humanise");
     let mut timing = midi.humanise_timing.0;
     let mut velocity = midi.humanise_velocity * 100.0;
     ui.label("Timing");

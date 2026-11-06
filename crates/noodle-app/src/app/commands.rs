@@ -3,7 +3,10 @@
 //! Every action of the menus and the transport is registered once, in
 //! [`ENTRIES`], with a name. The palette (Cmd+K) searches them by name, so a
 //! feature that is not a node can be found by typing what it does, and the
-//! keymap binds a key chord to any of them. The keymap is a preference:
+//! keymap binds a key chord to any of them. A command also answers to the
+//! names other programs give it ([`KEYWORDS`]), and a feature that lives in a
+//! menu of the thing it works on (a clip, a track) has a guide entry that says
+//! where, since the palette itself has no selection to act on. The keymap is a preference:
 //! only the chords the user changed are saved, so a new default reaches
 //! everyone who did not touch that command.
 
@@ -261,6 +264,108 @@ pub static ENTRIES: &[Entry] = &[
         false,
     ),
     entry(
+        "punch.toggle",
+        "Punch In and Out On or Off",
+        Action::TogglePunch,
+        None,
+        false,
+    ),
+    entry(
+        "punch.in",
+        "Set Punch In at Playhead",
+        Action::SetPunchIn,
+        None,
+        false,
+    ),
+    entry(
+        "punch.out",
+        "Set Punch Out at Playhead",
+        Action::SetPunchOut,
+        None,
+        false,
+    ),
+    entry(
+        "markers.add",
+        "Add Marker at Playhead",
+        Action::AddMarker,
+        None,
+        false,
+    ),
+    entry(
+        "guide.freeze",
+        "Freeze a Node or Group…",
+        Action::Guide(
+            "Freeze: select nodes in the graph and press Shift+F, or use the Freeze button in \
+             a node's panel.",
+        ),
+        None,
+        false,
+    ),
+    entry(
+        "guide.render",
+        "Render a Track or Clip to Audio…",
+        Action::Guide(
+            "Render to clip: right-click the track's name in the arrangement. To mix the whole \
+             project down instead, use Export Audio.",
+        ),
+        None,
+        false,
+    ),
+    entry(
+        "guide.stems",
+        "Split an Audio Clip to Stems…",
+        Action::Guide("Split to stems: select an audio clip; the button is in its panel."),
+        None,
+        false,
+    ),
+    entry(
+        "guide.transients",
+        "Pin Transients, Slice or Convert to MIDI…",
+        Action::Guide(
+            "Select an audio clip; Pin transients, Slice and Convert to MIDI are in its panel \
+             and its right-click menu.",
+        ),
+        None,
+        false,
+    ),
+    entry(
+        "guide.quantise",
+        "Quantise or Humanise Notes…",
+        Action::Guide(
+            "Open a MIDI clip in the piano roll, select notes, then use Quantise or Humanise \
+             in its toolbar.",
+        ),
+        None,
+        false,
+    ),
+    entry(
+        "guide.takes",
+        "Comp or Flatten Takes…",
+        Action::Guide(
+            "Comp: right-click a take folder in the arrangement to choose between takes, or \
+             Flatten takes to make one clip.",
+        ),
+        None,
+        false,
+    ),
+    entry(
+        "guide.warp",
+        "Warp or Stretch a Clip…",
+        Action::Guide("Warp: select an audio clip and open the Warp section of its panel."),
+        None,
+        false,
+    ),
+    entry(
+        "guide.lanes",
+        "Automation Lanes…",
+        Action::Guide(
+            "Automation lanes: right-click a parameter and choose Automate, then open the \
+             track's lanes in the arrangement.",
+        ),
+        None,
+        false,
+    ),
+    entry(
         "keyboard.midi",
         "Computer Keyboard as MIDI",
         Action::ToggleKeyboard,
@@ -268,6 +373,45 @@ pub static ENTRIES: &[Entry] = &[
         true,
     ),
 ];
+
+/// Other names for a command, by its id, that the palette also searches.
+static KEYWORDS: &[(&str, &str)] = &[
+    (
+        "file.export",
+        "render bounce mixdown master loudness lufs stems versions mix version",
+    ),
+    ("file.import", "audio file sample load"),
+    ("file.save_template", "preset starter"),
+    ("punch.toggle", "punch record overdub"),
+    ("punch.in", "punch record overdub"),
+    ("punch.out", "punch record overdub"),
+    (
+        "markers.add",
+        "marker section verse chorus structure locator",
+    ),
+    ("guide.freeze", "freeze bounce in place cpu"),
+    ("guide.render", "bounce consolidate render clip print"),
+    ("guide.stems", "stem separate vocals drums bass"),
+    ("guide.transients", "transient slice onset beat detect midi"),
+    (
+        "guide.quantise",
+        "quantize quantise humanize humanise grid timing",
+    ),
+    ("guide.takes", "comp takes flatten consolidate"),
+    ("guide.warp", "warp stretch time tempo"),
+    ("guide.lanes", "lane automation envelope"),
+    ("view.cpu", "cpu load performance"),
+    ("view.cache", "cache render"),
+    ("transport.metronome", "click"),
+    ("transport.record", "rec arm"),
+];
+
+fn keywords(id: &str) -> &'static str {
+    KEYWORDS
+        .iter()
+        .find(|(k, _)| *k == id)
+        .map_or("", |(_, words)| words)
+}
 
 /// A chord as text, such as `Cmd+Shift+S`, for the saved keymap. `Cmd` is
 /// Ctrl on Windows and Linux.
@@ -395,9 +539,37 @@ impl Keymap {
     }
 }
 
+/// How well `query` finds a command with this name and these other names:
+/// words that start with it come first, then the looser letter-by-letter
+/// match of the name alone. Lower is better; `None` is no match.
+fn rank(query: &str, name: &str, keywords: &str) -> Option<(usize, usize)> {
+    let words: Vec<String> = query
+        .to_lowercase()
+        .split_whitespace()
+        .map(String::from)
+        .collect();
+    if !words.is_empty() {
+        let haystack = format!("{} {}", name.to_lowercase(), keywords.to_lowercase());
+        let starts = |word: &String| {
+            haystack
+                .split_whitespace()
+                .any(|h| h.starts_with(word.as_str()))
+        };
+        if words.iter().all(starts) {
+            return Some((0, 0));
+        }
+    }
+    letters(query, name).map(|cost| (1, cost))
+}
+
 /// Whether `query` finds `name`: every letter of it, in order, with matches
 /// that run together or start words ranked first. `None` is no match.
+#[cfg(test)]
 pub fn score(query: &str, name: &str) -> Option<usize> {
+    letters(query, name)
+}
+
+fn letters(query: &str, name: &str) -> Option<usize> {
     let name = name.to_lowercase();
     let mut at = 0;
     let mut cost = 0;
@@ -434,6 +606,18 @@ pub struct Out {
     pub keymap_changed: bool,
 }
 
+/// The registered commands `query` finds, best first, for the usability
+/// scorecard to type vocabulary into.
+#[cfg(test)]
+pub fn search(query: &str) -> Vec<&'static Entry> {
+    let mut found: Vec<_> = ENTRIES
+        .iter()
+        .filter_map(|e| Some((rank(query, e.name, keywords(e.id))?, e)))
+        .collect();
+    found.sort_by_key(|(cost, _)| *cost);
+    found.into_iter().map(|(_, e)| e).collect()
+}
+
 /// A command in the list: a registered entry, or one made for the moment,
 /// such as a template to start from.
 struct Row<'a> {
@@ -462,7 +646,7 @@ impl Palette {
     /// The commands the query finds, best first. `extra` are the commands
     /// that exist only now (the project templates).
     fn found<'a>(&self, extra: &[(String, Action)]) -> Vec<Row<'a>> {
-        let mut rows: Vec<(usize, Row<'a>)> = ENTRIES
+        let mut rows: Vec<((usize, usize), Row<'a>)> = ENTRIES
             .iter()
             .map(|e| Row {
                 name: e.name.to_owned(),
@@ -474,7 +658,10 @@ impl Palette {
                 action: *action,
                 id: None,
             }))
-            .filter_map(|row| Some((score(&self.query, &row.name)?, row)))
+            .filter_map(|row| {
+                let words = row.id.map_or("", |e| keywords(e.id));
+                Some((rank(&self.query, &row.name, words)?, row))
+            })
             .collect();
         rows.sort_by_key(|(cost, _)| *cost);
         rows.into_iter().map(|(_, row)| row).collect()

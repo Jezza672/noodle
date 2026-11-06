@@ -6,7 +6,7 @@ use egui::{Key, KeyboardShortcut, Modifiers};
 use noodle_core::{Command, NodeId};
 use noodle_engine::OUTPUT_ID;
 
-mod commands;
+pub(crate) mod commands;
 
 use crate::cache_panel::CachePanel;
 use crate::clip_editor::{self, ClipEditor};
@@ -216,6 +216,16 @@ pub(crate) enum Action {
     NewFromTemplate(usize),
     /// Folds or unfolds every folder of tracks.
     FoldFolders(bool),
+    /// Turns the punch range on or off.
+    TogglePunch,
+    /// Moves the punch-in or punch-out to the playhead.
+    SetPunchIn,
+    SetPunchOut,
+    /// Names the playhead's place as a marker.
+    AddMarker,
+    /// Says where a feature that works on a selection lives. The palette has
+    /// no selection to act on, so this is its entry for those.
+    Guide(&'static str),
 }
 
 impl Action {
@@ -1924,6 +1934,34 @@ impl App {
                 }
             }
             Action::OpenPalette => self.palette.open(),
+            Action::Guide(text) => self.session.notify(text.to_owned()),
+            Action::TogglePunch => {
+                let punch = self.session.project().punch();
+                self.session.edit(vec![Edit::Apply(Command::SetPunch(
+                    noodle_core::PunchRange {
+                        on: !punch.on,
+                        ..punch
+                    },
+                ))]);
+            }
+            Action::SetPunchIn | Action::SetPunchOut => {
+                let punch = self.session.project().punch();
+                let here = self.session.playhead();
+                let map = self.session.project().tempo_map().clone();
+                let moved = if action == Action::SetPunchIn {
+                    timeline::punch_in_at(punch, here, &map)
+                } else {
+                    timeline::punch_out_at(punch, here, &map)
+                };
+                self.session
+                    .edit(vec![Edit::Apply(Command::SetPunch(moved))]);
+            }
+            Action::AddMarker => {
+                let here = self.session.playhead();
+                if let Some(command) = timeline::add_marker_at(self.session.project(), here) {
+                    self.session.edit(vec![Edit::Apply(command)]);
+                }
+            }
             Action::SaveTemplate => self.template_name = Some(String::new()),
             Action::NewFromTemplate(n) => {
                 if let Some((_, path)) = self.templates.get(n).cloned()
@@ -2444,6 +2482,59 @@ mod tests {
         h.run();
         assert!(!h.state().palette.is_open(), "it closes after running one");
         assert!(folded(&h));
+    }
+
+    fn palette_run(app: App, query: &str) -> Harness<'static, App> {
+        let mut h = harness(app);
+        h.run();
+        let at = egui::pos2(300.0, 200.0);
+        crate::testkit::press(&mut h, at, Modifiers::COMMAND, Key::K);
+        h.run();
+        crate::testkit::type_text(&mut h, at, query);
+        h.run();
+        crate::testkit::press(&mut h, at, Modifiers::NONE, Key::Enter);
+        h.run();
+        h
+    }
+
+    #[test]
+    fn the_palette_turns_punch_on_and_puts_it_at_the_playhead() {
+        let h = palette_run(empty(), "punch on");
+        assert!(h.state().session.project().punch().on);
+        let h = palette_run(empty(), "punch out");
+        let punch = h.state().session.project().punch();
+        assert!(punch.end > punch.start, "{punch:?}");
+    }
+
+    #[test]
+    fn the_palette_adds_a_marker_at_the_playhead() {
+        let h = palette_run(empty(), "add marker");
+        assert_eq!(h.state().session.project().markers().len(), 1);
+    }
+
+    #[test]
+    fn the_palette_finds_a_feature_by_another_programs_name_and_says_where_it_is() {
+        for (query, word) in [
+            ("freeze", "Shift+F"),
+            ("bounce", "Render to clip"),
+            ("comp", "take folder"),
+            ("lufs", ""),
+        ] {
+            let found = commands::search(query);
+            assert!(!found.is_empty(), "{query} finds nothing");
+            if let Action::Guide(text) = found[0].action {
+                assert!(text.contains(word), "{query}: {text}");
+            }
+        }
+        let h = palette_run(empty(), "freeze");
+        assert!(
+            h.state()
+                .session
+                .message()
+                .is_some_and(|m| m.contains("Freeze")),
+            "{:?}",
+            h.state().session.message()
+        );
     }
 
     #[test]

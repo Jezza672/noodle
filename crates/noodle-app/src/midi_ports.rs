@@ -100,21 +100,124 @@ pub struct MidiPortsView {
     list_outputs: Lister,
 }
 
-impl Default for MidiPortsView {
-    #[cfg(not(test))]
-    fn default() -> Self {
-        Self::with_listers(noodle_io::midi_inputs, noodle_io::midi_outputs)
-    }
+#[cfg(not(test))]
+fn system_listers() -> (Lister, Lister) {
+    (noodle_io::midi_inputs, noodle_io::midi_outputs)
+}
 
-    /// Tests (and the story routes) see two ports of each kind, whatever
-    /// the machine has.
-    #[cfg(test)]
+/// Tests (and the story routes) see two ports of each kind, whatever the
+/// machine has.
+#[cfg(test)]
+fn system_listers() -> (Lister, Lister) {
+    (
+        || Ok(vec!["Test Keys".into(), "Test Pads".into()]),
+        || Ok(vec!["Test Synth".into(), "Test Drum Machine".into()]),
+    )
+}
+
+impl Default for MidiPortsView {
     fn default() -> Self {
-        Self::with_listers(
-            || Ok(vec!["Test Keys".into(), "Test Pads".into()]),
-            || Ok(vec!["Test Synth".into(), "Test Drum Machine".into()]),
-        )
+        let (inputs, outputs) = system_listers();
+        Self::with_listers(inputs, outputs)
     }
+}
+
+/// The ports the system lists, kept in the UI context so a node's panel can
+/// offer them without asking the system every frame.
+#[derive(Clone, Default)]
+struct PortCache {
+    inputs: Vec<String>,
+    outputs: Vec<String>,
+    error: Option<String>,
+    listed: bool,
+}
+
+fn port_cache_id() -> egui::Id {
+    egui::Id::new("midi port cache")
+}
+
+fn refresh_cache(ctx: &egui::Context) -> PortCache {
+    let (list_inputs, list_outputs) = system_listers();
+    let mut cache = PortCache {
+        listed: true,
+        ..Default::default()
+    };
+    match list_inputs() {
+        Ok(ports) => cache.inputs = ports,
+        Err(error) => cache.error = Some(error.to_string()),
+    }
+    match list_outputs() {
+        Ok(ports) => cache.outputs = ports,
+        Err(error) => cache.error = Some(error.to_string()),
+    }
+    ctx.data_mut(|d| d.insert_temp(port_cache_id(), cache.clone()));
+    cache
+}
+
+/// The port drop-down on a MIDI node's own panel, so the choice is made
+/// where the node is. It returns the new port name (empty for "every port"
+/// or "none") when one is picked. The listing is taken when the panel first
+/// shows it and again on Refresh.
+pub fn port_picker(ui: &mut Ui, id: NodeId, kind: Kind, current: &str) -> Option<String> {
+    let cache = ui
+        .ctx()
+        .data(|d| d.get_temp::<PortCache>(port_cache_id()))
+        .filter(|c| c.listed)
+        .unwrap_or_else(|| refresh_cache(ui.ctx()));
+    let ports = match kind {
+        Kind::Input => &cache.inputs,
+        Kind::Output => &cache.outputs,
+    };
+    let any = match kind {
+        Kind::Input => "Every port",
+        Kind::Output => "None",
+    };
+    let unset = current.is_empty() || current == "*";
+    let connected = ports.iter().any(|p| same_port(p, current));
+    let selected = if unset {
+        any.to_owned()
+    } else if connected {
+        current.to_owned()
+    } else {
+        format!("{current} (not connected)")
+    };
+    let mut chosen = None;
+    ui.horizontal(|ui| {
+        let name = ui.label("Port");
+        let combo = Dropdown::from_id_salt(("node midi port", id))
+            .selected_text(selected)
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(unset, any).clicked() {
+                    chosen = Some(String::new());
+                }
+                for port in ports {
+                    if ui
+                        .selectable_label(same_port(current, port), port)
+                        .clicked()
+                    {
+                        chosen = Some(port.clone());
+                    }
+                }
+                if !unset && !connected {
+                    let _ = ui.selectable_label(true, format!("{current} (not connected)"));
+                }
+            });
+        combo.response.labelled_by(name.id);
+        if ui
+            .small_button("Refresh")
+            .on_hover_text("List the ports again, e.g. after plugging a device in")
+            .clicked()
+        {
+            refresh_cache(ui.ctx());
+        }
+    });
+    if ports.is_empty() {
+        ui.weak(match &cache.error {
+            Some(error) => format!("MIDI isn't available here: {error}"),
+            None => "No MIDI ports found. Plug a device in and press Refresh.".to_owned(),
+        });
+    }
+    chosen.filter(|port| port != current)
 }
 
 impl MidiPortsView {
