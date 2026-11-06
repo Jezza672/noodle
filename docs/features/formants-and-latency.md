@@ -15,6 +15,6 @@ Tests: `FormantWarp` in `spectral.rs`, `Formant Shift` in `noodle-nodes/src/spec
 
 ## Latency display (#429)
 
-`Controller::latency_report` (`noodle-engine/src/plan.rs`: `LatencyReport`, `NodeLatency`, `HeldInput`) gives, per node, its own reported latency, how late its output sounds and which inputs delay compensation held back. The session keeps the report from each compile (`Session::plan_latency`); `noodle-app/src/latency.rs` turns it into words. A node that adds latency shows `+N ms` in its header, one that lines up paths shows `holds N ms`, and the properties panel has a Latency section. A group sums what is inside it. Nothing shows when no node reports latency.
+`Controller::latency_report` (`noodle-engine/src/plan.rs`: `LatencyReport`, `NodeLatency`, `HeldInput`) gives, per node, its own reported latency, how late its output sounds and which inputs delay compensation held back. The session keeps the report from each compile (`Session::plan_latency`); `noodle-app/src/latency.rs` turns it into words. A node that adds latency shows `+N ms` in its header, one that lines up paths shows `holds N ms`, and the properties panel has a Latency section. A group shows the longest latency of what is inside it. Nothing shows when no node reports latency.
 
 Tests: `tests/pdc.rs` (the report names the latent node and the held input; an empty report with no latency), `session.rs` (a Synthesize path joined with a dry path: the Synthesize reports its latency and the mixer's second input is held), `latency.rs`.

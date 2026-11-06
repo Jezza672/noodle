@@ -13,7 +13,8 @@ use crate::session::Session;
 /// What one node adds, and what was held back at its inputs.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
 pub struct Reading {
-    /// The latency the node (or the nodes inside a group) report, in samples.
+    /// The latency the node reports, or the longest of the nodes inside a
+    /// group, in samples.
     pub own: u32,
     /// How late the node's output sounds against the timeline, in samples.
     pub arrival: u32,
@@ -38,7 +39,8 @@ pub fn ms(samples: u32, rate: f32) -> String {
 }
 
 /// What delay compensation did at `node`, or nothing if no latency reaches
-/// it. A group has the sum of what is inside it and the latest arrival.
+/// it. A group has the longest latency of what is inside it (paths inside
+/// run in parallel, so a sum would overstate it) and the latest arrival.
 pub fn reading(session: &Session, node: NodeId) -> Option<Reading> {
     let report = session.plan_latency();
     if report.nodes.is_empty() {
@@ -51,7 +53,7 @@ pub fn reading(session: &Session, node: NodeId) -> Option<Reading> {
         if !inside {
             continue;
         }
-        total.own += latency.own;
+        total.own = total.own.max(latency.own);
         total.arrival = total.arrival.max(latency.arrival);
         let Some(placed) = graph.node(id) else {
             continue;

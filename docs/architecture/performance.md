@@ -46,7 +46,7 @@ reports (`own`), how late its outputs sound (`arrival`) and which inputs were
 held back and by how much. The editor shows it on a node's header (`+43 ms`
 for a node that adds latency, `holds 43 ms` for one that lines paths up), and
 the properties panel has a Latency section with the samples and the names of
-the delayed inputs. A group shows the sum of what is inside it.
+the delayed inputs. A group shows the longest latency of what is inside it.
 
 ## CPU meters
 
