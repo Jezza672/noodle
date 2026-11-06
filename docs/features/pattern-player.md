@@ -36,7 +36,7 @@ A sampler for MIDI clips: `noodle.events.pattern` plays a pattern on its
   the slots (Edit opens the piano roll, Play picks the slot, Remove, `+ New
   slot`) and draws the step grid for the slot that plays: a row for each key,
   a cell for each step of the region (each cell is a button named "Step N on
-  key K"), a click for a note half a step long, a vertical drag for velocity,
+  key K"; the grid squeezes to fit the panel and numbers its steps), a click for a note half a step long, a vertical drag for velocity,
   `+ Row` for a key not yet used, and `To triplets`, which moves every note
   from the straight grid to the triplet one and sets `step` to match in one
   batch. A timeline MIDI clip's menu has `Copy to pattern`.
