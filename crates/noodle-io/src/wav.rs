@@ -125,7 +125,15 @@ impl Drop for WavStreamWriter {
 
 /// Reads integer or float WAV, scaling integer samples to between -1 and 1.
 pub fn read_wav(path: &Path) -> Result<Audio, WavError> {
-    let mut reader = hound::WavReader::open(path)?;
+    read_wav_from(hound::WavReader::open(path)?)
+}
+
+/// Reads WAV audio held in memory (a file embedded in the program).
+pub fn read_wav_bytes(bytes: &[u8]) -> Result<Audio, WavError> {
+    read_wav_from(hound::WavReader::new(bytes)?)
+}
+
+fn read_wav_from<R: std::io::Read>(mut reader: hound::WavReader<R>) -> Result<Audio, WavError> {
     let spec = reader.spec();
     let samples = match spec.sample_format {
         hound::SampleFormat::Float => reader.samples::<f32>().collect::<Result<_, _>>()?,

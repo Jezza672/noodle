@@ -72,7 +72,7 @@
                 to: (node: 5, port: "in"),
             ),
             (
-                from: (node: 5, port: "out"),
+                from: (node: 5, port: "low"),
                 to: (node: 6, port: "p1"),
             ),
         ],
@@ -80,7 +80,7 @@
     GroupPreset((
         name: "Sustained",
         slug: "multisample-instrument-sustained",
-        topology: "22d06daa24b8588b",
+        topology: "e8ac31468ca95be1",
         nodes: [
             (
                 params: {"bend_range": 2.0, "mode": 1.0, "release": 0.4},
@@ -96,7 +96,7 @@
     GroupPreset((
         name: "Short Notes",
         slug: "multisample-instrument-short-notes",
-        topology: "22d06daa24b8588b",
+        topology: "e8ac31468ca95be1",
         nodes: [
             (
                 params: {"bend_range": 2.0, "mode": 1.0, "release": 0.08},
@@ -112,7 +112,7 @@
     GroupPreset((
         name: "Wide Bend",
         slug: "multisample-instrument-wide-bend",
-        topology: "22d06daa24b8588b",
+        topology: "e8ac31468ca95be1",
         nodes: [
             (
                 params: {"bend_range": 12.0, "mode": 1.0, "release": 0.25},

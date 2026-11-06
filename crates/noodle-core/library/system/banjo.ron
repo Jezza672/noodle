@@ -1,0 +1,135 @@
+[
+    Template((
+        name: "Banjo",
+        slug: "banjo",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Banjo"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:tune\n3:bend range\n4:release\n5:gain\n6:cutoff"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.instrument.sample_set",
+                config: {"sample": "498a3d2e3284ef0c30b4c33c38e331c992d104429a502d4b4c74d47e1e5c6adc@39;86c210d439bcadd4ef04c0225a90ff5af307a896814be1d40fdc44ce26ca0323@43;a93d93afd7970a2a35e5d82cf6db0779a0db091fdb5e870a95483eca516e41a0@46;2d862cb19a48b9768e6500ccf8b0226e4103e7ab1907143e667563d2b184f486@49;3a991fbb85456355f4677f66147bf6dba97447463f191d6fde354ea61d9c18d9@52;cb21db1ec0dabd9f1a7600640f61fcb1996268105bfae1581c36452df2331a17@55;a3508e455c692de2f8349f8dcd883f8010bb7a151a3a5c42dfa8357bec152450@58;9ce8a5e3d2649c7827065cd32636f80a2a15f6ad3734ddbc040da3a76b4bcf32@61"},
+                position: (x: 220.0, y: 260.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.instrument.sampler",
+                params: {"bend_range": 2.0, "gain": -5.0, "mode": 1.0, "release": 0.25},
+                position: (x: 440.0, y: 0.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.filter.svf",
+                params: {"cutoff": 20000.0},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 910.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 4, port: "bend_range"),
+            ),
+            (
+                from: (node: 2, port: "p5"),
+                to: (node: 4, port: "gain"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 4, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 4, port: "release"),
+            ),
+            (
+                from: (node: 3, port: "sample"),
+                to: (node: 4, port: "sample"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 4, port: "tune"),
+            ),
+            (
+                from: (node: 2, port: "p6"),
+                to: (node: 5, port: "cutoff"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "in"),
+            ),
+            (
+                from: (node: 5, port: "low"),
+                to: (node: 6, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Open",
+        slug: "banjo-open",
+        topology: "e8ac31468ca95be1",
+        nodes: [
+            (
+                params: {"bend_range": 2.0, "gain": -5.0, "mode": 1.0, "release": 0.25},
+            ),
+            (),
+            (
+                params: {"cutoff": 20000.0},
+            ),
+            (
+                config: {"sample": "498a3d2e3284ef0c30b4c33c38e331c992d104429a502d4b4c74d47e1e5c6adc@39;86c210d439bcadd4ef04c0225a90ff5af307a896814be1d40fdc44ce26ca0323@43;a93d93afd7970a2a35e5d82cf6db0779a0db091fdb5e870a95483eca516e41a0@46;2d862cb19a48b9768e6500ccf8b0226e4103e7ab1907143e667563d2b184f486@49;3a991fbb85456355f4677f66147bf6dba97447463f191d6fde354ea61d9c18d9@52;cb21db1ec0dabd9f1a7600640f61fcb1996268105bfae1581c36452df2331a17@55;a3508e455c692de2f8349f8dcd883f8010bb7a151a3a5c42dfa8357bec152450@58;9ce8a5e3d2649c7827065cd32636f80a2a15f6ad3734ddbc040da3a76b4bcf32@61"},
+            ),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Muted",
+        slug: "banjo-muted",
+        topology: "e8ac31468ca95be1",
+        nodes: [
+            (
+                params: {"bend_range": 2.0, "gain": -5.0, "mode": 1.0, "release": 0.06},
+            ),
+            (),
+            (
+                params: {"cutoff": 3000.0},
+            ),
+            (
+                config: {"sample": "498a3d2e3284ef0c30b4c33c38e331c992d104429a502d4b4c74d47e1e5c6adc@39;86c210d439bcadd4ef04c0225a90ff5af307a896814be1d40fdc44ce26ca0323@43;a93d93afd7970a2a35e5d82cf6db0779a0db091fdb5e870a95483eca516e41a0@46;2d862cb19a48b9768e6500ccf8b0226e4103e7ab1907143e667563d2b184f486@49;3a991fbb85456355f4677f66147bf6dba97447463f191d6fde354ea61d9c18d9@52;cb21db1ec0dabd9f1a7600640f61fcb1996268105bfae1581c36452df2331a17@55;a3508e455c692de2f8349f8dcd883f8010bb7a151a3a5c42dfa8357bec152450@58;9ce8a5e3d2649c7827065cd32636f80a2a15f6ad3734ddbc040da3a76b4bcf32@61"},
+            ),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Warm",
+        slug: "banjo-warm",
+        topology: "e8ac31468ca95be1",
+        nodes: [
+            (
+                params: {"bend_range": 2.0, "gain": -5.0, "mode": 1.0, "release": 0.2},
+            ),
+            (),
+            (
+                params: {"cutoff": 2200.0},
+            ),
+            (
+                config: {"sample": "498a3d2e3284ef0c30b4c33c38e331c992d104429a502d4b4c74d47e1e5c6adc@39;86c210d439bcadd4ef04c0225a90ff5af307a896814be1d40fdc44ce26ca0323@43;a93d93afd7970a2a35e5d82cf6db0779a0db091fdb5e870a95483eca516e41a0@46;2d862cb19a48b9768e6500ccf8b0226e4103e7ab1907143e667563d2b184f486@49;3a991fbb85456355f4677f66147bf6dba97447463f191d6fde354ea61d9c18d9@52;cb21db1ec0dabd9f1a7600640f61fcb1996268105bfae1581c36452df2331a17@55;a3508e455c692de2f8349f8dcd883f8010bb7a151a3a5c42dfa8357bec152450@58;9ce8a5e3d2649c7827065cd32636f80a2a15f6ad3734ddbc040da3a76b4bcf32@61"},
+            ),
+            (),
+        ],
+    )),
+]

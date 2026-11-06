@@ -35,7 +35,7 @@ pub(super) fn registry() -> Registry {
 
 /// A family: one template and the instruments its presets come from. The
 /// first is the template's own values.
-struct Family {
+pub(super) struct Family {
     file: &'static str,
     name: &'static str,
     slug: &'static str,
@@ -43,7 +43,7 @@ struct Family {
 }
 
 /// Builds one variant of a family's group in a scratch patch.
-type Build = Box<dyn Fn(&mut Patch) -> NodeId>;
+pub(super) type Build = Box<dyn Fn(&mut Patch) -> NodeId>;
 
 fn tone_family(
     file: &'static str,
@@ -111,7 +111,7 @@ fn drum(drum: Drum) -> Instrument {
 }
 
 fn families() -> Vec<Family> {
-    vec![
+    let mut families = vec![
         tone_family(
             "mono-synth",
             "Mono Synth",
@@ -400,10 +400,12 @@ fn families() -> Vec<Family> {
             })
             .collect(),
         ),
-    ]
+    ];
+    families.extend(super::instruments::families());
+    families
 }
 
-fn effect_family(
+pub(super) fn effect_family(
     file: &'static str,
     name: &'static str,
     voices: Vec<(&'static str, Build)>,
@@ -671,7 +673,7 @@ fn multisample_instrument(p: &mut Patch, release: f32, bend: f32) -> NodeId {
     p.connect((sampler, "out"), (filter, "in"));
     p.connect(cutoff, (filter, "cutoff"));
     let out = p.output("out", 4.0, 0.0);
-    p.connect((filter, "out"), out);
+    p.connect((filter, "low"), out);
     p.leave(group);
     group
 }
@@ -815,6 +817,7 @@ fn drum_rack(db: f32, spread: f32) -> Instrument {
             .into_iter()
             .map(|(drum, key, pan)| Slot {
                 sample: String::new(),
+                label: None,
                 drum,
                 key,
                 // Hats and cymbals sit at `db`; the rest at 0 dB.
