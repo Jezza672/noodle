@@ -31,6 +31,8 @@ export NOODLE_PROMPT="$out/private/prompt.md" NOODLE_AGENT="$out/agent" \
   NOODLE_CTL="$out/agent/ctl.sh" NOODLE_MODEL="${3:-}" \
   NOODLE_TRANSCRIPT="$out/private/transcript.jsonl"
 bash "$runner" || echo "the runner exited with an error (see above)"
+# An agent that stopped without finish or giveup still gets its run checked.
+[ -f "$out/agent/over" ] || bash "$NOODLE_CTL" abandon >/dev/null 2>&1 || true
 # The app writes the result when the agent finishes; give it time before stopping it.
 for _ in $(seq 1 100); do [ -f "$out/private/result.json" ] && break; sleep 0.3; done
 kill "$(cat "$out/private/driver.pid")" 2>/dev/null || true

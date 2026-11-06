@@ -52,7 +52,10 @@ const DEFAULT_BUDGET: usize = 80;
 #[derive(Clone, Debug, PartialEq)]
 enum Command {
     Screenshot,
-    Tree,
+    /// The accessibility tree, only the lines holding this text if given.
+    Tree(Option<String>),
+    /// What is in the task's folder, as a file manager would show it.
+    Files,
     Click {
         at: Pos2,
         modifiers: Modifiers,
@@ -83,6 +86,9 @@ enum Command {
     Listen(Duration),
     Finish,
     GiveUp,
+    /// Sent by the launcher when the agent's session ended without `finish`
+    /// or `giveup`, so the run still ends and is checked. Not in the prompt.
+    Abandon,
 }
 
 impl Command {
@@ -91,12 +97,14 @@ impl Command {
         !matches!(
             self,
             Command::Screenshot
-                | Command::Tree
+                | Command::Tree(_)
+                | Command::Files
                 | Command::Note(_)
                 | Command::Choose(_)
                 | Command::Listen(_)
                 | Command::Finish
                 | Command::GiveUp
+                | Command::Abandon
         )
     }
 }
@@ -137,7 +145,8 @@ fn parse(line: &str) -> Result<Command, String> {
     let words: Vec<&str> = rest.split_whitespace().collect();
     Ok(match verb {
         "screenshot" | "look" => Command::Screenshot,
-        "tree" => Command::Tree,
+        "tree" => Command::Tree((!rest.is_empty()).then(|| rest.to_lowercase())),
+        "files" => Command::Files,
         "click" => Command::Click {
             at: point(&words, 0)?,
             modifiers: words
@@ -219,6 +228,7 @@ fn parse(line: &str) -> Result<Command, String> {
         "note" => Command::Note(rest.to_string()),
         "finish" | "done" => Command::Finish,
         "giveup" => Command::GiveUp,
+        "abandon" => Command::Abandon,
         "" => return Err("empty command".into()),
         other => return Err(format!("unknown command {other}")),
     })
@@ -373,10 +383,30 @@ impl Run {
 fn execute(h: &mut AppHarness, run: &mut Run, command: Command) -> String {
     match command {
         Command::Screenshot => run.shot(h),
-        Command::Tree => tree(h),
+        Command::Tree(filter) => {
+            let all = tree(h);
+            match filter {
+                None => all,
+                Some(text) => {
+                    let kept: Vec<&str> = all
+                        .lines()
+                        .filter(|l| l.to_lowercase().contains(&text))
+                        .collect();
+                    if kept.is_empty() {
+                        format!("no line of the tree holds \"{text}\"")
+                    } else {
+                        kept.join("\n")
+                    }
+                }
+            }
+        }
+        Command::Files => {
+            let world = run.dir.join("world");
+            format!("{}: {}", world.display(), listing(&world))
+        }
         Command::Note(_) => "noted".into(),
         Command::Listen(time) => listen(h, time),
-        Command::Finish | Command::GiveUp => "ok".into(),
+        Command::Finish | Command::GiveUp | Command::Abandon => "ok".into(),
         // A choose or cancel is read by the picker's handler while a picker is
         // open. Arriving here, none is.
         Command::Choose(_) => "no file picker is open".into(),
@@ -609,24 +639,40 @@ fn install_picker(run: &Run) {
     }));
 }
 
-/// The names in a folder, as a file dialog would list them.
+/// The names in a folder, as a file dialog would list them, with what is in
+/// each folder inside it (one level), as a person browsing would see.
 fn listing(dir: &Path) -> String {
-    let mut names: Vec<String> = std::fs::read_dir(dir)
-        .map(|rd| {
-            rd.filter_map(Result::ok)
-                .map(|e| {
-                    let name = e.file_name().to_string_lossy().into_owned();
-                    if e.path().is_dir() {
-                        format!("{name}/")
-                    } else {
-                        name
-                    }
-                })
-                .collect()
+    fn names(dir: &Path) -> Vec<(String, bool)> {
+        let mut names: Vec<(String, bool)> = std::fs::read_dir(dir)
+            .map(|rd| {
+                rd.filter_map(Result::ok)
+                    .map(|e| {
+                        (
+                            e.file_name().to_string_lossy().into_owned(),
+                            e.path().is_dir(),
+                        )
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+        names.sort();
+        names
+    }
+    names(dir)
+        .into_iter()
+        .map(|(name, is_dir)| {
+            if is_dir {
+                let inside: Vec<String> = names(&dir.join(&name))
+                    .into_iter()
+                    .map(|(n, d)| if d { format!("{n}/") } else { n })
+                    .collect();
+                format!("{name}/ (holds: {})", inside.join(", "))
+            } else {
+                name
+            }
         })
-        .unwrap_or_default();
-    names.sort();
-    names.join(", ")
+        .collect::<Vec<_>>()
+        .join(", ")
 }
 
 fn wait_for(path: &Path) -> String {
@@ -747,6 +793,7 @@ fn drive() {
         let finishing = match command {
             Command::Finish => Some("finished"),
             Command::GiveUp => Some("gave up"),
+            Command::Abandon => Some("walked away"),
             _ => None,
         };
         let result = execute(&mut h, &mut run, command);
@@ -815,6 +862,26 @@ mod tests {
             Command::Listen(Duration::from_secs(5))
         );
         assert!(parse("listen soon").is_err());
+    }
+
+    #[test]
+    fn the_listing_shows_what_is_inside_folders() {
+        let dir = std::env::temp_dir().join(format!("noodle-listing-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join("recordings")).unwrap();
+        std::fs::write(dir.join("recordings/a.wav"), "").unwrap();
+        std::fs::write(dir.join("project.ron"), "").unwrap();
+        let text = listing(&dir);
+        std::fs::remove_dir_all(&dir).unwrap();
+        assert_eq!(text, "project.ron, recordings/ (holds: a.wav)");
+        assert_eq!(parse("abandon").unwrap(), Command::Abandon);
+        assert_eq!(parse("tree").unwrap(), Command::Tree(None));
+        assert_eq!(
+            parse("tree Formant").unwrap(),
+            Command::Tree(Some("formant".into()))
+        );
+        assert_eq!(parse("files").unwrap(), Command::Files);
+        assert!(!Command::Files.is_action());
+        assert!(!Command::Abandon.is_action());
     }
 
     #[test]
