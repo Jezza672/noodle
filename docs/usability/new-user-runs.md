@@ -85,7 +85,8 @@ and all tools, so "only use ctl.sh" is only a request there. Two things help:
   `head`/`tail`) or a screenshot read is listed as stray. A stray call that the
   tool refused (`denied`) taught the agent nothing and is only listed; one that
   ran marks the run **contaminated**. A contaminated run says what the agent
-  could have found, not what a newcomer finds: rerun it. For another runner,
+  could have found, not what a newcomer finds: rerun it. `test_audit.py` holds
+  the accepted and refused command lines. For another runner,
   make a transcript in the same shape, or record strays by hand.
 
 Native file pickers do not show in screenshots. When an action opens one, the

@@ -18,30 +18,42 @@ import sys
 from pathlib import Path
 
 
+GREP_SHORT = set("iEnvwxcoFhH")  # flags that take no argument and read nothing
+GREP_LONG = {
+    "--ignore-case", "--extended-regexp", "--line-number", "--invert-match",
+    "--word-regexp", "--count", "--only-matching", "--no-filename",
+}
+
+
 def filter_ok(words) -> bool:
     """A filter on ctl.sh's output: head or tail with a count, or grep that
-    reads only its input (a pattern and options, no file named)."""
+    reads only its input: whitelisted flags, a pattern, and no file or
+    recursion."""
     if re.fullmatch(r"(head|tail)( -n?\+?\d+)?( -n \+?\d+)?", " ".join(words)):
         return True
     if not words or words[0] != "grep":
         return False
-    with_arg = {"-A", "-B", "-C", "-m"}
+    with_arg = {"-A", "-B", "-C", "-m", "-e"}
     patterns_given, operands, i = False, [], 1
     while i < len(words):
         w = words[i]
         if w in with_arg:
+            patterns_given = patterns_given or w == "-e"
+            if i + 1 >= len(words):
+                return False
             i += 2
             continue
-        if w == "-e":
-            patterns_given = True
-            i += 2
-            continue
-        if w.startswith("-"):
-            if "f" in w[1:] and not w.startswith("--") or w in ("-r", "-R") or w.startswith("--file"):
-                return False  # reads a pattern file, or searches files
+        if re.fullmatch(r"-[ABCm]\d+", w):
             i += 1
             continue
-        operands.append(w)
+        if w.startswith("--"):
+            if w not in GREP_LONG:
+                return False
+        elif w.startswith("-") and w != "-":
+            if not set(w[1:]) <= GREP_SHORT:
+                return False
+        else:
+            operands.append(w)
         i += 1
     return len(operands) == (0 if patterns_given else 1)
 
@@ -53,14 +65,21 @@ def only_ctl(cmd: str, ctl: str) -> bool:
     run inside it: backticks, `$(` and `${`."""
     if "`" in cmd or "$(" in cmd or "${" in cmd:
         return False
-    # Unquoted newlines separate commands, so make them visible.
+    # Walk the line as bash would. Outside single quotes a backslash can hide
+    # a quote or a newline, and outside any quotes `#` starts a comment that
+    # runs to the end of the line: refuse both rather than model them. An
+    # unquoted newline separates commands, so make it visible.
     out, quote = [], None
     for ch in cmd:
         if quote:
             if ch == quote:
                 quote = None
+            elif ch == "\\" and quote == '"':
+                return False
         elif ch in "'\"":
             quote = ch
+        elif ch in "\\#":
+            return False
         elif ch == "\n":
             ch = " ; "
         out.append(ch)
@@ -68,6 +87,7 @@ def only_ctl(cmd: str, ctl: str) -> bool:
         return False
     lexer = shlex.shlex("".join(out), posix=True, punctuation_chars=True)
     lexer.whitespace_split = True
+    lexer.commenters = ""
     try:
         tokens = list(lexer)
     except ValueError:
@@ -128,10 +148,14 @@ def stray_calls(lines, agent: Path):
         if not isinstance(content, list):
             continue
         for part in content:
-            if part.get("type") == "tool_result" and "Permission to use" in json.dumps(
-                part.get("content")
-            ):
-                denied.add(part.get("tool_use_id"))
+            if part.get("type") == "tool_result" and part.get("is_error"):
+                body = part.get("content")
+                if isinstance(body, list):
+                    body = " ".join(
+                        b.get("text", "") for b in body if isinstance(b, dict)
+                    )
+                if str(body).startswith("Permission to use "):
+                    denied.add(part.get("tool_use_id"))
     for ev in events:
         message = ev.get("message")
         content = message.get("content") if isinstance(message, dict) else None
