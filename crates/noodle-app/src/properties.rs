@@ -771,23 +771,25 @@ fn config(
             articulation_map_editor(ui, session, id, info, node, edits);
             continue;
         }
-        // Chosen in the MIDI ports view, which knows what ports there are.
+        // Chosen here, and for every MIDI node at once in View → MIDI ports.
         if matches!(
             node_type.info().id,
             noodle_nodes::MIDI_IN_ID | noodle_nodes::MIDI_CONTROL_ID | noodle_nodes::MIDI_OUT_ID
         ) && info.key == noodle_nodes::MIDI_PORT_KEY
         {
-            let port = info.get_text(&node.config);
-            ui.label(if port.is_empty() || port == "*" {
-                if node_type.info().id == noodle_nodes::MIDI_OUT_ID {
-                    "No port chosen".to_owned()
-                } else {
-                    "Listens to every port".to_owned()
-                }
+            let kind = if node_type.info().id == noodle_nodes::MIDI_OUT_ID {
+                crate::midi_ports::Kind::Output
             } else {
-                format!("Port: {port}")
-            })
-            .on_hover_text("Choose the port in View → MIDI ports.");
+                crate::midi_ports::Kind::Input
+            };
+            let port = info.get_text(&node.config);
+            if let Some(chosen) = crate::midi_ports::port_picker(ui, id, kind, &port) {
+                edits.push(Edit::Apply(Command::SetConfig {
+                    node: id,
+                    key: info.key.to_owned(),
+                    value: (!chosen.is_empty()).then_some(noodle_core::Value::Text(chosen)),
+                }));
+            }
             continue;
         }
         if node_type.info().id == noodle_nodes::REMAP_ID
@@ -1992,6 +1994,40 @@ mod tests {
         assert!(param(&harness, "freq1").unwrap() > 300.0);
         let gain = param(&harness, "gain1").unwrap();
         assert!((gain - 12.0).abs() < 1.5, "{gain}");
+    }
+
+    #[test]
+    fn a_midi_out_node_offers_its_ports_in_its_own_panel() {
+        let mut harness = harness([Node::new(noodle_nodes::MIDI_OUT_ID)]);
+        harness.get_by_label("Port").click();
+        harness.run();
+        harness.get_by_label("Test Synth").click();
+        harness.run();
+        let node = harness
+            .state()
+            .session
+            .project()
+            .graph()
+            .node(NodeId(1))
+            .unwrap()
+            .clone();
+        assert_eq!(
+            node.config.get(noodle_nodes::MIDI_OUT_PORT_KEY),
+            Some(&noodle_core::Value::Text("Test Synth".into()))
+        );
+        // Back to none.
+        harness.get_by_label("Port").click();
+        harness.run();
+        harness.get_by_label("None").click();
+        harness.run();
+        let node = harness
+            .state()
+            .session
+            .project()
+            .graph()
+            .node(NodeId(1))
+            .unwrap();
+        assert_eq!(node.config.get(noodle_nodes::MIDI_OUT_PORT_KEY), None);
     }
 
     #[test]

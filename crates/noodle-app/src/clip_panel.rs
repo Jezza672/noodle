@@ -431,11 +431,26 @@ fn quantise_section(
             .clicked()
         {
             match subject {
-                Subject::Clip(id) => edits.push(Edit::PinTransients(id, percent)),
-                Subject::Sampler(_) => edits.extend(
-                    pin_transients(project, subject, analysis.map_or(&[], |a| &a.onsets))
-                        .map(Edit::Apply),
-                ),
+                Subject::Clip(id) => {
+                    // The session counts them and says so in the status bar;
+                    // the panel repeats that beside the button.
+                    crate::inline_result::remember(ui, &format!("pin transients {subject:?}"), "");
+                    edits.push(Edit::PinTransients(id, percent));
+                }
+                Subject::Sampler(_) => {
+                    let command =
+                        pin_transients(project, subject, analysis.map_or(&[], |a| &a.onsets));
+                    crate::inline_result::remember(
+                        ui,
+                        &format!("pin transients {subject:?}"),
+                        if command.is_some() {
+                            "Pinned: the markers are on the waveform"
+                        } else {
+                            "No new transients to pin"
+                        },
+                    );
+                    edits.extend(command.map(Edit::Apply));
+                }
             }
         }
         if matches!(subject, Subject::Clip(_)) {
@@ -452,6 +467,10 @@ fn quantise_section(
             }
         }
     });
+    let pin_key = format!("pin transients {subject:?}");
+    if crate::inline_result::recall(ui, &pin_key).is_some_and(|t| !t.is_empty()) {
+        crate::inline_result::show(ui, &pin_key);
+    }
     let Some(quantise) = &warp.quantise else {
         return;
     };
@@ -738,6 +757,16 @@ pub fn show(
     }
     gain(ui, project, id, &mut edits);
     section(ui, session, id, &mut edits);
+    // What Pin transients did: for a clip the session counts the markers.
+    if crate::inline_result::recall(ui, &format!("pin transients {:?}", Subject::from(id)))
+        .is_some_and(|t| t.is_empty())
+        && let Some(message) = session.message()
+        && (message.starts_with("Pinned")
+            || message.starts_with("No new transients")
+            || message.starts_with("Couldn't"))
+    {
+        ui.label(RichText::new(message).strong());
+    }
     edits
 }
 
@@ -949,8 +978,19 @@ pub fn warp_controls(
         if detect.on_hover_text(hint).clicked()
             && let Some(found) = found
         {
-            edits.extend(detect_tempo(project, subject, &found, span).map(Edit::Apply));
+            let command = detect_tempo(project, subject, &found, span);
+            crate::inline_result::remember(
+                ui,
+                &format!("detect tempo {subject:?}"),
+                if command.is_some() {
+                    format!("Tempo set to {:.1} BPM", found.bpm)
+                } else {
+                    format!("{:.1} BPM is outside the range a clip can have", found.bpm)
+                },
+            );
+            edits.extend(command.map(Edit::Apply));
         }
+        crate::inline_result::show(ui, &format!("detect tempo {subject:?}"));
         let tap = ui.button("Tap").on_hover_text("Tap along to set the tempo");
         if tap.clicked()
             && let Some(bpm) = state.tap(Instant::now())
