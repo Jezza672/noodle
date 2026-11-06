@@ -51,11 +51,11 @@ deliberately deferred items.
 
 **Built since (#317, #318, #320, #321):** entry-point surfaces, the vocabulary match, time to hear, live editing, state visibility, dropouts, and save and reopen.
 
-**Still owed from groups E to G:** the Fitts, precision and typed-value parts of group A (#310); the naive-agent runs (#319).
+**Still owed from groups E to G:** the Fitts, precision and typed-value parts of group A (#310); the naive-agent runs for stories other than S12, and a run with user docs available (#319; the driver and first S12 results are in `docs/usability/new-user-runs.md`).
 
 **Built since (#322, #324):** the scorecard diff on PRs; the Cognitive Dimensions rubric and the human-session protocol (`docs/usability/rubric.md`); and a status for every story in the registry, assessed from the docs and code.
 
-**Then:** routes for the 24 stories that have a status but no route (U10, #316, #368), the naive-agent runs (#319), grades and thresholds once there is data for every story (#323), and the cross-DAW baseline (#325, optional).
+**Then:** routes for the 24 stories that have a status but no route (U10, #316, #368), more naive-agent runs (#319), grades and thresholds once there is data for every story (#323), and the cross-DAW baseline (#325, optional).
 
 
 ## Owed: needs a person on real hardware

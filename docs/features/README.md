@@ -43,3 +43,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [swing-humanise-midi-ports.md](swing-humanise-midi-ports.md) | Swing node, choke groups, humanise in the piano roll and as a node, View > MIDI ports |
 | [selector.md](selector.md) | Selector node: deterministic N-way selection of signals, notes, samples and spectra |
 | [organise-tracks.md](organise-tracks.md) | Track colours, folders, name-only lanes, command palette and keymap, project templates (#367) |
+| [first-use-discoverability.md](first-use-discoverability.md) | Add menu on right-click and double-click, one track menu, clip actions in the panel and palette, tooltips, export messages, problems list (#396-#406) |

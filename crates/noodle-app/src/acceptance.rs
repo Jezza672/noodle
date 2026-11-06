@@ -660,3 +660,52 @@ fn drag(h: &mut H, path: &[Pos2]) {
 fn drop_file(h: &mut H, at: Pos2, file: &Path) {
     drop_files(h, at, &[file.to_owned()]);
 }
+
+/// A press and release of `button` at `at`, on empty canvas.
+fn click_button(h: &mut H, at: Pos2, button: egui::PointerButton) {
+    h.hover_at(at);
+    h.step();
+    for pressed in [true, false] {
+        h.event(Event::PointerButton {
+            pos: at,
+            button,
+            pressed,
+            modifiers: Modifiers::NONE,
+        });
+        h.step();
+    }
+    h.run_steps(3);
+}
+
+#[test]
+fn right_click_on_empty_canvas_opens_the_add_search() {
+    let mut h = harness(App::new(Session::new(Nodes::all())));
+    let at = Pos2::new(400.0, 400.0);
+    click_button(&mut h, at, egui::PointerButton::Secondary);
+    assert!(
+        h.state().editor().is_searching(),
+        "right-click opened the add search"
+    );
+    assert!(
+        !egui::Popup::is_any_open(&h.ctx),
+        "no empty context menu sits over the search"
+    );
+}
+
+#[test]
+fn double_click_on_empty_canvas_opens_the_add_search() {
+    // Like a real display, so two clicks can make a double click.
+    let mut h = Harness::builder()
+        .with_size(Vec2::new(1280.0, 800.0))
+        .with_step_dt(1.0 / 60.0)
+        .build_ui_state(
+            |ui, app: &mut App| app.show(ui),
+            App::new(Session::new(Nodes::all())),
+        );
+    h.run_steps(3);
+    crate::testkit::double_click(&mut h, Pos2::new(400.0, 400.0));
+    assert!(
+        h.state().editor().is_searching(),
+        "double-click opened the add search"
+    );
+}

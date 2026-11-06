@@ -333,7 +333,23 @@ fn sample_picker(
     let reference = SampleRef::parse(&info.get_text(&node.config));
     let hash = reference.hash.clone();
     ui.label(info.name);
-    let mut status = if hash.is_empty() {
+    // A Sampler fed by a wire gets its sound from there, not from its own
+    // sample.
+    let wired = sampler
+        .then(|| {
+            let graph = session.project().graph();
+            let from = graph.source(&noodle_core::Endpoint::new(id, "sample"))?;
+            graph.node(from.node)
+        })
+        .flatten();
+    let mut status = if let Some(source) = wired {
+        if source.type_id == noodle_nodes::SAMPLE_SET_ID {
+            let n = noodle_nodes::rows_of(&source.config).len();
+            format!("Sound comes from a Sample Set ({n} samples) wired to the Sample input")
+        } else {
+            "Sound comes from the node wired to the Sample input".to_owned()
+        }
+    } else if hash.is_empty() {
         "No sample loaded".to_owned()
     } else if let Some(sample) = store.get(&hash) {
         format!(
@@ -365,12 +381,10 @@ fn sample_picker(
         ui.colored_label(crate::theme::MUTE, error);
     }
     if ui.button("Load sample…").clicked()
-        && let Some(path) = rfd::FileDialog::new()
-            .add_filter(
-                "Audio",
-                &["wav", "flac", "mp3", "ogg", "aif", "aiff", "m4a"],
-            )
-            .pick_file()
+        && let Some(path) = crate::picker::pick_file((
+            "Audio",
+            &["wav", "flac", "mp3", "ogg", "aif", "aiff", "m4a"],
+        ))
     {
         // Kept in memory; saving the project writes it beside the file.
         match store.import(&path) {
@@ -450,17 +464,15 @@ fn sample_set_table(
     let mut result = None;
     ui.horizontal_wrapped(|ui| {
         if ui.button("Load folder…").clicked()
-            && let Some(path) = rfd::FileDialog::new().pick_folder()
+            && let Some(path) = crate::picker::pick_folder()
         {
             result = Some(session.sample_set_load_folder(id, &path));
         }
         if ui.button("Add files…").clicked()
-            && let Some(paths) = rfd::FileDialog::new()
-                .add_filter(
-                    "Audio",
-                    &["wav", "flac", "mp3", "ogg", "aif", "aiff", "m4a"],
-                )
-                .pick_files()
+            && let Some(paths) = crate::picker::pick_files((
+                "Audio",
+                &["wav", "flac", "mp3", "ogg", "aif", "aiff", "m4a"],
+            ))
         {
             result = Some(session.sample_set_add(id, &paths));
         }

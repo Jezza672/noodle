@@ -1145,7 +1145,7 @@ fn transpose_section(
     }
 }
 
-/// Mute, and Split to stems.
+/// Mute, Split to stems, Slice to Sampler and Convert to MIDI.
 fn section(ui: &mut Ui, session: &Session, id: ClipId, edits: &mut Vec<Edit>) {
     let project = session.project();
     let Some(clip) = project.clip(id) else { return };
@@ -1168,6 +1168,35 @@ fn section(ui: &mut Ui, session: &Session, id: ClipId, edits: &mut Vec<Edit>) {
     {
         edits.push(Edit::SplitToStems(id));
     }
+    if ui
+        .button("Slice to Sampler")
+        .on_hover_text(
+            "Cut this clip at its transients onto a new track that plays each slice from a key, \
+             starting at C2",
+        )
+        .clicked()
+    {
+        edits.push(Edit::SliceToSampler(id));
+    }
+    ui.menu_button("Convert to MIDI", |ui| {
+        ui.label(
+            "Notes on a new track (right-click the clip with a MIDI clip selected to replace it)",
+        );
+        for detect in crate::session::convert::Detect::ALL {
+            if ui
+                .button(detect.label())
+                .on_hover_text(
+                    "Follows one voice or line. The notes are plain notes to edit; convert again \
+                     to try another setting.",
+                )
+                .clicked()
+            {
+                ui.close();
+                edits.push(Edit::ConvertToMidi(id, detect, None));
+            }
+        }
+    });
+    ui.weak("These are also in the clip's right-click menu, and the command palette.");
     ui.horizontal(|ui| {
         ui.label("Stem quality");
         let quality = session.stems_quality();
