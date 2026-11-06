@@ -137,6 +137,11 @@ impl Search {
         }
     }
 
+    #[cfg(test)]
+    pub fn query(&self) -> &str {
+        &self.query
+    }
+
     pub fn show(&mut self, ctx: &egui::Context, registry: &Registry, library: &Library) -> Outcome {
         let mut outcome = Outcome::Open;
         let response = egui::Area::new(egui::Id::new("noodle-editor-add-node"))

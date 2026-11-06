@@ -783,6 +783,24 @@ fn the_search_box_can_be_driven_with_arrows() {
     assert_eq!(graph.nodes().next().unwrap().1.type_id, "noodle.osc.sine");
 }
 
+/// Issue #418: a run saw "sequenc" arrive as "sequend". Characters arriving
+/// one per frame, straight after the box opens, all land in the box.
+#[test]
+fn the_search_box_keeps_every_character_typed_quickly() {
+    let mut h = rig();
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::SHIFT, Key::A);
+    for c in "sequencer".chars() {
+        h.event(Event::Text(c.to_string()));
+        h.step();
+    }
+    h.run();
+    assert_eq!(
+        h.state().editor.search.as_ref().unwrap().query(),
+        "sequencer"
+    );
+}
+
 #[test]
 fn the_wheel_zooms_around_the_pointer_and_trackpads_pan() {
     let mut h = rig();
@@ -2010,6 +2028,106 @@ fn drag_node_to(h: &mut H, node: NodeId, modifiers: Modifiers, to: Pos2) {
             end,
         ],
     );
+}
+
+/// Issue #416.
+#[test]
+fn clicking_a_cable_selects_it_and_delete_removes_it_through_undo() {
+    let mut h = rig();
+    let (sine, gain, stroke) = wired(&mut h);
+    let before = h.state().session.project().clone();
+    click(&mut h, stroke[1], Modifiers::NONE);
+    assert!(h.state().editor.selected_wire.is_some());
+    // Clicking away lets go of it.
+    let away = empty_space(&h);
+    click(&mut h, away, Modifiers::NONE);
+    assert!(h.state().editor.selected_wire.is_none());
+    click(&mut h, stroke[1], Modifiers::NONE);
+    press(&mut h, stroke[1], Modifiers::NONE, Key::Delete);
+    assert_eq!(source(&h, gain, "in"), None);
+    assert!(h.state().editor.selected_wire.is_none());
+    h.state_mut().session.undo();
+    assert_eq!(source(&h, gain, "in"), Some(Endpoint::new(sine, "out")));
+    assert_eq!(h.state().session.project(), &before);
+}
+
+#[test]
+fn a_splice_says_what_it_did() {
+    let mut h = rig();
+    let (_, _, stroke) = wired(&mut h);
+    let filter = add(&mut h, Node::new("noodle.util.gain").at(0.0, 300.0));
+    h.run();
+    drag_node_to(&mut h, filter, Modifiers::NONE, stroke[1]);
+    let said = h.state_mut().editor.take_refusal().expect("a message");
+    assert!(said.contains("into the wire"), "{said}");
+}
+
+#[test]
+fn a_wire_dropped_on_a_node_body_says_which_port_it_landed_on() {
+    let mut h = rig();
+    let sine = add(&mut h, Node::new("noodle.osc.sine").at(0.0, 0.0));
+    let gain = add(&mut h, Node::new("noodle.util.gain").at(300.0, 0.0));
+    h.run();
+    let from = socket(&h, sine, Side::Output, "out");
+    let to = title(&h, gain);
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[from, from.lerp(to, 0.5), to],
+    );
+    assert!(source(&h, gain, "in").is_some() || source(&h, gain, "gain").is_some());
+    let said = h.state_mut().editor.take_refusal().expect("a message");
+    assert!(said.starts_with("Wired to"), "{said}");
+}
+
+#[test]
+fn a_wire_dropped_on_a_port_that_cant_take_it_is_refused_not_moved_elsewhere() {
+    let mut h = rig();
+    let arp = add(&mut h, Node::new("noodle.event.arpeggiator").at(0.0, 0.0));
+    let gain = add(&mut h, Node::new("noodle.util.gain").at(300.0, 0.0));
+    h.run();
+    let out = scene(&h)
+        .node(arp)
+        .unwrap()
+        .ports
+        .iter()
+        .find(|p| p.side == Side::Output)
+        .unwrap()
+        .key
+        .clone();
+    let from = socket(&h, arp, Side::Output, &out);
+    // The row of the gain's audio input, away from its socket.
+    let row = scene(&h)
+        .node(gain)
+        .unwrap()
+        .port(Side::Input, "in")
+        .unwrap()
+        .row;
+    let to = screen(&h, row.center() + Vec2::new(30.0, 0.0));
+    let before = h.state().session.project().clone();
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[from, from.lerp(to, 0.5), to],
+    );
+    assert_eq!(h.state().session.project(), &before);
+    let said = h.state_mut().editor.take_refusal().expect("a message");
+    assert!(said.contains("can't take that wire"), "{said}");
+}
+
+#[test]
+fn adding_a_track_input_says_it_is_a_track() {
+    let mut h = rig();
+    let p = empty_space(&h);
+    press(&mut h, p, Modifiers::SHIFT, Key::A);
+    h.event(Event::Text("track input".into()));
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let said = h.state_mut().editor.take_refusal().expect("a message");
+    assert!(said.contains("track"), "{said}");
 }
 
 #[test]

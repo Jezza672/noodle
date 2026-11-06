@@ -483,6 +483,15 @@ impl<'a> ParamField<'a> {
         if !typing.focused {
             response.request_focus();
             typing.focused = true;
+            // Typing replaces the value, as in a spreadsheet cell.
+            let mut state = TextEdit::load_state(ui.ctx(), response.id).unwrap_or_default();
+            state
+                .cursor
+                .set_char_range(Some(egui::text::CCursorRange::two(
+                    egui::text::CCursor::new(0),
+                    egui::text::CCursor::new(typing.text.chars().count()),
+                )));
+            state.store(ui.ctx(), response.id);
         }
 
         let mut edit = None;

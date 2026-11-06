@@ -112,6 +112,8 @@ pub fn wires(
             colors::PROBLEM
         } else if splicing {
             colors::ACTIVE
+        } else if state.selected_wire.as_ref() == Some(&wire.connection) {
+            colors::SELECTED
         } else if wire.event {
             colors::EVENT_WIRE
         } else if wire.spectral {

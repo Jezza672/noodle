@@ -13,7 +13,12 @@ use crate::session::{Edit, Session};
 use crate::theme;
 
 /// A step grid's cell, in graph points.
+/// The widest a step's cell is drawn; narrower panels squeeze the grid to fit.
 const CELL: f32 = 18.0;
+/// The narrowest the grid is squeezed to.
+const CELL_MIN: f32 = 11.0;
+/// The height of the row of step numbers above the grid.
+const NUMBERS: f32 = 12.0;
 
 fn request_id() -> egui::Id {
     egui::Id::new("open a pattern in the piano roll")
@@ -252,12 +257,31 @@ fn step_grid(
     let keys = rows(midi, region, &extra);
     ui.label(RichText::new("Step grid").strong());
     let steps = region.steps.min(64);
-    let size = vec2(steps as f32 * CELL + 30.0, keys.len().max(1) as f32 * CELL);
+    // Fit the panel, so the last cell isn't cut off at its edge.
+    let cell_size = cell_width(ui.available_width(), steps);
+    let size = vec2(
+        steps as f32 * cell_size + 30.0,
+        keys.len().max(1) as f32 * CELL + NUMBERS,
+    );
     let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
     let painter = ui.painter_at(rect);
-    let origin = rect.min + vec2(30.0, 0.0);
-    // One bright cell in four, to read the beat by.
+    let origin = rect.min + vec2(30.0, NUMBERS);
+    // The step numbers, so the grid can be counted and each cell found:
+    // every one when they fit, else the first of each beat.
     let per_beat = (960 / region.step_ticks.max(1)).max(1) as usize;
+    for step in (0..steps).filter(|s| cell_size >= 14.0 || s % per_beat == 0) {
+        painter.text(
+            pos2(
+                origin.x + (step as f32 + 0.5) * cell_size,
+                rect.top() + NUMBERS / 2.0,
+            ),
+            egui::Align2::CENTER_CENTER,
+            (step + 1).to_string(),
+            egui::FontId::monospace(8.0),
+            ui.visuals().weak_text_color(),
+        );
+    }
+    // One bright cell in four, to read the beat by.
     for (row, &key) in keys.iter().enumerate() {
         let top = origin.y + row as f32 * CELL;
         painter.text(
@@ -268,9 +292,11 @@ fn step_grid(
             ui.visuals().weak_text_color(),
         );
         for step in 0..steps {
-            let cell =
-                Rect::from_min_size(pos2(origin.x + step as f32 * CELL, top), vec2(CELL, CELL))
-                    .shrink(1.0);
+            let cell = Rect::from_min_size(
+                pos2(origin.x + step as f32 * cell_size, top),
+                vec2(cell_size, CELL),
+            )
+            .shrink(1.0);
             let beat = step % per_beat.max(1) == 0;
             painter.rect_filled(
                 cell,
@@ -361,6 +387,12 @@ fn step_grid(
     });
 }
 
+/// How wide each of `steps` cells is in `available` points, leaving room for
+/// the key labels.
+fn cell_width(available: f32, steps: usize) -> f32 {
+    ((available - 30.0) / steps.max(1) as f32).clamp(CELL_MIN, CELL)
+}
+
 fn with_midi(clip: &Clip, midi: MidiClip) -> Clip {
     Clip {
         content: ClipContent::Midi(midi),
@@ -379,6 +411,14 @@ mod tests {
             division: 4,
             step_ticks: 240,
         }
+    }
+
+    /// Issue #417: 16 steps fit the sidebar's default width.
+    #[test]
+    fn the_grid_squeezes_to_fit_and_never_grows_past_a_cell() {
+        assert!(16.0 * cell_width(260.0, 16) + 30.0 <= 260.0);
+        assert_eq!(cell_width(2000.0, 16), CELL);
+        assert_eq!(cell_width(100.0, 64), CELL_MIN);
     }
 
     #[test]
