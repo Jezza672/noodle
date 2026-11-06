@@ -217,30 +217,35 @@ fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut 
 fn group_control_targets(
     session: &Session,
     group: NodeId,
-) -> Vec<(String, Endpoint, noodle_engine::ParamInfo)> {
+) -> Vec<(String, Vec<Endpoint>, noodle_engine::ParamInfo)> {
     let graph = session.project().graph();
     let mut found = Vec::new();
     for port in graph.group_ports(group).inputs {
         let from = Endpoint::new(port.node, port.key());
-        let target = graph
-            .connections()
-            .filter(|c| c.from == from)
-            .find_map(|c| {
-                let node = graph.node(c.to.node)?;
-                let layout = session
-                    .registry()
-                    .get(&node.type_id)?
-                    .layout(&node.config)
-                    .ok()?;
-                layout.inputs.iter().find_map(|input| match &input.kind {
-                    InputKind::Param(info) if input.key == c.to.port => {
-                        Some((c.to.clone(), info.clone()))
-                    }
-                    _ => None,
-                })
+        let mut targets = Vec::new();
+        let mut first_info = None;
+        for c in graph.connections().filter(|c| c.from == from) {
+            let Some(node) = graph.node(c.to.node) else {
+                continue;
+            };
+            let Some(layout) = session
+                .registry()
+                .get(&node.type_id)
+                .and_then(|t| t.layout(&node.config).ok())
+            else {
+                continue;
+            };
+            let info = layout.inputs.iter().find_map(|input| match &input.kind {
+                InputKind::Param(info) if input.key == c.to.port => Some(info.clone()),
+                _ => None,
             });
-        if let Some((to, info)) = target {
-            found.push((port.name, to, info));
+            if let Some(info) = info {
+                first_info.get_or_insert(info);
+                targets.push(c.to.clone());
+            }
+        }
+        if let Some(info) = first_info {
+            found.push((port.name, targets, info));
         }
     }
     found
@@ -295,7 +300,8 @@ fn group_controls(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Ed
     }
     let graph = session.project().graph();
     let mut field = |ui: &mut Ui, index: usize| {
-        let (name, to, info) = &controls[index];
+        let (name, targets, info) = &controls[index];
+        let to = &targets[0];
         let label = split(name).map_or_else(|| name.clone(), |(_, tail)| tail);
         let value = graph
             .node(to.node)
@@ -316,6 +322,14 @@ fn group_controls(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Ed
                     .on_disabled_hover_text(format!("Driven by {}", describe(session, from)));
             } else {
                 edits.extend(out.edits(to.node, &to.port));
+                // The input feeds more than one parameter: set the rest too.
+                for other in &targets[1..] {
+                    edits.extend(
+                        out.edits(other.node, &other.port)
+                            .into_iter()
+                            .filter(|e| matches!(e, Edit::Apply(_) | Edit::Drag(_))),
+                    );
+                }
             }
         });
     };
@@ -932,6 +946,10 @@ fn articulation_map_editor(
                     let key = egui::Id::new(("rename articulation", art));
                     let mut text: String = ui.data(|d| d.get_temp(key)).unwrap_or(name.clone());
                     let edit = ui.add(egui::TextEdit::singleline(&mut text).desired_width(90.0));
+                    // Not being typed in: show the current name (after an undo).
+                    if !edit.has_focus() && !edit.lost_focus() {
+                        text = name.clone();
+                    }
                     if edit.lost_focus()
                         && !text.trim().is_empty()
                         && text.trim() != name
