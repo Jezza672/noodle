@@ -52,7 +52,8 @@ You can only see and use Noodle through one helper script. Every command is
 | Command | What it does |
 |---|---|
 | `look` | Takes a screenshot of the window and prints where the file is (`screenshot: .../NNN.png`). Open that file with your image viewer or file-reading tool to see it. |
-| `tree` | Lists the text and rectangles the window exposes to screen readers: `Role "label" [x1,y1 to x2,y2]`. Handy for finding exact positions. |
+| `tree [text]` | Lists the text and rectangles the window exposes to screen readers: `Role "label" [x1,y1 to x2,y2]`. Handy for finding exact positions. With some text, only the lines holding it (any case). |
+| `files` | Lists the files in your task folder, as a file manager would. |
 | `click X Y [shift\\|ctrl\\|alt]` | Left click at pixel X, Y of the screenshot. |
 | `rclick X Y` | Right click. |
 | `dclick X Y` | Double click. |
@@ -73,7 +74,7 @@ the path of a fresh screenshot. The first screenshot is `{first}`.
 The pointer starts in the middle of the window.
 
 You have **{budget} actions** (clicks, drags, typing, keys, scrolls and
-hovers). `look`, `tree`, `listen` and `note` are free. When they run out the session is
+hovers). `look`, `tree`, `files`, `listen` and `note` are free. When they run out the session is
 over.
 
 ## Rules
@@ -82,9 +83,9 @@ over.
   why, and when something surprises you, note that too. Your notes are how the
   people who made the program learn where it confuses people. Be honest about
   being lost.
-- Use only `{ctl}`, and open only the screenshot files it prints.
-  Do **not** read any other file or folder on this computer except the files
-  named in the task, and do not search the web: nobody sitting at the program
+- Use only `{ctl}`, and open only the screenshot files it prints. Run one
+  `{ctl}` command at a time. Do **not** read any other file or folder on this
+  computer (use `files` to see your task folder), and do not search the web: nobody sitting at the program
   would have the program's source or its manual.
 - Do not guess your way to a "finished" state: say `finish` only when you
   believe the task is really done, and `giveup` when you are truly stuck.

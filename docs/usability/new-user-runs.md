@@ -11,6 +11,9 @@ running app, nothing from `docs/`. Never run per PR: each run costs model time.
 - One helper, `ctl.sh`, to look (screenshot, accessibility tree) and act
   (click, right click, double click, drag, hover, scroll, type, key). Its
   commands are the same input events `testkit` gives a route.
+- `files` (what is in the task's folder, as a file manager shows it) and
+  `tree [text]` (the accessibility tree, only lines holding the text), so a
+  contained agent that cannot run `ls` or `grep` can still see them.
 - `listen [seconds]`, because an agent cannot hear: it renders what is playing
   and describes it in words (loudness in four parts, brightness, a steady
   pitch if there is one, or silence). Something must be playing. It is a
@@ -78,9 +81,12 @@ and all tools, so "only use ctl.sh" is only a request there. Two things help:
     with an allow-list like `claude.sh` has.
 - **`scripts/new_user/audit.py <run folder> [transcript.jsonl]`** reads a Claude
   Code stream-json transcript (the shape `claude.sh` writes) and writes `private/audit.json`: any call that is
-  not exactly one `ctl.sh` command or a screenshot read is listed as stray, and
-  the run is marked **contaminated**. A contaminated run says what the agent
-  could have found, not what a newcomer finds: rerun it. For another runner,
+  not `ctl.sh` commands (chained with `;` or `&&`, optionally piped to
+  `head`/`tail`) or a screenshot read is listed as stray. A stray call that the
+  tool refused (`denied`) taught the agent nothing and is only listed; one that
+  ran marks the run **contaminated**. A contaminated run says what the agent
+  could have found, not what a newcomer finds: rerun it. `test_audit.py` holds
+  the accepted and refused command lines. For another runner,
   make a transcript in the same shape, or record strays by hand.
 
 Native file pickers do not show in screenshots. When an action opens one, the
