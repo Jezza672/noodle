@@ -379,8 +379,18 @@ impl Run {
     }
 }
 
+/// The app only advances when it is stepped. Without this, work on another
+/// thread (an export, a render) never reaches the screen while the agent
+/// merely watches, and a finished export looks stuck at 0%.
+fn watch(h: &mut AppHarness) {
+    h.run_steps(2);
+}
+
 /// Carries out one command and says what came of it.
 fn execute(h: &mut AppHarness, run: &mut Run, command: Command) -> String {
+    if matches!(command, Command::Screenshot | Command::Tree(_)) {
+        watch(h);
+    }
     match command {
         Command::Screenshot => run.shot(h),
         Command::Tree(filter) => {
@@ -840,6 +850,33 @@ mod tests {
             })
             .collect();
         assert!(describe(&noise, 2, 48_000).contains("No single steady pitch"));
+    }
+
+    #[test]
+    fn watching_lets_a_background_export_finish() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::prefs::init(dir.path().join("prefs.ron"));
+        let route = route_for("S04");
+        // No screenshots here, so no GPU: CI's Linux runner has none.
+        let mut h = window_with((route.fixture)(dir.path()), false);
+        let out = dir.path().join("out.wav");
+        h.state_mut()
+            .session_mut()
+            .start_export(
+                out,
+                crate::session::ExportChoice::mixdown(
+                    noodle_io::ExportFormat::WavFloat,
+                    noodle_engine::ChannelLayout::Stereo,
+                    None,
+                ),
+            )
+            .unwrap();
+        let until = Instant::now() + std::time::Duration::from_secs(60);
+        while h.state().session().export_progress().is_some() {
+            assert!(Instant::now() < until, "the export never finished");
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            watch(&mut h);
+        }
     }
 
     #[test]
