@@ -160,3 +160,46 @@ per-link depth features (S13, S14), and getting sound out of a track.
 **Harness gaps this round exposed:** the fixtures for S23, S24, S29 and S30 do
 not hold the project the story describes (no clips, 3 tracks, an empty
 `project.ron`); fixing them is a scorecard issue.
+
+## Round 3: after the double-click fix (#447)
+
+Same setup as round 2, on `main` after #447. Rounds 1 and 2 could not make a
+MIDI clip by double-click, because the agent driver's frame clock put two
+clicks 0.5 s apart and egui never saw a double click. That is fixed, so this
+is the first valid run of everything that depends on double-click. S09 and S27
+were re-run once because the first attempt was cut short (S09 died after 11 s,
+S27 lost its audit when the machine restarted); both attempts are in the raw
+logs. Results are in `/mnt/project-files/new-user-runs/round3/`.
+
+| Story | R2 | R3 | Round 3: where it ended |
+|---|---|---|---|
+| S01 comp | no | no | 8 takes made; no comp menu found (the hint says "right-click a take folder") |
+| S02 punch | yes | no | punch found; ran bars 3 to 4 instead of 2 to 3 (likely off by one bar; check) |
+| S03 external synth | no | no | no MIDI in the cloud |
+| S04 tighten drums | yes | **yes** | |
+| S05 conform | no | no | key set with formants kept; check wants a different warp mode |
+| S06 stems | no | no | model download fails in the cloud |
+| S07 sections | no | no | markers named but not on the wanted bars |
+| S08 MIDI detail | no | no | made the clip by double-click; the part to edit is not in the fixture |
+| S09 drum pattern | no | no | pattern built, silent (no sample reaches the rack) |
+| S10 articulations | no | no | articulations set and notes tagged; check found no first note |
+| S11 audio to MIDI | yes | **yes** | |
+| S12 multisampler | yes | **yes** | |
+| S13 macro patch | no | no | built with Version Value and Remap; no macro knob |
+| S14 shared modulation | no | no | no per-link depth control |
+| S15 rhythmic gate | no | no | wiring not as the check wants |
+| S16 spectral cross | no | **yes** | |
+| S17 resample, slice | no | no | silent: cannot tell MIDI from audio ports |
+| S18 plugins | no | no | no plugins in the cloud |
+| S19 drum bus | no | no | no pre-fader send, no delay-compensation control found |
+| S20 automation | no | no | Touch and Latch worked; trimming a span found no way |
+| S21 mix versions | no | no | cutoff not varied per version |
+| S22 surround | no | no | export progress sticks at 2% (see issues) |
+| S23 loudness | no | no | fixture has no clips |
+| S24 stems export | no | no | fixture has no clips |
+| S27 clip launching | no | no | loop imported; no wire from the Sampler to the pads |
+| S28 setlist | no | no | blocked (#366) |
+| S29 organise | no | no | the 150-track project is not in the fixture |
+| S30 freeze | no | **yes** | passed, but the fixture is the small project, so treat as weak |
+
+Done check passed: 5 of 28 (S04, S11, S12, S16, S30). S30 is weak.
