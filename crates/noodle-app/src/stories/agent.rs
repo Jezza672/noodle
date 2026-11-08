@@ -857,7 +857,8 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         crate::prefs::init(dir.path().join("prefs.ron"));
         let route = route_for("S04");
-        let mut h = window_with((route.fixture)(dir.path()), true);
+        // No screenshots here, so no GPU: CI's Linux runner has none.
+        let mut h = window_with((route.fixture)(dir.path()), false);
         let out = dir.path().join("out.wav");
         h.state_mut()
             .session_mut()
