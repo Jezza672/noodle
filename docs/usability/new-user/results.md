@@ -194,7 +194,7 @@ logs. Results are in `/mnt/project-files/new-user-runs/round3/`.
 | S19 drum bus | no | no | no pre-fader send, no delay-compensation control found |
 | S20 automation | no | no | Touch and Latch worked; trimming a span found no way |
 | S21 mix versions | no | no | cutoff not varied per version |
-| S22 surround | no | no | export progress sticks at 2% (see issues) |
+| S22 surround | no | no | built a 7.1.4 bed and a stereo fold-down; the progress bar looked stuck at 0-2% (a harness artefact, fixed below) |
 | S23 loudness | no | no | fixture has no clips |
 | S24 stems export | no | no | fixture has no clips |
 | S27 clip launching | no | no | loop imported; no wire from the Sampler to the pads |
@@ -203,3 +203,7 @@ logs. Results are in `/mnt/project-files/new-user-runs/round3/`.
 | S30 freeze | no | **yes** | passed, but the fixture is the small project, so treat as weak |
 
 Done check passed: 5 of 28 (S04, S11, S12, S16, S30). S30 is weak.
+
+The "stuck export" in S22 was the driver, not the app: it advanced the app
+only on actions, so a finished export never reached the screen while the agent
+watched. `look` and `tree` now step the app, with a test that fails without it.
