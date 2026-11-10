@@ -5,9 +5,9 @@
 //! Swing node in front of the Note Split (#330), and the closed and open hat
 //! share a choke group in the template, so a closed hat cuts the open one off
 //! with no setting to make. Loading the samples into
-//! the rack's slots is not routed: a sample reaches a slot by dragging an
-//! audio clip across from the timeline onto a Sampler inside the group,
-//! which no route reaches yet, so the fixture starts with the kit loaded.
+//! the rack's pads is not routed: a sample reaches a pad (Kick, Snare, ...) by
+//! dragging an audio clip from the timeline, or a file from the desktop, onto
+//! it. No route reaches that yet, so the fixture starts with the kit loaded.
 //! Swapping the snare sample is therefore not routed.
 
 use std::path::Path;
@@ -79,26 +79,32 @@ fn kit(dir: &Path) -> App {
     ] {
         session.edit([Edit::Apply(spare::wire(from, to))]);
     }
-    let samplers: Vec<NodeId> = session
-        .project()
-        .graph()
-        .nodes()
-        .filter(|(_, n)| n.type_id == SAMPLER_ID && n.parent == Some(rack))
-        .map(|(id, _)| id)
-        .collect();
-    for (slot, (name, hz)) in [
-        ("kick", 60.0),
-        ("snare", 200.0),
-        ("hat", 3000.0),
-        ("open", 2000.0),
+    // Each drum's sample goes to the Sampler inside the pad of that name.
+    let sampler_in = |session: &crate::session::Session, pad: &str| -> NodeId {
+        let graph = session.project().graph();
+        let pad = graph
+            .children(Some(rack))
+            .find(|&(id, _)| crate::editor::group_title(graph, id) == pad)
+            .map(|(id, _)| id)
+            .unwrap_or_else(|| panic!("the rack has a pad called {pad}"));
+        graph
+            .children(Some(pad))
+            .find(|(_, n)| n.type_id == SAMPLER_ID)
+            .map(|(id, _)| id)
+            .expect("the pad has a Sampler")
+    };
+    for (pad, name, hz) in [
+        ("Kick", "kick", 60.0),
+        ("Snare", "snare", 200.0),
+        ("Closed Hat", "hat", 3000.0),
+        ("Open Hat", "open", 2000.0),
     ]
     .into_iter()
-    .enumerate()
     {
         let path = dir.join(format!("{name}.wav"));
         drum_wav(&path, hz);
         let hash = session.samples().import(&path).expect("the sample imports");
-        let command = crate::sample_drop::choose(&session, samplers[slot], &hash);
+        let command = crate::sample_drop::choose(&session, sampler_in(&session, pad), &hash);
         session.edit([Edit::Apply(command)]);
     }
     finished(session, dir)

@@ -2442,6 +2442,20 @@ impl App {
     /// Rescan); on the empty canvas they become a new Sample Set.
     fn files_dropped_on_graph(&mut self, dropped: editor::DroppedFiles) {
         use noodle_core::{Command, Node};
+        // One audio file on a pad (or a Sampler) is that drum's sample.
+        if let Some(sampler) = dropped.pad
+            && let [path] = dropped.paths.as_slice()
+            && path.is_file()
+        {
+            match self.session.samples().import(path) {
+                Ok(hash) => {
+                    let command = crate::sample_drop::choose(&self.session, sampler, &hash);
+                    self.session.edit([crate::session::Edit::Apply(command)]);
+                }
+                Err(e) => self.session.notify(format!("Couldn't read that file: {e}")),
+            }
+            return;
+        }
         let (node, new) = match dropped.on {
             Ok(node) => (node, None),
             Err(at) => {

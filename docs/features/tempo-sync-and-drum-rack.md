@@ -32,3 +32,7 @@ drums are a rack of them.
   to drop its unused ports in one undo step (`spare::remove_unused_ports`): a
   Mixer's inputs past the last wired one, and a group's (or its input or output
   node's) ports with no wire outside or inside. Other nodes are unaffected.
+
+## Drum pads and node names
+
+The Drum Rack template's slots are `Drum Pad` groups named for their drum (Kick, Snare, Closed Hat, Open Hat, Clap, Low Tom, High Tom, Crash), each holding a Sampler and a Pan with `notes`, `level`, `tune` and `pan` inputs. Dropping an audio clip from the timeline, or a single file from the desktop, on a pad (or on the Sampler) loads that drum, with no need to open the group. The rack's Note Split keeps the keys and choke groups. Any node can now be named (F2 or double-click on its title; the `name` config); the group panel's Controls follow wires through nested groups, so `Kick level` still sets the Sampler's gain. The songs' racks are unchanged, so the golden renders are too. Tests: `editor::tests` (pads and renaming), `properties::tests::a_drum_rack_panel_sets_its_swing_and_choke_inside`. The S09 fixture loads the kit by pad name; dragging onto a pad is not routed yet.

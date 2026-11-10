@@ -14,7 +14,7 @@
 //! The group's name is its kind ("Pluck"), and the track that plays it is
 //! named after the part.
 
-use super::patch::{Patch, Port, spec};
+use super::patch::{Patch, Port, Spec, spec};
 use noodle_core::{NodeId, Value};
 
 /// Oscillator shapes.
@@ -332,15 +332,23 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
             let choke = p.input(&format!("{label} choke"), row * 2.0 + 4.0);
             p.connect(choke, (split, choke_key(i)));
         }
-        let sampler = p.add(
-            spec("noodle.instrument.sampler")
-                .config("sample", Value::Text(sample_hash(&slot.sample)))
-                .param("keytrack", 0.0)
-                .param("mode", 0.0)
-                .param("gain", slot.db),
-            3.0,
-            row,
-        );
+        let sampler_spec = spec("noodle.instrument.sampler")
+            .config("sample", Value::Text(sample_hash(&slot.sample)))
+            .param("keytrack", 0.0)
+            .param("mode", 0.0)
+            .param("gain", slot.db);
+        if rack.controls {
+            // The library template's slots are pads: a named group holding the
+            // Sampler, so a sample dropped on it is the sample of that drum.
+            let pad = drum_pad(p, &label, sampler_spec, slot.pan, 3.0, row);
+            p.connect((split, out_key(i)), (pad, "notes"));
+            p.connect(level, (pad, "level"));
+            p.connect(tune, (pad, "tune"));
+            p.connect(slot_pan, (pad, "pan"));
+            p.connect((pad, "out"), (mix, wire_in(i)));
+            continue;
+        }
+        let sampler = p.add(sampler_spec, 3.0, row);
         let pan = p.add(spec("noodle.util.pan").param("pan", slot.pan), 4.0, row);
         p.connect((split, out_key(i)), (sampler, "in"));
         p.connect(level, (sampler, "gain"));
@@ -349,6 +357,28 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
         p.connect((sampler, "out"), (pan, "in"));
         p.connect((pan, "out"), (mix, wire_in(i)));
     }
+}
+
+/// A drum pad: a group named `name` holding a Sampler and a Pan. Its inputs
+/// are `notes`, `level` (decibels), `tune` (cents) and `pan`; its
+/// output is `out`. Drop a sample on the pad and it plays it.
+fn drum_pad(p: &mut Patch, name: &str, sampler: Spec, pan: f32, column: f32, row: f32) -> NodeId {
+    let group = p.enter(name, column, row);
+    let notes = p.input("notes", 0.0);
+    let level = p.input("level", 1.0);
+    let tune = p.input("tune", 2.0);
+    let spread = p.input("pan", 3.0);
+    let sampler = p.add(sampler, 1.0, 0.0);
+    let pan = p.add(spec("noodle.util.pan").param("pan", pan), 2.0, 0.0);
+    let out = p.output("out", 3.0, 0.0);
+    p.connect(notes, (sampler, "in"));
+    p.connect(level, (sampler, "gain"));
+    p.connect(tune, (sampler, "tune"));
+    p.connect(spread, (pan, "pan"));
+    p.connect((sampler, "out"), (pan, "in"));
+    p.connect((pan, "out"), out);
+    p.leave(group);
+    group
 }
 
 /// The hash a slot's Sampler plays; a slot with no sample (a library

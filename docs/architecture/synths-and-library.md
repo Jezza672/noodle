@@ -267,10 +267,17 @@ These are primitives; instruments and racks built from them are groups.
 - **Group controls (#432, #433).** A group's panel lists its **Controls**: each
   group input that feeds a parameter inside, as a field that sets that
   parameter (`properties::group_controls`), greyed with the source's name when
-  something is wired to the input. Names like `Slot 3 choke` or `Pad 2 loop`
-  are sectioned under `Slot 3` or `Pad 2`. The Drum Rack and Loop Pads panels
+  something is wired to the input (through the inputs of nested groups, so a
+  drum pad's `level` is found). Names like `Open Hat choke` or `Pad 2 loop`
+  are sectioned under `Open Hat` or `Pad 2`. The Drum Rack and Loop Pads panels
   add a line saying what the controls do and how to reach a pattern (a track's
   MIDI into `notes`, New MIDI clip on the lane, then the piano roll).
+- **Naming nodes and drum pads.** Any node can be named: F2 or a double-click
+  on its title sets its `name` config, which replaces the title (empty puts the
+  type's name back). The Drum Rack template's slots are `Drum Pad` groups
+  named for their drum (ADR 0009); dropping an audio clip, or a single file from
+  the desktop, on a group that holds exactly one Sampler (or on the Sampler)
+  gives it the sample (`editor::pad_sampler`).
 - **Swing** (`noodle.event.swing`) delays the notes that fall on the odd steps
   of a `grid` (1/8, 1/16, 1/32) by `amount` of a step (0 to 0.75, the
   Arpeggiator's definition). It reads the transport's tick, so it works on

@@ -282,6 +282,9 @@ pub struct DroppedFiles {
     /// The Sample Set they landed on, or else where on the canvas, in graph
     /// coordinates.
     pub on: Result<NodeId, Pos2>,
+    /// The Sampler they landed on, directly or on the pad (a group holding
+    /// one) around it.
+    pub pad: Option<NodeId>,
     pub group: Option<NodeId>,
 }
 
@@ -764,11 +767,9 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     if let Some(drop) = crate::carry::drop_in(ui.ctx(), canvas) {
         crate::carry::take_drop(ui.ctx());
         let sampler = match hit(&f, drop.at) {
-            Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _) => project
-                .graph()
-                .node(id)
-                .is_some_and(|n| n.type_id == noodle_nodes::SAMPLER_ID)
-                .then_some(id),
+            Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _) => {
+                pad_sampler(project.graph(), id)
+            }
             _ => None,
         };
         state.dropped = Some(Dropped {
@@ -790,8 +791,12 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
             .input(|i| i.pointer.latest_pos())
             .filter(|p| canvas.contains(*p))
     {
-        let on = match hit(&f, at) {
-            Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _)
+        let over = match hit(&f, at) {
+            Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _) => Some(id),
+            _ => None,
+        };
+        let on = match over {
+            Some(id)
                 if project
                     .graph()
                     .node(id)
@@ -804,6 +809,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         state.dropped_files = Some(DroppedFiles {
             paths: files,
             on,
+            pad: over.and_then(|id| pad_sampler(project.graph(), id)),
             group: state.group,
         });
     }
@@ -2877,6 +2883,24 @@ fn start_rename(state: &mut EditorState, project: &Project, id: FrameId) {
     }
 }
 
+/// The Sampler a sample dropped on `id` goes to: `id` if it is one, or the
+/// only Sampler directly inside it if it is a group (a drum pad).
+fn pad_sampler(graph: &noodle_core::Graph, id: NodeId) -> Option<NodeId> {
+    let node = graph.node(id)?;
+    if node.type_id == noodle_nodes::SAMPLER_ID {
+        return Some(id);
+    }
+    if node.type_id != GROUP {
+        return None;
+    }
+    let mut samplers = graph
+        .children(Some(id))
+        .filter(|(_, n)| n.type_id == noodle_nodes::SAMPLER_ID)
+        .map(|(id, _)| id);
+    let only = samplers.next()?;
+    samplers.next().is_none().then_some(only)
+}
+
 /// Starts renaming a group, or a group's input or output node.
 fn start_node_rename(state: &mut EditorState, project: &Project, id: NodeId) {
     let graph = project.graph();
@@ -2903,7 +2927,9 @@ fn start_node_rename(state: &mut EditorState, project: &Project, id: NodeId) {
             };
             (target, name)
         }
-        _ => return,
+        _ if node.type_id == noodle_nodes::TRACK_INPUT_ID => return,
+        // Any other node can be given a name of its own, shown as its title.
+        _ => (RenameTarget::Group(id), layout::node_name(graph, id)),
     };
     state.rename = Some(Rename {
         target,
@@ -3245,8 +3271,10 @@ fn rename_edit(project: &Project, target: RenameTarget, label: String) -> Option
             let graph = project.graph();
             let shown = if graph.node(id)?.type_id == spare::MIXER {
                 spare::mixer_name(graph, id)
-            } else {
+            } else if graph.node(id)?.type_id == GROUP {
                 layout::group_title(graph, id)
+            } else {
+                layout::node_name(graph, id)
             };
             if label == shown {
                 return None;
