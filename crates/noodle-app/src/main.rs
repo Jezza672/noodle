@@ -106,9 +106,7 @@ fn main() -> ExitCode {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Noodle")
-            .with_inner_size([1280.0, 800.0])
-            // Below this the top bar's groups would run into each other.
-            .with_min_inner_size([1100.0, 480.0]),
+            .with_inner_size([1280.0, 800.0]),
         ..Default::default()
     };
     let result = eframe::run_native(

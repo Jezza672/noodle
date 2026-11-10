@@ -12,6 +12,7 @@ pub struct Dropdown {
     id: Id,
     text: String,
     width: Option<f32>,
+    arrow: bool,
 }
 
 impl Dropdown {
@@ -20,11 +21,19 @@ impl Dropdown {
             id: Id::new(salt),
             text: String::new(),
             width: None,
+            arrow: true,
         }
     }
 
     pub fn selected_text(mut self, text: impl Into<String>) -> Self {
         self.text = text.into();
+        self
+    }
+
+    /// Whether the button carries a drop-down arrow (it does by default). A
+    /// button that sits among others that open lists without one leaves it off.
+    pub fn arrow(mut self, arrow: bool) -> Self {
+        self.arrow = arrow;
         self
     }
 
@@ -46,12 +55,16 @@ impl Dropdown {
         let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
         // The arrow is drawn below, not typed: the font has no glyph for it,
         // and it showed as an empty box. Two spaces make room for it.
-        let mut button = egui::Button::new(format!("{}\u{2003}\u{2002}", self.text));
+        let mut button = egui::Button::new(if self.arrow {
+            format!("{}\u{2003}\u{2002}", self.text)
+        } else {
+            self.text.clone()
+        });
         if let Some(width) = self.width {
             button = button.min_size(egui::vec2(width, 0.0));
         }
         let response = ui.add(button);
-        if ui.is_rect_visible(response.rect) {
+        if self.arrow && ui.is_rect_visible(response.rect) {
             let colour = ui.style().interact(&response).fg_stroke.color;
             crate::transport_widgets::paint_chevron(
                 ui,

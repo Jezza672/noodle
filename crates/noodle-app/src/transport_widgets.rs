@@ -75,8 +75,8 @@ pub fn keyboard_toggle(ui: &mut Ui, on: bool) -> Response {
     response
 }
 
-/// A button and its options arrow, joined by one outline so the arrow reads
-/// as part of the button. `main` draws the button; the arrow comes back as a
+/// A button and its options arrow, flush against it so the arrow reads as part
+/// of the button. `main` draws the button; the arrow comes back as a
 /// second response, to anchor the popover on. `label` names the arrow for
 /// accessibility and tests.
 pub fn split_button(
@@ -106,47 +106,7 @@ pub fn split_button(
         )
         .inner;
     arrow.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
-    ui.painter().rect_stroke(
-        main.rect.union(arrow.rect),
-        egui::CornerRadius::same(4),
-        Stroke::new(1.0, theme::TRANSPORT_OUTLINE),
-        StrokeKind::Inside,
-    );
     (main, arrow)
-}
-
-/// A row of choices where the current one is lit, each with a hover. Returns
-/// the one clicked.
-pub fn segmented<T: Copy + PartialEq>(
-    ui: &mut Ui,
-    choices: &[(&str, T, &str)],
-    current: T,
-) -> Option<T> {
-    let mut picked = None;
-    ui.horizontal_wrapped(|ui| {
-        ui.spacing_mut().item_spacing.x = 2.0;
-        for (label, value, tip) in choices {
-            if ui
-                .selectable_label(*value == current, *label)
-                .on_hover_text(*tip)
-                .clicked()
-            {
-                picked = Some(*value);
-            }
-        }
-    });
-    picked
-}
-
-/// A setting: its name, then its choices.
-pub fn setting<T: Copy + PartialEq>(
-    ui: &mut Ui,
-    name: &str,
-    choices: &[(&str, T, &str)],
-    current: T,
-) -> Option<T> {
-    ui.label(egui::RichText::new(name).weak());
-    segmented(ui, choices, current)
 }
 
 /// How the position reads: bar.beat.tick, counting bars and beats from 1.
@@ -222,6 +182,43 @@ pub fn position_field(ui: &mut Ui, map: &TempoMap, at: Tick) -> Option<Tick> {
         tick = (tick + SCRUB_STEP / 2) / SCRUB_STEP * SCRUB_STEP;
     }
     Some(Tick(tick.max(0)))
+}
+
+/// A small status dot, then `text`, on one line. `filled` false draws a ring.
+pub fn dot_label(ui: &mut Ui, colour: Color32, filled: bool, text: impl Into<egui::WidgetText>) {
+    ui.horizontal(|ui| {
+        let (rect, _) = ui.allocate_exact_size(vec2(10.0, 10.0), Sense::hover());
+        if filled {
+            ui.painter().circle_filled(rect.center(), 3.5, colour);
+        } else {
+            ui.painter()
+                .circle_stroke(rect.center(), 3.0, Stroke::new(1.5, colour));
+        }
+        ui.label(text);
+    });
+}
+
+/// A row of choices on one line, the current one lit, each with a hover.
+/// Says the one clicked.
+pub fn inline<T: Copy + PartialEq>(
+    ui: &mut Ui,
+    choices: &[(String, T, &str)],
+    current: T,
+) -> Option<T> {
+    let mut picked = None;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 2.0;
+        for (label, value, tip) in choices {
+            if ui
+                .selectable_label(*value == current, label.as_str())
+                .on_hover_text(*tip)
+                .clicked()
+            {
+                picked = Some(*value);
+            }
+        }
+    });
+    picked
 }
 
 #[cfg(test)]

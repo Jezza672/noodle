@@ -379,11 +379,16 @@ the right.
   clamped between the left and right groups, so a narrow window pushes it
   off-centre instead of overlapping them.
 - **Split buttons.** Record, the Audio chip and the keyboard toggle each have an
-  options arrow flush against them (`transport_widgets::split_button`), opening a
-  popover: record options (quantise, loop recording, count-in, pre-roll,
-  automation write), audio options (monitor device, the playback cache, audio
-  settings) and the keyboard's octave and velocity. A lime dot on Record says
-  a count-in or pre-roll is set.
+  options arrow flush against them (`transport_widgets::split_button`, no outline),
+  opening a popover. The record options open centred under the whole transport
+  capsule, in two columns: quantise down the left, and on the right count-in and
+  pre-roll (bars), loop recording and automation write, each on one row. The
+  audio popover has three parts: the engine (on/off, whether it runs as chosen,
+  latency, underruns), where monitoring plays, and the playback cache (what it is,
+  the automatic switch, and where the sound is coming from now, with the same dot as
+  the chip). The keyboard popover holds its octave and velocity. A lime dot on
+  Record says a count-in or pre-roll is set. The tempo field has a fixed width, so
+  typing a tempo (which drops the " bpm" suffix) moves nothing.
 - **Drawn arrows and icons.** The bundled font has no glyph for the
   drop-down arrow or for a plus, and typed ones show as empty boxes, so arrows
   are painted (`paint_chevron`, also used by `widgets::Dropdown`) and the
