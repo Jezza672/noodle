@@ -322,6 +322,39 @@ the scroll delta they use, so a view that pans or zooms with the wheel has to
 clear it too: otherwise one turn acts twice, once on the view and once on a
 scroll area around it.
 
+## The top bar
+
+One row (`app.rs`, `top_bar`): the menus and the tempo group on the left, the
+transport centred on the window, and the audio chip, mix version and keyboard on
+the right.
+
+- **Nothing moves by itself.** A status is a dot, a toggle never changes its
+  label, and every field has a fixed width, so a button never shifts while it
+  is being pressed. The Audio chip's dot says how the sound is made (grey
+  live, a ring caching, lime from the cache, amber when the engine runs on
+  something other than what was chosen); the words are in its tooltip and
+  popover. The transport's width is measured one frame late and the centre is
+  clamped between the left and right groups, so a narrow window pushes it
+  off-centre instead of overlapping them.
+- **Split buttons.** Record, the Audio chip and the keyboard toggle each have an
+  options arrow flush against them (`transport_widgets::split_button`), opening a
+  popover: record options (quantise, loop recording, count-in, pre-roll,
+  automation write), audio options (monitor device, the playback cache, audio
+  settings) and the keyboard's octave and velocity. A lime dot on Record says
+  a count-in or pre-roll is set.
+- **Drawn arrows and icons.** The bundled font has no glyph for the
+  drop-down arrow or for a plus, and typed ones show as empty boxes, so arrows
+  are painted (`paint_chevron`, also used by `widgets::Dropdown`) and the
+  keyboard is a drawn icon.
+- **The position field** shows bar.beat.tick. Drag it sideways to move the
+  playhead (a beat per dozen pixels, landing on sixteenths; Shift for finer),
+  or click it and type `5`, `5.2` or `5.2.480`. A place that is not in the music
+  (bar 0, a fifth beat in 4/4) is refused. Both send `Action::Seek`.
+- **Switches** are not in this bar. They are Button nodes in the graph, shown in a
+  strip along the top of the node editor. The strip is only there once there is
+  a switch (Edit > Add Switch Button makes the first, and the strip's "+ Switch"
+  menu the rest), so an empty graph keeps all its height.
+
 ## Parameter widgets
 
 `widgets::ParamField` draws any `ParamInfo`, in the properties panel and

@@ -41,7 +41,7 @@ pub fn is_key(key: Key) -> bool {
 }
 
 /// The lowest and highest octave. C3 is note 60, so octave 3 starts there.
-const OCTAVES: std::ops::RangeInclusive<i8> = -2..=8;
+pub const OCTAVES: std::ops::RangeInclusive<i8> = -2..=8;
 const VELOCITY_STEP: u8 = 16;
 const CHANNEL: u8 = 0;
 
@@ -78,9 +78,18 @@ impl KeyboardMidi {
         if on { Vec::new() } else { self.release_all() }
     }
 
-    #[cfg(test)]
     pub fn octave(&self) -> i8 {
         self.octave
+    }
+
+    /// Sets the octave the note keys play at, kept in range.
+    pub fn set_octave(&mut self, octave: i8) {
+        self.octave = octave.clamp(*OCTAVES.start(), *OCTAVES.end());
+    }
+
+    /// Sets the velocity the note keys play at, kept in range.
+    pub fn set_velocity(&mut self, velocity: u8) {
+        self.velocity = velocity.clamp(1, 127);
     }
 
     pub fn velocity(&self) -> u8 {

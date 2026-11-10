@@ -165,8 +165,13 @@ pub(crate) enum Action {
     /// Makes the live tempo a tempo change in the map at the playhead.
     WriteTempoToMap,
     Rewind,
+    /// Moves the playhead: a position typed or scrubbed in the transport.
+    Seek(noodle_core::Tick),
     ToggleRecord,
     ToggleKeyboard,
+    /// The octave and the velocity the computer keyboard plays at.
+    SetKeyboardOctave(i8),
+    SetKeyboardVelocity(u8),
     /// How the MIDI of the next take is snapped.
     SetRecordQuantise(crate::midi_take::Quantise),
     SetRecordMidi(crate::midi_take::MidiRecord),
@@ -455,15 +460,7 @@ impl App {
         egui::Panel::top("menu").show(ui, |ui| {
             #[cfg(test)]
             crate::testkit::mark_view(ui, "menu");
-            egui::MenuBar::new().ui(ui, |ui| {
-                self.menus(ui, &mut actions);
-                ui.separator();
-                self.transport(ui, &mut actions);
-                ui.separator();
-                if let Some(step) = crate::snap::menu(ui, self.session.snap()) {
-                    self.session.set_snap(step);
-                }
-            });
+            egui::MenuBar::new().ui(ui, |ui| self.top_bar(ui, &mut actions));
         });
 
         egui::Panel::bottom("status").show(ui, |ui| {
@@ -736,6 +733,7 @@ impl App {
             .show(ui, |ui| {
                 #[cfg(test)]
                 crate::testkit::mark_view(ui, "node editor");
+                self.switch_strip(ui, &mut actions);
                 let edits = editor::show(ui, &mut self.editor, &self.session);
                 self.session.edit(edits);
                 self.open_requested_view();
@@ -927,6 +925,7 @@ impl App {
                 }
             };
         let template = std::cell::Cell::new(None);
+        let bind = std::cell::Cell::new(None);
         ui.menu_button("File", |ui| {
             item(ui, "New", Some(&NEW), true, Action::New);
             item(ui, "Open…", Some(&OPEN), true, Action::Open);
@@ -1027,7 +1026,21 @@ impl App {
                 true,
                 Action::ArrangeNodes,
             );
+            ui.menu_button("Add Switch Button", |ui| {
+                if let Some(n) = self.switch_choice(ui) {
+                    bind.set(Some(n));
+                    ui.close();
+                }
+            })
+            .response
+            .on_hover_text(
+                "Put a button along the top of the node editor that turns a node's \
+                 On/Off setting on or off, such as a reverb you want to switch while you play",
+            );
         });
+        if let Some(n) = bind.get() {
+            actions.push(Action::BindButton(n));
+        }
         if let Some(n) = template.get() {
             actions.push(Action::NewFromTemplate(n));
         }
@@ -1114,8 +1127,78 @@ impl App {
         });
     }
 
-    /// The transport pill: rewind, play, pause, record, the position and the
-    /// metronome, in a rounded capsule like the Canvas design's.
+    /// The whole top row. Menus and the tempo group sit on the left, the
+    /// transport and the position in the middle of the window, and the
+    /// engine, the keyboard and the user's switches on the right.
+    ///
+    /// Nothing in it changes width because of what the project is doing: a
+    /// status is a dot, a toggle never changes its label, and each field has
+    /// a fixed width. So a button never moves while it is being pressed.
+    fn top_bar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        use egui::{Align, Layout, UiBuilder};
+        let row = ui.max_rect();
+        self.menus(ui, actions);
+        ui.separator();
+        let snap = self.tempo_group(ui, actions);
+        if let Some(step) = snap {
+            self.session.set_snap(step);
+        }
+        let left_end = ui.cursor().min.x;
+        // The right group is placed by the width it had last frame, like the
+        // transport below. (A right-to-left layout would be simpler, but its
+        // rect spans the whole row, and sits over the menus.)
+        let right_id = egui::Id::new("top bar right width");
+        let right_width = ui.data(|d| d.get_temp::<f32>(right_id)).unwrap_or(150.0);
+        let right_rect = egui::Rect::from_min_max(
+            egui::pos2(row.max.x - right_width - 4.0, row.min.y),
+            row.max,
+        );
+        let used = ui
+            .scope_builder(
+                UiBuilder::new()
+                    .id_salt("top bar right")
+                    .max_rect(right_rect)
+                    .layout(Layout::left_to_right(Align::Center)),
+                |ui| self.right_group(ui, actions),
+            )
+            .response
+            .rect
+            .width();
+        if (used - right_width).abs() > 0.5 {
+            ui.data_mut(|d| d.insert_temp(right_id, used));
+            ui.request_repaint();
+        }
+        let right_start = row.max.x - right_width;
+        // The transport is centred on the window, and gives way to the groups
+        // on either side when there is no room.
+        let id = egui::Id::new("top bar transport width");
+        let width = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(280.0);
+        let low = left_end + 10.0;
+        let high = (right_start - 10.0 - width).max(low);
+        let x = (row.center().x - width / 2.0).clamp(low, high);
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(x, row.min.y),
+            egui::pos2(x + width + 4.0, row.max.y),
+        );
+        let used = ui
+            .scope_builder(
+                UiBuilder::new()
+                    .id_salt("top bar transport")
+                    .max_rect(rect)
+                    .layout(Layout::left_to_right(Align::Center)),
+                |ui| self.transport(ui, actions),
+            )
+            .response
+            .rect
+            .width();
+        if (used - width).abs() > 0.5 {
+            ui.data_mut(|d| d.insert_temp(id, used));
+            ui.request_repaint();
+        }
+    }
+
+    /// The capsule round the transport: rewind, play, record with its options,
+    /// and the position.
     fn transport(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         egui::Frame::NONE
             .fill(theme::TRANSPORT_FILL)
@@ -1126,6 +1209,34 @@ impl App {
                 ui.spacing_mut().item_spacing.x = 4.0;
                 self.transport_buttons(ui, actions);
             });
+    }
+
+    /// The capsule round the tempo, the metronome, the time signature, where
+    /// the tempo comes from, and the snap step. Says the snap step picked.
+    fn tempo_group(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) -> Option<i64> {
+        let mut snap = None;
+        egui::Frame::NONE
+            .fill(theme::TRANSPORT_FILL)
+            .stroke(egui::Stroke::new(1.0, theme::TRANSPORT_OUTLINE))
+            .corner_radius(egui::CornerRadius::same(theme::PILL_RADIUS))
+            .inner_margin(egui::Margin::symmetric(8, 1))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                self.metronome_button(ui, actions);
+                self.tempo_fields(ui, actions);
+                self.tempo_source_controls(ui, actions);
+                ui.separator();
+                snap = crate::snap::menu(ui, self.session.snap());
+            });
+        snap
+    }
+
+    /// The right edge: the computer keyboard, the mix version and the audio
+    /// engine.
+    fn right_group(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        self.keyboard_button(ui, actions);
+        self.version_menu(ui, actions);
+        self.engine_chip(ui, actions);
     }
 
     fn transport_buttons(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
@@ -1155,48 +1266,64 @@ impl App {
         {
             actions.push(Action::TogglePlayback);
         }
-        self.engine_button(ui, actions);
-        self.version_menu(ui, actions);
-        self.cache_indicator(ui, actions);
         let recording = self.session.is_recording() || self.session.is_counting_in();
-        let record = egui::Button::new(egui::RichText::new("⏺").color(if recording {
-            theme::RECORD
-        } else {
-            theme::timeline::TEXT
-        }))
-        .selected(recording);
-        if ui
-            .add(record)
-            .on_hover_text(
+        // The options arrow is part of the record button, not a control of
+        // its own, so it is joined to it.
+        let (record, options) = crate::transport_widgets::split_button(
+            ui,
+            "Record options",
+            |ui| {
+                let button = egui::Button::new(egui::RichText::new("⏺").color(if recording {
+                    theme::RECORD
+                } else {
+                    theme::timeline::TEXT
+                }))
+                .selected(recording);
+                ui.add(button).on_hover_text(
                 "Record the input onto the armed tracks (RA and RM on a track header), from the playhead",
             )
-            .clicked()
-        {
+            },
+        );
+        if record.clicked() {
             actions.push(Action::ToggleRecord);
         }
-        self.quantise_menu(ui, actions);
-        self.lead_in_menus(ui, actions);
-        self.automation_mode_menu(ui, actions);
-        self.monitor_menu(ui, actions);
-        self.keyboard_button(ui, actions);
-        self.metronome_button(ui, actions);
-        self.tempo_fields(ui, actions);
-        self.extra_buttons(ui, actions);
-        self.tempo_source_controls(ui, actions);
-        let at = self
-            .session
-            .project()
-            .tempo_map()
-            .position(self.session.playhead());
-        let position = format!("{}.{}.{:03}", at.bar + 1, at.beat + 1, at.tick);
-        ui.monospace(position).on_hover_text("Bar.beat.tick");
+        if self.session.count_in_bars() > 0 || self.session.pre_roll_bars() > 0 {
+            // A count-in or a pre-roll is set, which changes what record does.
+            ui.painter().circle_filled(
+                record.rect.right_top() + egui::vec2(-4.0, 4.5),
+                2.5,
+                theme::ACCENT,
+            );
+        }
+        egui::Popup::menu(&options)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| self.record_options(ui, actions));
+        options.on_hover_text(
+            "Record options: quantise, loop recording, count-in, pre-roll and automation",
+        );
+        ui.separator();
+        let map = self.session.project().tempo_map();
+        if let Some(tick) =
+            crate::transport_widgets::position_field(ui, map, self.session.playhead())
+        {
+            actions.push(Action::Seek(tick));
+        }
     }
 
-    /// The tempo source, the Tap button, and Write to map while a tap or a
+    /// The tempo source menu, which also has Tap tempo, and Write to map while a tap or a
     /// clock is in charge.
     fn tempo_source_controls(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let source = self.session.tempo_source();
         ui.menu_button(format!("♪ {}", source.label()), |ui| {
+            if ui
+                .button("Tap tempo")
+                .on_hover_text("Tap the tempo (T). Three taps make a tempo")
+                .clicked()
+            {
+                actions.push(Action::TapTempo);
+                ui.close();
+            }
+            ui.separator();
             for choice in crate::tempo_source::TempoSource::ALL {
                 if ui
                     .selectable_label(choice == source, choice.label())
@@ -1222,13 +1349,6 @@ impl App {
         })
         .response
         .on_hover_text("Where the tempo comes from: the tempo map, taps, or a MIDI clock");
-        if ui
-            .button("Tap")
-            .on_hover_text("Tap the tempo (T). Three taps make a tempo")
-            .clicked()
-        {
-            actions.push(Action::TapTempo);
-        }
     }
 
     /// The session's tempo and time signature. The tempo is the one that holds
@@ -1287,91 +1407,71 @@ impl App {
             .on_hover_text("The time signature");
     }
 
-    /// How recorded MIDI is snapped to the beat. What is heard while
-    /// recording is never snapped, only the clip the take becomes.
-    fn quantise_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    /// The record button's popover: how recorded MIDI is snapped (what is
+    /// heard while recording is never snapped, only the clip the take becomes),
+    /// what a loop does, the count-in (bars of metronome before a take), the
+    /// pre-roll (bars of the project before a punch-in), and how armed
+    /// Automation nodes write.
+    fn record_options(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        use crate::transport_widgets::setting;
+        ui.set_min_width(280.0);
+        ui.label(egui::RichText::new("Record options").strong());
         let current = self.session.record_quantise();
-        crate::widgets::Dropdown::from_id_salt("record_quantise")
-            .width(48.0)
-            .selected_text(format!("Q {}", current.label()))
-            .show_ui(ui, |ui| {
-                for choice in crate::midi_take::Quantise::ALL {
-                    if ui
-                        .selectable_label(choice == current, choice.label())
-                        .clicked()
-                    {
-                        actions.push(Action::SetRecordQuantise(choice));
-                    }
-                }
-                ui.separator();
-                ui.label("Loop recording MIDI");
-                let mode = self.session.record_midi();
-                for choice in crate::midi_take::MidiRecord::ALL {
-                    if ui
-                        .selectable_label(choice == mode, choice.label())
-                        .on_hover_text(match choice {
-                            crate::midi_take::MidiRecord::Takes => {
-                                "A take of every cycle, in a take folder to comp from"
-                            }
-                            crate::midi_take::MidiRecord::Merge => "Every cycle in one clip",
-                        })
-                        .clicked()
-                    {
-                        actions.push(Action::SetRecordMidi(choice));
-                    }
-                }
+        let choices: Vec<_> = crate::midi_take::Quantise::ALL
+            .iter()
+            .map(|q| {
+                (
+                    q.label(),
+                    *q,
+                    "Snap the notes of recorded MIDI to this grid",
+                )
             })
-            .response
-            .on_hover_text("Snap the notes of recorded MIDI to this grid");
-    }
-
-    /// The count-in (bars of metronome before a take) and the pre-roll (bars of
-    /// the project before a punch-in).
-    fn lead_in_menus(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let menu = |ui: &mut egui::Ui,
-                    id: &str,
-                    label: &str,
-                    current: u8,
-                    choices: &[u8],
-                    tip: &str,
-                    actions: &mut Vec<Action>,
-                    action: fn(u8) -> Action| {
-            crate::widgets::Dropdown::from_id_salt(id)
-                .width(48.0)
-                .selected_text(format!("{label} {current}"))
-                .show_ui(ui, |ui| {
-                    for &bars in choices {
-                        if ui
-                            .selectable_label(bars == current, format!("{bars} bars"))
-                            .clicked()
-                        {
-                            actions.push(action(bars));
-                        }
+            .collect();
+        if let Some(choice) = setting(ui, "Quantise", &choices, current) {
+            actions.push(Action::SetRecordQuantise(choice));
+        }
+        let mode = self.session.record_midi();
+        let choices: Vec<_> = crate::midi_take::MidiRecord::ALL
+            .iter()
+            .map(|m| {
+                let tip = match m {
+                    crate::midi_take::MidiRecord::Takes => {
+                        "A take of every cycle, in a take folder to comp from"
                     }
-                })
-                .response
-                .on_hover_text(tip);
-        };
-        menu(
-            ui,
-            "count_in",
-            "In",
-            self.session.count_in_bars(),
-            &[0, 1, 2],
-            "Bars of metronome before recording starts",
-            actions,
-            Action::SetCountIn,
-        );
-        menu(
-            ui,
-            "pre_roll",
-            "Pre",
-            self.session.pre_roll_bars(),
-            &[0, 1, 2, 4],
-            "Bars of the project played before a punch-in",
-            actions,
-            Action::SetPreRoll,
-        );
+                    crate::midi_take::MidiRecord::Merge => "Every cycle in one clip",
+                };
+                (m.label(), *m, tip)
+            })
+            .collect();
+        if let Some(choice) = setting(ui, "Loop recording MIDI", &choices, mode) {
+            actions.push(Action::SetRecordMidi(choice));
+        }
+        ui.separator();
+        let bars = [(0u8, "0"), (1, "1"), (2, "2"), (4, "4")];
+        let choices: Vec<_> = bars
+            .iter()
+            .filter(|(n, _)| *n <= 2)
+            .map(|(n, l)| (*l, *n, "Bars of metronome before recording starts"))
+            .collect();
+        if let Some(n) = setting(ui, "Count-in, bars", &choices, self.session.count_in_bars()) {
+            actions.push(Action::SetCountIn(n));
+        }
+        let choices: Vec<_> = bars
+            .iter()
+            .map(|(n, l)| (*l, *n, "Bars of the project played before a punch-in"))
+            .collect();
+        if let Some(n) = setting(ui, "Pre-roll, bars", &choices, self.session.pre_roll_bars()) {
+            actions.push(Action::SetPreRoll(n));
+        }
+        ui.separator();
+        let current = self.session.automation_mode();
+        let choices: Vec<_> = crate::session::record_automation::AutomationMode::ALL
+            .iter()
+            .map(|m| (m.label(), *m, m.tooltip()))
+            .collect();
+        if let Some(choice) = setting(ui, "Automation write", &choices, current) {
+            actions.push(Action::SetAutomationMode(choice));
+        }
     }
 
     /// Which mix version plays. Shown once the project has versions (the
@@ -1434,96 +1534,21 @@ impl App {
             .on_hover_text("The mix version that plays");
     }
 
-    /// How armed Automation nodes write: Read, Touch or Latch.
-    fn automation_mode_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        use crate::session::record_automation::AutomationMode;
-        let current = self.session.automation_mode();
-        crate::widgets::Dropdown::from_id_salt("automation_mode")
-            .width(64.0)
-            .selected_text(format!("Auto {}", current.label()))
-            .show_ui(ui, |ui| {
-                for choice in AutomationMode::ALL {
-                    if ui
-                        .selectable_label(choice == current, choice.label())
-                        .on_hover_text(choice.tooltip())
-                        .clicked()
-                    {
-                        actions.push(Action::SetAutomationMode(choice));
-                    }
-                }
-            })
-            .response
-            .on_hover_text(
-                "How armed Automation nodes record: Read plays back, Touch writes while you move, Latch holds the last move",
-            );
-    }
-
-    /// Where the monitor buttons on nodes play: the main output or any other
-    /// device. While something is monitored, a button stops it.
-    fn monitor_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let current = self.session.monitor_device();
-        let name = |id: &str| {
-            self.outputs
-                .device_name(id)
-                .unwrap_or_else(|| id.to_owned())
-        };
-        let shown = if current.is_empty() {
-            "Master".to_owned()
-        } else {
-            name(current)
-        };
-        crate::widgets::Dropdown::from_id_salt("monitor_device")
-            .width(64.0)
-            .selected_text(format!("Mon {shown}"))
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(current.is_empty(), "Master").clicked() {
-                    actions.push(Action::SetMonitorDevice(None));
-                }
-                for (n, device) in self.outputs.devices().iter().enumerate() {
-                    if ui
-                        .selectable_label(current == device.id, &device.name)
-                        .clicked()
-                    {
-                        actions.push(Action::SetMonitorDevice(Some(n)));
-                    }
-                }
-            })
-            .response
-            .on_hover_text(
-                "Where a node's monitor button plays. Click it to listen to a node, \
-                 Shift-click to add another, Ctrl-click to silence the other outputs on \
-                 this device, Ctrl+Shift-click to silence all of them",
-            );
-        if !self.session.monitored().is_empty()
-            && ui
-                .button(
-                    egui::RichText::new(match self.session.monitor_mode() {
-                        crate::session::MonitorMode::Sum => "Stop monitor",
-                        crate::session::MonitorMode::Exclusive => "Stop monitor (solo device)",
-                        crate::session::MonitorMode::SilenceOthers => "Stop monitor (solo)",
-                    })
-                    .color(theme::ACCENT),
-                )
-                .on_hover_text("Stop listening to the monitored nodes (Escape)")
-                .clicked()
-        {
-            actions.push(Action::StopMonitor);
-        }
-    }
-
-    /// The computer keyboard as a MIDI source. While on it shows the octave
-    /// and velocity the Z X C V keys set.
-    /// The audio engine's switch. Lit while it runs, amber when it runs on
-    /// something other than what was chosen (the hover says what).
-    fn engine_button(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    /// The audio engine's switch with its options arrow. Lit while the engine
+    /// runs; the dot says how the sound is being made, so the chip never
+    /// changes size: grey is live, a ring is caching, lime is played from the
+    /// cache, amber is the engine running on something other than what was
+    /// chosen (the hover says what).
+    fn engine_chip(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let on = self.session.engine_running();
         let warning = self.session.engine_warning();
-        let (label, colour) = match (on, warning) {
-            (true, Some(_)) => ("⚠ Audio", theme::WARNING),
-            (true, None) => ("Audio", theme::ACCENT),
-            (false, _) => ("Audio", theme::timeline::TEXT_WEAK),
+        let status = self.session.cache_status();
+        let colour = match (on, warning) {
+            (true, Some(_)) => theme::WARNING,
+            (true, None) => theme::ACCENT,
+            (false, _) => theme::timeline::TEXT_WEAK,
         };
-        let tip = match (on, warning) {
+        let mut tip = match (on, warning) {
             (true, Some(warning)) => format!(
                 "The audio engine is on, but not as chosen: {warning}. Click to turn it off"
             ),
@@ -1539,68 +1564,154 @@ impl App {
             ),
             (false, _) => "The audio engine is off, so nothing sounds. Click to turn it on".into(),
         };
-        let label = egui::RichText::new(label).color(colour);
-        if ui
-            .add(egui::Button::new(label).selected(on))
-            .on_hover_text(tip)
-            .clicked()
-        {
-            actions.push(Action::ToggleEngine);
+        if on && !matches!(status, CacheStatus::Off | CacheStatus::Idle) {
+            tip.push_str(&format!(". {}", crate::cache_panel::status_line(status).0));
         }
-    }
-
-    /// Whether the sound is computed live or played from the playback cache.
-    /// Shown while the engine runs and the cache is on, and has something to
-    /// cache; a click opens the cache panel.
-    fn cache_indicator(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let status = self.session.cache_status();
-        let (label, colour) = match status {
-            CacheStatus::Off | CacheStatus::Idle => return,
-            CacheStatus::Live => ("Live", theme::timeline::TEXT_WEAK),
-            CacheStatus::Rendering(_) => ("Caching…", theme::timeline::TEXT_WEAK),
-            CacheStatus::Cached => ("From cache", theme::ACCENT),
-        };
-        let mut tip = crate::cache_panel::status_line(status).0;
         if let Some(n) = self.session.underruns().filter(|&n| n > 0) {
             let times = if n == 1 { "underrun" } else { "underruns" };
             tip.push_str(&format!(". {n} {times} since playback started"));
         }
+        let (chip, options) = crate::transport_widgets::split_button(ui, "Audio options", |ui| {
+            // Room on the left for the dot.
+            ui.scope(|ui| {
+                ui.spacing_mut().button_padding.x = 17.0;
+                let label = egui::RichText::new("Audio").color(colour);
+                ui.add(egui::Button::new(label).selected(on))
+                    .on_hover_text(tip)
+            })
+            .inner
+        });
+        if chip.clicked() {
+            actions.push(Action::ToggleEngine);
+        }
+        let centre = chip.rect.left_center() + egui::vec2(10.0, 0.0);
+        let weak = theme::timeline::TEXT_WEAK;
+        let painter = ui.painter();
+        match (on, warning, status) {
+            (false, _, _) => painter.circle_stroke(centre, 3.0, egui::Stroke::new(1.0, weak)),
+            (true, Some(_), _) => painter.circle_filled(centre, 3.5, theme::WARNING),
+            (true, None, CacheStatus::Cached) => painter.circle_filled(centre, 3.5, theme::ACCENT),
+            (true, None, CacheStatus::Rendering(_)) => {
+                painter.circle_stroke(centre, 3.0, egui::Stroke::new(1.5, theme::ACCENT))
+            }
+            (true, None, _) => painter.circle_filled(centre, 3.5, weak),
+        };
+        egui::Popup::menu(&options)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| self.audio_options(ui, actions));
+        options.on_hover_text("Where monitoring plays, the playback cache, and audio settings");
+    }
+
+    /// The audio chip's popover: where the monitor buttons on nodes play
+    /// (the main output or any other device), the playback cache, and the
+    /// audio settings.
+    fn audio_options(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        ui.set_min_width(240.0);
+        ui.label(egui::RichText::new("Monitor plays on").strong())
+            .on_hover_text(
+                "Where a node's monitor button plays. Click it to listen to a node, \
+                 Shift-click to add another, Ctrl-click to silence the other outputs on \
+                 this device, Ctrl+Shift-click to silence all of them",
+            );
+        let current = self.session.monitor_device();
         if ui
-            .add(egui::Button::new(egui::RichText::new(label).color(colour)))
-            .on_hover_text(tip)
+            .selectable_label(current.is_empty(), "Main output")
+            .clicked()
+        {
+            actions.push(Action::SetMonitorDevice(None));
+        }
+        for (n, device) in self.outputs.devices().iter().enumerate() {
+            if ui
+                .selectable_label(current == device.id, &device.name)
+                .clicked()
+            {
+                actions.push(Action::SetMonitorDevice(Some(n)));
+            }
+        }
+        if !self.session.monitored().is_empty()
+            && ui
+                .button(
+                    egui::RichText::new(match self.session.monitor_mode() {
+                        crate::session::MonitorMode::Sum => "Stop monitor",
+                        crate::session::MonitorMode::Exclusive => "Stop monitor (solo device)",
+                        crate::session::MonitorMode::SilenceOthers => "Stop monitor (solo)",
+                    })
+                    .color(theme::ACCENT),
+                )
+                .on_hover_text("Stop listening to the monitored nodes (Escape)")
+                .clicked()
+        {
+            actions.push(Action::StopMonitor);
+        }
+        ui.separator();
+        ui.label(egui::RichText::new("Playback cache").strong());
+        let (line, colour) = crate::cache_panel::status_line(self.session.cache_status());
+        ui.label(egui::RichText::new(line).color(colour));
+        if ui
+            .button("Playback cache…")
+            .on_hover_text("Switch the playback cache, and see what it holds")
             .clicked()
         {
             actions.push(Action::ToggleCache);
+            ui.close();
+        }
+        ui.separator();
+        if ui.button("Audio settings…").clicked() {
+            actions.push(Action::AudioSettings);
+            ui.close();
         }
     }
 
+    /// The computer keyboard as a MIDI source, with an arrow for its octave and
+    /// velocity. The button never changes its label.
     fn keyboard_button(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let on = self.keyboard.is_on();
-        let label = if on {
-            format!(
-                "⌨ {} · {}",
-                self.keyboard.octave_label(),
-                self.keyboard.velocity()
-            )
-        } else {
-            "⌨".to_owned()
-        };
-        let label = egui::RichText::new(label).color(if on {
-            theme::ACCENT
-        } else {
-            theme::timeline::TEXT
-        });
-        if ui
-            .add(egui::Button::new(label).selected(on))
-            .on_hover_text(
-                "Play the MIDI In nodes, and record, from the computer keyboard (M). \
-                 A W S E D F T G Y H U J K are the notes, Z and X change the octave, \
-                 C and V the velocity.",
-            )
-            .clicked()
-        {
+        let (button, options) =
+            crate::transport_widgets::split_button(ui, "Keyboard options", |ui| {
+                crate::transport_widgets::keyboard_toggle(ui, on).on_hover_text(format!(
+                    "Play the MIDI In nodes, and record, from the computer keyboard (M). \
+                     A W S E D F T G Y H U J K are the notes, Z and X change the octave, \
+                     C and V the velocity. Now {} at velocity {}",
+                    self.keyboard.octave_label(),
+                    self.keyboard.velocity()
+                ))
+            });
+        if button.clicked() {
             actions.push(Action::ToggleKeyboard);
         }
+        egui::Popup::menu(&options)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_min_width(200.0);
+                ui.label(egui::RichText::new("Computer keyboard").strong());
+                let mut octave = self.keyboard.octave();
+                ui.horizontal(|ui| {
+                    ui.label("Octave");
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut octave)
+                                .range(crate::keyboard::OCTAVES)
+                                .prefix("C"),
+                        )
+                        .on_hover_text("Z and X")
+                        .changed()
+                    {
+                        actions.push(Action::SetKeyboardOctave(octave));
+                    }
+                });
+                let mut velocity = self.keyboard.velocity();
+                ui.horizontal(|ui| {
+                    ui.label("Velocity");
+                    if ui
+                        .add(egui::DragValue::new(&mut velocity).range(1..=127))
+                        .on_hover_text("C and V")
+                        .changed()
+                    {
+                        actions.push(Action::SetKeyboardVelocity(velocity));
+                    }
+                });
+            });
+        options.on_hover_text("The keyboard's octave and velocity");
     }
 
     /// Lit while the bound button is on. A metronome that is missing shows
@@ -1630,8 +1741,33 @@ impl App {
         }
     }
 
-    /// The other Button nodes, lit while on, and a menu to bind a new one
-    /// to a switch on any node.
+    /// The strip along the top of the node editor: the user's own switches,
+    /// each a Button node lit while on and named for what it switches, and a
+    /// menu to add one wired to the On/Off setting of any node. The Button
+    /// nodes are ordinary nodes in the graph; this is only a place to press
+    /// them. It wraps onto more rows when there are many, and is only there
+    /// while there is a switch to show (Edit > Add Switch Button makes the first).
+    fn switch_strip(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        // No strip, and no height taken from the graph, until there is a switch.
+        if pill_buttons::extras(self.session.project(), self.session.registry()).is_empty() {
+            return;
+        }
+        egui::Frame::NONE
+            .fill(theme::PANEL)
+            .inner_margin(egui::Margin::symmetric(8, 3))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("Switches").weak())
+                        .on_hover_text(
+                            "Buttons for the On/Off settings you want in reach while you play",
+                        );
+                    self.extra_buttons(ui, actions);
+                });
+            });
+    }
+
+    /// The switches in the strip, then its menu.
     fn extra_buttons(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let project = self.session.project();
         let registry = self.session.registry();
@@ -1644,28 +1780,48 @@ impl App {
             let tip = if extra.target.is_empty() {
                 "A button nothing is wired to".to_owned()
             } else {
-                extra.target.clone()
+                format!("Switches {}. Click to turn it on or off", extra.target)
             };
+            // The node it switches, so it can be told from the others.
+            let name = extra
+                .target
+                .split(" · ")
+                .next()
+                .filter(|name| !name.is_empty())
+                .unwrap_or("Switch");
             let button =
-                egui::Button::new(egui::RichText::new("⏻").color(colour)).selected(extra.on);
+                egui::Button::new(egui::RichText::new(name).color(colour)).selected(extra.on);
             if ui.add(button).on_hover_text(tip).clicked() {
                 actions.push(Action::PressButton(extra.button));
             }
         }
-        ui.menu_button("＋", |ui| {
-            let switches = pill_buttons::switches(project, registry);
-            if switches.is_empty() {
-                ui.weak("No switches to bind a button to");
-            }
-            for (n, switch) in switches.iter().enumerate() {
-                if ui.button(&switch.label).clicked() {
-                    actions.push(Action::BindButton(n));
-                    ui.close();
-                }
+        ui.menu_button("+ Switch", |ui| {
+            if let Some(n) = self.switch_choice(ui) {
+                actions.push(Action::BindButton(n));
+                ui.close();
             }
         })
         .response
-        .on_hover_text("Add a button here that switches a node's On/Off setting");
+        .on_hover_text(
+            "Add a button here that turns a node's On/Off setting on or off, \
+             such as a reverb you want to switch while you play",
+        );
+    }
+
+    /// The list of On/Off settings a switch can be added for. Says which was
+    /// picked, as its place in [`pill_buttons::switches`].
+    fn switch_choice(&self, ui: &mut egui::Ui) -> Option<usize> {
+        let switches = pill_buttons::switches(self.session.project(), self.session.registry());
+        if switches.is_empty() {
+            ui.weak("No On/Off settings to add a switch for");
+        }
+        let mut picked = None;
+        for (n, switch) in switches.iter().enumerate() {
+            if ui.button(&switch.label).clicked() {
+                picked = Some(n);
+            }
+        }
+        picked
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -2052,6 +2208,7 @@ impl App {
                 crate::prefs::remember_monitor_device(&device);
             }
             Action::Rewind => self.session.rewind(),
+            Action::Seek(tick) => self.session.seek(tick),
             Action::SetRecordQuantise(quantise) => self.session.set_record_quantise(quantise),
             Action::SetRecordMidi(mode) => {
                 self.session.set_record_midi(mode);
@@ -2075,6 +2232,8 @@ impl App {
                 self.session.set_automation_mode(mode);
                 crate::prefs::remember_automation_mode(mode);
             }
+            Action::SetKeyboardOctave(octave) => self.keyboard.set_octave(octave),
+            Action::SetKeyboardVelocity(velocity) => self.keyboard.set_velocity(velocity),
             Action::ToggleKeyboard => {
                 for message in self.keyboard.set_on(!self.keyboard.is_on()) {
                     self.session.midi_bus().send(message);
@@ -2949,7 +3108,7 @@ mod tests {
     }
 
     #[test]
-    fn the_audio_button_shows_when_the_engine_fell_back() {
+    fn the_audio_chip_keeps_its_place_and_label_when_the_engine_fell_back() {
         let mut app = empty();
         app.session.set_audio_config(noodle_io::AudioConfig {
             output: Some("alsa:no such device".into()),
@@ -2959,7 +3118,9 @@ mod tests {
         let mut harness = harness(app);
         harness.run_steps(3);
         assert!(harness.state().session.engine_warning().is_some());
-        harness.get_by_label("⚠ Audio");
+        // The warning is the chip's amber dot and its hover, not a longer
+        // label, so nothing next to it moves.
+        harness.get_by_label("Audio");
     }
 
     #[test]
@@ -3929,13 +4090,62 @@ mod tests {
     }
 
     #[test]
-    fn the_plus_menu_binds_a_new_pill_button_that_presses_a_switch() {
+    fn switching_the_engine_or_keyboard_does_not_move_the_transport() {
+        let mut harness = harness(empty());
+        harness.run();
+        let place = |h: &Harness<'_, App>| {
+            [
+                h.get_by_label("▶").rect(),
+                h.get_by_label("⏺").rect(),
+                h.get_by_label("Audio").rect(),
+            ]
+        };
+        let before = place(&harness);
+        harness.get_by_label("Computer keyboard").click();
+        harness.run();
+        harness.get_by_label("Audio").click();
+        harness.run_steps(4);
+        assert_eq!(place(&harness), before);
+    }
+
+    #[test]
+    fn the_record_options_arrow_is_joined_to_the_record_button() {
+        let mut harness = harness(empty());
+        harness.run();
+        let record = harness.get_by_label("⏺").rect();
+        let arrow = harness.get_by_label("Record options").rect();
+        assert_eq!(record.right(), arrow.left());
+    }
+
+    #[test]
+    fn a_position_typed_into_the_transport_moves_the_playhead() {
+        let mut harness = harness(empty());
+        harness.run();
+        // Bar 3, beat 2: two bars and a beat in.
+        harness.get_by_label("Position").click();
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        harness.event(egui::Event::Text("3.2".into()));
+        harness.run();
+        harness.key_press(Key::Enter);
+        harness.run();
+        assert_eq!(
+            harness.state().session.playhead(),
+            noodle_core::Tick(9 * noodle_core::TICKS_PER_QUARTER)
+        );
+    }
+
+    #[test]
+    fn adding_a_switch_from_the_edit_menu_shows_a_strip_button_that_presses_it() {
         let mut harness = harness(empty());
         harness.run();
         // The metronome's own button makes a metronome with a switch left.
         harness.get_by_label("♩").click();
         harness.run();
-        harness.get_by_label("＋").click();
+        // With no switch yet there is no strip: the Edit menu makes the first.
+        harness.get_by_label("Edit").click();
+        harness.run();
+        harness.get_by_label_contains("Add Switch Button").click();
         harness.run();
         harness.get_by_label("Metronome · Accent").click();
         harness.run();
@@ -3945,7 +4155,7 @@ mod tests {
         };
         assert_eq!(shown().len(), 1);
         assert!(shown()[0].on);
-        harness.get_by_label("⏻").click();
+        harness.get_by_label("Metronome").click();
         harness.run();
         let state = harness.state();
         let extras = pill_buttons::extras(state.session.project(), state.session.registry());

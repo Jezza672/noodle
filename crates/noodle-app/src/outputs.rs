@@ -131,14 +131,6 @@ impl OutputsView {
         self.listed()
     }
 
-    /// The name of the listed device `id`.
-    pub fn device_name(&self, id: &str) -> Option<String> {
-        self.listed()
-            .iter()
-            .find(|d| d.id == id)
-            .map(|d| d.name.clone())
-    }
-
     /// The output devices last listed.
     fn listed(&self) -> &[DeviceInfo] {
         match &self.devices {

@@ -47,6 +47,7 @@ mod testkit;
 mod theme;
 mod timeline;
 mod toolbar;
+mod transport_widgets;
 mod widgets;
 
 use std::process::ExitCode;

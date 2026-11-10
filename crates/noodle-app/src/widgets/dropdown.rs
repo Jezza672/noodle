@@ -44,11 +44,21 @@ impl Dropdown {
         let open_id = id.with("open");
         let width_id = id.with("width");
         let mut open = ui.data(|d| d.get_temp::<bool>(open_id)).unwrap_or(false);
-        let mut button = egui::Button::new(format!("{} ▾", self.text));
+        // The arrow is drawn below, not typed: the font has no glyph for it,
+        // and it showed as an empty box. Two spaces make room for it.
+        let mut button = egui::Button::new(format!("{}\u{2003}\u{2002}", self.text));
         if let Some(width) = self.width {
             button = button.min_size(egui::vec2(width, 0.0));
         }
         let response = ui.add(button);
+        if ui.is_rect_visible(response.rect) {
+            let colour = ui.style().interact(&response).fg_stroke.color;
+            crate::transport_widgets::paint_chevron(
+                ui,
+                response.rect.right_center() - egui::vec2(11.0, 0.0),
+                colour,
+            );
+        }
         response.widget_info(|| WidgetInfo {
             current_text_value: Some(self.text.clone()),
             ..WidgetInfo::new(WidgetType::ComboBox)
