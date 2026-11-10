@@ -185,6 +185,7 @@ pub fn show(
                     let (_, rect) = ui.allocate_space(vec2(title_width, PILL_HEIGHT));
                     let mut child = ui.new_child(
                         UiBuilder::new()
+                            .id_salt("toolbar title")
                             .max_rect(rect)
                             .layout(Layout::left_to_right(Align::Center)),
                     );
@@ -219,6 +220,7 @@ fn draw_slot(ui: &mut Ui, slot: &Slot, i: usize, draw: &mut dyn FnMut(&mut Ui, u
     // rather than the slot's fixed width.
     let mut child = ui.new_child(
         UiBuilder::new()
+            .id_salt(("toolbar slot", i))
             .max_rect(rect)
             .layout(Layout::left_to_right(Align::Center)),
     );
