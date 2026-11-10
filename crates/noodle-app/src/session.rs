@@ -2533,7 +2533,10 @@ impl Session {
         };
         let samples = audio.controller.transport().position();
         let rate = f64::from(audio.controller.settings().sample_rate);
-        let tick = audio.controller.tempo_map().tick_at_sample(samples, rate);
+        let tick = audio
+            .controller
+            .timeline_map()
+            .tick_at_sample(samples, rate);
         Tick(tick.round() as i64)
     }
 
@@ -2627,7 +2630,7 @@ impl Session {
             return;
         };
         audio.controller.maintain();
-        if audio.controller.tempo_map() != self.project.tempo_map() {
+        if audio.controller.timeline_map() != self.project.tempo_map() {
             audio.controller.set_tempo_map(self.project.tempo_map());
         }
         // The loop is project state, so undo and loading change it too.
@@ -3042,7 +3045,7 @@ impl Session {
             return;
         };
         let map = match &self.audio {
-            Some(audio) => audio.controller.tempo_map(),
+            Some(audio) => audio.controller.timeline_map(),
             None => self.project.tempo_map(),
         };
         let rate = match &self.audio {
