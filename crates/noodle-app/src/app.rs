@@ -86,6 +86,8 @@ pub struct App {
     /// piano roll follows a change of selection and nothing else.
     roll_followed: Option<noodle_core::ClipId>,
     devices: DevicePicker,
+    display: crate::display::Display,
+    display_dialog: crate::display::DisplayDialog,
     export: ExportDialog,
     /// An action waiting for the user to decide what to do with unsaved
     /// changes.
@@ -209,6 +211,7 @@ pub(crate) enum Action {
     TogglePlugins,
     ToggleCache,
     ToggleCpu,
+    DisplaySettings,
     ImportAudio,
     ExportAudio,
     /// Asks where the export the dialog chose is to be written.
@@ -286,7 +289,7 @@ fn added_automation_node(edits: &[Edit]) -> Option<noodle_core::NodeId> {
 impl App {
     pub fn new(session: Session) -> Self {
         let templates = session.templates();
-        Self {
+        let mut app = Self {
             session,
             version_edits: std::cell::RefCell::new(Vec::new()),
             editor: EditorState::default(),
@@ -298,6 +301,8 @@ impl App {
             audition_track: None,
             roll_followed: None,
             devices: DevicePicker::default(),
+            display: crate::prefs::display(),
+            display_dialog: Default::default(),
             export: ExportDialog::default(),
             confirming: None,
             after_save: None,
@@ -322,7 +327,9 @@ impl App {
             keymap: commands::Keymap::from_saved(&crate::prefs::keymap()),
             templates,
             template_name: None,
-        }
+        };
+        app.editor.set_display(app.display);
+        app
     }
 
     /// Turns autosave on, and offers whatever a crashed run left in it.
@@ -797,6 +804,10 @@ impl App {
             self.session.set_audio_config(config);
             crate::prefs::remember_audio(self.session.audio_config());
         }
+        if self.display_dialog.show(ui.ctx(), &mut self.display) {
+            crate::prefs::remember_display(self.display);
+            self.editor.set_display(self.display);
+        }
         self.editor.retain_existing(&self.session);
         // A safety net for undo grouping: a drag's edits are one undo step,
         // closed by its widget's `EndDrag`. A widget that stops being drawn
@@ -838,6 +849,7 @@ impl App {
         let typing = ctx.egui_wants_keyboard_input()
             && ctx.memory(|m| m.focused()) != Some(crate::editor::canvas_id());
         let dialog = self.devices.is_open()
+            || self.display_dialog.is_open()
             || self.export.is_open()
             || self.confirming.is_some()
             || self.palette.is_open()
@@ -894,6 +906,7 @@ impl App {
         // The editor's own keys are safe too, since they need the pointer
         // over the canvas and a modal's backdrop covers it. Keep it so.
         let dialog = self.devices.is_open()
+            || self.display_dialog.is_open()
             || self.export.is_open()
             || self.confirming.is_some()
             || self.palette.is_open()
@@ -1134,6 +1147,14 @@ impl App {
                 .clicked()
             {
                 actions.push(Action::ToggleCpu);
+            }
+            if ui
+                .button("Display Settings…")
+                .on_hover_text("Choose what the graph shows of the sound as it plays")
+                .clicked()
+            {
+                actions.push(Action::DisplaySettings);
+                ui.close();
             }
         });
     }
@@ -2179,6 +2200,7 @@ impl App {
             }
             Action::ToggleTempoLane => self.timeline.set_tempo_lane(!self.timeline.tempo_lane()),
             Action::ToggleCpu => self.editor.set_show_cpu(!self.editor.show_cpu()),
+            Action::DisplaySettings => self.display_dialog.open(),
             Action::ToggleOutputs => {
                 self.outputs_open = !self.outputs_open;
                 if self.outputs_open {
@@ -3209,6 +3231,52 @@ mod tests {
         assert!(!harness.state().session().sandbox_plugins());
         assert!(!crate::prefs::load(&prefs).unwrap().sandbox_plugins);
         assert!(!noodle_plugins::sandbox_enabled());
+    }
+
+    #[test]
+    fn display_switches_are_set_from_the_dialog_and_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = dir.path().join("prefs.ron");
+        crate::prefs::init(prefs.clone());
+        let mut harness = harness(empty());
+        harness.run();
+        harness.get_by_label("View").click();
+        harness.run();
+        harness.get_by_label("Display Settings…").click();
+        harness.run();
+        assert!(harness.state().display_dialog.is_open());
+        // Everything is on but the CPU tint.
+        assert!(harness.state().editor.bodies_display().event_wires);
+        assert!(!harness.state().editor.bodies_display().cpu_heat);
+        harness.get_by_label("Level bars on outputs").click();
+        harness.run();
+        assert!(!crate::prefs::load(&prefs).unwrap().display.output_meters);
+        assert!(!harness.state().editor.bodies_display().output_meters);
+        harness.get_by_label("Heat tint for CPU use").click();
+        harness.run();
+        assert!(crate::prefs::load(&prefs).unwrap().display.cpu_heat);
+        assert!(harness.state().editor.bodies_display().cpu_heat);
+        // Performance mode shows none of it, and keeps the choices.
+        harness.get_by_label("Performance mode").click();
+        harness.run();
+        let saved = crate::prefs::load(&prefs).unwrap().display;
+        assert!(saved.performance && saved.event_wires && saved.cpu_heat);
+        let shown = harness.state().editor.bodies_display();
+        assert!(!shown.event_wires && !shown.cpu_heat);
+        // And the engine is told to stop measuring.
+        assert!(!harness.state().session().telemetry().gather().events());
+        harness.get_by_label("Performance mode").click();
+        harness.run();
+        assert!(harness.state().editor.bodies_display().event_wires);
+        assert!(harness.state().session().telemetry().gather().events());
+        assert!(
+            !harness
+                .state()
+                .session()
+                .telemetry()
+                .gather()
+                .output_levels()
+        );
     }
 
     #[test]

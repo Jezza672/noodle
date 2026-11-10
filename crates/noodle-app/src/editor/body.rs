@@ -14,10 +14,11 @@ use egui::{Painter, Pos2, Rect, Stroke, Vec2, pos2};
 use noodle_core::group::{GROUP, GROUP_OUTPUT};
 use noodle_core::{Node, NodeId, Project};
 use noodle_engine::{
-    ACTIVITY_FLOOR, BlockStats, CpuReading, Level, MeterReader, NodeView, ParamReading, Registry,
-    ScopeView, Telemetry,
+    ACTIVITY_FLOOR, BlockStats, CpuReading, Level, MeterReader, NodeActivity, NodeView,
+    ParamReading, Registry, ScopeView, Telemetry,
 };
 
+use crate::display::Display;
 use crate::theme::editor as colors;
 use crate::widgets::Live;
 
@@ -154,6 +155,49 @@ pub struct Bodies {
     blocks_before: BlockStats,
     /// When the current window began, on `clock`.
     blocks_since: f32,
+    /// What is shown of the sound: see [`crate::display`].
+    display: Display,
+    /// The level leaving each audio output, by (node, port key), one channel
+    /// per signal channel.
+    outputs: HashMap<(NodeId, String), Vec<MeterChannel>>,
+    /// How lately each event output sent something, by (node, port key).
+    events: HashMap<(NodeId, String), EventGlow>,
+    /// What each node did in its last block.
+    states: HashMap<NodeId, NodeActivity>,
+    /// How strong the beat's pulse is now, while the transport runs.
+    beat: Option<f32>,
+    /// The nodes whose types pulse on the beat, while they're shown to.
+    pulsing: std::collections::HashSet<NodeId>,
+}
+
+/// How long an event wire takes to fade after an event, in seconds.
+const EVENT_GLOW_SECONDS: f32 = 0.35;
+
+/// How long a modulation wire takes to fade after its signal last moved.
+const MOTION_GLOW_SECONDS: f32 = 0.5;
+
+/// How long a clipping flash lasts, in seconds.
+pub const CLIP_FLASH_SECONDS: f32 = 1.0;
+
+/// An event output's recent past: the count it last had and how brightly
+/// its wire shows that it changed.
+struct EventGlow {
+    count: u64,
+    glow: f32,
+}
+
+impl EventGlow {
+    fn update(&mut self, count: u64, dt: f32) {
+        if count != self.count {
+            self.count = count;
+            self.glow = 1.0;
+        } else {
+            self.glow *= (-dt / EVENT_GLOW_SECONDS).exp();
+            if self.glow < 0.01 {
+                self.glow = 0.0;
+            }
+        }
+    }
 }
 
 /// How much the editor needs redrawing, as of the last [`Bodies::update`].
@@ -188,12 +232,26 @@ pub const PARAM_WINDOW_SECONDS: f32 = 3.0;
 #[derive(Default)]
 struct ParamWindow {
     last: f32,
+    /// How brightly the wire shows that the signal moved lately, 0 to 1.
+    glow: f32,
+    /// When it last reported, to fade the glow by.
+    at: f32,
     /// (time, lowest, highest), oldest first.
     history: VecDeque<(f32, f32, f32)>,
 }
 
 impl ParamWindow {
     fn push(&mut self, now: f32, reading: ParamReading) {
+        let moved = reading.max - reading.min > 1e-4 || (reading.value - self.last).abs() > 1e-4;
+        if moved {
+            self.glow = 1.0;
+        } else {
+            self.glow *= (-(now - self.at).max(0.0) / MOTION_GLOW_SECONDS).exp();
+            if self.glow < 0.02 {
+                self.glow = 0.0;
+            }
+        }
+        self.at = now;
         self.last = reading.value;
         self.history.push_back((now, reading.min, reading.max));
         self.trim(now);
@@ -236,11 +294,12 @@ impl Bodies {
     ) -> Liveness {
         let graph = project.graph();
         let activity = telemetry.activity();
-        let moving = activity != self.activity || self.show_cpu;
+        let reading_cpu = self.show_cpu || self.display.cpu_heat;
+        let moving = activity != self.activity || reading_cpu;
         self.activity = activity;
         self.cpu.clear();
         self.cpu_total = 0.0;
-        if self.show_cpu {
+        if reading_cpu {
             self.cpu.extend(telemetry.read_all_cpu());
             self.cpu_total = self.cpu.values().map(|reading| reading.load).sum();
             // A group is flattened away and never runs itself, so it shows
@@ -256,6 +315,8 @@ impl Bodies {
                 }
             }
             self.cpu.extend(groups);
+        }
+        if self.show_cpu {
             // Block statistics run in windows: read the current one, and
             // start the next when this one is old enough.
             self.blocks = telemetry.read_blocks();
@@ -308,6 +369,7 @@ impl Bodies {
             window.trim(now);
         }
 
+        let flash = self.display.clip_flash;
         for (id, node) in graph.nodes() {
             match view_of(registry, node) {
                 // A mixer reports one level per input.
@@ -316,7 +378,7 @@ impl Bodies {
                     let levels = reader.meter(id).unwrap_or_default();
                     channels.resize_with(levels.len(), MeterChannel::default);
                     for (channel, level) in channels.iter_mut().zip(levels) {
-                        channel.update(level, dt);
+                        channel.update(level, dt, flash);
                     }
                 }
                 // A group's outputs, and its output node inside, show what
@@ -342,7 +404,7 @@ impl Bodies {
                     let channels = self.meters.entry(id).or_default();
                     channels.resize_with(levels.len(), MeterChannel::default);
                     for (channel, level) in channels.iter_mut().zip(levels) {
-                        channel.update(level, dt);
+                        channel.update(level, dt, flash);
                     }
                 }
                 // An Output node's scope shows what it sends to the device.
@@ -361,14 +423,17 @@ impl Bodies {
                 NodeView::Envelope | NodeView::Panner | NodeView::Graph(_) | NodeView::None => {}
             }
         }
-        // Every wired audio input reports what arrives at it. The nodes that
-        // meter their inputs already (Meter, Mixer, groups) don't need it.
+        // Every wired audio input reports what arrives at it, for the bar on
+        // the input and the glow of the wire. The nodes that meter their
+        // inputs already (Meter, Mixer, groups) don't need it.
+        let tapping = self.display.audio_wires || self.display.input_meters;
         self.taps.retain(|(node, key), _| {
-            graph
-                .source(&noodle_core::Endpoint::new(*node, key.clone()))
-                .is_some()
+            tapping
+                && graph
+                    .source(&noodle_core::Endpoint::new(*node, key.clone()))
+                    .is_some()
         });
-        for connection in graph.connections() {
+        for connection in graph.connections().filter(|_| tapping) {
             let (node, key) = (connection.to.node, connection.to.port.clone());
             let Some(target) = graph.node(node) else {
                 continue;
@@ -385,8 +450,58 @@ impl Bodies {
             let channels = self.taps.entry((node, key)).or_default();
             channels.resize_with(levels.len(), MeterChannel::default);
             for (channel, level) in channels.iter_mut().zip(levels) {
-                channel.update(level, dt);
+                channel.update(level, dt, flash);
             }
+        }
+        // Every audio output reports what leaves it.
+        if self.display.output_meters && self.sample_rate > 0.0 {
+            for ((node, key), levels) in reader.output_meters() {
+                if graph.node(node).is_none() {
+                    continue;
+                }
+                let channels = self.outputs.entry((node, key)).or_default();
+                channels.resize_with(levels.len(), MeterChannel::default);
+                for (channel, level) in channels.iter_mut().zip(levels) {
+                    channel.update(level, dt, flash);
+                }
+            }
+            self.outputs
+                .retain(|(node, _), _| graph.node(*node).is_some());
+        } else {
+            self.outputs.clear();
+        }
+        // Every event output reports how many events it has sent.
+        if self.display.event_wires && self.sample_rate > 0.0 {
+            let counts: HashMap<(NodeId, String), u64> =
+                telemetry.read_all_events().into_iter().collect();
+            for (key, &count) in &counts {
+                self.events
+                    .entry(key.clone())
+                    .or_insert(EventGlow { count, glow: 0.0 })
+                    .update(count, dt);
+            }
+            self.events.retain(|key, _| counts.contains_key(key));
+        } else {
+            self.events.clear();
+        }
+        // The nodes that keep time, for the beat's pulse.
+        self.pulsing.clear();
+        if self.beat.is_some() {
+            self.pulsing.extend(
+                graph
+                    .nodes()
+                    .filter(|(_, node)| {
+                        registry
+                            .get(&node.type_id)
+                            .is_some_and(|node_type| node_type.pulses_on_beat())
+                    })
+                    .map(|(id, _)| id),
+            );
+        }
+        // And every node, what it did.
+        self.states.clear();
+        if (self.display.silent_dim || self.display.voice_leds) && self.sample_rate > 0.0 {
+            self.states.extend(telemetry.read_all_states());
         }
         if moving {
             Liveness::Moving
@@ -404,8 +519,11 @@ impl Bodies {
         self.meters
             .values()
             .chain(self.taps.values())
+            .chain(self.outputs.values())
             .flatten()
-            .any(|c| c.peak > ACTIVITY_FLOOR || c.hold > ACTIVITY_FLOOR)
+            .any(|c| c.peak > ACTIVITY_FLOOR || c.hold > ACTIVITY_FLOOR || c.clip > 0.0)
+            || self.events.values().any(|e| e.glow > 0.0)
+            || self.params.values().any(|w| w.glow > 0.01)
             || self.spectra.values().any(SpectrumTrace::is_decaying)
             || self
                 .params
@@ -450,7 +568,92 @@ impl Bodies {
     /// What the wired parameter `key` of `node` has been doing lately, if it
     /// has reported.
     pub fn param_live(&self, node: NodeId, key: &str) -> Option<Live> {
-        self.params.get(&(node, key.to_owned()))?.live()
+        let live = self.params.get(&(node, key.to_owned()))?.live()?;
+        // The value is what a replaced parameter shows; the range is only
+        // there to be marked.
+        Some(if self.display.param_motion {
+            live
+        } else {
+            Live {
+                min: live.value,
+                max: live.value,
+                ..live
+            }
+        })
+    }
+
+    /// How brightly the modulation wire into `key` of `node` shows that its
+    /// signal moved lately, 0 to 1.
+    pub fn param_glow(&self, node: NodeId, key: &str) -> f32 {
+        if !self.display.param_motion {
+            return 0.0;
+        }
+        self.params
+            .get(&(node, key.to_owned()))
+            .map_or(0.0, |w| if w.glow > 0.01 { w.glow } else { 0.0 })
+    }
+
+    /// How brightly the wire from event output `key` of `node` shows that
+    /// events came out of it lately, 0 to 1.
+    pub fn event_glow(&self, node: NodeId, key: &str) -> f32 {
+        self.events
+            .get(&(node, key.to_owned()))
+            .map_or(0.0, |e| e.glow)
+    }
+
+    /// The levels leaving audio output `key` of `node`, one per channel
+    /// (empty when nothing has reported).
+    pub fn output_tap(&self, node: NodeId, key: &str) -> &[MeterChannel] {
+        self.outputs
+            .get(&(node, key.to_owned()))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// What `node` did in its last block, if it reported.
+    pub fn node_state(&self, node: NodeId) -> Option<NodeActivity> {
+        self.states.get(&node).copied()
+    }
+
+    /// The strongest level among `channels`, 0 to 1 on a meter's scale, and
+    /// whether any has clipped lately.
+    pub fn level_of(channels: &[MeterChannel]) -> (f32, bool) {
+        let peak = channels.iter().map(|c| c.peak).fold(0.0f32, f32::max);
+        (meter_fraction(peak), channels.iter().any(|c| c.clip > 0.0))
+    }
+
+    /// Sets what is shown of the sound.
+    pub fn set_display(&mut self, display: Display) {
+        self.display = display.effective();
+    }
+
+    pub fn display(&self) -> &Display {
+        &self.display
+    }
+
+    /// Sets the beat's pulse: 1 on the beat, fading to 0 before the next,
+    /// or `None` when the transport isn't running.
+    pub fn set_beat(&mut self, pulse: Option<f32>) {
+        self.beat = pulse.filter(|_| self.display.beat_pulse);
+    }
+
+    /// The beat's pulse at `node`, if its type pulses on the beat and the
+    /// transport runs.
+    pub fn beat_at(&self, node: NodeId) -> Option<f32> {
+        self.beat.filter(|_| self.pulsing.contains(&node))
+    }
+
+    /// Whether any node pulses on the beat now, so the editor keeps drawing.
+    pub fn any_pulsing(&self) -> bool {
+        self.beat.is_some() && !self.pulsing.is_empty()
+    }
+
+    /// How hot `node` runs, as a share of its block time, if the heat tint
+    /// is on and it has reported.
+    pub fn cpu_heat(&self, node: NodeId) -> Option<f32> {
+        if !self.display.cpu_heat {
+            return None;
+        }
+        self.cpu.get(&node).map(|reading| reading.peak)
     }
 
     /// Turns the per-node CPU meters on or off.
@@ -465,7 +668,7 @@ impl Bodies {
     /// How much of the block time `node` is taking, if CPU meters are on and
     /// it has reported.
     pub fn cpu(&self, node: NodeId) -> Option<CpuReading> {
-        self.cpu.get(&node).copied()
+        self.cpu.get(&node).copied().filter(|_| self.show_cpu)
     }
 
     /// The whole graph's share of the audio thread's time, if CPU meters are
@@ -747,11 +950,18 @@ pub struct MeterChannel {
     /// The highest recent peak, kept for [`PEAK_HOLD_SECONDS`].
     hold: f32,
     hold_age: f32,
+    /// Seconds left of a clipping flash, 0 when there is none.
+    clip: f32,
 }
 
 impl MeterChannel {
-    fn update(&mut self, level: Level, dt: f32) {
+    fn update(&mut self, level: Level, dt: f32, flash: bool) {
         self.rms = level.rms;
+        if flash && level.peak > 1.0 {
+            self.clip = CLIP_FLASH_SECONDS;
+        } else {
+            self.clip = (self.clip - dt).max(0.0);
+        }
         let fall = 10f32.powf(-PEAK_FALL_DB_PER_SECOND * dt / 20.0);
         self.peak = level.peak.max(self.peak * fall);
         if level.peak >= self.hold {
@@ -844,6 +1054,20 @@ pub fn meter(painter: &Painter, area: Rect, zoom: f32, channels: &[MeterChannel]
         };
         fill(channel.peak, colors::METER_PEAK);
         fill(channel.rms, colors::METER_RMS);
+        if channel.clip > 0.0 {
+            // A lamp at the far end of the bar, fading over the flash.
+            let color = colors::METER_OVER.gamma_multiply(channel.clip / CLIP_FLASH_SECONDS);
+            let lamp = match axis {
+                MeterAxis::Horizontal => Rect::from_min_size(
+                    Pos2::new(bar.right() - thickness * 1.5, bar.top()),
+                    Vec2::splat(thickness),
+                ),
+                MeterAxis::Vertical => {
+                    Rect::from_min_size(Pos2::new(bar.left(), bar.top()), Vec2::splat(thickness))
+                }
+            };
+            painter.rect_filled(lamp, 0.0, color);
+        }
         if channel.hold > 0.0 {
             let color = if channel.hold >= 1.0 {
                 colors::METER_OVER
@@ -1060,12 +1284,13 @@ mod tests {
                 rms: 0.5,
             },
             0.1,
+            false,
         );
         assert_eq!((channel.peak, channel.hold), (1.0, 1.0));
 
         // A second of silence: the peak falls 20 dB, the hold stays.
         for _ in 0..10 {
-            channel.update(Level::default(), 0.1);
+            channel.update(Level::default(), 0.1, false);
         }
         assert!((channel.peak - 0.1).abs() < 1e-3, "{channel:?}");
         assert_eq!(channel.hold, 1.0);
@@ -1073,11 +1298,11 @@ mod tests {
 
         // Past the hold time, the hold follows the falling peak, every frame.
         for _ in 0..6 {
-            channel.update(Level::default(), 0.1);
+            channel.update(Level::default(), 0.1, false);
         }
         assert!(channel.hold < 0.1, "{channel:?}");
         for _ in 0..3 {
-            channel.update(Level::default(), 0.1);
+            channel.update(Level::default(), 0.1, false);
             assert_eq!(channel.hold, channel.peak, "{channel:?}");
         }
     }
@@ -1482,6 +1707,232 @@ mod tests {
         .unwrap();
         bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
         assert!(bodies.tap(gain, "in").is_empty());
+    }
+
+    fn two_nodes(first: &str, second: &str) -> (Project, NodeId, NodeId) {
+        let mut project = Project::new();
+        let (a, b) = (project.new_node_id(), project.new_node_id());
+        for (id, type_id) in [(a, first), (b, second)] {
+            Command::AddNode {
+                id,
+                node: Node::new(type_id),
+            }
+            .apply(&mut project)
+            .unwrap();
+        }
+        (project, a, b)
+    }
+
+    #[test]
+    fn a_peak_over_full_scale_flashes_for_a_second_when_enabled() {
+        let over = Level {
+            peak: 1.5,
+            rms: 0.5,
+        };
+        let mut off = MeterChannel::default();
+        off.update(over, 0.1, false);
+        assert_eq!(off.clip, 0.0);
+        let mut on = MeterChannel::default();
+        on.update(over, 0.1, true);
+        assert_eq!(on.clip, CLIP_FLASH_SECONDS);
+        for _ in 0..5 {
+            on.update(Level::default(), 0.1, true);
+        }
+        assert!(on.clip > 0.0 && on.clip < CLIP_FLASH_SECONDS);
+        for _ in 0..6 {
+            on.update(Level::default(), 0.1, true);
+        }
+        assert_eq!(on.clip, 0.0);
+        // A level at exactly full scale is not an over.
+        let mut at_full = MeterChannel::default();
+        at_full.update(
+            Level {
+                peak: 1.0,
+                rms: 1.0,
+            },
+            0.1,
+            true,
+        );
+        assert_eq!(at_full.clip, 0.0);
+    }
+
+    #[test]
+    fn an_event_wire_lights_when_events_flow_and_fades_after() {
+        let (project, source, sink) = two_nodes("noodle.input.button", "noodle.event.key");
+        let _ = sink;
+        let telemetry = Telemetry::new();
+        let writer = telemetry.open_events(source, "events");
+        writer.write(0);
+        let mut bodies = Bodies::default();
+        bodies.set_sample_rate(48_000.0);
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        // Nothing has flowed yet, and what was there on first sight is old.
+        assert_eq!(bodies.event_glow(source, "events"), 0.0);
+        writer.write(2);
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(bodies.event_glow(source, "events"), 1.0);
+        assert_eq!(
+            bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0),
+            Liveness::Decaying
+        );
+        // No more events: it fades, and is gone after a few of its lengths.
+        writer.write(0);
+        bodies.update(&telemetry, &project, &registry(), 0.1);
+        let faded = bodies.event_glow(source, "events");
+        assert!(faded > 0.0 && faded < 1.0, "{faded}");
+        for _ in 0..20 {
+            bodies.update(&telemetry, &project, &registry(), 0.1);
+        }
+        assert_eq!(bodies.event_glow(source, "events"), 0.0);
+        // Switched off, nothing is kept.
+        writer.write(1);
+        bodies.set_display(Display {
+            event_wires: false,
+            ..Display::default()
+        });
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(bodies.event_glow(source, "events"), 0.0);
+    }
+
+    #[test]
+    fn outputs_show_their_level_only_while_the_engine_runs_and_the_switch_is_on() {
+        let (project, node, _) = two_nodes("noodle.osc.sine", "noodle.filter.svf");
+        let telemetry = Telemetry::new();
+        let writer = telemetry.open_output_meter(node, "out", 2);
+        writer.write(
+            1,
+            Level {
+                peak: 0.5,
+                rms: 0.25,
+            },
+        );
+        let mut bodies = Bodies::default();
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert!(bodies.output_tap(node, "out").is_empty(), "no engine yet");
+        bodies.set_sample_rate(48_000.0);
+        writer.write(
+            1,
+            Level {
+                peak: 0.5,
+                rms: 0.25,
+            },
+        );
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(bodies.output_tap(node, "out").len(), 2);
+        assert_eq!(bodies.output_tap(node, "out")[1].peak, 0.5);
+        assert!(bodies.output_tap(node, "other").is_empty());
+        bodies.set_display(Display {
+            output_meters: false,
+            ..Display::default()
+        });
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert!(bodies.output_tap(node, "out").is_empty());
+    }
+
+    #[test]
+    fn nodes_report_their_state_and_performance_mode_hides_it() {
+        let (project, node, _) = two_nodes("noodle.osc.sine", "noodle.filter.svf");
+        let telemetry = Telemetry::new();
+        let writer = telemetry.open_state(node);
+        let state = noodle_engine::NodeActivity {
+            ran: true,
+            silent: true,
+            sounding: 1,
+            voices: 4,
+        };
+        writer.write(state);
+        let mut bodies = Bodies::default();
+        bodies.set_sample_rate(48_000.0);
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(bodies.node_state(node), Some(state));
+        bodies.set_display(Display {
+            performance: true,
+            ..Display::default()
+        });
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(bodies.node_state(node), None);
+    }
+
+    #[test]
+    fn a_modulation_wire_glows_while_its_signal_moves() {
+        let (project, lfo, target) = two_nodes("noodle.mod.lfo", "noodle.filter.svf");
+        let telemetry = Telemetry::new();
+        let probe = telemetry.open_param(target, "cutoff");
+        probe.write(&[100.0, 200.0]);
+        let mut bodies = Bodies::default();
+        // The parameter has to be wired for the editor to read it.
+        let mut project = project;
+        Command::Connect(noodle_core::Connection {
+            from: noodle_core::Endpoint::new(lfo, "out"),
+            to: noodle_core::Endpoint::new(target, "cutoff"),
+        })
+        .apply(&mut project)
+        .unwrap();
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(bodies.param_glow(target, "cutoff"), 1.0);
+        // It holds still: the glow fades.
+        probe.write(&[200.0]);
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        for _ in 0..20 {
+            probe.write(&[200.0]);
+            bodies.update(&telemetry, &project, &registry(), 0.1);
+        }
+        assert_eq!(bodies.param_glow(target, "cutoff"), 0.0);
+        // With the switch off the range marks collapse to the value too.
+        probe.write(&[100.0, 200.0]);
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert!(bodies.param_live(target, "cutoff").unwrap().min < 200.0);
+        bodies.set_display(Display {
+            param_motion: false,
+            ..Display::default()
+        });
+        let live = bodies.param_live(target, "cutoff").unwrap();
+        assert_eq!(live.min, live.max);
+        assert_eq!(bodies.param_glow(target, "cutoff"), 0.0);
+    }
+
+    #[test]
+    fn the_heat_tint_reads_cpu_without_showing_the_labels() {
+        let (project, node, _) = two_nodes("noodle.osc.sine", "noodle.filter.svf");
+        let telemetry = Telemetry::new();
+        let mut writer = telemetry.open_cpu(node);
+        writer.record(250_000, 1_000_000.0);
+        let mut bodies = Bodies::default();
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        // Off by default.
+        assert_eq!(bodies.cpu_heat(node), None);
+        bodies.set_display(Display {
+            cpu_heat: true,
+            ..Display::default()
+        });
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert!(bodies.cpu_heat(node).is_some_and(|heat| heat > 0.2));
+        // The header's CPU labels are still their own switch.
+        assert_eq!(bodies.cpu(node), None);
+        bodies.set_show_cpu(true);
+        assert!(bodies.cpu(node).is_some());
+    }
+
+    #[test]
+    fn only_timekeeping_nodes_pulse_on_the_beat() {
+        let (project, clock, gain) = two_nodes(noodle_nodes::CLOCK_ID, noodle_nodes::GAIN_ID);
+        let telemetry = Telemetry::new();
+        let mut bodies = Bodies::default();
+        // Stopped: nothing pulses.
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert!(!bodies.any_pulsing());
+        bodies.set_beat(Some(0.5));
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(bodies.beat_at(clock), Some(0.5));
+        assert_eq!(bodies.beat_at(gain), None);
+        assert!(bodies.any_pulsing());
+        bodies.set_display(Display {
+            beat_pulse: false,
+            ..Display::default()
+        });
+        bodies.set_beat(Some(0.5));
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(bodies.beat_at(clock), None);
     }
 
     /// A node type that is none of the built-ins, declaring only a view.
