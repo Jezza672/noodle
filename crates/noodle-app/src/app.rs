@@ -4450,6 +4450,36 @@ mod tests {
     }
 
     #[test]
+    fn editing_or_moving_the_position_does_not_move_the_transport() {
+        let mut harness = harness(empty());
+        harness.run();
+        let place = |h: &Harness<'_, App>| {
+            [
+                h.get_by_label("▶").rect(),
+                h.get_by_label("⏺").rect(),
+                h.get_by_label("Position").rect(),
+                h.get_by_label_contains("Tempo map").rect(),
+                h.get_by_label("Audio").rect(),
+            ]
+        };
+        let before = place(&harness);
+        // A far-off, wide position.
+        harness
+            .state_mut()
+            .session
+            .seek(noodle_core::Tick(9999 * 4 * noodle_core::TICKS_PER_QUARTER));
+        harness.run();
+        assert_eq!(place(&harness), before, "wide position");
+        // Typing into the field.
+        harness.get_by_label("Position").click();
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        harness.event(egui::Event::Text("123456.2.100".into()));
+        harness.run();
+        assert_eq!(place(&harness), before, "while typing");
+    }
+
+    #[test]
     fn the_record_options_arrow_sits_flush_against_the_record_button() {
         let mut harness = harness(empty());
         harness.run();

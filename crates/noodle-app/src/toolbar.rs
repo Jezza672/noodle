@@ -183,16 +183,15 @@ pub fn show(
                 |ui| {
                     ui.spacing_mut().item_spacing.x = GAP;
                     let (_, rect) = ui.allocate_space(vec2(title_width, PILL_HEIGHT));
-                    ui.scope_builder(
+                    let mut child = ui.new_child(
                         UiBuilder::new()
+                            .id_salt("toolbar title")
                             .max_rect(rect)
                             .layout(Layout::left_to_right(Align::Center)),
-                        |ui| {
-                            ui.add(
-                                egui::Label::new(RichText::new(title).strong().color(colors::TEXT))
-                                    .truncate(),
-                            );
-                        },
+                    );
+                    child.add(
+                        egui::Label::new(RichText::new(title).strong().color(colors::TEXT))
+                            .truncate(),
                     );
                     for (i, slot) in slots.iter().enumerate() {
                         if shown[i] && slot.side == Side::Left {
@@ -216,15 +215,17 @@ fn draw_slot(ui: &mut Ui, slot: &Slot, i: usize, draw: &mut dyn FnMut(&mut Ui, u
         );
     }
     let (_, rect) = ui.allocate_space(vec2(slot.width, PILL_HEIGHT));
-    ui.scope_builder(
+    // A child that is not allocated: `scope_builder` would move the cursor back
+    // to the end of what was drawn, so the next slot would follow the content
+    // rather than the slot's fixed width.
+    let mut child = ui.new_child(
         UiBuilder::new()
+            .id_salt(("toolbar slot", i))
             .max_rect(rect)
             .layout(Layout::left_to_right(Align::Center)),
-        |ui| {
-            ui.spacing_mut().item_spacing.x = 0.0;
-            draw(ui, i, Mode::Bar);
-        },
     );
+    child.spacing_mut().item_spacing.x = 0.0;
+    draw(&mut child, i, Mode::Bar);
 }
 
 /// Paints the rounded capsule behind a slot's buttons.
