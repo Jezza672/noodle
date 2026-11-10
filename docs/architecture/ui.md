@@ -159,7 +159,8 @@ It has these views:
     clicked ("Add tempo change at bar N"), and one "Insert time signature change at
     bar N", which places the change with the current signature and opens a text
     field over its marker, text selected (type `3/4`; Enter or a click away sets
-    it, Escape keeps the old one);
+    it, Escape keeps the old one). Clicking a signature label on the ruler opens the
+    same field in place;
     signature changes live in the same tempo map, on bar lines only, and show
     as markers on the ruler.
     Every edit is a `SetTempoMap` command, so undo and the engine's table follow

@@ -2922,3 +2922,61 @@ fn escape_while_typing_a_time_signature_changes_nothing() {
     h.state_mut().session.undo();
     assert_eq!(signatures(&h), vec![(0, "4/4".to_string())]);
 }
+
+/// Types `text` into the one single-line field showing `was`.
+fn retype(h: &mut H, was: &str, text: &str) {
+    fn field<'a>(h: &'a H, was: &str) -> egui_kittest::Node<'a> {
+        h.get_all_by_role(egui::accesskit::Role::TextInput)
+            .find(|n| n.value().as_deref() == Some(was))
+            .expect("the field")
+    }
+    field(h, was).click();
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run();
+    field(h, was).type_text(text);
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+}
+
+#[test]
+fn clicking_a_signature_label_or_a_marker_name_edits_it_in_place() {
+    let (mut h, _) = rig();
+    let session = &mut h.state_mut().session;
+    session.edit([Edit::Apply(Command::SetMarkers(vec![
+        noodle_core::Marker {
+            at: Tick(3840),
+            name: "Verse".into(),
+            key: None,
+        },
+    ]))]);
+    let map = session.project().tempo_map();
+    let map = crate::tempo::with_signature_at(
+        map,
+        2,
+        noodle_core::TimeSignature {
+            numerator: 3,
+            denominator: 4,
+        },
+    )
+    .unwrap();
+    session.edit([Edit::Apply(Command::SetTempoMap(map))]);
+    h.run();
+    // The marker's flag: a click types its name there, no popup.
+    click(&mut h, Pos2::new(150.0 + 240.0 + 8.0, 6.0), Modifiers::NONE);
+    retype(&mut h, "Verse", "Chorus");
+    assert_eq!(h.state().session.project().markers()[0].name, "Chorus");
+    assert!(h.state().timeline.marker_popup.is_none());
+    // The signature label at bar 3: a click types over it.
+    click(
+        &mut h,
+        Pos2::new(150.0 + 2.0 * 240.0 + 10.0, 22.0),
+        Modifiers::NONE,
+    );
+    retype(&mut h, "3/4", "6/8");
+    assert_eq!(
+        signatures(&h),
+        vec![(0, "4/4".to_string()), (2, "6/8".to_string())]
+    );
+}

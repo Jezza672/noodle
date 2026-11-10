@@ -149,6 +149,9 @@ pub struct TimelineState {
     /// being typed for it.
     marker_popup: Option<Tick>,
     marker_name: String,
+    /// The marker whose name is being typed on its flag (a click on it), and
+    /// whether the field has yet to take focus. Shares `marker_name`.
+    marker_inline: Option<(Tick, bool)>,
     /// A time signature change being typed on the ruler.
     signature_edit: Option<SignatureEdit>,
     /// Whether the tempo lane is shown under the ruler.
@@ -207,6 +210,7 @@ impl Default for TimelineState {
             range: None,
             marker_menu: None,
             marker_popup: None,
+            marker_inline: None,
             marker_name: String::new(),
             signature_edit: None,
             tempo: tempo_lane::State::default(),
@@ -1938,26 +1942,6 @@ pub fn show(
         Pos2::new(content.left(), rect.top()),
         Pos2::new(rect.right(), rect.top() + colors::RULER_HEIGHT),
     );
-    if let Some(editing) = state.signature_edit.as_mut() {
-        let typed = signature_field(ui, axis, ruler, editing);
-        let bar = editing.bar;
-        match typed {
-            SignatureTyped::Open => {}
-            SignatureTyped::Done(typed) => {
-                state.signature_edit = None;
-                // The same signature as is already in force is no change.
-                edits.extend(
-                    typed
-                        .filter(|&s| s != crate::tempo::signature_at_bar(map, bar))
-                        .and_then(|signature| {
-                            crate::tempo::with_signature_at(map, bar, signature)
-                                .map(|new| Edit::Apply(Command::SetTempoMap(new)))
-                        }),
-                );
-            }
-            SignatureTyped::Cancelled => state.signature_edit = None,
-        }
-    }
     #[cfg(test)]
     {
         state.ruler_seen = Some((ruler, axis.origin, axis.pps));
@@ -2168,7 +2152,12 @@ pub fn show(
                 edits.push(Edit::EndDrag);
             }
             if response.double_clicked() {
+                state.marker_inline = None;
                 state.marker_popup = Some(marker.at);
+                state.marker_name = marker.name.clone();
+            } else if response.clicked() && state.marker_inline.is_none() {
+                // A click types the name right on the flag.
+                state.marker_inline = Some((marker.at, true));
                 state.marker_name = marker.name.clone();
             }
             if response.secondary_clicked() {
@@ -2225,6 +2214,46 @@ pub fn show(
                     }
                 });
         }
+        if let Some((edit_at, fresh)) = state.marker_inline {
+            match markers.iter().position(|m| m.at == edit_at) {
+                Some(i) => {
+                    let id = ui.id().with(("marker_inline", edit_at.0));
+                    let field = Rect::from_min_size(
+                        Pos2::new(axis.x(edit_at), flag_top),
+                        vec2(120.0, 13.0),
+                    );
+                    let mut out = egui::TextEdit::singleline(&mut state.marker_name)
+                        .id(id)
+                        .font(FontId::proportional(10.0))
+                        .margin(vec2(3.0, 0.0))
+                        .show(&mut ui.new_child(egui::UiBuilder::new().max_rect(field)));
+                    if fresh {
+                        state.marker_inline = Some((edit_at, false));
+                        out.response.request_focus();
+                        out.state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(0),
+                                egui::text::CCursor::new(state.marker_name.chars().count()),
+                            )));
+                        out.state.store(ui.ctx(), id);
+                    }
+                    if out.response.lost_focus() {
+                        let typed = state.marker_name.trim().to_string();
+                        if !ui.input(|input| input.key_pressed(Key::Escape))
+                            && !typed.is_empty()
+                            && typed != markers[i].name
+                        {
+                            let mut renamed = markers.to_vec();
+                            renamed[i].name = typed;
+                            edits.push(Edit::Apply(Command::SetMarkers(renamed)));
+                        }
+                        state.marker_inline = None;
+                    }
+                }
+                None => state.marker_inline = None,
+            }
+        }
         if let Some(popup_at) = state.marker_popup {
             // Found by its tick, which is the marker's identity: dragging
             // markers past each other reorders the list.
@@ -2247,6 +2276,48 @@ pub fn show(
             if band.width() > 0.0 {
                 painter.rect_filled(band, 0.0, colors::SELECTED);
             }
+        }
+    }
+    // A click on a time signature label on the ruler types over it in place.
+    if state.signature_edit.is_none() {
+        for change in map.signatures().iter().skip(1) {
+            let x = axis.x(map.bar_start(change.bar));
+            let label =
+                Rect::from_min_size(Pos2::new(x + 2.0, ruler.bottom() - 15.0), vec2(30.0, 14.0));
+            let hit = ui
+                .interact(
+                    label,
+                    ui.id().with(("signature_label", change.bar)),
+                    Sense::click(),
+                )
+                .on_hover_cursor(egui::CursorIcon::Text);
+            if hit.clicked() {
+                state.signature_edit = Some(SignatureEdit {
+                    bar: change.bar,
+                    text: change.signature.to_string(),
+                    fresh: true,
+                });
+            }
+        }
+    }
+    if let Some(editing) = state.signature_edit.as_mut() {
+        let typed = signature_field(ui, axis, ruler, editing);
+        let bar = editing.bar;
+        match typed {
+            SignatureTyped::Open => {}
+            SignatureTyped::Done(typed) => {
+                state.signature_edit = None;
+                // The same signature as is already in force is no change.
+                edits.extend(
+                    typed
+                        .filter(|&s| s != crate::tempo::signature_at_bar(map, bar))
+                        .and_then(|signature| {
+                            crate::tempo::with_signature_at(map, bar, signature)
+                                .map(|new| Edit::Apply(Command::SetTempoMap(new)))
+                        }),
+                );
+            }
+            SignatureTyped::Cancelled => state.signature_edit = None,
         }
     }
     if scrub.secondary_clicked() {
