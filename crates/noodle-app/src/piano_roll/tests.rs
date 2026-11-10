@@ -473,6 +473,40 @@ fn the_toolbar_says_how_many_notes_are_selected() {
     h.get_by_label("2 notes selected");
 }
 
+#[test]
+fn selecting_notes_never_moves_the_toolbar_buttons() {
+    use egui_kittest::kittest::Queryable;
+    const LABELS: [&str; 6] = [
+        "Close",
+        "Loop",
+        "Humanise",
+        "Articulation",
+        "Snap: 1/4 beat",
+        "More controls",
+    ];
+    let mut h = rig(&[note(0, 240, 60), note(240, 240, 62)]);
+    h.set_size(Vec2::new(1200.0, 420.0));
+    h.run();
+    let positions = |h: &H| -> Vec<Option<egui::Rect>> {
+        LABELS
+            .iter()
+            .map(|l| h.query_by_label(l).map(|n| n.rect()))
+            .collect()
+    };
+    let none = positions(&h);
+    assert!(none[0].is_some() && none[2].is_some());
+    let ids: Vec<u32> = midi_of(&h).notes.iter().map(|n| n.id).collect();
+    for count in [1, 2] {
+        h.state_mut().roll.selected = ids.iter().copied().take(count).collect();
+        h.run();
+        assert_eq!(positions(&h), none, "{count} selected");
+    }
+    // A long count reads differently but takes the same room.
+    h.state_mut().roll.selected = (1000..1999).collect();
+    h.run();
+    assert_eq!(positions(&h), none, "999 selected");
+}
+
 fn midi_of(h: &H) -> MidiClip {
     let rig = h.state();
     rig.session
