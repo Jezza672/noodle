@@ -319,11 +319,11 @@ fn boxed(
                 (_, side) => {
                     let (anchor, align) = match side {
                         Side::Input => (
-                            row.left_center() + Vec2::new(12.0 * z, 0.0),
+                            row.left_center() + Vec2::new(PORT_LABEL_INSET * z, 0.0),
                             Align2::LEFT_CENTER,
                         ),
                         Side::Output => (
-                            row.right_center() - Vec2::new(12.0 * z, 0.0),
+                            row.right_center() - Vec2::new(PORT_LABEL_INSET * z, 0.0),
                             Align2::RIGHT_CENTER,
                         ),
                     };
@@ -338,7 +338,7 @@ fn boxed(
                         anchor,
                         align,
                         &port.name,
-                        FontId::proportional(12.0 * z),
+                        FontId::proportional(PORT_LABEL_SIZE * z),
                         color,
                     );
                 }
@@ -350,17 +350,15 @@ fn boxed(
             && let Some(channel) = mixer_channel(graph, node.id, &port.key)
         {
             let row = f.t.rect_to_screen(port.row);
-            let area = Rect::from_center_size(
-                Pos2::new(row.right() - 30.0 * z, row.center().y),
-                Vec2::new(48.0 * z, 7.0 * z),
-            );
-            body::meter(
-                painter,
-                area,
-                z,
-                bodies.input_meters_of(node.id, channel),
-                body::MeterAxis::Horizontal,
-            );
+            if let Some(area) = row_meter_area(painter, row, z, &port.name) {
+                body::meter(
+                    painter,
+                    area,
+                    z,
+                    bodies.input_meters_of(node.id, channel),
+                    body::MeterAxis::Horizontal,
+                );
+            }
         }
         // Any other wired audio input shows the level arriving at it.
         if text
@@ -371,11 +369,9 @@ fn boxed(
             let levels = bodies.tap(node.id, &port.key);
             if !levels.is_empty() {
                 let row = f.t.rect_to_screen(port.row);
-                let area = Rect::from_center_size(
-                    Pos2::new(row.right() - 30.0 * z, row.center().y),
-                    Vec2::new(48.0 * z, 7.0 * z),
-                );
-                body::meter(painter, area, z, levels, body::MeterAxis::Horizontal);
+                if let Some(area) = row_meter_area(painter, row, z, &port.name) {
+                    body::meter(painter, area, z, levels, body::MeterAxis::Horizontal);
+                }
             }
         }
         socket(painter, f, port);
@@ -746,6 +742,34 @@ pub fn gesture(painter: &Painter, f: &Frame_<'_>, gesture: &Gesture, pointer: Po
     }
 }
 
+/// A port label's font size and its distance from the row's edge, in graph
+/// units: shared by the label and the meter that must stay clear of it.
+const PORT_LABEL_SIZE: f32 = 12.0;
+const PORT_LABEL_INSET: f32 = 12.0;
+
+/// Where the level bar beside an input's name goes in its `row`: up to 48
+/// units wide at the right, shrunk so it never covers the name (a group's
+/// port names are the user's, so they can be long). None when too little room
+/// is left to read.
+fn row_meter_area(painter: &Painter, row: Rect, z: f32, name: &str) -> Option<Rect> {
+    let name_width = painter
+        .layout_no_wrap(
+            name.to_owned(),
+            FontId::proportional(PORT_LABEL_SIZE * z),
+            colors::TEXT,
+        )
+        .size()
+        .x;
+    let right = row.right() - 6.0 * z;
+    let left = (right - 48.0 * z).max(row.left() + PORT_LABEL_INSET * z + name_width + 6.0 * z);
+    (right - left >= 12.0 * z).then(|| {
+        Rect::from_min_max(
+            Pos2::new(left, row.center().y - 3.5 * z),
+            Pos2::new(right, row.center().y + 3.5 * z),
+        )
+    })
+}
+
 /// The meter channel of a mixer node's input `key`: its position from 0.
 fn mixer_channel(graph: &noodle_core::Graph, id: noodle_core::NodeId, key: &str) -> Option<usize> {
     let mixer = graph.node(id)?.type_id == noodle_core::spare::MIXER;
@@ -790,5 +814,37 @@ mod default_tests {
         let get = |key: &str| defaults.iter().find(|(k, _)| k == key).map(|&(_, d)| d);
         assert_eq!(get("freq2"), Some(400.0));
         assert!((get("q1").unwrap() - 0.707).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_row_meter_never_covers_the_port_name() {
+        let ctx = egui::Context::default();
+        let mut out = ctx.run_ui(Default::default(), |ui| {
+            let painter = ui.painter();
+            for z in [0.5, 1.0, 2.0] {
+                let row = Rect::from_min_size(Pos2::new(0.0, 0.0), Vec2::new(180.0 * z, 22.0 * z));
+                for name in [
+                    "L",
+                    "Left",
+                    "A rather long output name",
+                    "x".repeat(80).as_str(),
+                ] {
+                    let width = painter
+                        .layout_no_wrap(
+                            name.to_owned(),
+                            FontId::proportional(PORT_LABEL_SIZE * z),
+                            colors::TEXT,
+                        )
+                        .size()
+                        .x;
+                    let label_right = row.left() + PORT_LABEL_INSET * z + width;
+                    if let Some(area) = row_meter_area(painter, row, z, name) {
+                        assert!(area.left() >= label_right, "{name} at {z}");
+                        assert!(area.right() <= row.right());
+                    }
+                }
+            }
+        });
+        out.textures_delta.clear();
     }
 }

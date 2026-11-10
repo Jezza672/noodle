@@ -1285,6 +1285,26 @@ fn a_tempo_change_keeps_the_playheads_tick() {
 }
 
 #[test]
+fn a_live_tempo_leaves_the_playhead_on_the_project_map() {
+    let mut rig = probe_rig(POSITION);
+    let transport = rig.controller.transport();
+    transport.stop();
+    transport.seek(ticks(480));
+    rig.render(20);
+    assert_eq!(transport.position(), 250);
+    // A tapped tempo twice as slow: the position stays where it was, and a
+    // seek still lands where the project's map puts the tick.
+    rig.controller.set_live_tempo(Some(60.0));
+    rig.render(20);
+    assert_eq!(transport.position(), 250);
+    assert_eq!(rig.controller.live_tempo(), Some(60.0));
+    assert_eq!(*rig.controller.timeline_map(), TempoMap::default());
+    transport.seek(ticks(960));
+    rig.render(20);
+    assert_eq!(transport.position(), 500);
+}
+
+#[test]
 fn the_tempo_map_the_controller_reports_is_the_last_one_set() {
     let mut rig = probe_rig(BPM);
     assert_eq!(*rig.controller.tempo_map(), TempoMap::default());
