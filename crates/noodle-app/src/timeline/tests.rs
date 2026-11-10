@@ -2387,12 +2387,9 @@ fn a_time_signature_change_shows_as_a_ruler_marker_that_can_be_removed() {
     h.get_by_label("Insert time signature change at bar 3")
         .click();
     h.run();
-    // The change starts as the signature already there, with its text
-    // selected, so typing replaces it.
-    assert_eq!(
-        signatures(&h),
-        vec![(0, "4/4".to_string()), (2, "4/4".to_string())]
-    );
+    // Nothing changes until it is entered; the field starts with the
+    // signature already there, selected, so typing replaces it.
+    assert_eq!(signatures(&h), vec![(0, "4/4".to_string())]);
     h.get_all_by_role(egui::accesskit::Role::TextInput)
         .find(|n| n.value().as_deref() == Some("4/4"))
         .expect("the signature field")
@@ -2909,4 +2906,19 @@ fn typed_time_signatures_read_n_over_d() {
         Some("7/8".into())
     );
     assert!(parse_signature("seven").is_none());
+}
+
+#[test]
+fn escape_while_typing_a_time_signature_changes_nothing() {
+    let (mut h, _) = rig();
+    right_click_ruler(&mut h, 150.0 + 2.0 * 240.0 + 20.0);
+    h.get_by_label("Insert time signature change at bar 3")
+        .click();
+    h.run();
+    h.key_press(Key::Escape);
+    h.run();
+    assert_eq!(signatures(&h), vec![(0, "4/4".to_string())]);
+    assert!(h.state().timeline.signature_edit.is_none());
+    h.state_mut().session.undo();
+    assert_eq!(signatures(&h), vec![(0, "4/4".to_string())]);
 }

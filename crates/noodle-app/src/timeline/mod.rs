@@ -147,7 +147,7 @@ pub struct TimelineState {
     marker_menu: Option<usize>,
     /// The marker whose properties popup a double-click opened, and the name
     /// being typed for it.
-    marker_popup: Option<usize>,
+    marker_popup: Option<Tick>,
     marker_name: String,
     /// A time signature change being typed on the ruler.
     signature_edit: Option<SignatureEdit>,
@@ -1945,10 +1945,15 @@ pub fn show(
             SignatureTyped::Open => {}
             SignatureTyped::Done(typed) => {
                 state.signature_edit = None;
-                edits.extend(typed.and_then(|signature| {
-                    crate::tempo::with_signature_at(map, bar, signature)
-                        .map(|new| Edit::Apply(Command::SetTempoMap(new)))
-                }));
+                // The same signature as is already in force is no change.
+                edits.extend(
+                    typed
+                        .filter(|&s| s != crate::tempo::signature_at_bar(map, bar))
+                        .and_then(|signature| {
+                            crate::tempo::with_signature_at(map, bar, signature)
+                                .map(|new| Edit::Apply(Command::SetTempoMap(new)))
+                        }),
+                );
             }
             SignatureTyped::Cancelled => state.signature_edit = None,
         }
@@ -2163,7 +2168,7 @@ pub fn show(
                 edits.push(Edit::EndDrag);
             }
             if response.double_clicked() {
-                state.marker_popup = Some(i);
+                state.marker_popup = Some(marker.at);
                 state.marker_name = marker.name.clone();
             }
             if response.secondary_clicked() {
@@ -2183,7 +2188,7 @@ pub fn show(
                         .clicked()
                     {
                         ui.close();
-                        state.marker_popup = Some(i);
+                        state.marker_popup = Some(marker.at);
                         state.marker_name = marker.name.clone();
                     }
                     let next = markers
@@ -2220,9 +2225,12 @@ pub fn show(
                     }
                 });
         }
-        if let Some(i) = state.marker_popup {
-            match markers.get(i) {
-                Some(marker) => {
+        if let Some(popup_at) = state.marker_popup {
+            // Found by its tick, which is the marker's identity: dragging
+            // markers past each other reorders the list.
+            match markers.iter().position(|m| m.at == popup_at) {
+                Some(i) => {
+                    let marker = &markers[i];
                     let at = Pos2::new(axis.x(marker.at), ruler.bottom() + 2.0);
                     marker_popup(ui, state, markers, i, at, &mut edits);
                 }
@@ -2391,13 +2399,9 @@ pub fn show(
             .clicked()
         {
             ui.close();
+            // Nothing is changed until the signature is typed and entered, so
+            // Escape leaves the song and its undo history as they were.
             let current = crate::tempo::signature_at_bar(map, bar);
-            // The change starts out as the signature already there, so there
-            // is a marker to type over; Enter or clicking away sets it.
-            edits.extend(
-                crate::tempo::with_signature_at(map, bar, current)
-                    .map(|new| Edit::Apply(Command::SetTempoMap(new))),
-            );
             state.signature_edit = Some(SignatureEdit {
                 bar,
                 text: current.to_string(),
@@ -2565,7 +2569,6 @@ pub fn show(
     }
 }
 
-/// The first tick of 1-based `bar`, through the signature changes.
 /// A time signature change being typed on the ruler.
 struct SignatureEdit {
     bar: u32,
