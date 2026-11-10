@@ -55,7 +55,8 @@ pub enum Side {
 pub struct Slot {
     /// The width of its slot, fixed.
     pub width: f32,
-    /// How long it survives a narrow panel: the lowest folds away first.
+    /// How long it survives a narrow panel: the highest value folds into the
+    /// "..." menu first, the lowest stays longest.
     pub keep: u8,
     pub side: Side,
     /// Starts a new group after a divider.
@@ -697,7 +698,7 @@ mod tests {
     }
 
     #[test]
-    fn the_lowest_priority_slots_fold_away_first() {
+    fn the_highest_keep_values_fold_away_first() {
         // Room for two 100-wide slots and the "..." button, not three.
         let room = 2.0 * (100.0 + GAP) + MORE_WIDTH + GAP + 1.0;
         assert_eq!(fit(&SLOTS, room), vec![true, false, true, false]);

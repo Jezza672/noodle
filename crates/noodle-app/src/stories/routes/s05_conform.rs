@@ -103,6 +103,8 @@ fn modulate(h: &mut Handle, _size: usize) {
     h.step("change the key there to G minor");
     let flag = h.ruler_at(2.05) + vec2(6.0, 0.0);
     h.right_click(flag);
+    let properties = h.find_like("Properties");
+    h.click(properties, Modifiers::NONE);
     let same = h.probe().find_value("Same as before");
     h.click(same, Modifiers::NONE);
     let key = h.find("G minor");
