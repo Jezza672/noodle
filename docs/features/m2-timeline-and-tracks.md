@@ -214,7 +214,7 @@ Metronome node and the metronome button.
   outputting the button's state (23). Wherever a UI control can be a graph
   node, it should be. **Done for the metronome:** a `Button` node
   (`noodle.input.button`) has a `state` parameter and outputs it, and the
-  transport pill presses it with an ordinary undoable `SetParam`. More buttons
+  switch strip along the top of the node editor presses it with an ordinary undoable `SetParam`. More buttons
   can use the same node.
 - **Done.** A metronome button (22). The `Metronome` node clicks on every
   beat while the transport plays, higher on the first beat of the bar, and
@@ -226,10 +226,12 @@ Metronome node and the metronome button.
 - **Done.** A button shows a distinct state when its node is missing (dimmed;
   pressing adds one) or broken (red, with the reason on hover), and what it's
   bound to can be edited (24) by rewiring in the node editor.
-- **Done.** Other buttons in the pill: every top-level Button node except the
-  metronome's shows as a ⏻ button (lit while on, tooltip naming what it
-  drives), and the ＋ menu adds one wired to any unwired two-valued
-  (Off/On) parameter of a top-level node, as one undo step.
+- **Done.** Other buttons: every top-level Button node except the
+  metronome's shows in the switch strip along the top of the node editor (lit
+  while on, named for the node it drives, wrapping onto more rows when there are
+  many), and the "+ Switch" menu there adds one wired to any unwired two-valued
+  (Off/On) parameter of a top-level node, as one undo step. They are ordinary
+  Button nodes, so the wiring can be seen and changed in the graph.
 - **Done.** The metronome has `pitch` and `accent` parameters, and counts
   beats from the start of the time signature in force (`Transport::signature_start`),
   so the clicks and the bar accent stay on the meter's grid after a change
