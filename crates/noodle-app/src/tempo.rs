@@ -95,6 +95,15 @@ pub fn with_signature_at(map: &TempoMap, bar: u32, signature: TimeSignature) -> 
     (new != *map).then_some(new)
 }
 
+/// The signature in force at 0-based `bar`.
+pub fn signature_at_bar(map: &TempoMap, bar: u32) -> TimeSignature {
+    map.signatures()
+        .iter()
+        .rev()
+        .find(|s| s.bar <= bar)
+        .map_or(TimeSignature::COMMON, |s| s.signature)
+}
+
 /// The map without the signature change at `bar`. The opening one stays.
 pub fn without_signature_at(map: &TempoMap, bar: u32) -> Option<TempoMap> {
     let mut signatures = map.signatures().to_vec();

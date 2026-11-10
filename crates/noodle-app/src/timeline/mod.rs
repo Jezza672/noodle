@@ -143,10 +143,14 @@ pub struct TimelineState {
     /// time work on. Clips, automation points and a range are never selected
     /// together.
     range: Option<sections::Range>,
-    /// The marker a right-click on the ruler opened its menu at, and the name
-    /// being typed for it.
+    /// The marker a right-click on the ruler opened its menu at.
     marker_menu: Option<usize>,
+    /// The marker whose properties popup a double-click opened, and the name
+    /// being typed for it.
+    marker_popup: Option<usize>,
     marker_name: String,
+    /// A time signature change being typed on the ruler.
+    signature_edit: Option<SignatureEdit>,
     /// Whether the tempo lane is shown under the ruler.
     show_tempo: bool,
     tempo: tempo_lane::State,
@@ -202,7 +206,9 @@ impl Default for TimelineState {
             ruler_menu_bar: None,
             range: None,
             marker_menu: None,
+            marker_popup: None,
             marker_name: String::new(),
+            signature_edit: None,
             tempo: tempo_lane::State::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
@@ -1925,13 +1931,28 @@ pub fn show(
         });
     state.scroll_y = scroll.state.offset.y;
 
-    let _markers = draw_ruler(ui, rect, axis, &lines);
+    let _markers = draw_ruler(ui, rect, axis, &lines, state.signature_edit.as_ref());
     #[cfg(test)]
     state.drawn_text.extend(_markers);
     let ruler = Rect::from_min_max(
         Pos2::new(content.left(), rect.top()),
         Pos2::new(rect.right(), rect.top() + colors::RULER_HEIGHT),
     );
+    if let Some(editing) = state.signature_edit.as_mut() {
+        let typed = signature_field(ui, axis, ruler, editing);
+        let bar = editing.bar;
+        match typed {
+            SignatureTyped::Open => {}
+            SignatureTyped::Done(typed) => {
+                state.signature_edit = None;
+                edits.extend(typed.and_then(|signature| {
+                    crate::tempo::with_signature_at(map, bar, signature)
+                        .map(|new| Edit::Apply(Command::SetTempoMap(new)))
+                }));
+            }
+            SignatureTyped::Cancelled => state.signature_edit = None,
+        }
+    }
     #[cfg(test)]
     {
         state.ruler_seen = Some((ruler, axis.origin, axis.pps));
@@ -2141,9 +2162,12 @@ pub fn show(
             if response.drag_stopped() {
                 edits.push(Edit::EndDrag);
             }
+            if response.double_clicked() {
+                state.marker_popup = Some(i);
+                state.marker_name = marker.name.clone();
+            }
             if response.secondary_clicked() {
                 state.marker_menu = Some(i);
-                state.marker_name = marker.name.clone();
             }
             // A click in the name field must not close the menu, so its buttons
             // close it themselves.
@@ -2153,42 +2177,15 @@ pub fn show(
                     if state.marker_menu != Some(i) {
                         return;
                     }
-                    let name = ui.add(
-                        egui::TextEdit::singleline(&mut state.marker_name)
-                            .hint_text("Marker name")
-                            .desired_width(120.0),
-                    );
-                    if name.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter)) {
-                        let mut renamed = markers.to_vec();
-                        renamed[i].name = state.marker_name.trim().to_string();
-                        if renamed[i].name.is_empty() {
-                            renamed[i].name = marker.name.clone();
-                        }
-                        edits.push(Edit::Apply(Command::SetMarkers(renamed)));
+                    if ui
+                        .button("Properties…")
+                        .on_hover_text("Rename the marker or set its key (double-click it)")
+                        .clicked()
+                    {
                         ui.close();
+                        state.marker_popup = Some(i);
+                        state.marker_name = marker.name.clone();
                     }
-                    ui.horizontal(|ui| {
-                        ui.label("Key");
-                        let shown = marker.key.map(noodle_core::KeyTarget::Fixed);
-                        if let Some(picked) = crate::clip_panel::key_picker(
-                            ui,
-                            "marker key",
-                            shown,
-                            Some("Same as before"),
-                            false,
-                        ) {
-                            let mut changed = markers.to_vec();
-                            changed[i].key = match picked {
-                                Some(noodle_core::KeyTarget::Fixed(key)) => Some(key),
-                                _ => None,
-                            };
-                            edits.push(Edit::Apply(Command::SetMarkers(changed)));
-                        }
-                    })
-                    .response
-                    .on_hover_text(
-                        "Clips that follow the timeline's key are carried to this key from here",
-                    );
                     let next = markers
                         .get(i + 1)
                         .map_or("end of the song".to_string(), |next| {
@@ -2222,6 +2219,15 @@ pub fn show(
                         edits.push(Edit::Apply(Command::SetMarkers(rest)));
                     }
                 });
+        }
+        if let Some(i) = state.marker_popup {
+            match markers.get(i) {
+                Some(marker) => {
+                    let at = Pos2::new(axis.x(marker.at), ruler.bottom() + 2.0);
+                    marker_popup(ui, state, markers, i, at, &mut edits);
+                }
+                None => state.marker_popup = None,
+            }
         }
         // The selected range is a band along the top of the ruler.
         if let Some(range) = state.range {
@@ -2379,21 +2385,24 @@ pub fn show(
                     .map(|(new, _)| Edit::Apply(Command::SetTempoMap(new))),
             );
         }
-        for (numerator, denominator) in crate::tempo::SIGNATURES {
-            let signature = noodle_core::TimeSignature {
-                numerator,
-                denominator,
-            };
-            if ui
-                .button(format!("Time signature {numerator}/{denominator}"))
-                .clicked()
-            {
-                ui.close();
-                edits.extend(
-                    crate::tempo::with_signature_at(map, bar, signature)
-                        .map(|new| Edit::Apply(Command::SetTempoMap(new))),
-                );
-            }
+        if ui
+            .button(format!("Insert time signature change at bar {}", bar + 1))
+            .on_hover_text("Type the new signature on the ruler: 3/4, 6/8, 7/8")
+            .clicked()
+        {
+            ui.close();
+            let current = crate::tempo::signature_at_bar(map, bar);
+            // The change starts out as the signature already there, so there
+            // is a marker to type over; Enter or clicking away sets it.
+            edits.extend(
+                crate::tempo::with_signature_at(map, bar, current)
+                    .map(|new| Edit::Apply(Command::SetTempoMap(new))),
+            );
+            state.signature_edit = Some(SignatureEdit {
+                bar,
+                text: current.to_string(),
+                fresh: true,
+            });
         }
         if bar > 0
             && map.signatures().iter().any(|s| s.bar == bar)
@@ -2557,6 +2566,146 @@ pub fn show(
 }
 
 /// The first tick of 1-based `bar`, through the signature changes.
+/// A time signature change being typed on the ruler.
+struct SignatureEdit {
+    bar: u32,
+    text: String,
+    /// Not yet shown: the first frame focuses the field and selects its text.
+    fresh: bool,
+}
+
+/// Reads "3/4" (or "3 / 4"). Whether the tempo map accepts it is for the map
+/// to say.
+pub(crate) fn parse_signature(text: &str) -> Option<noodle_core::TimeSignature> {
+    let (n, d) = text.split_once('/')?;
+    Some(noodle_core::TimeSignature {
+        numerator: n.trim().parse().ok()?,
+        denominator: d.trim().parse().ok()?,
+    })
+}
+
+/// How typing a time signature on the ruler ended.
+enum SignatureTyped {
+    /// Still typing.
+    Open,
+    /// Enter or a click elsewhere: what was typed, if it reads as a signature.
+    Done(Option<noodle_core::TimeSignature>),
+    /// Escape.
+    Cancelled,
+}
+
+/// The text field for the time signature change at `edit.bar`, over its
+/// marker. Enter or clicking away sets the signature; Escape keeps the old one.
+fn signature_field(
+    ui: &mut egui::Ui,
+    axis: Axis<'_>,
+    ruler: Rect,
+    edit: &mut SignatureEdit,
+) -> SignatureTyped {
+    let x = axis.x(axis.map.bar_start(edit.bar));
+    let id = ui.id().with(("signature_field", edit.bar));
+    let field = Rect::from_min_size(Pos2::new(x + 2.0, ruler.bottom() - 16.0), vec2(44.0, 15.0));
+    let mut out = egui::TextEdit::singleline(&mut edit.text)
+        .id(id)
+        .font(FontId::proportional(10.0))
+        .margin(vec2(2.0, 0.0))
+        .show(&mut ui.new_child(egui::UiBuilder::new().max_rect(field)));
+    if edit.fresh {
+        edit.fresh = false;
+        out.response.request_focus();
+        out.state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(edit.text.chars().count()),
+            )));
+        out.state.store(ui.ctx(), id);
+    }
+    if !out.response.lost_focus() {
+        SignatureTyped::Open
+    } else if ui.input(|i| i.key_pressed(Key::Escape)) {
+        SignatureTyped::Cancelled
+    } else {
+        SignatureTyped::Done(parse_signature(&edit.text))
+    }
+}
+
+/// The popup a double-click on marker `index` opens: its name and key.
+fn marker_popup(
+    ui: &mut egui::Ui,
+    state: &mut TimelineState,
+    markers: &[noodle_core::Marker],
+    index: usize,
+    at: Pos2,
+    edits: &mut Vec<Edit>,
+) {
+    let mut open = true;
+    let mut close = false;
+    egui::Window::new("Marker")
+        .id(ui.id().with("marker_popup"))
+        .fixed_pos(at)
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ui.ctx(), |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                let name = ui.add(
+                    egui::TextEdit::singleline(&mut state.marker_name)
+                        .hint_text("Marker name")
+                        .desired_width(140.0),
+                );
+                if name.lost_focus() {
+                    let typed = state.marker_name.trim();
+                    if !typed.is_empty() && typed != markers[index].name {
+                        let mut renamed = markers.to_vec();
+                        renamed[index].name = typed.to_string();
+                        edits.push(Edit::Apply(Command::SetMarkers(renamed)));
+                    }
+                    if ui.input(|i| i.key_pressed(Key::Enter)) {
+                        close = true;
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Key");
+                let shown = markers[index].key.map(noodle_core::KeyTarget::Fixed);
+                if let Some(picked) = crate::clip_panel::key_picker(
+                    ui,
+                    "marker key",
+                    shown,
+                    Some("Same as before"),
+                    false,
+                ) {
+                    let mut changed = markers.to_vec();
+                    changed[index].key = match picked {
+                        Some(noodle_core::KeyTarget::Fixed(key)) => Some(key),
+                        _ => None,
+                    };
+                    edits.push(Edit::Apply(Command::SetMarkers(changed)));
+                }
+            })
+            .response
+            .on_hover_text(
+                "Clips that follow the timeline's key are carried to this key from here",
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Delete marker").clicked() {
+                    let mut rest = markers.to_vec();
+                    rest.remove(index);
+                    edits.push(Edit::Apply(Command::SetMarkers(rest)));
+                    close = true;
+                }
+                if ui.button("Done").clicked() {
+                    close = true;
+                }
+            });
+        });
+    if !open || close {
+        state.marker_popup = None;
+    }
+}
+
 /// The colour of markers.
 const MARKER_COLOUR: egui::Color32 = egui::Color32::from_rgb(235, 180, 60);
 
@@ -3632,7 +3781,13 @@ fn folder_strip(
 }
 
 /// Draws the ruler, and returns the time signature markers it drew.
-fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis<'_>, lines: &[grid::Line]) -> Vec<String> {
+fn draw_ruler(
+    ui: &egui::Ui,
+    rect: Rect,
+    axis: Axis<'_>,
+    lines: &[grid::Line],
+    editing: Option<&SignatureEdit>,
+) -> Vec<String> {
     let strip = Rect::from_min_size(rect.min, Vec2::new(rect.width(), colors::RULER_HEIGHT));
     let painter = ui.painter_at(strip);
     painter.rect_filled(strip, 0.0, colors::RULER);
@@ -3676,6 +3831,10 @@ fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis<'_>, lines: &[grid::Line]) -
     // transport shows.
     let mut markers = Vec::new();
     for change in axis.map.signatures().iter().skip(1) {
+        if editing.is_some_and(|e| e.bar == change.bar) {
+            // The text field is drawn over it.
+            continue;
+        }
         let x = axis.x(axis.map.bar_start(change.bar));
         painter.vline(
             x,

@@ -156,7 +156,10 @@ It has these views:
     add a change on the beat, drag a point to move it and set its tempo, and
     right-click or Delete removes it (the first change stays at the start).
     The ruler's right-click menu also adds a tempo change at the bar
-    clicked ("Add tempo change at bar N"), next to its time signature items;
+    clicked ("Add tempo change at bar N"), and one "Insert time signature change at
+    bar N", which places the change with the current signature and opens a text
+    field over its marker, text selected (type `3/4`; Enter or a click away sets
+    it, Escape keeps the old one);
     signature changes live in the same tempo map, on bar lines only, and show
     as markers on the ruler.
     Every edit is a `SetTempoMap` command, so undo and the engine's table follow

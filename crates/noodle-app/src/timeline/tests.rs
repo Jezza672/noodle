@@ -2384,7 +2384,20 @@ fn the_ruler_menu_adds_a_tempo_change_at_the_bar() {
 fn a_time_signature_change_shows_as_a_ruler_marker_that_can_be_removed() {
     let (mut h, _) = rig();
     right_click_ruler(&mut h, 150.0 + 2.0 * 240.0 + 20.0);
-    h.get_by_label("Time signature 3/4").click();
+    h.get_by_label("Insert time signature change at bar 3")
+        .click();
+    h.run();
+    // The change starts as the signature already there, with its text
+    // selected, so typing replaces it.
+    assert_eq!(
+        signatures(&h),
+        vec![(0, "4/4".to_string()), (2, "4/4".to_string())]
+    );
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .find(|n| n.value().as_deref() == Some("4/4"))
+        .expect("the signature field")
+        .type_text("3/4");
+    h.key_press(Key::Enter);
     h.run();
     assert_eq!(
         signatures(&h),
@@ -2848,4 +2861,52 @@ fn a_lane_can_be_shrunk_to_just_its_name_and_grown_back() {
     h.run();
     assert!(!h.state().timeline.name_only(input));
     assert!(h.query_by_label("RA").is_some());
+}
+
+#[test]
+fn double_clicking_a_marker_opens_its_properties_and_renames_it() {
+    let (mut h, _) = rig();
+    let session = &mut h.state_mut().session;
+    session.edit([Edit::Apply(Command::SetMarkers(vec![
+        noodle_core::Marker {
+            at: Tick(3840),
+            name: "Verse".into(),
+            key: None,
+        },
+    ]))]);
+    h.run();
+    double_click(&mut h, Pos2::new(150.0 + 240.0 + 8.0, 6.0));
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .find(|n| n.value().as_deref() == Some("Verse"))
+        .expect("the name field")
+        .click();
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run();
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .find(|n| n.value().as_deref() == Some("Verse"))
+        .expect("the name field")
+        .type_text("Chorus");
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let names: Vec<_> = h
+        .state()
+        .session
+        .project()
+        .markers()
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
+    assert_eq!(names, vec!["Chorus".to_string()]);
+}
+
+#[test]
+fn typed_time_signatures_read_n_over_d() {
+    use super::parse_signature;
+    assert_eq!(
+        parse_signature(" 7 / 8 ").map(|s| s.to_string()),
+        Some("7/8".into())
+    );
+    assert!(parse_signature("seven").is_none());
 }
