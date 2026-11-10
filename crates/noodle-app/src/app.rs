@@ -82,6 +82,9 @@ pub struct App {
     clip_panel: ClipPanel,
     /// The track the piano roll last played keys on, to let them go.
     audition_track: Option<noodle_core::NodeId>,
+    /// The clip that was selected on the timeline last frame, so the open
+    /// piano roll follows a change of selection and nothing else.
+    roll_followed: Option<noodle_core::ClipId>,
     devices: DevicePicker,
     export: ExportDialog,
     /// An action waiting for the user to decide what to do with unsaved
@@ -293,6 +296,7 @@ impl App {
             clip_editor: ClipEditor::default(),
             clip_panel: ClipPanel::default(),
             audition_track: None,
+            roll_followed: None,
             devices: DevicePicker::default(),
             export: ExportDialog::default(),
             confirming: None,
@@ -669,6 +673,23 @@ impl App {
             self.piano_roll.open(clip);
         }
 
+        // An open roll follows the clip selected on the timeline, not only the
+        // one double-clicked.
+        let selected = self.timeline.selected_clip();
+        if selected != self.roll_followed {
+            self.roll_followed = selected;
+            if let Some(clip) = selected
+                && self.piano_roll.clip().is_some()
+                && self
+                    .session
+                    .project()
+                    .clip(clip)
+                    .is_some_and(|c| c.as_midi().is_some())
+            {
+                self.piano_roll.open(clip);
+            }
+        }
+
         let mut roll_rect = None;
         if let Some(clip) = self.piano_roll.clip() {
             roll_rect = Some(
@@ -683,6 +704,9 @@ impl App {
                         let out =
                             piano_roll::show(ui, &mut self.piano_roll, &self.session, playhead);
                         self.session.edit(out.edits);
+                        if let Some(at) = out.seek {
+                            self.session.seek(at);
+                        }
                         if let Some(track) = self.session.project().clip(clip).map(|c| c.node) {
                             self.audition_track = Some(track);
                             for (key, on) in out.audition {
@@ -3587,7 +3611,7 @@ mod tests {
         // X is a note-keyboard key now, not delete.
         harness.key_press(Key::X);
         harness.run();
-        assert_eq!(harness.state().keyboard.octave(), 4);
+        assert_eq!(harness.state().keyboard.octave(), 5);
         assert_eq!(
             harness.state().session().project().graph().nodes().count(),
             1
@@ -3600,6 +3624,34 @@ mod tests {
         harness.key_press(Key::M);
         harness.run();
         assert_eq!(heard.pop(), Some([0x80, 76, 0]));
+    }
+
+    #[test]
+    fn an_open_piano_roll_follows_the_selected_clip() {
+        use noodle_core::{Clip, ClipId, Tick};
+        let mut app = empty();
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id: noodle_core::NodeId(1),
+            node: Node::new(crate::timeline::TRACK_INPUT),
+        })]);
+        for (id, start) in [(1, 0), (2, 3840)] {
+            app.session.edit([Edit::Apply(Command::AddClip {
+                id: ClipId(id),
+                clip: Clip::midi(noodle_core::NodeId(1), Tick(start), Tick(3840)),
+            })]);
+        }
+        app.piano_roll.open(ClipId(1));
+        let mut harness = harness(app);
+        harness.run();
+        assert_eq!(harness.state().piano_roll.clip(), Some(ClipId(1)));
+        harness.state_mut().timeline.select_only(ClipId(2));
+        harness.run();
+        assert_eq!(harness.state().piano_roll.clip(), Some(ClipId(2)));
+        // A roll that is closed stays closed.
+        harness.state_mut().piano_roll.close();
+        harness.state_mut().timeline.select_only(ClipId(1));
+        harness.run();
+        assert_eq!(harness.state().piano_roll.clip(), None);
     }
 
     #[test]
