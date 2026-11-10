@@ -23,3 +23,7 @@ A batch of fixes to the piano roll found in use.
   on the timeline (MIDI clips only), not just the last one double-clicked.
 - **Velocity bar.** The bar being dragged is drawn last, outlined, with its
   value beside it.
+- **Copy by dragging.** Cmd/Ctrl-drag on a note (or the whole selection) drags
+  copies and leaves the originals.
+- **Group velocity.** Dragging the velocity bar of a selected note scales
+  every selected note by the same ratio, so the group keeps its shape.

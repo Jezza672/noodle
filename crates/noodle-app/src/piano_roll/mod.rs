@@ -362,7 +362,7 @@ pub fn show(
         ui,
         toolbar,
         &format!("Piano roll · {id}"),
-        "Drag to draw · Shift-drag selects · Alt: no snap · Alt-scroll zooms keys",
+        "Drag to draw · Shift-drag selects · Cmd-drag copies · Alt: no snap · Alt-scroll zooms keys",
         |ui| {
             ui.label(format!("Snap: {}", crate::snap::label(state.step)));
             ui.separator();
@@ -512,6 +512,26 @@ pub fn show(
                 if resize {
                     state.last_length = None;
                 }
+                let (mut original, mut grabbed) = (original, i);
+                // Cmd/Ctrl-drag drags copies and leaves the notes where they are.
+                if !resize && ui.input(|i| i.modifiers.command) {
+                    let mut next = original.iter().map(|n| n.id).max().map_or(0, |m| m + 1);
+                    let mut copies = BTreeSet::new();
+                    for (at, note) in original.clone().iter().enumerate() {
+                        if state.selected.contains(&note.id) {
+                            if at == i {
+                                grabbed = original.len();
+                            }
+                            original.push(MidiNote {
+                                id: next,
+                                ..note.clone()
+                            });
+                            copies.insert(next);
+                            next += 1;
+                        }
+                    }
+                    state.selected = copies;
+                }
                 state.drag = Some(Drag {
                     gesture: if resize {
                         Gesture::Resize
@@ -520,7 +540,7 @@ pub fn show(
                     },
                     original,
                     selected: state.selected.clone(),
-                    grabbed: i,
+                    grabbed,
                     press,
                 });
             }
@@ -1221,12 +1241,15 @@ fn draw_velocity(
             .filter(|(_, d)| *d <= 6.0)
             .min_by(|a, b| a.1.total_cmp(&b.1));
         if let Some((i, _)) = nearest {
+            // Dragging a bar of the selection edits the whole selection.
             let note_id = midi.notes[i].id;
-            state.selected = BTreeSet::from([note_id]);
+            if !state.selected.contains(&note_id) {
+                state.selected = BTreeSet::from([note_id]);
+            }
             state.drag = Some(Drag {
                 gesture: Gesture::Velocity,
                 original: midi.notes.clone(),
-                selected: BTreeSet::from([note_id]),
+                selected: state.selected.clone(),
                 grabbed: i,
                 press,
             });
@@ -1236,7 +1259,12 @@ fn draw_velocity(
         && let (Some(drag), Some(pos)) = (&state.drag, response.interact_pointer_pos())
         && drag.gesture == Gesture::Velocity
     {
-        let changed = notes::with_velocity(&drag.original, drag.grabbed, velocity_at(pos.y));
+        let changed = notes::with_group_velocity(
+            &drag.original,
+            &drag.selected,
+            drag.grabbed,
+            velocity_at(pos.y),
+        );
         if changed != midi.notes {
             out.edits.push(set_notes(id, clip, changed, true));
         }

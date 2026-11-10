@@ -955,3 +955,15 @@ fn notes_played_on_any_input_are_remembered_until_released() {
         "note on at 0 is a release"
     );
 }
+
+#[test]
+fn command_dragging_a_note_moves_a_copy_and_leaves_the_original() {
+    let mut h = rig(&[note(480, 240, 60)]);
+    let from = at(&h, 540, 60);
+    let to = at(&h, 1500, 64);
+    crate::testkit::drag_between(&mut h, Modifiers::COMMAND, from, to);
+    let notes = notes_of(&h);
+    assert_eq!(notes.len(), 2);
+    assert!(notes.contains(&note(480, 240, 60)), "the original stays");
+    assert!(notes.iter().any(|n| n.key == 64 && n.start.0 > 480));
+}
