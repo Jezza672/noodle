@@ -132,13 +132,33 @@ struct InputStage {
 }
 
 /// The stage of every port of every group's output node, for the meters.
-pub(crate) fn output_stages(graph: &Graph) -> impl Iterator<Item = NodeId> + '_ {
+/// A port that carries events (notes, say) has none: a stage is a signal
+/// node, and metering has nothing to measure on events. Whether a port does
+/// is read from the node that feeds it inside the group.
+pub(crate) fn output_stages<'a>(
+    graph: &'a Graph,
+    registry: &'a crate::Registry,
+) -> impl Iterator<Item = NodeId> + 'a {
+    let carries_events = move |boundary: NodeId, port: u32| {
+        let Some(from) = graph.source(&Endpoint::new(boundary, noodle_core::group::port_key(port)))
+        else {
+            return false;
+        };
+        let Some(node) = graph.node(from.node) else {
+            return false;
+        };
+        registry
+            .get(&node.type_id)
+            .and_then(|t| t.layout(&node.config).ok())
+            .is_some_and(|layout| layout.event_outputs.iter().any(|p| p.key == from.port))
+    };
     graph
         .nodes()
         .filter(|(_, node)| node.type_id == GROUP_OUTPUT && node.parent.is_some())
-        .flat_map(|(id, node)| {
+        .flat_map(move |(id, node)| {
             node.boundary_ports()
                 .into_iter()
+                .filter(move |&(port, _)| !carries_events(id, port))
                 .map(move |(port, _)| stage_id(id, port))
         })
 }

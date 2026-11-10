@@ -279,9 +279,7 @@ fn param_targets(
 fn group_hint(title: &str) -> Option<&'static str> {
     match title {
         "Drum Rack" => Some(
-            "Swing delays the off-beat notes. Drop a sample on a pad (Kick, Snare, ...) to load it. Pads with the same non-zero choke group cut \
-             each other off (the closed and open hat share group 1). Slots play keys 36, \
-             38, 42, 46, 39, 45, 50 and 49. To program a pattern: wire a track's MIDI into \
+            "Swing delays the off-beat notes. Drop a sample on a pad (Kick, Snare, ...) to load it. Each pad plays the key in its `key` control (36, 38, 42, 46, 39, 45, 50 and 49). To cut one drum off with another, open the rack and wire a pad's `choke out` to another pad's `choke in` (the closed and open hat already do this). To program a pattern: wire a track's MIDI into \
              notes, right-click the track's lane and choose New MIDI clip, then open the \
              clip (double-click) for the piano roll.",
         ),
@@ -312,7 +310,7 @@ fn group_controls(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Ed
     let split = |name: &str| match name.rsplit_once(' ') {
         Some((head, tail))
             if head.ends_with(|c: char| c.is_ascii_digit())
-                || ["level", "tune", "pan", "choke"].contains(&tail) =>
+                || ["level", "tune", "pan", "key", "choke"].contains(&tail) =>
         {
             Some((head.to_owned(), tail.to_owned()))
         }
@@ -2833,17 +2831,17 @@ mod tests {
         h.run();
         h.get_by_label("Open Hat").click();
         h.run();
-        h.get_by_label("choke");
+        h.get_by_label("key");
         let names: Vec<_> = group_control_targets(&h.state().session, group)
             .into_iter()
             .map(|(name, ..)| name)
             .collect();
         assert!(names.contains(&"Swing".to_owned()));
-        assert!(names.contains(&"Open Hat choke".to_owned()));
+        assert!(names.contains(&"Open Hat key".to_owned()));
         assert_eq!(
             names.len(),
             33,
-            "swing and four controls for each of eight slots"
+            "swing, and key, level, tune and pan for each of eight pads"
         );
     }
 

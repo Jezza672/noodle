@@ -183,12 +183,23 @@ fn the_drum_rack_has_a_slot_per_general_midi_key_and_no_samples() {
             .get("sample")
             .is_none_or(|v| matches!(v, noodle_core::Value::Text(t) if t.is_empty()))
     }));
-    let split = inside("noodle.event.note_split");
-    assert_eq!(split.len(), 1);
-    let keys: Vec<f32> = (1..=8)
-        .map(|i| split[0].params[&format!("low{i}")])
+    // Each pad holds its own key filter, in the order of the pads.
+    let keys: Vec<f32> = pads
+        .iter()
+        .map(|&pad| {
+            let filters: Vec<&Node> = graph
+                .children(Some(pad))
+                .filter(|(_, n)| n.type_id == "noodle.event.note_split")
+                .map(|(_, n)| n)
+                .collect();
+            assert_eq!(filters.len(), 1);
+            filters[0].params["low1"]
+        })
         .collect();
-    assert_eq!(keys, [36.0, 38.0, 42.0, 46.0, 39.0, 45.0, 50.0, 49.0]);
+    let mut sorted = keys.clone();
+    sorted.sort_by(f32::total_cmp);
+    assert_eq!(sorted, [36.0, 38.0, 39.0, 42.0, 45.0, 46.0, 49.0, 50.0]);
+    assert!(inside("noodle.event.note_split").is_empty());
     let ports = graph.group_ports(group);
     assert!(ports.input("notes").is_some() && ports.output("out").is_some());
 }

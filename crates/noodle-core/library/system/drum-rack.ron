@@ -10,7 +10,7 @@
             ),
             2: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:Swing\n3:Kick level\n4:Kick tune\n5:Kick pan\n6:Kick choke\n7:Snare level\n8:Snare tune\n9:Snare pan\n10:Snare choke\n11:Closed Hat level\n12:Closed Hat tune\n13:Closed Hat pan\n14:Closed Hat choke\n15:Open Hat level\n16:Open Hat tune\n17:Open Hat pan\n18:Open Hat choke\n19:Clap level\n20:Clap tune\n21:Clap pan\n22:Clap choke\n23:Low Tom level\n24:Low Tom tune\n25:Low Tom pan\n26:Low Tom choke\n27:High Tom level\n28:High Tom tune\n29:High Tom pan\n30:High Tom choke\n31:Crash level\n32:Crash tune\n33:Crash pan\n34:Crash choke"},
+                config: {"ports": "1:notes\n2:Swing\n3:Kick key\n4:Kick level\n5:Kick tune\n6:Kick pan\n7:Snare key\n8:Snare level\n9:Snare tune\n10:Snare pan\n11:Closed Hat key\n12:Closed Hat level\n13:Closed Hat tune\n14:Closed Hat pan\n15:Open Hat key\n16:Open Hat level\n17:Open Hat tune\n18:Open Hat pan\n19:Clap key\n20:Clap level\n21:Clap tune\n22:Clap pan\n23:Low Tom key\n24:Low Tom level\n25:Low Tom tune\n26:Low Tom pan\n27:High Tom key\n28:High Tom level\n29:High Tom tune\n30:High Tom pan\n31:Crash key\n32:Crash level\n33:Crash tune\n34:Crash pan"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(1),
             ),
@@ -20,271 +20,360 @@
                 parent: Some(1),
             ),
             4: (
-                type: "noodle.event.note_split",
-                params: {"choke1": 0.0, "choke2": 0.0, "choke3": 1.0, "choke4": 1.0, "choke5": 0.0, "choke6": 0.0, "choke7": 0.0, "choke8": 0.0, "high1": 36.0, "high2": 38.0, "high3": 42.0, "high4": 46.0, "high5": 39.0, "high6": 45.0, "high7": 50.0, "high8": 49.0, "low1": 36.0, "low2": 38.0, "low3": 42.0, "low4": 46.0, "low5": 39.0, "low6": 45.0, "low7": 50.0, "low8": 49.0},
-                config: {"outputs": 8},
-                position: (x: 440.0, y: 0.0),
-                parent: Some(1),
-            ),
-            5: (
                 type: "noodle.util.mix",
                 config: {"inputs": 8},
                 position: (x: 1320.0, y: 0.0),
                 parent: Some(1),
             ),
-            6: (
+            5: (
                 type: "noodle.group.output",
                 config: {"ports": "1:out"},
                 position: (x: 1570.0, y: 0.0),
                 parent: Some(1),
             ),
-            7: (
+            6: (
                 type: "noodle.group",
                 config: {"name": "Kick"},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(1),
             ),
-            8: (
+            7: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:level\n3:tune\n4:pan"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
                 position: (x: 0.0, y: 0.0),
-                parent: Some(7),
+                parent: Some(6),
+            ),
+            8: (
+                type: "noodle.event.note_split",
+                params: {"high1": 36.0, "low1": 36.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(6),
             ),
             9: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(6),
+            ),
+            10: (
                 type: "noodle.instrument.sampler",
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
-                position: (x: 220.0, y: 0.0),
-                parent: Some(7),
-            ),
-            10: (
-                type: "noodle.util.pan",
-                params: {"pan": 0.0},
-                position: (x: 440.0, y: 0.0),
-                parent: Some(7),
+                position: (x: 660.0, y: 0.0),
+                parent: Some(6),
             ),
             11: (
-                type: "noodle.group.output",
-                config: {"ports": "1:out"},
-                position: (x: 690.0, y: 0.0),
-                parent: Some(7),
+                type: "noodle.util.pan",
+                params: {"pan": 0.0},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(6),
             ),
             12: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(6),
+            ),
+            13: (
                 type: "noodle.group",
                 config: {"name": "Snare"},
                 position: (x: 660.0, y: 130.0),
                 parent: Some(1),
             ),
-            13: (
-                type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:level\n3:tune\n4:pan"},
-                position: (x: 0.0, y: 0.0),
-                parent: Some(12),
-            ),
             14: (
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(13),
+            ),
+            15: (
+                type: "noodle.event.note_split",
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(13),
+            ),
+            16: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(13),
+            ),
+            17: (
                 type: "noodle.instrument.sampler",
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
-                position: (x: 220.0, y: 0.0),
-                parent: Some(12),
+                position: (x: 660.0, y: 0.0),
+                parent: Some(13),
             ),
-            15: (
+            18: (
                 type: "noodle.util.pan",
                 params: {"pan": 0.0},
-                position: (x: 440.0, y: 0.0),
-                parent: Some(12),
+                position: (x: 880.0, y: 0.0),
+                parent: Some(13),
             ),
-            16: (
+            19: (
                 type: "noodle.group.output",
-                config: {"ports": "1:out"},
-                position: (x: 690.0, y: 0.0),
-                parent: Some(12),
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(13),
             ),
-            17: (
+            20: (
                 type: "noodle.group",
                 config: {"name": "Closed Hat"},
                 position: (x: 660.0, y: 260.0),
                 parent: Some(1),
             ),
-            18: (
-                type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:level\n3:tune\n4:pan"},
-                position: (x: 0.0, y: 0.0),
-                parent: Some(17),
-            ),
-            19: (
-                type: "noodle.instrument.sampler",
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-                position: (x: 220.0, y: 0.0),
-                parent: Some(17),
-            ),
-            20: (
-                type: "noodle.util.pan",
-                params: {"pan": -0.0},
-                position: (x: 440.0, y: 0.0),
-                parent: Some(17),
-            ),
             21: (
-                type: "noodle.group.output",
-                config: {"ports": "1:out"},
-                position: (x: 690.0, y: 0.0),
-                parent: Some(17),
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(20),
             ),
             22: (
-                type: "noodle.group",
-                config: {"name": "Open Hat"},
-                position: (x: 660.0, y: 390.0),
-                parent: Some(1),
+                type: "noodle.event.note_split",
+                params: {"high1": 42.0, "low1": 42.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(20),
             ),
             23: (
-                type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:level\n3:tune\n4:pan"},
-                position: (x: 0.0, y: 0.0),
-                parent: Some(22),
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(20),
             ),
             24: (
                 type: "noodle.instrument.sampler",
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
-                position: (x: 220.0, y: 0.0),
-                parent: Some(22),
+                position: (x: 660.0, y: 0.0),
+                parent: Some(20),
             ),
             25: (
                 type: "noodle.util.pan",
-                params: {"pan": 0.0},
-                position: (x: 440.0, y: 0.0),
-                parent: Some(22),
+                params: {"pan": -0.0},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(20),
             ),
             26: (
                 type: "noodle.group.output",
-                config: {"ports": "1:out"},
-                position: (x: 690.0, y: 0.0),
-                parent: Some(22),
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(20),
             ),
             27: (
+                type: "noodle.group",
+                config: {"name": "Open Hat"},
+                position: (x: 660.0, y: 390.0),
+                parent: Some(1),
+            ),
+            28: (
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(27),
+            ),
+            29: (
+                type: "noodle.event.note_split",
+                params: {"high1": 46.0, "low1": 46.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(27),
+            ),
+            30: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(27),
+            ),
+            31: (
+                type: "noodle.instrument.sampler",
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(27),
+            ),
+            32: (
+                type: "noodle.util.pan",
+                params: {"pan": 0.0},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(27),
+            ),
+            33: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(27),
+            ),
+            34: (
                 type: "noodle.group",
                 config: {"name": "Clap"},
                 position: (x: 660.0, y: 520.0),
                 parent: Some(1),
             ),
-            28: (
+            35: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:level\n3:tune\n4:pan"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
                 position: (x: 0.0, y: 0.0),
-                parent: Some(27),
+                parent: Some(34),
             ),
-            29: (
+            36: (
+                type: "noodle.event.note_split",
+                params: {"high1": 39.0, "low1": 39.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(34),
+            ),
+            37: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(34),
+            ),
+            38: (
                 type: "noodle.instrument.sampler",
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
-                position: (x: 220.0, y: 0.0),
-                parent: Some(27),
+                position: (x: 660.0, y: 0.0),
+                parent: Some(34),
             ),
-            30: (
+            39: (
                 type: "noodle.util.pan",
                 params: {"pan": 0.0},
-                position: (x: 440.0, y: 0.0),
-                parent: Some(27),
+                position: (x: 880.0, y: 0.0),
+                parent: Some(34),
             ),
-            31: (
+            40: (
                 type: "noodle.group.output",
-                config: {"ports": "1:out"},
-                position: (x: 690.0, y: 0.0),
-                parent: Some(27),
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(34),
             ),
-            32: (
+            41: (
                 type: "noodle.group",
                 config: {"name": "Low Tom"},
                 position: (x: 660.0, y: 650.0),
                 parent: Some(1),
             ),
-            33: (
+            42: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:level\n3:tune\n4:pan"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
                 position: (x: 0.0, y: 0.0),
-                parent: Some(32),
+                parent: Some(41),
             ),
-            34: (
+            43: (
+                type: "noodle.event.note_split",
+                params: {"high1": 45.0, "low1": 45.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(41),
+            ),
+            44: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(41),
+            ),
+            45: (
                 type: "noodle.instrument.sampler",
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
-                position: (x: 220.0, y: 0.0),
-                parent: Some(32),
+                position: (x: 660.0, y: 0.0),
+                parent: Some(41),
             ),
-            35: (
+            46: (
                 type: "noodle.util.pan",
                 params: {"pan": -0.0},
-                position: (x: 440.0, y: 0.0),
-                parent: Some(32),
+                position: (x: 880.0, y: 0.0),
+                parent: Some(41),
             ),
-            36: (
+            47: (
                 type: "noodle.group.output",
-                config: {"ports": "1:out"},
-                position: (x: 690.0, y: 0.0),
-                parent: Some(32),
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(41),
             ),
-            37: (
+            48: (
                 type: "noodle.group",
                 config: {"name": "High Tom"},
                 position: (x: 660.0, y: 780.0),
                 parent: Some(1),
             ),
-            38: (
+            49: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:level\n3:tune\n4:pan"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
                 position: (x: 0.0, y: 0.0),
-                parent: Some(37),
+                parent: Some(48),
             ),
-            39: (
+            50: (
+                type: "noodle.event.note_split",
+                params: {"high1": 50.0, "low1": 50.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(48),
+            ),
+            51: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(48),
+            ),
+            52: (
                 type: "noodle.instrument.sampler",
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
-                position: (x: 220.0, y: 0.0),
-                parent: Some(37),
+                position: (x: 660.0, y: 0.0),
+                parent: Some(48),
             ),
-            40: (
+            53: (
                 type: "noodle.util.pan",
                 params: {"pan": 0.0},
-                position: (x: 440.0, y: 0.0),
-                parent: Some(37),
+                position: (x: 880.0, y: 0.0),
+                parent: Some(48),
             ),
-            41: (
+            54: (
                 type: "noodle.group.output",
-                config: {"ports": "1:out"},
-                position: (x: 690.0, y: 0.0),
-                parent: Some(37),
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(48),
             ),
-            42: (
+            55: (
                 type: "noodle.group",
                 config: {"name": "Crash"},
                 position: (x: 660.0, y: 910.0),
                 parent: Some(1),
             ),
-            43: (
+            56: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:level\n3:tune\n4:pan"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
                 position: (x: 0.0, y: 0.0),
-                parent: Some(42),
+                parent: Some(55),
             ),
-            44: (
+            57: (
+                type: "noodle.event.note_split",
+                params: {"high1": 49.0, "low1": 49.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(55),
+            ),
+            58: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(55),
+            ),
+            59: (
                 type: "noodle.instrument.sampler",
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
-                position: (x: 220.0, y: 0.0),
-                parent: Some(42),
+                position: (x: 660.0, y: 0.0),
+                parent: Some(55),
             ),
-            45: (
+            60: (
                 type: "noodle.util.pan",
                 params: {"pan": 0.0},
-                position: (x: 440.0, y: 0.0),
-                parent: Some(42),
+                position: (x: 880.0, y: 0.0),
+                parent: Some(55),
             ),
-            46: (
+            61: (
                 type: "noodle.group.output",
-                config: {"ports": "1:out"},
-                position: (x: 690.0, y: 0.0),
-                parent: Some(42),
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(55),
             ),
         },
         connections: [
@@ -297,223 +386,231 @@
                 to: (node: 3, port: "in"),
             ),
             (
-                from: (node: 2, port: "p6"),
-                to: (node: 4, port: "choke1"),
+                from: (node: 6, port: "out"),
+                to: (node: 4, port: "in1"),
             ),
             (
-                from: (node: 2, port: "p10"),
-                to: (node: 4, port: "choke2"),
+                from: (node: 13, port: "out"),
+                to: (node: 4, port: "in2"),
             ),
             (
-                from: (node: 2, port: "p14"),
-                to: (node: 4, port: "choke3"),
-            ),
-            (
-                from: (node: 2, port: "p18"),
-                to: (node: 4, port: "choke4"),
-            ),
-            (
-                from: (node: 2, port: "p22"),
-                to: (node: 4, port: "choke5"),
-            ),
-            (
-                from: (node: 2, port: "p26"),
-                to: (node: 4, port: "choke6"),
-            ),
-            (
-                from: (node: 2, port: "p30"),
-                to: (node: 4, port: "choke7"),
-            ),
-            (
-                from: (node: 2, port: "p34"),
-                to: (node: 4, port: "choke8"),
-            ),
-            (
-                from: (node: 3, port: "out"),
-                to: (node: 4, port: "in"),
-            ),
-            (
-                from: (node: 7, port: "out"),
-                to: (node: 5, port: "in1"),
-            ),
-            (
-                from: (node: 12, port: "out"),
-                to: (node: 5, port: "in2"),
-            ),
-            (
-                from: (node: 17, port: "out"),
-                to: (node: 5, port: "in3"),
-            ),
-            (
-                from: (node: 22, port: "out"),
-                to: (node: 5, port: "in4"),
+                from: (node: 20, port: "out"),
+                to: (node: 4, port: "in3"),
             ),
             (
                 from: (node: 27, port: "out"),
-                to: (node: 5, port: "in5"),
+                to: (node: 4, port: "in4"),
             ),
             (
-                from: (node: 32, port: "out"),
-                to: (node: 5, port: "in6"),
+                from: (node: 34, port: "out"),
+                to: (node: 4, port: "in5"),
             ),
             (
-                from: (node: 37, port: "out"),
-                to: (node: 5, port: "in7"),
+                from: (node: 41, port: "out"),
+                to: (node: 4, port: "in6"),
             ),
             (
-                from: (node: 42, port: "out"),
-                to: (node: 5, port: "in8"),
+                from: (node: 48, port: "out"),
+                to: (node: 4, port: "in7"),
             ),
             (
-                from: (node: 5, port: "out"),
-                to: (node: 6, port: "p1"),
+                from: (node: 55, port: "out"),
+                to: (node: 4, port: "in8"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "p1"),
             ),
             (
                 from: (node: 2, port: "p3"),
-                to: (node: 7, port: "level"),
-            ),
-            (
-                from: (node: 4, port: "out1"),
-                to: (node: 7, port: "notes"),
-            ),
-            (
-                from: (node: 2, port: "p5"),
-                to: (node: 7, port: "pan"),
+                to: (node: 6, port: "key"),
             ),
             (
                 from: (node: 2, port: "p4"),
-                to: (node: 7, port: "tune"),
+                to: (node: 6, port: "level"),
             ),
             (
-                from: (node: 8, port: "p2"),
-                to: (node: 9, port: "gain"),
+                from: (node: 3, port: "out"),
+                to: (node: 6, port: "notes"),
             ),
             (
-                from: (node: 8, port: "p1"),
+                from: (node: 2, port: "p6"),
+                to: (node: 6, port: "pan"),
+            ),
+            (
+                from: (node: 2, port: "p5"),
+                to: (node: 6, port: "tune"),
+            ),
+            (
+                from: (node: 7, port: "p2"),
+                to: (node: 8, port: "high1"),
+            ),
+            (
+                from: (node: 7, port: "p1"),
+                to: (node: 8, port: "in"),
+            ),
+            (
+                from: (node: 7, port: "p2"),
+                to: (node: 8, port: "low1"),
+            ),
+            (
+                from: (node: 7, port: "p6"),
+                to: (node: 9, port: "choke"),
+            ),
+            (
+                from: (node: 8, port: "out1"),
                 to: (node: 9, port: "in"),
             ),
             (
-                from: (node: 8, port: "p3"),
-                to: (node: 9, port: "tune"),
+                from: (node: 7, port: "p3"),
+                to: (node: 10, port: "gain"),
             ),
             (
                 from: (node: 9, port: "out"),
                 to: (node: 10, port: "in"),
             ),
             (
-                from: (node: 8, port: "p4"),
-                to: (node: 10, port: "pan"),
+                from: (node: 7, port: "p4"),
+                to: (node: 10, port: "tune"),
             ),
             (
                 from: (node: 10, port: "out"),
-                to: (node: 11, port: "p1"),
+                to: (node: 11, port: "in"),
+            ),
+            (
+                from: (node: 7, port: "p5"),
+                to: (node: 11, port: "pan"),
+            ),
+            (
+                from: (node: 11, port: "out"),
+                to: (node: 12, port: "p1"),
+            ),
+            (
+                from: (node: 8, port: "out1"),
+                to: (node: 12, port: "p2"),
             ),
             (
                 from: (node: 2, port: "p7"),
-                to: (node: 12, port: "level"),
-            ),
-            (
-                from: (node: 4, port: "out2"),
-                to: (node: 12, port: "notes"),
-            ),
-            (
-                from: (node: 2, port: "p9"),
-                to: (node: 12, port: "pan"),
+                to: (node: 13, port: "key"),
             ),
             (
                 from: (node: 2, port: "p8"),
-                to: (node: 12, port: "tune"),
+                to: (node: 13, port: "level"),
             ),
             (
-                from: (node: 13, port: "p2"),
-                to: (node: 14, port: "gain"),
+                from: (node: 3, port: "out"),
+                to: (node: 13, port: "notes"),
             ),
             (
-                from: (node: 13, port: "p1"),
-                to: (node: 14, port: "in"),
+                from: (node: 2, port: "p10"),
+                to: (node: 13, port: "pan"),
             ),
             (
-                from: (node: 13, port: "p3"),
-                to: (node: 14, port: "tune"),
+                from: (node: 2, port: "p9"),
+                to: (node: 13, port: "tune"),
             ),
             (
-                from: (node: 14, port: "out"),
+                from: (node: 14, port: "p2"),
+                to: (node: 15, port: "high1"),
+            ),
+            (
+                from: (node: 14, port: "p1"),
                 to: (node: 15, port: "in"),
             ),
             (
-                from: (node: 13, port: "p4"),
-                to: (node: 15, port: "pan"),
+                from: (node: 14, port: "p2"),
+                to: (node: 15, port: "low1"),
             ),
             (
-                from: (node: 15, port: "out"),
-                to: (node: 16, port: "p1"),
+                from: (node: 14, port: "p6"),
+                to: (node: 16, port: "choke"),
             ),
             (
-                from: (node: 2, port: "p11"),
-                to: (node: 17, port: "level"),
+                from: (node: 15, port: "out1"),
+                to: (node: 16, port: "in"),
             ),
             (
-                from: (node: 4, port: "out3"),
-                to: (node: 17, port: "notes"),
+                from: (node: 14, port: "p3"),
+                to: (node: 17, port: "gain"),
             ),
             (
-                from: (node: 2, port: "p13"),
-                to: (node: 17, port: "pan"),
+                from: (node: 16, port: "out"),
+                to: (node: 17, port: "in"),
             ),
             (
-                from: (node: 2, port: "p12"),
+                from: (node: 14, port: "p4"),
                 to: (node: 17, port: "tune"),
             ),
             (
-                from: (node: 18, port: "p2"),
-                to: (node: 19, port: "gain"),
+                from: (node: 17, port: "out"),
+                to: (node: 18, port: "in"),
             ),
             (
-                from: (node: 18, port: "p1"),
-                to: (node: 19, port: "in"),
+                from: (node: 14, port: "p5"),
+                to: (node: 18, port: "pan"),
             ),
             (
-                from: (node: 18, port: "p3"),
-                to: (node: 19, port: "tune"),
+                from: (node: 18, port: "out"),
+                to: (node: 19, port: "p1"),
             ),
             (
-                from: (node: 19, port: "out"),
-                to: (node: 20, port: "in"),
+                from: (node: 15, port: "out1"),
+                to: (node: 19, port: "p2"),
             ),
             (
-                from: (node: 18, port: "p4"),
+                from: (node: 27, port: "choke out"),
+                to: (node: 20, port: "choke in"),
+            ),
+            (
+                from: (node: 2, port: "p11"),
+                to: (node: 20, port: "key"),
+            ),
+            (
+                from: (node: 2, port: "p12"),
+                to: (node: 20, port: "level"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 20, port: "notes"),
+            ),
+            (
+                from: (node: 2, port: "p14"),
                 to: (node: 20, port: "pan"),
             ),
             (
-                from: (node: 20, port: "out"),
-                to: (node: 21, port: "p1"),
+                from: (node: 2, port: "p13"),
+                to: (node: 20, port: "tune"),
             ),
             (
-                from: (node: 2, port: "p15"),
-                to: (node: 22, port: "level"),
+                from: (node: 21, port: "p2"),
+                to: (node: 22, port: "high1"),
             ),
             (
-                from: (node: 4, port: "out4"),
-                to: (node: 22, port: "notes"),
+                from: (node: 21, port: "p1"),
+                to: (node: 22, port: "in"),
             ),
             (
-                from: (node: 2, port: "p17"),
-                to: (node: 22, port: "pan"),
+                from: (node: 21, port: "p2"),
+                to: (node: 22, port: "low1"),
             ),
             (
-                from: (node: 2, port: "p16"),
-                to: (node: 22, port: "tune"),
+                from: (node: 21, port: "p6"),
+                to: (node: 23, port: "choke"),
             ),
             (
-                from: (node: 23, port: "p2"),
+                from: (node: 22, port: "out1"),
+                to: (node: 23, port: "in"),
+            ),
+            (
+                from: (node: 21, port: "p3"),
                 to: (node: 24, port: "gain"),
             ),
             (
-                from: (node: 23, port: "p1"),
+                from: (node: 23, port: "out"),
                 to: (node: 24, port: "in"),
             ),
             (
-                from: (node: 23, port: "p3"),
+                from: (node: 21, port: "p4"),
                 to: (node: 24, port: "tune"),
             ),
             (
@@ -521,7 +618,7 @@
                 to: (node: 25, port: "in"),
             ),
             (
-                from: (node: 23, port: "p4"),
+                from: (node: 21, port: "p5"),
                 to: (node: 25, port: "pan"),
             ),
             (
@@ -529,172 +626,424 @@
                 to: (node: 26, port: "p1"),
             ),
             (
-                from: (node: 2, port: "p19"),
+                from: (node: 22, port: "out1"),
+                to: (node: 26, port: "p2"),
+            ),
+            (
+                from: (node: 20, port: "choke out"),
+                to: (node: 27, port: "choke in"),
+            ),
+            (
+                from: (node: 2, port: "p15"),
+                to: (node: 27, port: "key"),
+            ),
+            (
+                from: (node: 2, port: "p16"),
                 to: (node: 27, port: "level"),
             ),
             (
-                from: (node: 4, port: "out5"),
+                from: (node: 3, port: "out"),
                 to: (node: 27, port: "notes"),
             ),
             (
-                from: (node: 2, port: "p21"),
+                from: (node: 2, port: "p18"),
                 to: (node: 27, port: "pan"),
             ),
             (
-                from: (node: 2, port: "p20"),
+                from: (node: 2, port: "p17"),
                 to: (node: 27, port: "tune"),
             ),
             (
                 from: (node: 28, port: "p2"),
-                to: (node: 29, port: "gain"),
+                to: (node: 29, port: "high1"),
             ),
             (
                 from: (node: 28, port: "p1"),
                 to: (node: 29, port: "in"),
             ),
             (
-                from: (node: 28, port: "p3"),
-                to: (node: 29, port: "tune"),
+                from: (node: 28, port: "p2"),
+                to: (node: 29, port: "low1"),
             ),
             (
-                from: (node: 29, port: "out"),
+                from: (node: 28, port: "p6"),
+                to: (node: 30, port: "choke"),
+            ),
+            (
+                from: (node: 29, port: "out1"),
                 to: (node: 30, port: "in"),
             ),
             (
-                from: (node: 28, port: "p4"),
-                to: (node: 30, port: "pan"),
+                from: (node: 28, port: "p3"),
+                to: (node: 31, port: "gain"),
             ),
             (
                 from: (node: 30, port: "out"),
-                to: (node: 31, port: "p1"),
+                to: (node: 31, port: "in"),
             ),
             (
-                from: (node: 2, port: "p23"),
-                to: (node: 32, port: "level"),
+                from: (node: 28, port: "p4"),
+                to: (node: 31, port: "tune"),
             ),
             (
-                from: (node: 4, port: "out6"),
-                to: (node: 32, port: "notes"),
+                from: (node: 31, port: "out"),
+                to: (node: 32, port: "in"),
             ),
             (
-                from: (node: 2, port: "p25"),
+                from: (node: 28, port: "p5"),
                 to: (node: 32, port: "pan"),
             ),
             (
-                from: (node: 2, port: "p24"),
-                to: (node: 32, port: "tune"),
+                from: (node: 32, port: "out"),
+                to: (node: 33, port: "p1"),
             ),
             (
-                from: (node: 33, port: "p2"),
-                to: (node: 34, port: "gain"),
+                from: (node: 29, port: "out1"),
+                to: (node: 33, port: "p2"),
             ),
             (
-                from: (node: 33, port: "p1"),
-                to: (node: 34, port: "in"),
+                from: (node: 2, port: "p19"),
+                to: (node: 34, port: "key"),
             ),
             (
-                from: (node: 33, port: "p3"),
+                from: (node: 2, port: "p20"),
+                to: (node: 34, port: "level"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 34, port: "notes"),
+            ),
+            (
+                from: (node: 2, port: "p22"),
+                to: (node: 34, port: "pan"),
+            ),
+            (
+                from: (node: 2, port: "p21"),
                 to: (node: 34, port: "tune"),
             ),
             (
-                from: (node: 34, port: "out"),
-                to: (node: 35, port: "in"),
+                from: (node: 35, port: "p2"),
+                to: (node: 36, port: "high1"),
             ),
             (
-                from: (node: 33, port: "p4"),
-                to: (node: 35, port: "pan"),
+                from: (node: 35, port: "p1"),
+                to: (node: 36, port: "in"),
             ),
             (
-                from: (node: 35, port: "out"),
-                to: (node: 36, port: "p1"),
+                from: (node: 35, port: "p2"),
+                to: (node: 36, port: "low1"),
             ),
             (
-                from: (node: 2, port: "p27"),
-                to: (node: 37, port: "level"),
+                from: (node: 35, port: "p6"),
+                to: (node: 37, port: "choke"),
             ),
             (
-                from: (node: 4, port: "out7"),
-                to: (node: 37, port: "notes"),
+                from: (node: 36, port: "out1"),
+                to: (node: 37, port: "in"),
             ),
             (
-                from: (node: 2, port: "p29"),
-                to: (node: 37, port: "pan"),
+                from: (node: 35, port: "p3"),
+                to: (node: 38, port: "gain"),
             ),
             (
-                from: (node: 2, port: "p28"),
-                to: (node: 37, port: "tune"),
+                from: (node: 37, port: "out"),
+                to: (node: 38, port: "in"),
             ),
             (
-                from: (node: 38, port: "p2"),
-                to: (node: 39, port: "gain"),
+                from: (node: 35, port: "p4"),
+                to: (node: 38, port: "tune"),
             ),
             (
-                from: (node: 38, port: "p1"),
+                from: (node: 38, port: "out"),
                 to: (node: 39, port: "in"),
             ),
             (
-                from: (node: 38, port: "p3"),
-                to: (node: 39, port: "tune"),
+                from: (node: 35, port: "p5"),
+                to: (node: 39, port: "pan"),
             ),
             (
                 from: (node: 39, port: "out"),
-                to: (node: 40, port: "in"),
+                to: (node: 40, port: "p1"),
             ),
             (
-                from: (node: 38, port: "p4"),
-                to: (node: 40, port: "pan"),
+                from: (node: 36, port: "out1"),
+                to: (node: 40, port: "p2"),
             ),
             (
-                from: (node: 40, port: "out"),
-                to: (node: 41, port: "p1"),
+                from: (node: 2, port: "p23"),
+                to: (node: 41, port: "key"),
             ),
             (
-                from: (node: 2, port: "p31"),
-                to: (node: 42, port: "level"),
+                from: (node: 2, port: "p24"),
+                to: (node: 41, port: "level"),
             ),
             (
-                from: (node: 4, port: "out8"),
-                to: (node: 42, port: "notes"),
+                from: (node: 3, port: "out"),
+                to: (node: 41, port: "notes"),
             ),
             (
-                from: (node: 2, port: "p33"),
-                to: (node: 42, port: "pan"),
+                from: (node: 2, port: "p26"),
+                to: (node: 41, port: "pan"),
             ),
             (
-                from: (node: 2, port: "p32"),
-                to: (node: 42, port: "tune"),
+                from: (node: 2, port: "p25"),
+                to: (node: 41, port: "tune"),
             ),
             (
-                from: (node: 43, port: "p2"),
-                to: (node: 44, port: "gain"),
+                from: (node: 42, port: "p2"),
+                to: (node: 43, port: "high1"),
             ),
             (
-                from: (node: 43, port: "p1"),
+                from: (node: 42, port: "p1"),
+                to: (node: 43, port: "in"),
+            ),
+            (
+                from: (node: 42, port: "p2"),
+                to: (node: 43, port: "low1"),
+            ),
+            (
+                from: (node: 42, port: "p6"),
+                to: (node: 44, port: "choke"),
+            ),
+            (
+                from: (node: 43, port: "out1"),
                 to: (node: 44, port: "in"),
             ),
             (
-                from: (node: 43, port: "p3"),
-                to: (node: 44, port: "tune"),
+                from: (node: 42, port: "p3"),
+                to: (node: 45, port: "gain"),
             ),
             (
                 from: (node: 44, port: "out"),
                 to: (node: 45, port: "in"),
             ),
             (
-                from: (node: 43, port: "p4"),
-                to: (node: 45, port: "pan"),
+                from: (node: 42, port: "p4"),
+                to: (node: 45, port: "tune"),
             ),
             (
                 from: (node: 45, port: "out"),
-                to: (node: 46, port: "p1"),
+                to: (node: 46, port: "in"),
+            ),
+            (
+                from: (node: 42, port: "p5"),
+                to: (node: 46, port: "pan"),
+            ),
+            (
+                from: (node: 46, port: "out"),
+                to: (node: 47, port: "p1"),
+            ),
+            (
+                from: (node: 43, port: "out1"),
+                to: (node: 47, port: "p2"),
+            ),
+            (
+                from: (node: 2, port: "p27"),
+                to: (node: 48, port: "key"),
+            ),
+            (
+                from: (node: 2, port: "p28"),
+                to: (node: 48, port: "level"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 48, port: "notes"),
+            ),
+            (
+                from: (node: 2, port: "p30"),
+                to: (node: 48, port: "pan"),
+            ),
+            (
+                from: (node: 2, port: "p29"),
+                to: (node: 48, port: "tune"),
+            ),
+            (
+                from: (node: 49, port: "p2"),
+                to: (node: 50, port: "high1"),
+            ),
+            (
+                from: (node: 49, port: "p1"),
+                to: (node: 50, port: "in"),
+            ),
+            (
+                from: (node: 49, port: "p2"),
+                to: (node: 50, port: "low1"),
+            ),
+            (
+                from: (node: 49, port: "p6"),
+                to: (node: 51, port: "choke"),
+            ),
+            (
+                from: (node: 50, port: "out1"),
+                to: (node: 51, port: "in"),
+            ),
+            (
+                from: (node: 49, port: "p3"),
+                to: (node: 52, port: "gain"),
+            ),
+            (
+                from: (node: 51, port: "out"),
+                to: (node: 52, port: "in"),
+            ),
+            (
+                from: (node: 49, port: "p4"),
+                to: (node: 52, port: "tune"),
+            ),
+            (
+                from: (node: 52, port: "out"),
+                to: (node: 53, port: "in"),
+            ),
+            (
+                from: (node: 49, port: "p5"),
+                to: (node: 53, port: "pan"),
+            ),
+            (
+                from: (node: 53, port: "out"),
+                to: (node: 54, port: "p1"),
+            ),
+            (
+                from: (node: 50, port: "out1"),
+                to: (node: 54, port: "p2"),
+            ),
+            (
+                from: (node: 2, port: "p31"),
+                to: (node: 55, port: "key"),
+            ),
+            (
+                from: (node: 2, port: "p32"),
+                to: (node: 55, port: "level"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 55, port: "notes"),
+            ),
+            (
+                from: (node: 2, port: "p34"),
+                to: (node: 55, port: "pan"),
+            ),
+            (
+                from: (node: 2, port: "p33"),
+                to: (node: 55, port: "tune"),
+            ),
+            (
+                from: (node: 56, port: "p2"),
+                to: (node: 57, port: "high1"),
+            ),
+            (
+                from: (node: 56, port: "p1"),
+                to: (node: 57, port: "in"),
+            ),
+            (
+                from: (node: 56, port: "p2"),
+                to: (node: 57, port: "low1"),
+            ),
+            (
+                from: (node: 56, port: "p6"),
+                to: (node: 58, port: "choke"),
+            ),
+            (
+                from: (node: 57, port: "out1"),
+                to: (node: 58, port: "in"),
+            ),
+            (
+                from: (node: 56, port: "p3"),
+                to: (node: 59, port: "gain"),
+            ),
+            (
+                from: (node: 58, port: "out"),
+                to: (node: 59, port: "in"),
+            ),
+            (
+                from: (node: 56, port: "p4"),
+                to: (node: 59, port: "tune"),
+            ),
+            (
+                from: (node: 59, port: "out"),
+                to: (node: 60, port: "in"),
+            ),
+            (
+                from: (node: 56, port: "p5"),
+                to: (node: 60, port: "pan"),
+            ),
+            (
+                from: (node: 60, port: "out"),
+                to: (node: 61, port: "p1"),
+            ),
+            (
+                from: (node: 57, port: "out1"),
+                to: (node: 61, port: "p2"),
             ),
         ],
     )),
     GroupPreset((
         name: "General MIDI",
         slug: "drum-rack-general-midi",
-        topology: "821a1aebb085cf7c",
+        topology: "20d49137186fc609",
         nodes: [
+            (),
+            (),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
+            ),
+            (
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (
+                params: {"high1": 42.0, "low1": 42.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (
+                params: {"high1": 36.0, "low1": 36.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.0},
+            ),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (
+                params: {"high1": 39.0, "low1": 39.0},
+                config: {"outputs": 1},
+            ),
             (
                 params: {"pan": -0.0},
             ),
@@ -705,9 +1054,15 @@
             ),
             (),
             (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
+                params: {"high1": 45.0, "low1": 45.0},
+                config: {"outputs": 1},
             ),
+            (
+                params: {"high1": 46.0, "low1": 46.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
             (
                 params: {"pan": 0.0},
             ),
@@ -716,6 +1071,17 @@
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
             ),
+            (
+                params: {"high1": 49.0, "low1": 49.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (
+                params: {"high1": 50.0, "low1": 50.0},
+                config: {"outputs": 1},
+            ),
+            (),
             (),
             (
                 params: {"pan": 0.0},
@@ -723,65 +1089,20 @@
             (),
             (),
             (),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
             (),
             (),
-            (),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (),
-            (
-                params: {"choke1": 0.0, "choke2": 0.0, "choke3": 1.0, "choke4": 1.0, "choke5": 0.0, "choke6": 0.0, "choke7": 0.0, "choke8": 0.0, "high1": 36.0, "high2": 38.0, "high3": 42.0, "high4": 46.0, "high5": 39.0, "high6": 45.0, "high7": 50.0, "high8": 49.0, "low1": 36.0, "low2": 38.0, "low3": 42.0, "low4": 46.0, "low5": 39.0, "low6": 45.0, "low7": 50.0, "low8": 49.0},
-                config: {"outputs": 8},
-            ),
-            (),
-            (
-                params: {"pan": 0.0},
-            ),
             (
                 config: {"inputs": 8},
             ),
             (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
+                params: {"pan": 0.0},
             ),
-            (),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (),
-            (),
-            (),
             (),
             (),
             (
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
             ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"pan": -0.0},
-            ),
-            (),
-            (),
-            (),
-            (),
-            (),
-            (),
             (),
             (),
             (),
@@ -790,63 +1111,35 @@
     GroupPreset((
         name: "Wide Kit",
         slug: "drum-rack-wide-kit",
-        topology: "821a1aebb085cf7c",
+        topology: "20d49137186fc609",
         nodes: [
-            (
-                params: {"pan": -0.5},
-            ),
             (),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
+            (),
             (),
             (
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
             ),
             (
-                params: {"pan": 0.5},
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
             ),
-            (),
             (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
+                params: {"pan": 0.0},
             ),
-            (),
             (
                 params: {"pan": 0.3},
             ),
-            (),
-            (),
-            (),
-            (
-                params: {"gain": -2.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (),
-            (),
-            (),
             (
                 params: {"gain": -2.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
             ),
             (),
             (
-                params: {"choke1": 0.0, "choke2": 0.0, "choke3": 1.0, "choke4": 1.0, "choke5": 0.0, "choke6": 0.0, "choke7": 0.0, "choke8": 0.0, "high1": 36.0, "high2": 38.0, "high3": 42.0, "high4": 46.0, "high5": 39.0, "high6": 45.0, "high7": 50.0, "high8": 49.0, "low1": 36.0, "low2": 38.0, "low3": 42.0, "low4": 46.0, "low5": 39.0, "low6": 45.0, "low7": 50.0, "low8": 49.0},
-                config: {"outputs": 8},
+                params: {"high1": 42.0, "low1": 42.0},
+                config: {"outputs": 1},
             ),
             (),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                config: {"inputs": 8},
-            ),
-            (
-                params: {"gain": -2.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
             (),
             (
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
@@ -855,30 +1148,94 @@
             (),
             (),
             (),
+            (
+                params: {"pan": 0.0},
+            ),
             (),
             (),
             (
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
             ),
+            (),
             (
-                params: {"pan": 0.4},
+                params: {"high1": 36.0, "low1": 36.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.5},
             ),
             (
-                params: {"pan": 0.1},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
             ),
+            (),
             (
-                params: {"pan": 0.0},
+                params: {"high1": 39.0, "low1": 39.0},
+                config: {"outputs": 1},
             ),
             (
                 params: {"pan": -0.4},
             ),
             (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (
+                params: {"high1": 45.0, "low1": 45.0},
+                config: {"outputs": 1},
+            ),
+            (
+                params: {"high1": 46.0, "low1": 46.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (
+                params: {"pan": 0.1},
+            ),
+            (),
+            (
+                params: {"gain": -2.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
+            ),
+            (
+                params: {"high1": 49.0, "low1": 49.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (
+                params: {"high1": 50.0, "low1": 50.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (
+                params: {"pan": 0.5},
+            ),
             (),
             (),
             (),
             (),
             (),
+            (
+                config: {"inputs": 8},
+            ),
+            (
+                params: {"pan": 0.4},
+            ),
+            (),
+            (),
+            (
+                params: {"gain": -2.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
+            ),
             (),
             (),
             (),
@@ -887,63 +1244,35 @@
     GroupPreset((
         name: "Quiet Cymbals",
         slug: "drum-rack-quiet-cymbals",
-        topology: "821a1aebb085cf7c",
+        topology: "20d49137186fc609",
         nodes: [
-            (
-                params: {"pan": -0.16666666},
-            ),
             (),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
+            (),
             (),
             (
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
             ),
             (
-                params: {"pan": 0.16666666},
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
             ),
-            (),
             (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
+                params: {"pan": 0.0},
             ),
-            (),
             (
                 params: {"pan": 0.1},
             ),
-            (),
-            (),
-            (),
-            (
-                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (),
-            (),
-            (),
             (
                 params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
             ),
             (),
             (
-                params: {"choke1": 0.0, "choke2": 0.0, "choke3": 1.0, "choke4": 1.0, "choke5": 0.0, "choke6": 0.0, "choke7": 0.0, "choke8": 0.0, "high1": 36.0, "high2": 38.0, "high3": 42.0, "high4": 46.0, "high5": 39.0, "high6": 45.0, "high7": 50.0, "high8": 49.0, "low1": 36.0, "low2": 38.0, "low3": 42.0, "low4": 46.0, "low5": 39.0, "low6": 45.0, "low7": 50.0, "low8": 49.0},
-                config: {"outputs": 8},
+                params: {"high1": 42.0, "low1": 42.0},
+                config: {"outputs": 1},
             ),
             (),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                config: {"inputs": 8},
-            ),
-            (
-                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
             (),
             (
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
@@ -952,30 +1281,94 @@
             (),
             (),
             (),
+            (
+                params: {"pan": 0.0},
+            ),
             (),
             (),
             (
                 params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": ""},
             ),
+            (),
             (
-                params: {"pan": 0.13333334},
+                params: {"high1": 36.0, "low1": 36.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.16666666},
             ),
             (
-                params: {"pan": 0.033333335},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
             ),
+            (),
             (
-                params: {"pan": 0.0},
+                params: {"high1": 39.0, "low1": 39.0},
+                config: {"outputs": 1},
             ),
             (
                 params: {"pan": -0.13333334},
             ),
             (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (
+                params: {"high1": 45.0, "low1": 45.0},
+                config: {"outputs": 1},
+            ),
+            (
+                params: {"high1": 46.0, "low1": 46.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (
+                params: {"pan": 0.033333335},
+            ),
+            (),
+            (
+                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
+            ),
+            (
+                params: {"high1": 49.0, "low1": 49.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (
+                params: {"high1": 50.0, "low1": 50.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (
+                params: {"pan": 0.16666666},
+            ),
             (),
             (),
             (),
             (),
             (),
+            (
+                config: {"inputs": 8},
+            ),
+            (
+                params: {"pan": 0.13333334},
+            ),
+            (),
+            (),
+            (
+                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": ""},
+            ),
             (),
             (),
             (),
