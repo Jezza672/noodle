@@ -66,7 +66,7 @@ released on its own messages only (`all_notes_off_from`).
   hands over two messages out of order.
 - **The computer keyboard.** A toolbar button (or M) turns the home row into
   an octave of keys, as in Ableton: A W S E D F T G Y H U J K and O L P ;
-  are the notes from C3 (60), Z and X change the octave, C and V the
+  are the notes from C4 (60, named as the piano roll names it), Z and X change the octave, C and V the
   velocity. The keys are sent to the same bus as a hardware port and are
   taken out of the frame's input, so nothing else (X to delete, say) acts on
   them; a text field, a dialog or the window losing focus lets go of held
