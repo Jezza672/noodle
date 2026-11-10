@@ -350,17 +350,15 @@ fn boxed(
             && let Some(channel) = mixer_channel(graph, node.id, &port.key)
         {
             let row = f.t.rect_to_screen(port.row);
-            let area = Rect::from_center_size(
-                Pos2::new(row.right() - 30.0 * z, row.center().y),
-                Vec2::new(48.0 * z, 7.0 * z),
-            );
-            body::meter(
-                painter,
-                area,
-                z,
-                bodies.input_meters_of(node.id, channel),
-                body::MeterAxis::Horizontal,
-            );
+            if let Some(area) = row_meter_area(painter, row, z, &port.name) {
+                body::meter(
+                    painter,
+                    area,
+                    z,
+                    bodies.input_meters_of(node.id, channel),
+                    body::MeterAxis::Horizontal,
+                );
+            }
         }
         // Any other wired audio input shows the level arriving at it.
         if text
@@ -371,11 +369,9 @@ fn boxed(
             let levels = bodies.tap(node.id, &port.key);
             if !levels.is_empty() {
                 let row = f.t.rect_to_screen(port.row);
-                let area = Rect::from_center_size(
-                    Pos2::new(row.right() - 30.0 * z, row.center().y),
-                    Vec2::new(48.0 * z, 7.0 * z),
-                );
-                body::meter(painter, area, z, levels, body::MeterAxis::Horizontal);
+                if let Some(area) = row_meter_area(painter, row, z, &port.name) {
+                    body::meter(painter, area, z, levels, body::MeterAxis::Horizontal);
+                }
             }
         }
         socket(painter, f, port);
@@ -744,6 +740,29 @@ pub fn gesture(painter: &Painter, f: &Frame_<'_>, gesture: &Gesture, pointer: Po
         }
         Gesture::Idle | Gesture::Pan | Gesture::Move { .. } | Gesture::Resize { .. } => {}
     }
+}
+
+/// Where the level bar beside an input's name goes in its `row`: up to 48
+/// units wide at the right, shrunk so it never covers the name (a group's
+/// port names are the user's, so they can be long). None when too little room
+/// is left to read.
+fn row_meter_area(painter: &Painter, row: Rect, z: f32, name: &str) -> Option<Rect> {
+    let name_width = painter
+        .layout_no_wrap(
+            name.to_owned(),
+            FontId::proportional(12.0 * z),
+            colors::TEXT,
+        )
+        .size()
+        .x;
+    let right = row.right() - 6.0 * z;
+    let left = (right - 48.0 * z).max(row.left() + 12.0 * z + name_width + 6.0 * z);
+    (right - left >= 12.0 * z).then(|| {
+        Rect::from_min_max(
+            Pos2::new(left, row.center().y - 3.5 * z),
+            Pos2::new(right, row.center().y + 3.5 * z),
+        )
+    })
 }
 
 /// The meter channel of a mixer node's input `key`: its position from 0.
