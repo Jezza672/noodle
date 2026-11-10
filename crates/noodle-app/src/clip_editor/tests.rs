@@ -374,6 +374,9 @@ fn the_clip_panel_chooses_the_mode_and_the_switches() {
     // panel is the unwarped one (which still has the loop).
     panel.get_by_label("Follow tempo").click();
     panel.run();
+    // Unwarped, it still says what was found in the audio.
+    panel.get_by_label("Tempo");
+    panel.get_by_label("Transients");
     panel.get_by_label("Loop").click();
     panel.run();
     let rig = panel.state();
