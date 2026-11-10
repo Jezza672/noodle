@@ -449,9 +449,17 @@ fn boxed(
         {
             let levels = bodies.tap(node.id, &port.key);
             if !levels.is_empty() {
-                let row = f.t.rect_to_screen(port.row);
-                if let Some(area) = row_meter_area(painter, row, z, &port.name) {
+                if port.in_header {
+                    // A lone input sits on the title bar, whose text fills it:
+                    // the level goes in a thin bar along the foot instead.
+                    let header = f.t.rect_to_screen(node.header());
+                    let area = header_meter_area(header, Side::Input, z);
                     body::meter(painter, area, z, levels, body::MeterAxis::Horizontal);
+                } else {
+                    let row = f.t.rect_to_screen(port.row);
+                    if let Some(area) = row_meter_area(painter, row, z, &port.name) {
+                        body::meter(painter, area, z, levels, body::MeterAxis::Horizontal);
+                    }
                 }
             }
         }
@@ -466,10 +474,14 @@ fn boxed(
                 } else {
                     f.t.rect_to_screen(port.row)
                 };
-                let area = Rect::from_min_size(
-                    Pos2::new(edge.right() - 62.0 * z, edge.bottom() - 5.0 * z),
-                    Vec2::new(48.0 * z, 4.0 * z),
-                );
+                let area = if port.in_header {
+                    header_meter_area(edge, Side::Output, z)
+                } else {
+                    Rect::from_min_size(
+                        Pos2::new(edge.right() - 62.0 * z, edge.bottom() - 5.0 * z),
+                        Vec2::new(48.0 * z, 4.0 * z),
+                    )
+                };
                 body::meter(painter, area, z, levels, body::MeterAxis::Horizontal);
             }
         }
@@ -874,6 +886,19 @@ pub fn gesture(painter: &Painter, f: &Frame_<'_>, gesture: &Gesture, pointer: Po
     }
 }
 
+/// The thin level bar along the foot of a title bar, for a port that sits on
+/// it. It lies below the title text (13 units, centred), never across it.
+fn header_meter_area(header: Rect, side: Side, z: f32) -> Rect {
+    let left = match side {
+        Side::Input => header.left() + 24.0 * z,
+        Side::Output => header.right() - 62.0 * z,
+    };
+    Rect::from_min_size(
+        Pos2::new(left, header.bottom() - 4.0 * z),
+        Vec2::new(48.0 * z, 3.0 * z),
+    )
+}
+
 /// A port label's font size and its distance from the row's edge, in graph
 /// units: shared by the label and the meter that must stay clear of it.
 const PORT_LABEL_SIZE: f32 = 12.0;
@@ -946,6 +971,22 @@ mod default_tests {
         let get = |key: &str| defaults.iter().find(|(k, _)| k == key).map(|&(_, d)| d);
         assert_eq!(get("freq2"), Some(400.0));
         assert!((get("q1").unwrap() - 0.707).abs() < 1e-3);
+    }
+
+    #[test]
+    fn a_header_meter_stays_below_the_title_text() {
+        for z in [0.5, 1.0, 2.0] {
+            let header = Rect::from_min_size(
+                Pos2::ZERO,
+                Vec2::new(200.0 * z, crate::editor::layout::HEADER_HEIGHT * z),
+            );
+            let text_bottom = header.center().y + 0.5 * 13.0 * z;
+            for side in [Side::Input, Side::Output] {
+                let area = header_meter_area(header, side, z);
+                assert!(area.top() >= text_bottom, "{side:?} at {z}");
+                assert!(header.contains_rect(area));
+            }
+        }
     }
 
     #[test]
