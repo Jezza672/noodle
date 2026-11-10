@@ -110,6 +110,12 @@ pub const CHORDS: &[Chord] = &[
     chord(CMD, Key::S, Surface::Menu, "File > Save"),
     chord(CMD_SHIFT, Key::S, Surface::Menu, "File > Save As"),
     chord(CMD, Key::O, Surface::Menu, "File > Open"),
+    chord(
+        CMD_SHIFT,
+        Key::O,
+        Surface::Menu,
+        "File > Open with Settings",
+    ),
     chord(CMD, Key::N, Surface::Menu, "File > New"),
     chord(CMD, Key::Comma, Surface::Menu, "Settings in the menu"),
     chord(CMD, Key::K, Surface::Menu, "View > Command Palette"),

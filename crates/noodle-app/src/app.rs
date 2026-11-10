@@ -27,6 +27,8 @@ const REDO: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::Z);
 const NEW: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
 const OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
+const OPEN_WITH_SETTINGS: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::O);
 const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 const SAVE_AS: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
@@ -162,6 +164,12 @@ const BPM_WIDTH: f32 = 84.0;
 pub(crate) enum Action {
     New,
     Open,
+    /// Open a project and take the settings saved in it as the user's own.
+    OpenWithSettings,
+    /// Take settings from a file, or from a project that has them.
+    ImportSettings,
+    /// Write the settings to a file, to take to another machine.
+    ExportSettings,
     Save,
     SaveAs,
     Undo,
@@ -263,7 +271,11 @@ impl Action {
     fn discards(self) -> bool {
         matches!(
             self,
-            Self::New | Self::Open | Self::Close | Self::NewFromTemplate(_)
+            Self::New
+                | Self::Open
+                | Self::OpenWithSettings
+                | Self::Close
+                | Self::NewFromTemplate(_)
         )
     }
 
@@ -971,6 +983,13 @@ impl App {
         ui.menu_button("File", |ui| {
             item(ui, "New", Some(&NEW), true, Action::New);
             item(ui, "Open…", Some(&OPEN), true, Action::Open);
+            item(
+                ui,
+                "Open with Settings…",
+                Some(&OPEN_WITH_SETTINGS),
+                true,
+                Action::OpenWithSettings,
+            );
             item(ui, "Save", Some(&SAVE), true, Action::Save);
             item(ui, "Save As…", Some(&SAVE_AS), true, Action::SaveAs);
             ui.separator();
@@ -991,6 +1010,21 @@ impl App {
                     }
                 });
             });
+            ui.separator();
+            item(
+                ui,
+                "Import User Settings…",
+                None,
+                true,
+                Action::ImportSettings,
+            );
+            item(
+                ui,
+                "Export User Settings…",
+                None,
+                true,
+                Action::ExportSettings,
+            );
             ui.separator();
             item(ui, "Import Audio…", None, true, Action::ImportAudio);
             item(ui, "Export Audio…", None, true, Action::ExportAudio);
@@ -1192,6 +1226,7 @@ impl App {
         let snap = self.tempo_group(ui, actions);
         if let Some(step) = snap {
             self.session.set_snap(step);
+            crate::prefs::remember_snap(step);
         }
         let left_end = ui.cursor().min.x;
         // The right group is placed by the width it had last frame, like the
@@ -2278,6 +2313,12 @@ impl App {
     /// Runs an action, first asking about unsaved changes if it would lose
     /// them.
     fn request(&mut self, ctx: &egui::Context, action: Action) {
+        // Shift on Open is Open with Settings.
+        let action = if action == Action::Open && ctx.input(|i| i.modifiers.shift) {
+            Action::OpenWithSettings
+        } else {
+            action
+        };
         if action.discards() && self.session.is_dirty() {
             if action == Action::Close {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -2288,17 +2329,66 @@ impl App {
         }
     }
 
+    /// Makes `settings` the user's own, here and in the settings file.
+    fn adopt_settings(&mut self, settings: &crate::prefs::Prefs) {
+        let now = crate::prefs::adopt(settings);
+        self.session.apply_user_settings(&now);
+        self.display = now.display;
+        self.editor.set_display(self.display);
+        self.keymap = commands::Keymap::from_saved(&now.keymap);
+        self.session.notify("Settings imported".to_owned());
+    }
+
     fn run(&mut self, ctx: &egui::Context, action: Action) {
         match action {
             Action::New => {
                 self.session.new_project();
                 self.editor = EditorState::default();
             }
-            Action::Open => {
+            Action::Open | Action::OpenWithSettings => {
                 if let Some(path) = crate::picker::pick_file(("Noodle project", &["ron"]))
                     && self.session.load(&path)
                 {
                     self.editor = EditorState::default();
+                    if action == Action::OpenWithSettings {
+                        match self
+                            .session
+                            .project()
+                            .user_settings()
+                            .map(crate::prefs::from_text)
+                        {
+                            Some(Ok(settings)) => self.adopt_settings(&settings),
+                            Some(Err(error)) => self
+                                .session
+                                .notify(format!("Couldn't read the project's settings: {error}")),
+                            None => self
+                                .session
+                                .notify("This project has no settings saved in it".to_owned()),
+                        }
+                    }
+                }
+            }
+            Action::ImportSettings => {
+                if let Some(path) =
+                    crate::picker::pick_file(("Noodle settings or project", &["ron"]))
+                {
+                    match crate::prefs::import_from(&path) {
+                        Ok(settings) => self.adopt_settings(&settings),
+                        Err(error) => self.session.notify(error),
+                    }
+                }
+            }
+            Action::ExportSettings => {
+                if let Some(path) = crate::picker::save_file(
+                    "noodle-settings.ron",
+                    ("Noodle settings", &["ron"]),
+                    None,
+                ) {
+                    self.session
+                        .notify(match crate::prefs::export_to(&with_extension(path)) {
+                            Ok(()) => "Exported settings".to_owned(),
+                            Err(error) => format!("Couldn't export settings: {error}"),
+                        });
                 }
             }
             Action::Save => {
@@ -2394,7 +2484,10 @@ impl App {
             }
             Action::Rewind => self.session.rewind(),
             Action::Seek(tick) => self.session.seek(tick),
-            Action::SetRecordQuantise(quantise) => self.session.set_record_quantise(quantise),
+            Action::SetRecordQuantise(quantise) => {
+                self.session.set_record_quantise(quantise);
+                crate::prefs::remember_record_quantise(quantise);
+            }
             Action::SetRecordMidi(mode) => {
                 self.session.set_record_midi(mode);
                 crate::prefs::remember_midi_record(mode);
@@ -3538,6 +3631,110 @@ mod tests {
         assert!(!noodle_plugins::sandbox_enabled());
     }
 
+    /// An app whose preferences are in a file of their own, and a handler
+    /// that answers every file picker with `answer`.
+    fn app_with_prefs(dir: &std::path::Path, name: &str) -> (App, PathBuf) {
+        let prefs = dir.join(name);
+        crate::prefs::init(prefs.clone());
+        (empty(), prefs)
+    }
+
+    fn answer_pickers_with(path: PathBuf) {
+        crate::picker::set_handler(Box::new(move |_| vec![path.clone()]));
+    }
+
+    #[test]
+    fn the_snap_step_is_picked_from_the_menu_and_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, prefs) = app_with_prefs(dir.path(), "prefs.ron");
+        let mut harness = harness(app);
+        harness.run();
+        harness.get_by_label("Snap: Beat").click();
+        harness.run();
+        harness.get_by_label("1/4 beat").click();
+        harness.run();
+        let step = noodle_core::TICKS_PER_QUARTER / 4;
+        assert_eq!(harness.state().session().snap(), step);
+        assert_eq!(crate::prefs::load(&prefs).unwrap().snap, step);
+    }
+
+    #[test]
+    fn a_project_carries_the_settings_but_only_open_with_settings_takes_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let step = noodle_core::TICKS_PER_QUARTER / 4;
+        // One machine: sets a snap step, and saves a project.
+        let (mut author, _) = app_with_prefs(dir.path(), "author.ron");
+        crate::prefs::remember_snap(step);
+        crate::prefs::remember_recording(2, 0);
+        let project = dir.path().join("song.ron");
+        assert!(author.session.save_as(&project));
+        // Another: opens it. A plain open leaves its own settings alone.
+        let (mut other, prefs) = app_with_prefs(dir.path(), "other.ron");
+        answer_pickers_with(project.clone());
+        other.run(&ctx, Action::Open);
+        assert_eq!(other.session.snap(), crate::snap::DEFAULT);
+        assert_eq!(
+            crate::prefs::load(&prefs).unwrap().snap,
+            crate::snap::DEFAULT
+        );
+        // Open with Settings takes them, and keeps them.
+        other.run(&ctx, Action::OpenWithSettings);
+        assert_eq!(other.session.snap(), step);
+        assert_eq!(other.session.count_in_bars(), 2);
+        assert_eq!(crate::prefs::load(&prefs).unwrap().snap, step);
+    }
+
+    #[test]
+    fn settings_are_exported_and_imported_from_a_file_or_from_a_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let step = noodle_core::TICKS_PER_QUARTER / 2;
+        let (mut first, _) = app_with_prefs(dir.path(), "first.ron");
+        crate::prefs::remember_snap(step);
+        let file = dir.path().join("mine.ron");
+        answer_pickers_with(file.clone());
+        first.run(&ctx, Action::ExportSettings);
+        let project = dir.path().join("song.ron");
+        assert!(first.session.save_as(&project));
+        for from in [&file, &project] {
+            let (mut second, prefs) = app_with_prefs(dir.path(), "second.ron");
+            answer_pickers_with(from.clone());
+            second.run(&ctx, Action::ImportSettings);
+            assert_eq!(second.session.snap(), step, "from {}", from.display());
+            assert_eq!(crate::prefs::load(&prefs).unwrap().snap, step);
+            std::fs::remove_file(&prefs).unwrap();
+        }
+    }
+
+    #[test]
+    fn importing_settings_keeps_this_machines_devices_and_refuses_a_project_without_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let (mut app, prefs) = app_with_prefs(dir.path(), "prefs.ron");
+        crate::prefs::remember_monitor_device("local-speakers");
+        let theirs = crate::prefs::Prefs {
+            monitor_device: "their-speakers".into(),
+            sandbox_plugins: true,
+            snap: noodle_core::TICKS_PER_QUARTER / 8,
+            ..Default::default()
+        };
+        let file = dir.path().join("theirs.ron");
+        std::fs::write(&file, ron::to_string(&theirs).unwrap()).unwrap();
+        answer_pickers_with(file);
+        app.run(&ctx, Action::ImportSettings);
+        let kept = crate::prefs::load(&prefs).unwrap();
+        assert_eq!(kept.monitor_device, "local-speakers");
+        assert!(!kept.sandbox_plugins);
+        assert_eq!(kept.snap, theirs.snap);
+        // A project nobody saved settings into says so.
+        let bare = dir.path().join("bare.ron");
+        std::fs::write(&bare, noodle_core::Project::new().to_ron()).unwrap();
+        answer_pickers_with(bare);
+        app.run(&ctx, Action::ImportSettings);
+        assert!(app.session.message().unwrap().contains("no settings"));
+    }
+
     #[test]
     fn display_switches_are_set_from_the_dialog_and_remembered() {
         let dir = tempfile::tempdir().unwrap();
@@ -3896,6 +4093,7 @@ mod tests {
         let discarding: Vec<_> = [
             Action::New,
             Action::Open,
+            Action::OpenWithSettings,
             Action::Save,
             Action::SaveAs,
             Action::Undo,
@@ -3908,7 +4106,15 @@ mod tests {
         .into_iter()
         .filter(|a| a.discards())
         .collect();
-        assert_eq!(discarding, [Action::New, Action::Open, Action::Close]);
+        assert_eq!(
+            discarding,
+            [
+                Action::New,
+                Action::Open,
+                Action::OpenWithSettings,
+                Action::Close
+            ]
+        );
     }
 
     #[test]

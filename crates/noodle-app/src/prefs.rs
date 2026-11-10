@@ -43,6 +43,10 @@ pub struct Prefs {
     pub automation_mode: crate::session::record_automation::AutomationMode,
     /// What the graph shows of the sound as it plays.
     pub display: crate::display::Display,
+    /// The step, in ticks, that clips, notes and markers snap to.
+    pub snap: i64,
+    /// How the MIDI of the next take is snapped.
+    pub record_quantise: crate::midi_take::Quantise,
     /// The keys the user changed, by command (see `app::commands`).
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub keymap: std::collections::BTreeMap<String, String>,
@@ -60,7 +64,23 @@ impl Default for Prefs {
             midi_record: Default::default(),
             automation_mode: Default::default(),
             display: Default::default(),
+            snap: crate::snap::DEFAULT,
+            record_quantise: Default::default(),
             keymap: Default::default(),
+        }
+    }
+}
+
+impl Prefs {
+    /// The settings that mean the same on another machine: everything but
+    /// the audio device choices, the monitor device and the plugin sandbox,
+    /// which are about this machine (its hardware, and what it trusts). What is exported, and kept in a project.
+    pub fn portable(&self) -> Self {
+        Self {
+            audio: AudioConfig::default(),
+            monitor_device: String::new(),
+            sandbox_plugins: false,
+            ..self.clone()
         }
     }
 }
@@ -240,6 +260,102 @@ pub fn remember_keymap(keymap: &std::collections::BTreeMap<String, String>) {
     });
 }
 
+/// Saves the snap step, with the other preferences, if [`init`] has been
+/// called.
+pub fn remember_snap(ticks: i64) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.snap = ticks;
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
+/// Saves how the next MIDI take is snapped, with the other preferences, if
+/// [`init`] has been called.
+pub fn remember_record_quantise(quantise: crate::midi_take::Quantise) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.record_quantise = quantise;
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
+/// The settings as portable text, for a project to carry: `None` if [`init`]
+/// has not been called.
+pub fn portable_text() -> Option<String> {
+    CURRENT.with_borrow(|current| {
+        current
+            .as_ref()
+            .and_then(|(_, prefs)| to_text(&prefs.portable()).ok())
+    })
+}
+
+/// Takes imported settings as the user's own: the settings that travel
+/// replace this machine's, which keeps its own audio devices. Saved with the
+/// other preferences, if [`init`] has been called. Returns what is now in
+/// force.
+pub fn adopt(imported: &Prefs) -> Prefs {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return imported.clone();
+        };
+        *prefs = Prefs {
+            audio: prefs.audio.clone(),
+            monitor_device: prefs.monitor_device.clone(),
+            sandbox_plugins: prefs.sandbox_plugins,
+            ..imported.portable()
+        };
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+        prefs.clone()
+    })
+}
+
+/// Writes the settings that travel to `path`, to take to another machine.
+pub fn export_to(path: &Path) -> io::Result<()> {
+    let text = portable_text().ok_or_else(|| io::Error::other("no settings to export"))?;
+    write_atomically(path, &text)
+}
+
+/// Reads settings from a file the user chose: either a settings file, or a
+/// project that has settings saved in it.
+pub fn import_from(path: &Path) -> Result<Prefs, String> {
+    let text = fs::read_to_string(path).map_err(|e| format!("{}: {e}", path.display()))?;
+    // A project has a graph; settings don't.
+    #[derive(Deserialize)]
+    struct Peek {
+        #[allow(dead_code)]
+        graph: ron::Value,
+    }
+    if ron::from_str::<Peek>(&text).is_ok() {
+        let project = noodle_core::Project::from_ron(&text)
+            .map_err(|e| format!("{}: {e}", path.display()))?;
+        let saved = project
+            .user_settings()
+            .ok_or_else(|| format!("{} has no settings saved in it", path.display()))?;
+        return from_text(saved).map_err(|e| format!("{}: {e}", path.display()));
+    }
+    from_text(&text).map_err(|e| format!("{}: {e}", path.display()))
+}
+
+fn to_text(prefs: &Prefs) -> Result<String, ron::Error> {
+    ron::ser::to_string_pretty(prefs, ron::ser::PrettyConfig::default()).map(|t| t + "\n")
+}
+
+/// Settings from text, such as a file's or a project's.
+pub fn from_text(text: &str) -> Result<Prefs, ron::error::SpannedError> {
+    ron::from_str(text)
+}
+
 /// Where project templates live: one project file each, in the data
 /// directory beside the library, e.g. `~/.local/share/noodle/templates`.
 pub fn templates_dir() -> Option<PathBuf> {
@@ -293,9 +409,8 @@ pub fn save(path: &Path, prefs: &Prefs) -> io::Result<()> {
     if let Some(dir) = path.parent() {
         fs::create_dir_all(dir)?;
     }
-    let text = ron::ser::to_string_pretty(prefs, ron::ser::PrettyConfig::default())
-        .map_err(io::Error::other)?;
-    write_atomically(path, &(text + "\n"))
+    let text = to_text(prefs).map_err(io::Error::other)?;
+    write_atomically(path, &text)
 }
 
 #[cfg(test)]
@@ -324,6 +439,8 @@ mod tests {
             midi_record: crate::midi_take::MidiRecord::Takes,
             automation_mode: crate::session::record_automation::AutomationMode::Latch,
             display: Default::default(),
+            snap: crate::snap::DEFAULT,
+            record_quantise: Default::default(),
             keymap: Default::default(),
         }
     }
@@ -401,7 +518,7 @@ mod tests {
         let text = ron::ser::to_string(&chosen()).unwrap();
         assert_eq!(
             text,
-            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_inputs:["Keystation 49","Pad Controller"],threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false,count_in_bars:0,pre_roll_bars:0,midi_record:Takes,automation_mode:Latch,display:(performance:false,event_wires:true,audio_wires:true,input_meters:true,output_meters:true,clip_flash:true,silent_dim:true,param_motion:true,voice_leds:true,beat_pulse:true,cpu_heat:false))"#
+            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_inputs:["Keystation 49","Pad Controller"],threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false,count_in_bars:0,pre_roll_bars:0,midi_record:Takes,automation_mode:Latch,display:(performance:false,event_wires:true,audio_wires:true,input_meters:true,output_meters:true,clip_flash:true,silent_dim:true,param_motion:true,voice_leds:true,beat_pulse:true,cpu_heat:false),snap:960,record_quantise:Off)"#
         );
         // Files from before the MIDI input was added still load.
         let old = r#"(audio:(host:Some("alsa"),output:None,input:Off,sample_rate:None,buffer_size:Some(256)))"#;
