@@ -434,12 +434,43 @@ fn click(h: &mut H, pos: Pos2) {
 fn the_toolbar_keeps_its_close_button_and_follows_the_snap_setting() {
     use egui_kittest::kittest::Queryable;
     let mut h = rig(&[]);
+    h.set_size(Vec2::new(1200.0, 420.0));
+    h.run();
     let close = h.get_by_label("Close").rect();
-    assert!(close.right() <= 900.0 && close.left() > 400.0, "{close:?}");
+    assert!(close.right() <= 1200.0 && close.left() > 800.0, "{close:?}");
     h.get_by_label("Snap: 1/4 beat");
     h.state_mut().session.set_snap(960);
     h.run();
     h.get_by_label("Snap: Beat");
+}
+
+#[test]
+fn a_narrow_toolbar_folds_controls_into_a_menu_instead_of_cutting_them_off() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = rig(&[]);
+    h.set_size(Vec2::new(420.0, 420.0));
+    h.run();
+    // Close stays inside the panel, and what did not fit is in the menu.
+    let close = h.get_by_label("Close").rect();
+    assert!(close.right() <= 420.0, "{close:?}");
+    assert!(h.query_by_label("Articulation").is_none());
+    h.get_by_label("More controls").click();
+    h.run();
+    h.get_by_label("Articulation");
+    h.get_by_label("Humanise");
+}
+
+#[test]
+fn the_toolbar_says_how_many_notes_are_selected() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = rig(&[note(0, 240, 60), note(240, 240, 62)]);
+    h.set_size(Vec2::new(1200.0, 420.0));
+    h.run();
+    h.get_by_label("No notes selected");
+    let ids: BTreeSet<u32> = midi_of(&h).notes.iter().map(|n| n.id).collect();
+    h.state_mut().roll.selected = ids;
+    h.run();
+    h.get_by_label("2 notes selected");
 }
 
 fn midi_of(h: &H) -> MidiClip {

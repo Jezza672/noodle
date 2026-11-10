@@ -11,7 +11,7 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use egui::{Align2, Color32, FontId, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
+use egui::{Align2, Color32, FontId, Pos2, Rect, RichText, Sense, Stroke, StrokeKind, vec2};
 use noodle_core::{
     Clip, ClipId, ControlKind, ControlPoint, ExpressionKind, MidiClip, MidiNote, NoteExpression,
     TempoMap, Tick,
@@ -21,6 +21,7 @@ use super::{Axes, Output, set_controls, set_notes};
 use crate::session::Edit;
 use crate::theme::{self, timeline as colors};
 use crate::timeline::ClipAction;
+use crate::toolbar::{Icon, Mode, Opens, Pill, pill_with_popover};
 
 /// The tallest a lane is.
 pub const LANE: f32 = 48.0;
@@ -498,18 +499,55 @@ pub fn expression_lined(
 
 // The toolbar.
 
-/// The lane controls for the piano roll's toolbar.
-pub fn controls(ui: &mut egui::Ui, lanes: &mut Lanes) {
-    ui.separator();
-    ui.label("Lanes:");
-    for (tool, label) in [
-        (Tool::Draw, "Draw"),
-        (Tool::Line, "Line"),
-        (Tool::Select, "Select"),
-    ] {
-        ui.selectable_value(&mut lanes.tool, tool, label);
+/// The lane tool choice for the piano roll's toolbar: Draw, Line and Select.
+pub fn tools(ui: &mut egui::Ui, mode: Mode, lanes: &mut Lanes) {
+    const TOOLS: [(Tool, Icon, &str, &str); 3] = [
+        (
+            Tool::Draw,
+            Icon::Pen,
+            "Draw",
+            "Lane tool: draw values freehand",
+        ),
+        (
+            Tool::Line,
+            Icon::Line,
+            "Line",
+            "Lane tool: draw straight ramps",
+        ),
+        (
+            Tool::Select,
+            Icon::Cursor,
+            "Select",
+            "Lane tool: select and move points",
+        ),
+    ];
+    match mode {
+        Mode::Bar => {
+            if let Some(tool) = crate::toolbar::tool_segment(ui, &TOOLS, lanes.tool) {
+                lanes.tool = tool;
+            }
+        }
+        Mode::Menu => {
+            ui.separator();
+            ui.label(RichText::new("Lane tool").small().color(colors::TEXT_WEAK));
+            for (tool, _, label, tip) in TOOLS {
+                ui.selectable_value(&mut lanes.tool, tool, label)
+                    .on_hover_text(tip);
+            }
+        }
     }
-    ui.menu_button("+", |ui| {
+}
+
+/// The Lanes pill: its popover adds a controller or expression lane.
+pub fn controls(ui: &mut egui::Ui, mode: Mode, lanes: &mut Lanes) {
+    let spec = Pill {
+        icon: Icon::Lanes,
+        label: "Lanes",
+        active: false,
+        enabled: true,
+        tip: "Add controller and expression lanes under the notes",
+    };
+    pill_with_popover(ui, mode, &spec, Opens::Itself, "", |ui| {
         let common = [
             ControlKind::Controller(1),
             ControlKind::Controller(7),
@@ -520,12 +558,11 @@ pub fn controls(ui: &mut egui::Ui, lanes: &mut Lanes) {
             ControlKind::ChannelPressure,
         ];
         for kind in common {
-            if ui.button(name(kind)).clicked() {
+            if ui.button(format!("Add {}", name(kind))).clicked() {
                 lanes.add(kind);
                 ui.close();
             }
         }
-        ui.separator();
         ui.horizontal(|ui| {
             ui.add(egui::DragValue::new(&mut lanes.next_cc).range(0..=127));
             if ui.button("Add CC").clicked() {
@@ -533,23 +570,24 @@ pub fn controls(ui: &mut egui::Ui, lanes: &mut Lanes) {
                 ui.close();
             }
         });
+        ui.separator();
+        ui.checkbox(&mut lanes.expressions, "Expression lane");
+        if lanes.expressions {
+            egui::ComboBox::from_id_salt("expression kind")
+                .selected_text(expression_name(lanes.expression))
+                .show_ui(ui, |ui| {
+                    for kind in [
+                        ExpressionKind::Pitch,
+                        ExpressionKind::Pressure,
+                        ExpressionKind::Timbre,
+                        ExpressionKind::Volume,
+                        ExpressionKind::Pan,
+                    ] {
+                        ui.selectable_value(&mut lanes.expression, kind, expression_name(kind));
+                    }
+                });
+        }
     });
-    ui.checkbox(&mut lanes.expressions, "Expression");
-    if lanes.expressions {
-        egui::ComboBox::from_id_salt("expression kind")
-            .selected_text(expression_name(lanes.expression))
-            .show_ui(ui, |ui| {
-                for kind in [
-                    ExpressionKind::Pitch,
-                    ExpressionKind::Pressure,
-                    ExpressionKind::Timbre,
-                    ExpressionKind::Volume,
-                    ExpressionKind::Pan,
-                ] {
-                    ui.selectable_value(&mut lanes.expression, kind, expression_name(kind));
-                }
-            });
-    }
 }
 
 // The lanes.
