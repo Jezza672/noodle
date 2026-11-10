@@ -132,6 +132,10 @@ const FIRST: i64 = 30;
 
 fn halve(h: &mut Handle, _size: usize) {
     h.step("halve the timing amount");
+    // The amounts live in the arrow beside Humanise.
+    let amounts = h.find("Humanise amounts");
+    h.click(amounts, Modifiers::NONE);
+    h.probe().settle();
     let at = h.field_after("Timing");
     h.click(at, Modifiers::NONE);
     h.press(at, Modifiers::COMMAND, Key::A);

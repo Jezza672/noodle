@@ -399,6 +399,10 @@ graph as `@level` and `@reduction`). Parametric EQ shows the combined response
 notch has no gain, so its point moves in frequency only. A node's config can
 reach a graph too (`bands`, through `special_value`).
 
+## Editor header bars
+
+The piano roll, clip editor and sample editor share one header bar (`toolbar.rs`). It follows the transport pill's rules: each control sits in a slot of fixed width, related controls share a rounded pill, icons are drawn, and numbers live in popovers (Loop range, Humanise amounts, lanes, articulations, the hint under `?`). Clip-level controls (lane tool, Loop, Lanes) come first, then a divider and the selection group (`N notes selected`, Humanise, Articulation). Snap is a read-only chip; the snap step is set in the menu bar. When the panel is too narrow, `toolbar::fit` folds the slots with the highest `keep` into a `...` menu (hint first, then Snap, the selection group, Lanes, tools, Loop), so nothing is cut off. Close never moves.
+
 ## Mixer
 
 The mixer (`noodle-app/src/mixer.rs`, View > Mixer) is a view over the

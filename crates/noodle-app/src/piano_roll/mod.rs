@@ -30,6 +30,30 @@ use crate::timeline::{ClipAction, grid};
 use noodle_core::Command;
 
 const TOOLBAR: f32 = crate::toolbar::HEIGHT;
+const TITLE_WIDTH: f32 = 150.0;
+const HINT: &str = "Drag to draw · Alt: no snap · Delete removes";
+
+// The toolbar's slots, in the order they are drawn. `keep` is how long each
+// survives a narrow panel (see `toolbar::fit`): what edits the clip stays
+// longest, what describes the selection goes before it, and the hint first.
+const TOOLS: usize = 0;
+const LOOP: usize = 1;
+const LANES: usize = 2;
+const STATUS: usize = 3;
+const HUMANISE: usize = 4;
+const ARTICULATION: usize = 5;
+const SNAP: usize = 6;
+const HELP: usize = 7;
+const SLOTS: [crate::toolbar::Slot; 8] = [
+    crate::toolbar::Slot::left(crate::toolbar::segment_width(3), 3),
+    crate::toolbar::Slot::left(88.0, 2),
+    crate::toolbar::Slot::left(84.0, 4),
+    crate::toolbar::Slot::left(112.0, 6).after_divider(),
+    crate::toolbar::Slot::left(114.0, 5),
+    crate::toolbar::Slot::left(122.0, 5),
+    crate::toolbar::Slot::right(112.0, 7),
+    crate::toolbar::Slot::right(crate::toolbar::SQUARE, 8),
+];
 const RULER: f32 = 18.0;
 const KEYBOARD: f32 = 64.0;
 const VELOCITY: f32 = 56.0;
@@ -327,20 +351,49 @@ pub fn show(
     let toolbar = Rect::from_min_size(rect.min, vec2(rect.width(), TOOLBAR));
     // The snap is the app-wide setting, in the menu bar.
     state.step = session.snap();
+    let selected = state.selected.len();
+    let status =
+        crate::inline_result::recall(ui, &format!("humanise {id:?}")).unwrap_or_else(|| {
+            match selected {
+                0 => "No notes selected".to_owned(),
+                1 => "1 note selected".to_owned(),
+                n => format!("{n} notes selected"),
+            }
+        });
+    let snap = crate::snap::label(state.step);
     let closed = crate::toolbar::show(
         ui,
         toolbar,
         &format!("Piano roll · {id}"),
-        "Drag to draw · Alt: no snap · Delete removes",
-        |ui| {
-            ui.label(format!("Snap: {}", crate::snap::label(state.step)));
-            ui.separator();
-            looping::controls(ui, &mut out, id, clip, midi);
-            ui.separator();
-            humanise::controls(ui, &mut out, &state.selected, id, clip, midi);
-            ui.separator();
-            lanes::controls(ui, &mut state.lanes);
-            articulations::controls(ui, &mut out, project, &state.selected, id, clip, midi);
+        TITLE_WIDTH,
+        &SLOTS,
+        &mut |ui, slot, mode| match slot {
+            TOOLS => lanes::tools(ui, mode, &mut state.lanes),
+            LOOP => looping::controls(ui, mode, &mut out, id, clip, midi),
+            LANES => lanes::controls(ui, mode, &mut state.lanes),
+            STATUS => crate::toolbar::status(ui, mode, &status, selected > 0),
+            HUMANISE => {
+                humanise::controls(ui, mode, &mut out, &state.selected, id, clip, midi);
+            }
+            ARTICULATION => articulations::controls(
+                ui,
+                mode,
+                &mut out,
+                project,
+                &state.selected,
+                id,
+                clip,
+                midi,
+            ),
+            SNAP => crate::toolbar::chip(
+                ui,
+                mode,
+                "Snap",
+                snap,
+                "The snap step is set in the menu bar",
+            ),
+            HELP => crate::toolbar::hint_popover(ui, mode, HINT),
+            _ => {}
         },
     );
     if closed {
