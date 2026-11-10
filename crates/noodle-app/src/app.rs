@@ -1150,7 +1150,7 @@ impl App {
         let right_id = egui::Id::new("top bar right width");
         let right_width = ui.data(|d| d.get_temp::<f32>(right_id)).unwrap_or(150.0);
         let right_rect = egui::Rect::from_min_max(
-            egui::pos2(row.max.x - right_width - 4.0, row.min.y),
+            egui::pos2((row.max.x - right_width).max(left_end + 10.0), row.min.y),
             row.max,
         );
         let used = ui
@@ -1168,7 +1168,7 @@ impl App {
             ui.data_mut(|d| d.insert_temp(right_id, used));
             ui.request_repaint();
         }
-        let right_start = row.max.x - right_width;
+        let right_start = right_rect.min.x;
         // The transport is centred on the window, and gives way to the groups
         // on either side when there is no room.
         let id = egui::Id::new("top bar transport width");
@@ -1303,11 +1303,15 @@ impl App {
         );
         ui.separator();
         let map = self.session.project().tempo_map();
-        if let Some(tick) =
-            crate::transport_widgets::position_field(ui, map, self.session.playhead())
-        {
-            actions.push(Action::Seek(tick));
-        }
+        // Seeking ends a take, so a drag that slips sideways must not be able
+        // to while one is being made.
+        ui.add_enabled_ui(!recording, |ui| {
+            if let Some(tick) =
+                crate::transport_widgets::position_field(ui, map, self.session.playhead())
+            {
+                actions.push(Action::Seek(tick));
+            }
+        });
     }
 
     /// The tempo source menu, which also has Tap tempo, and Write to map while a tap or a
