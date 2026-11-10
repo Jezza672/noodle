@@ -14,6 +14,7 @@ use noodle_core::{Clip, ClipContent, ClipId, MidiClip, Tick};
 use super::{Axes, Output};
 use crate::session::Edit;
 use crate::theme;
+use crate::toolbar::{Icon, Mode, Opens, Pill, pill_with_popover};
 
 /// What the amounts become the first time Humanise is used on a clip whose
 /// amounts are both zero: about 15 ms at 120 bpm, and a tenth of full scale.
@@ -39,23 +40,31 @@ fn set_midi(id: ClipId, clip: &Clip, midi: MidiClip, drag: bool) -> Edit {
     }
 }
 
-/// The Humanise button and the clip's Timing and Velocity amounts.
+/// The Humanise pill, which re-rolls the selected notes, and its popover with
+/// the clip's Timing and Velocity amounts.
 pub(super) fn controls(
     ui: &mut egui::Ui,
+    mode: Mode,
     out: &mut Output,
     selected: &BTreeSet<u32>,
     id: ClipId,
     clip: &Clip,
     midi: &MidiClip,
 ) {
-    if ui
-        .add_enabled(!selected.is_empty(), egui::Button::new("Humanise"))
-        .on_hover_text(
-            "Give the selected notes a new random feel. The notes stay where they are drawn; \
-             the amounts beside it set how far they play from there.",
-        )
-        .clicked()
-    {
+    let spec = Pill {
+        icon: Icon::Dice,
+        label: "Humanise",
+        active: false,
+        enabled: !selected.is_empty(),
+        tip: "Give the selected notes a new random feel. The notes stay where they are drawn; \
+              the amounts in the arrow beside it set how far they play from there.",
+    };
+    let pressed = pill_with_popover(ui, mode, &spec, Opens::Chevron, "Humanise amounts", |ui| {
+        crate::inline_result::show(ui, &format!("humanise {id:?}"));
+        amounts(ui, out, id, clip, midi);
+    })
+    .pressed;
+    if pressed {
         let mut changed = midi.clone();
         let ids: Vec<u32> = selected.iter().copied().collect();
         let seed = ui.input(|i| i.time).to_bits() ^ (id.0 << 32);
@@ -77,21 +86,32 @@ pub(super) fn controls(
         );
         out.edits.push(set_midi(id, clip, changed, false));
     }
-    crate::inline_result::show(ui, &format!("humanise {id:?}"));
+}
+
+/// The clip's Timing and Velocity amounts.
+fn amounts(ui: &mut egui::Ui, out: &mut Output, id: ClipId, clip: &Clip, midi: &MidiClip) {
     let mut timing = midi.humanise_timing.0;
     let mut velocity = midi.humanise_velocity * 100.0;
-    ui.label("Timing");
-    let t = ui.add(
-        egui::DragValue::new(&mut timing)
-            .range(0..=MAX_TIMING)
-            .suffix(" ticks"),
-    );
-    ui.label("Velocity");
-    let v = ui.add(
-        egui::DragValue::new(&mut velocity)
-            .range(0.0..=MAX_VELOCITY * 100.0)
-            .suffix("%"),
-    );
+    let t = ui
+        .horizontal(|ui| {
+            ui.label("Timing");
+            ui.add(
+                egui::DragValue::new(&mut timing)
+                    .range(0..=MAX_TIMING)
+                    .suffix(" ticks"),
+            )
+        })
+        .inner;
+    let v = ui
+        .horizontal(|ui| {
+            ui.label("Velocity");
+            ui.add(
+                egui::DragValue::new(&mut velocity)
+                    .range(0.0..=MAX_VELOCITY * 100.0)
+                    .suffix("%"),
+            )
+        })
+        .inner;
     for response in [&t, &v] {
         if response.changed() {
             let mut changed = midi.clone();

@@ -18,6 +18,7 @@ struct Rig {
     auditioned: Vec<(u8, bool)>,
     /// How far the scroll area around the roll has scrolled, if it has one.
     scroll: Vec2,
+    seeked: Option<Tick>,
 }
 
 type H = Harness<'static, Rig>;
@@ -63,6 +64,7 @@ fn harness(rig: Rig, in_scroll_area: bool) -> H {
                     let out = show(ui, &mut rig.roll, &rig.session, None);
                     rig.session.edit(out.edits);
                     rig.auditioned.extend(out.audition);
+                    rig.seeked = out.seek.or(rig.seeked);
                 }
             },
             rig,
@@ -98,6 +100,7 @@ fn make_rig(start: Tick, notes: &[MidiNote]) -> Rig {
         clip,
         auditioned: Vec::new(),
         scroll: Vec2::ZERO,
+        seeked: None,
     }
 }
 
@@ -431,12 +434,43 @@ fn click(h: &mut H, pos: Pos2) {
 fn the_toolbar_keeps_its_close_button_and_follows_the_snap_setting() {
     use egui_kittest::kittest::Queryable;
     let mut h = rig(&[]);
+    h.set_size(Vec2::new(1200.0, 420.0));
+    h.run();
     let close = h.get_by_label("Close").rect();
-    assert!(close.right() <= 900.0 && close.left() > 400.0, "{close:?}");
+    assert!(close.right() <= 1200.0 && close.left() > 800.0, "{close:?}");
     h.get_by_label("Snap: 1/4 beat");
     h.state_mut().session.set_snap(960);
     h.run();
     h.get_by_label("Snap: Beat");
+}
+
+#[test]
+fn a_narrow_toolbar_folds_controls_into_a_menu_instead_of_cutting_them_off() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = rig(&[]);
+    h.set_size(Vec2::new(420.0, 420.0));
+    h.run();
+    // Close stays inside the panel, and what did not fit is in the menu.
+    let close = h.get_by_label("Close").rect();
+    assert!(close.right() <= 420.0, "{close:?}");
+    assert!(h.query_by_label("Articulation").is_none());
+    h.get_by_label("More controls").click();
+    h.run();
+    h.get_by_label("Articulation");
+    h.get_by_label("Humanise");
+}
+
+#[test]
+fn the_toolbar_says_how_many_notes_are_selected() {
+    use egui_kittest::kittest::Queryable;
+    let mut h = rig(&[note(0, 240, 60), note(240, 240, 62)]);
+    h.set_size(Vec2::new(1200.0, 420.0));
+    h.run();
+    h.get_by_label("No notes selected");
+    let ids: BTreeSet<u32> = midi_of(&h).notes.iter().map(|n| n.id).collect();
+    h.state_mut().roll.selected = ids;
+    h.run();
+    h.get_by_label("2 notes selected");
 }
 
 fn midi_of(h: &H) -> MidiClip {
@@ -864,4 +898,103 @@ fn lane_arithmetic() {
     assert_eq!(held[1].tick.0, 960);
     assert!(lanes::pasted(&all, &held, 4000, 3840).is_none());
     assert_eq!(lanes::pasted(&all, &held, 3000, 3840).unwrap().0.len(), 4);
+}
+
+#[test]
+fn shift_dragging_over_empty_space_selects_the_notes_it_touches() {
+    let mut h = rig(&[note(480, 240, 60), note(960, 240, 64), note(2000, 240, 70)]);
+    let from = at(&h, 300, 58);
+    let to = at(&h, 1300, 66);
+    crate::testkit::drag_between(&mut h, Modifiers::SHIFT, from, to);
+    let ids: Vec<u32> = stored_notes(&h).iter().map(|n| n.id).collect();
+    assert_eq!(h.state().roll.selected(), &BTreeSet::from([ids[0], ids[1]]));
+    assert_eq!(notes_of(&h).len(), 3, "a sweep draws nothing");
+    // Copy and paste what was swept: it was impossible to select a region.
+    crate::clipboard::clear();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::C);
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::V);
+    h.run();
+    assert_eq!(notes_of(&h).len(), 5);
+}
+
+#[test]
+fn command_a_selects_every_note() {
+    let mut h = rig(&[note(0, 240, 60), note(960, 240, 64)]);
+    h.hover_at(geometry(&h).grid.center());
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run();
+    assert_eq!(h.state().roll.selected().len(), 2);
+}
+
+#[test]
+fn pressing_the_ruler_puts_the_playhead_there() {
+    let mut h = rig(&[]);
+    let g = geometry(&h);
+    let ruler = Pos2::new(g.x(960), g.grid.top() - 8.0);
+    click(&mut h, ruler);
+    // The clip starts at 960, and the snap is a sixteenth.
+    assert_eq!(h.state().seeked, Some(Tick(960 + 960)));
+}
+
+#[test]
+fn alt_with_the_wheel_zooms_the_key_rows_and_not_time() {
+    let mut h = rig(&[]);
+    let at = geometry(&h).grid.center();
+    let (ppq, rows) = (h.state().roll.ppq, h.state().roll.key_h);
+    h.hover_at(at);
+    h.event(Event::ModifiersChanged(Modifiers::ALT));
+    crate::testkit::wheel_with(
+        &mut h,
+        at,
+        MouseWheelUnit::Point,
+        Vec2::new(0.0, 40.0),
+        Modifiers::ALT,
+    );
+    assert!(h.state().roll.key_h > rows, "rows taller");
+    assert_eq!(h.state().roll.ppq, ppq, "time unchanged");
+}
+
+#[test]
+fn a_plain_pinch_zooms_time_and_leaves_the_rows() {
+    let mut h = rig(&[]);
+    let at = geometry(&h).grid.center();
+    let (ppq, rows) = (h.state().roll.ppq, h.state().roll.key_h);
+    h.hover_at(at);
+    h.event(Event::Zoom(1.5));
+    h.run();
+    assert!(h.state().roll.ppq > ppq);
+    assert_eq!(h.state().roll.key_h, rows);
+}
+
+#[test]
+fn notes_played_on_any_input_are_remembered_until_released() {
+    let mut h = rig(&[]);
+    let bus = h.state().session.midi_bus().clone();
+    h.run();
+    bus.send([0x90, 64, 100]);
+    bus.send([0x90, 67, 100]);
+    bus.send([0x80, 64, 0]);
+    h.run();
+    let live = &h.state().roll.live;
+    assert!(live.is_down(67) && !live.is_down(64));
+    bus.send([0x90, 67, 0]);
+    h.run();
+    assert!(
+        !h.state().roll.live.is_down(67),
+        "note on at 0 is a release"
+    );
+}
+
+#[test]
+fn command_dragging_a_note_moves_a_copy_and_leaves_the_original() {
+    let mut h = rig(&[note(480, 240, 60)]);
+    let from = at(&h, 540, 60);
+    let to = at(&h, 1500, 64);
+    crate::testkit::drag_between(&mut h, Modifiers::COMMAND, from, to);
+    let notes = notes_of(&h);
+    assert_eq!(notes.len(), 2);
+    assert!(notes.contains(&note(480, 240, 60)), "the original stays");
+    assert!(notes.iter().any(|n| n.key == 64 && n.start.0 > 480));
 }

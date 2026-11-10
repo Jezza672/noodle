@@ -291,10 +291,15 @@ to a second Mix and is not routed.
 
 The transport's tempo is the project's tempo map unless a live tempo stands in
 for it (`Controller::set_live_tempo`): tap tempo or an external MIDI clock, chosen
-in the transport bar. The controller keeps the project's map and the one the
-engine plays by (the live tempo with the project's time signatures)
-separately; the engine gets a new `TempoTable` the way it does for an edit, which
-keeps the playhead's tick. It is session state: no command, no undo step, no
+in the transport bar. The timeline (the playhead, seeks, loops, and where clips
+sit) always runs on the project's map, so the playhead moves at the map's speed
+and what is under it is what plays; the waveforms are drawn by the same map. The
+live tempo (with the project's time signatures) is only what the transport tells
+nodes (`Transport::bpm` and `tick`: Tempo, Clock, the metronome, MIDI out). The
+engine gets a `Tempos` pair (live and timeline `TempoTable`s) the way it does for
+an edit; a change to the live one alone does not move the position. With a single
+tempo in the map, a tap sets that tempo in the map instead (an undo step) and no
+live tempo is made. It is session state: no command, no undo step, no
 cache invalidation. "Write to map" makes it a `SetTempoMap`. MIDI timing
 messages reach the session through `MidiBus::clock_tap`, never the MIDI In
 nodes, and `tempo_source.rs` holds the tap and clock estimators. Details and

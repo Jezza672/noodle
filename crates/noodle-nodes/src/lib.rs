@@ -10,6 +10,7 @@ mod beat_length;
 mod bitcrush;
 mod button;
 mod cached;
+mod choke_gate;
 mod chorus;
 mod clip;
 mod clock;
@@ -97,6 +98,7 @@ pub use beat_length::{BEAT_LENGTH_ID, BeatLength};
 pub use bitcrush::{BITCRUSHER_ID, Bitcrusher, quantise};
 pub use button::{BUTTON_ID, BUTTON_STATE, Button};
 pub use cached::{CACHED_ID, CachedPlayer};
+pub use choke_gate::{CHOKE_GATE_ID, ChokeGate};
 pub use chorus::{CHORUS_ID, Chorus};
 pub use clip::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip,
@@ -312,6 +314,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Key);
     registry.register(MonoNote);
     registry.register(NoteSplit);
+    registry.register(ChokeGate);
     registry.register(ArticulationMap);
     registry.register(VersionValue);
     registry.register(RandomSelect);

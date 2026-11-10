@@ -141,6 +141,13 @@ pub trait NodeType: Send + Sync + 'static {
         NodeView::None
     }
 
+    /// Whether the node keeps time or plays against the beat (a clock, an
+    /// arpeggiator, a pattern), so the editor pulses it on each beat while
+    /// the transport runs.
+    fn pulses_on_beat(&self) -> bool {
+        false
+    }
+
     /// The config a newly added node of this type starts with, for settings
     /// whose first value isn't the same as leaving them out. Whatever adds a
     /// node from the UI (the add-node search, the plugin browser) applies it.

@@ -118,7 +118,11 @@ fn marker_menu(h: &mut Handle, bar: f64) -> Pos2 {
 /// Marks bar `bar` (from 0) and names the marker.
 fn add_marker(h: &mut Handle, bar: f64, was: &str, name: &str) {
     ruler_menu(h, bar, "Add marker");
-    marker_menu(h, bar);
+    let seconds = at_bar(h, bar);
+    let flag = h.ruler_at(seconds + 0.05) + vec2(6.0, 0.0);
+    h.right_click(flag);
+    let properties = h.find_like("Properties");
+    h.click(properties, Modifiers::NONE);
     let field = h.probe().find_value(was);
     h.click(field, Modifiers::NONE);
     h.press(field, Modifiers::COMMAND, Key::A);

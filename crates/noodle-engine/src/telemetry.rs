@@ -53,6 +53,73 @@ pub struct Telemetry {
     /// Counts position reports across every node, to tell the instances that
     /// are still running from those left over from an old plan.
     position_clock: Arc<AtomicU64>,
+    /// Which optional reports the audio thread makes, see [`Gather`].
+    gather: Gather,
+}
+
+/// Which of the optional reports the audio thread makes. The UI turns them
+/// off when it isn't showing what they feed, so a user who wants raw
+/// performance pays for one relaxed load per node per block and nothing
+/// more. All are on by default. Cloning gives another handle to the same
+/// flags.
+#[derive(Clone)]
+pub struct Gather(Arc<GatherFlags>);
+
+struct GatherFlags {
+    input_levels: AtomicBool,
+    output_levels: AtomicBool,
+    events: AtomicBool,
+    state: AtomicBool,
+}
+
+impl Default for Gather {
+    fn default() -> Self {
+        Self(Arc::new(GatherFlags {
+            input_levels: AtomicBool::new(true),
+            output_levels: AtomicBool::new(true),
+            events: AtomicBool::new(true),
+            state: AtomicBool::new(true),
+        }))
+    }
+}
+
+impl Gather {
+    /// Whether the level arriving at each wired audio input is measured.
+    pub fn input_levels(&self) -> bool {
+        self.0.input_levels.load(Ordering::Relaxed)
+    }
+
+    /// Whether the level of each audio output is measured.
+    pub fn output_levels(&self) -> bool {
+        self.0.output_levels.load(Ordering::Relaxed)
+    }
+
+    /// Whether the events each event output sends are counted.
+    pub fn events(&self) -> bool {
+        self.0.events.load(Ordering::Relaxed)
+    }
+
+    /// Whether each node reports if it ran, if it was silent, and how many
+    /// of its voices sound.
+    pub fn state(&self) -> bool {
+        self.0.state.load(Ordering::Relaxed)
+    }
+
+    pub fn set_input_levels(&self, on: bool) {
+        self.0.input_levels.store(on, Ordering::Relaxed);
+    }
+
+    pub fn set_output_levels(&self, on: bool) {
+        self.0.output_levels.store(on, Ordering::Relaxed);
+    }
+
+    pub fn set_events(&self, on: bool) {
+        self.0.events.store(on, Ordering::Relaxed);
+    }
+
+    pub fn set_state(&self, on: bool) {
+        self.0.state.store(on, Ordering::Relaxed);
+    }
 }
 
 /// Each node's open channels, oldest first.
@@ -66,6 +133,10 @@ struct Channels {
     cpu: HashMap<NodeId, Vec<Arc<CpuCells>>>,
     /// Where a sampling node's voices are in their sample.
     positions: HashMap<NodeId, Vec<Arc<PositionCells>>>,
+    /// How many events each event output has sent, by node and port key.
+    events: HashMap<(NodeId, String), Vec<Arc<EventCells>>>,
+    /// What each node did last block.
+    states: HashMap<NodeId, Vec<Arc<StateCells>>>,
     /// The IDs of the live [`MeterReader`]s.
     readers: HashSet<u64>,
     next_reader: u64,
@@ -75,11 +146,12 @@ struct Channels {
 }
 
 /// What a meter channel measures: a node's own signal, or the signal
-/// arriving at one of its audio inputs.
+/// arriving at one of its audio inputs or leaving one of its audio outputs.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 enum MeterKey {
     Node(NodeId),
     Input(NodeId, String),
+    Output(NodeId, String),
 }
 
 impl Channels {
@@ -102,6 +174,14 @@ impl Channels {
             !list.is_empty()
         });
         self.positions.retain(|_, list| {
+            list.retain(|cells| Arc::strong_count(cells) > 1);
+            !list.is_empty()
+        });
+        self.events.retain(|_, list| {
+            list.retain(|cells| Arc::strong_count(cells) > 1);
+            !list.is_empty()
+        });
+        self.states.retain(|_, list| {
             list.retain(|cells| Arc::strong_count(cells) > 1);
             !list.is_empty()
         });
@@ -151,6 +231,110 @@ impl Telemetry {
     /// building a plan, not on the audio thread.
     pub fn open_input_meter(&self, node: NodeId, key: &str, channels: usize) -> MeterWriter {
         self.open_meter_at(MeterKey::Input(node, key.to_owned()), channels)
+    }
+
+    /// Opens a meter channel for the signal leaving audio output `key` of
+    /// `node`, read with [`MeterReader::output_meter`]. Call this when
+    /// building a plan, not on the audio thread.
+    pub fn open_output_meter(&self, node: NodeId, key: &str, channels: usize) -> MeterWriter {
+        self.open_meter_at(MeterKey::Output(node, key.to_owned()), channels)
+    }
+
+    /// The flags that say which optional reports the audio thread makes.
+    pub fn gather(&self) -> &Gather {
+        &self.gather
+    }
+
+    /// Opens a channel counting the events sent from event output `key` of
+    /// `node`. Call this when building a plan, not on the audio thread.
+    pub fn open_events(&self, node: NodeId, key: &str) -> EventWriter {
+        let cells = Arc::new(EventCells {
+            count: AtomicU64::new(0),
+            written: AtomicBool::new(false),
+            activity: self.activity.clone(),
+        });
+        self.lock()
+            .events
+            .entry((node, key.to_owned()))
+            .or_default()
+            .push(cells.clone());
+        EventWriter(cells)
+    }
+
+    /// How many events event output `key` of `node` has sent since its plan
+    /// started, or `None` if it hasn't reported. A reader tells that events
+    /// are flowing by this changing.
+    pub fn read_events(&self, node: NodeId, key: &str) -> Option<u64> {
+        let channels = self.lock();
+        let list = channels.events.get(&(node, key.to_owned()))?;
+        let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
+        cells
+            .written
+            .load(Ordering::Relaxed)
+            .then(|| cells.count.load(Ordering::Relaxed))
+    }
+
+    /// Every event output's count, as [`read_events`](Self::read_events)
+    /// gives it, under one lock.
+    pub fn read_all_events(&self) -> Vec<((NodeId, String), u64)> {
+        let channels = self.lock();
+        channels
+            .events
+            .iter()
+            .filter_map(|(key, list)| {
+                let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
+                cells
+                    .written
+                    .load(Ordering::Relaxed)
+                    .then(|| (key.clone(), cells.count.load(Ordering::Relaxed)))
+            })
+            .collect()
+    }
+
+    /// Every node's state, as [`read_state`](Self::read_state) gives it,
+    /// under one lock.
+    pub fn read_all_states(&self) -> Vec<(NodeId, NodeActivity)> {
+        let channels = self.lock();
+        channels
+            .states
+            .iter()
+            .filter_map(|(&node, list)| {
+                let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
+                cells.written.load(Ordering::Relaxed).then(|| {
+                    (
+                        node,
+                        NodeActivity::unpack(cells.packed.load(Ordering::Relaxed)),
+                    )
+                })
+            })
+            .collect()
+    }
+
+    /// Opens the channel on which `node` reports what it did each block.
+    /// Call this when building a plan, not on the audio thread.
+    pub fn open_state(&self, node: NodeId) -> StateWriter {
+        let cells = Arc::new(StateCells {
+            packed: AtomicU32::new(0),
+            written: AtomicBool::new(false),
+            activity: self.activity.clone(),
+        });
+        self.lock()
+            .states
+            .entry(node)
+            .or_default()
+            .push(cells.clone());
+        StateWriter(cells)
+    }
+
+    /// What `node` did in its last block, if it has reported.
+    pub fn read_state(&self, node: NodeId) -> Option<NodeActivity> {
+        let channels = self.lock();
+        let list = channels.states.get(&node)?;
+        let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
+        cells
+            .written
+            .load(Ordering::Relaxed)
+            .then(|| NodeActivity::unpack(cells.packed.load(Ordering::Relaxed)))
     }
 
     fn open_meter_at(&self, key: MeterKey, channels: usize) -> MeterWriter {
@@ -445,14 +629,45 @@ impl MeterReader {
         self.read(MeterKey::Input(node, key.to_owned()))
     }
 
+    /// The levels leaving audio output `key` of `node`, one per channel, or
+    /// `None` if it hasn't reported. Peaks are as for
+    /// [`meter`](Self::meter).
+    pub fn output_meter(&self, node: NodeId, key: &str) -> Option<Vec<Level>> {
+        self.read(MeterKey::Output(node, key.to_owned()))
+    }
+
     fn read(&self, key: MeterKey) -> Option<Vec<Level>> {
         let mut guard = self.hub.lock();
+        self.read_locked(&mut guard, key)
+    }
+
+    /// Every audio output's levels, as [`output_meter`](Self::output_meter)
+    /// gives them, under one lock.
+    pub fn output_meters(&self) -> Vec<((NodeId, String), Vec<Level>)> {
+        let mut guard = self.hub.lock();
+        let keys: Vec<MeterKey> = guard
+            .meters
+            .keys()
+            .filter(|key| matches!(key, MeterKey::Output(..)))
+            .cloned()
+            .collect();
+        keys.into_iter()
+            .filter_map(|key| {
+                let MeterKey::Output(node, port) = key.clone() else {
+                    return None;
+                };
+                Some(((node, port), self.read_locked(&mut guard, key)?))
+            })
+            .collect()
+    }
+
+    fn read_locked(&self, guard: &mut Channels, key: MeterKey) -> Option<Vec<Level>> {
         let Channels {
             meters,
             readers,
             held,
             ..
-        } = &mut *guard;
+        } = guard;
         let list = meters.get(&key)?;
         let cells = live(list, |cells| cells.written.load(Ordering::Relaxed))?;
         let count = cells.levels.len();
@@ -783,6 +998,78 @@ impl ParamWriter {
             });
         // Release, so a reader that sees this also sees the value.
         self.0.written.store(true, Ordering::Release);
+    }
+}
+
+struct EventCells {
+    count: AtomicU64,
+    written: AtomicBool,
+    activity: Arc<AtomicU64>,
+}
+
+/// The audio thread's end of an event output's channel.
+pub struct EventWriter(Arc<EventCells>);
+
+impl EventWriter {
+    /// Reports that a block sent `events` events (maybe none).
+    pub fn write(&self, events: usize) {
+        self.0.written.store(true, Ordering::Relaxed);
+        if events > 0 {
+            self.0.count.fetch_add(events as u64, Ordering::Relaxed);
+            self.0.activity.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+}
+
+/// What a node did in its last block.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct NodeActivity {
+    /// The node ran. A node that nothing listens to doesn't.
+    pub ran: bool,
+    /// It has audio outputs and every lane of them is flagged silent.
+    pub silent: bool,
+    /// How many voices of its outputs have sound in them (flagged not
+    /// silent), at most the most it has.
+    pub sounding: u8,
+    /// The most voices any of its outputs has.
+    pub voices: u8,
+}
+
+impl NodeActivity {
+    fn pack(self) -> u32 {
+        u32::from(self.ran)
+            | u32::from(self.silent) << 1
+            | u32::from(self.sounding) << 8
+            | u32::from(self.voices) << 16
+    }
+
+    fn unpack(bits: u32) -> Self {
+        Self {
+            ran: bits & 1 != 0,
+            silent: bits & 2 != 0,
+            sounding: (bits >> 8) as u8,
+            voices: (bits >> 16) as u8,
+        }
+    }
+}
+
+struct StateCells {
+    packed: AtomicU32,
+    written: AtomicBool,
+    activity: Arc<AtomicU64>,
+}
+
+/// The audio thread's end of a node's state channel.
+pub struct StateWriter(Arc<StateCells>);
+
+impl StateWriter {
+    pub fn write(&self, state: NodeActivity) {
+        let bits = state.pack();
+        let before = self.0.packed.swap(bits, Ordering::Relaxed);
+        let first = !self.0.written.swap(true, Ordering::Relaxed);
+        if first || before != bits {
+            self.0.activity.fetch_add(1, Ordering::Relaxed);
+        }
     }
 }
 

@@ -1285,6 +1285,26 @@ fn a_tempo_change_keeps_the_playheads_tick() {
 }
 
 #[test]
+fn a_live_tempo_leaves_the_playhead_on_the_project_map() {
+    let mut rig = probe_rig(POSITION);
+    let transport = rig.controller.transport();
+    transport.stop();
+    transport.seek(ticks(480));
+    rig.render(20);
+    assert_eq!(transport.position(), 250);
+    // A tapped tempo twice as slow: the position stays where it was, and a
+    // seek still lands where the project's map puts the tick.
+    rig.controller.set_live_tempo(Some(60.0));
+    rig.render(20);
+    assert_eq!(transport.position(), 250);
+    assert_eq!(rig.controller.live_tempo(), Some(60.0));
+    assert_eq!(*rig.controller.timeline_map(), TempoMap::default());
+    transport.seek(ticks(960));
+    rig.render(20);
+    assert_eq!(transport.position(), 500);
+}
+
+#[test]
 fn the_tempo_map_the_controller_reports_is_the_last_one_set() {
     let mut rig = probe_rig(BPM);
     assert_eq!(*rig.controller.tempo_map(), TempoMap::default());
@@ -1750,6 +1770,79 @@ fn a_wired_audio_input_reports_the_level_arriving_at_it() {
     // The source's output and unwired inputs have none.
     assert_eq!(reader.input_meter(counter, "out"), None);
     assert_eq!(reader.input_meter(output, "gain"), None);
+}
+
+#[test]
+fn audio_outputs_report_their_level_and_can_be_switched_off() {
+    let telemetry = Telemetry::new();
+    let reader = telemetry.meter_reader();
+    let mut rig = Rig::new(SETTINGS);
+    rig.controller.set_telemetry(&telemetry);
+    let counter = rig.add("counter");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(counter, output, "in");
+    assert!(rig.update().is_empty());
+
+    rig.render(4);
+    let levels = reader.output_meter(counter, "out").unwrap();
+    assert_eq!(levels.len(), 1);
+    assert_eq!(levels[0].peak, 3.0);
+
+    // Switched off, nothing new is measured (the peak was taken above).
+    telemetry.gather().set_output_levels(false);
+    rig.render(4);
+    assert_eq!(reader.output_meter(counter, "out").unwrap()[0].peak, 0.0);
+    telemetry.gather().set_output_levels(true);
+    rig.render(4);
+    assert_eq!(reader.output_meter(counter, "out").unwrap()[0].peak, 11.0);
+}
+
+#[test]
+fn event_outputs_count_the_events_they_send() {
+    let telemetry = Telemetry::new();
+    let mut rig = Rig::new(SETTINGS);
+    rig.controller.set_telemetry(&telemetry);
+    let source = rig.add("note_source");
+    let thru = rig.add("note_thru");
+    let output = rig.add(OUTPUT_ID);
+    let probe = rig.add("note_probe");
+    rig.connect(source, "notes", thru, "notes");
+    rig.connect(thru, "a", probe, "notes");
+    rig.wire(probe, output, "in");
+    assert!(rig.update().is_empty());
+    assert_eq!(telemetry.read_events(source, "notes"), None);
+
+    rig.render(4);
+    assert_eq!(telemetry.read_events(source, "notes"), Some(1));
+    rig.render(4);
+    rig.render(4);
+    assert_eq!(telemetry.read_events(source, "notes"), Some(3));
+    assert_eq!(telemetry.read_events(thru, "a"), Some(3));
+    // Switched off, the count stops where it was.
+    telemetry.gather().set_events(false);
+    rig.render(4);
+    assert_eq!(telemetry.read_events(source, "notes"), Some(3));
+    assert_eq!(telemetry.read_events(source, "nothing"), None);
+}
+
+#[test]
+fn a_node_reports_whether_it_ran() {
+    let telemetry = Telemetry::new();
+    let mut rig = Rig::new(SETTINGS);
+    rig.controller.set_telemetry(&telemetry);
+    let heard = rig.add("counter");
+    let unheard = rig.add("counter");
+    let output = rig.add(OUTPUT_ID);
+    rig.wire(heard, output, "in");
+    assert!(rig.update().is_empty());
+    assert_eq!(telemetry.read_state(heard), None);
+
+    rig.render(4);
+    let state = telemetry.read_state(heard).unwrap();
+    assert!(state.ran && !state.silent, "{state:?}");
+    // Nothing listens to the second counter, so it never runs.
+    let state = telemetry.read_state(unheard).unwrap();
+    assert!(!state.ran, "{state:?}");
 }
 
 /// Outputs 1 and counts the blocks it runs.

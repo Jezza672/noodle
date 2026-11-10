@@ -41,6 +41,8 @@ pub struct Prefs {
     pub midi_record: crate::midi_take::MidiRecord,
     /// How armed Automation nodes write: Read, Touch or Latch.
     pub automation_mode: crate::session::record_automation::AutomationMode,
+    /// What the graph shows of the sound as it plays.
+    pub display: crate::display::Display,
     /// The keys the user changed, by command (see `app::commands`).
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub keymap: std::collections::BTreeMap<String, String>,
@@ -57,6 +59,7 @@ impl Default for Prefs {
             pre_roll_bars: 0,
             midi_record: Default::default(),
             automation_mode: Default::default(),
+            display: Default::default(),
             keymap: Default::default(),
         }
     }
@@ -187,6 +190,31 @@ pub fn remember_automation_mode(mode: crate::session::record_automation::Automat
     });
 }
 
+/// What the graph shows of the sound, as [`init`] read it or
+/// [`remember_display`] last saved it.
+pub fn display() -> crate::display::Display {
+    CURRENT.with_borrow(|current| {
+        current
+            .as_ref()
+            .map(|(_, prefs)| prefs.display)
+            .unwrap_or_default()
+    })
+}
+
+/// Saves the display switches, with the other preferences, if [`init`] has
+/// been called.
+pub fn remember_display(display: crate::display::Display) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.display = display;
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
 /// The keys the user changed, as [`init`] read them or [`remember_keymap`]
 /// last saved them.
 pub fn keymap() -> std::collections::BTreeMap<String, String> {
@@ -295,6 +323,7 @@ mod tests {
             auto_cache: false,
             midi_record: crate::midi_take::MidiRecord::Takes,
             automation_mode: crate::session::record_automation::AutomationMode::Latch,
+            display: Default::default(),
             keymap: Default::default(),
         }
     }
@@ -307,6 +336,21 @@ mod tests {
         assert!(keymap().is_empty());
         remember_keymap(&[("file.save".to_owned(), "Cmd+J".to_owned())].into());
         assert_eq!(load(&path).unwrap().keymap["file.save"], "Cmd+J");
+    }
+
+    #[test]
+    fn the_display_switches_are_saved() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.ron");
+        init(path.clone());
+        assert_eq!(display(), crate::display::Display::default());
+        let chosen = crate::display::Display {
+            audio_wires: false,
+            ..Default::default()
+        };
+        remember_display(chosen);
+        assert_eq!(load(&path).unwrap().display, chosen);
+        assert_eq!(display(), chosen);
     }
 
     #[test]
@@ -357,7 +401,7 @@ mod tests {
         let text = ron::ser::to_string(&chosen()).unwrap();
         assert_eq!(
             text,
-            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_inputs:["Keystation 49","Pad Controller"],threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false,count_in_bars:0,pre_roll_bars:0,midi_record:Takes,automation_mode:Latch)"#
+            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_inputs:["Keystation 49","Pad Controller"],threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false,count_in_bars:0,pre_roll_bars:0,midi_record:Takes,automation_mode:Latch,display:(performance:false,event_wires:true,audio_wires:true,input_meters:true,output_meters:true,clip_flash:true,silent_dim:true,param_motion:true,voice_leds:true,beat_pulse:true,cpu_heat:false))"#
         );
         // Files from before the MIDI input was added still load.
         let old = r#"(audio:(host:Some("alsa"),output:None,input:Off,sample_rate:None,buffer_size:Some(256)))"#;

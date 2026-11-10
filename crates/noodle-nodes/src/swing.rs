@@ -49,6 +49,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Swing {
+    fn pulses_on_beat(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }

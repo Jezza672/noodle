@@ -27,6 +27,7 @@
 //! | Tab | Enter the selected group, or leave the current one |
 //! | Double-click a group | Enter it |
 //! | Double-click a frame title, F2 | Rename the frame |
+//! | Drag a port label, double-click a group's port row | Reorder or rename the port; only on a node that was already selected (dragging an unselected node's label moves the node) |
 //!
 //! Each frame the editor rebuilds where everything goes from the project (see
 //! [`layout`]), handles input against that, then draws it. It never changes
@@ -106,6 +107,11 @@ pub struct EditorState {
     gesture: Gesture,
     search: Option<Search>,
     rename: Option<Rename>,
+    /// Whether the node under the latest press was already selected when the
+    /// press began (a double-click's second press keeps the first's answer).
+    /// In-node edits (reordering or renaming ports) need it; moving and wiring
+    /// do not.
+    press_selected: Option<(NodeId, bool, f64)>,
     /// The group the canvas's context menu is about: the one a right-click
     /// landed on. The menu stays open until egui closes it.
     group_menu: Option<NodeId>,
@@ -219,6 +225,7 @@ impl Default for EditorState {
             group_menu: None,
             group_name: None,
             rename: None,
+            press_selected: None,
             bodies: body::Bodies::default(),
             scene_cache: None,
             arrange_requested: false,
@@ -282,6 +289,9 @@ pub struct DroppedFiles {
     /// The Sample Set they landed on, or else where on the canvas, in graph
     /// coordinates.
     pub on: Result<NodeId, Pos2>,
+    /// The Sampler they landed on, directly or on the pad (a group holding
+    /// one) around it.
+    pub pad: Option<NodeId>,
     pub group: Option<NodeId>,
 }
 
@@ -356,6 +366,17 @@ impl EditorState {
     /// What a wired parameter has been doing lately (see `Bodies::update`).
     pub fn param_live(&self, node: NodeId, key: &str) -> Option<crate::widgets::Live> {
         self.bodies.param_live(node, key)
+    }
+
+    /// Sets what the graph shows of the sound as it plays.
+    pub fn set_display(&mut self, display: crate::display::Display) {
+        self.bodies.set_display(display);
+    }
+
+    /// What the graph is showing of the sound now (performance mode counts).
+    #[cfg(test)]
+    pub fn bodies_display(&self) -> crate::display::Display {
+        *self.bodies.display()
     }
 
     /// Whether each node shows how much of the audio thread's time it takes.
@@ -624,19 +645,33 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
     state
         .bodies
         .set_sample_rate(session.engine_sample_rate().unwrap_or(0.0));
+    // The engine measures only what is shown, however the session came by
+    // its hub.
+    state.bodies.display().apply(session.telemetry().gather());
+    // The beat's pulse: 1 on the beat, gone by the next, while playing.
+    let beat = (session.engine_running() && session.transport_running()).then(|| {
+        let ticks = session
+            .playhead()
+            .0
+            .rem_euclid(noodle_core::TICKS_PER_QUARTER);
+        let fraction = ticks as f32 / noodle_core::TICKS_PER_QUARTER as f32;
+        (1.0 - fraction * 2.0).max(0.0).powi(2)
+    });
+    state.bodies.set_beat(beat);
     let liveness = state.bodies.update(
         session.telemetry(),
         session.project(),
         session.registry(),
         dt,
     );
+    let pulsing = state.bodies.any_pulsing();
     // Meters and scopes move with the audio, so keep drawing while they do,
     // and while their peaks and traces fall back. A still graph, silent or
     // with the transport stopped, costs nothing.
     if session.engine_running() {
         // Nothing else wakes a still editor when sound starts without input
         // (live MIDI with the transport stopped), so look again now and then.
-        let wait = if liveness == body::Liveness::Still {
+        let wait = if liveness == body::Liveness::Still && !pulsing {
             body::IDLE_POLL
         } else {
             body::METER_FRAME
@@ -764,11 +799,9 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
     if let Some(drop) = crate::carry::drop_in(ui.ctx(), canvas) {
         crate::carry::take_drop(ui.ctx());
         let sampler = match hit(&f, drop.at) {
-            Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _) => project
-                .graph()
-                .node(id)
-                .is_some_and(|n| n.type_id == noodle_nodes::SAMPLER_ID)
-                .then_some(id),
+            Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _) => {
+                pad_sampler(project.graph(), id)
+            }
             _ => None,
         };
         state.dropped = Some(Dropped {
@@ -790,8 +823,12 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
             .input(|i| i.pointer.latest_pos())
             .filter(|p| canvas.contains(*p))
     {
-        let on = match hit(&f, at) {
-            Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _)
+        let over = match hit(&f, at) {
+            Hit::Node(id) | Hit::Port(Endpoint { node: id, .. }, _) => Some(id),
+            _ => None,
+        };
+        let on = match over {
+            Some(id)
                 if project
                     .graph()
                     .node(id)
@@ -804,6 +841,7 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         state.dropped_files = Some(DroppedFiles {
             paths: files,
             on,
+            pad: over.and_then(|id| pad_sampler(project.graph(), id)),
             group: state.group,
         });
     }
@@ -1214,6 +1252,22 @@ fn pointer(
         )
     });
 
+    // Remember whether a press landed on an already-selected node, before the
+    // click or drag selects it: in-node edits only work on a selected node.
+    if let (true, Some(p), now) =
+        ui.input(|i| (i.pointer.primary_pressed(), i.pointer.latest_pos(), i.time))
+    {
+        let target = match hit(f, p) {
+            Hit::Node(id) => Some(id),
+            _ => None,
+        };
+        let continues =
+            matches!(state.press_selected, Some((id, _, t)) if Some(id) == target && now - t < 0.8);
+        if !continues {
+            state.press_selected = target.map(|id| (id, state.selected.contains(&id), now));
+        }
+    }
+
     // A parameter field on a node takes any drag that starts on it, but only
     // plain primary drags (and right-clicks) are its own. Hand panning and
     // strokes to the canvas, before the field sees the drag.
@@ -1493,15 +1547,17 @@ fn pointer(
     } else if response.double_clicked_by(PointerButton::Primary)
         && let Some(p) = latest
     {
+        let editable = |id: NodeId| matches!(state.press_selected, Some((n, true, _)) if n == id);
         match hit(f, p) {
             Hit::FrameHeader(id) => start_rename(state, f.project, id),
-            // A group's port rows rename the port; the rest of the node
-            // opens it.
+            // A group's port rows rename the port (on a node that was
+            // already selected); the rest of the node opens it.
             Hit::Node(id) if is_group(f.project, id) => {
                 let port = f
                     .scene
                     .node(id)
-                    .and_then(|node| port_row_at(node, f.t.to_graph(p)));
+                    .and_then(|node| port_row_at(node, f.t.to_graph(p)))
+                    .filter(|_| editable(id));
                 match port {
                     Some(port) => start_port_rename(state, f.project, id, port),
                     None => state.enter(Some(id), None),
@@ -1513,7 +1569,8 @@ fn pointer(
                     .scene
                     .node(id)
                     .and_then(|node| port_row_at(node, f.t.to_graph(p)))
-                    .filter(|port| !matches!(port.kind, PortKind::Param(_)));
+                    .filter(|port| !matches!(port.kind, PortKind::Param(_)))
+                    .filter(|_| editable(id));
                 if let Some(port) = port {
                     start_boundary_rename(state, id, port);
                 }
@@ -1654,7 +1711,8 @@ fn start_primary_drag(
             }
         }
         Hit::Node(id) => {
-            if !state.selected.contains(&id) {
+            let was_selected = state.selected.contains(&id);
+            if !was_selected {
                 if modifiers.shift {
                     state.selected.insert(id);
                 } else {
@@ -1662,11 +1720,14 @@ fn start_primary_drag(
                 }
             }
             state.active = Some(id);
-            // A port's label is its handle: dragging it reorders the column.
-            if let Some(port) = f
-                .scene
-                .node(id)
-                .and_then(|node| label_at(node, f.t.to_graph(start)))
+            // A port's label is its handle: dragging it reorders the column,
+            // but only on a node that was already selected; otherwise the drag
+            // moves the node.
+            if was_selected
+                && let Some(port) = f
+                    .scene
+                    .node(id)
+                    .and_then(|node| label_at(node, f.t.to_graph(start)))
             {
                 return Gesture::Reorder {
                     node: id,
@@ -2877,6 +2938,24 @@ fn start_rename(state: &mut EditorState, project: &Project, id: FrameId) {
     }
 }
 
+/// The Sampler a sample dropped on `id` goes to: `id` if it is one, or the
+/// only Sampler directly inside it if it is a group (a drum pad).
+fn pad_sampler(graph: &noodle_core::Graph, id: NodeId) -> Option<NodeId> {
+    let node = graph.node(id)?;
+    if node.type_id == noodle_nodes::SAMPLER_ID {
+        return Some(id);
+    }
+    if node.type_id != GROUP {
+        return None;
+    }
+    let mut samplers = graph
+        .children(Some(id))
+        .filter(|(_, n)| n.type_id == noodle_nodes::SAMPLER_ID)
+        .map(|(id, _)| id);
+    let only = samplers.next()?;
+    samplers.next().is_none().then_some(only)
+}
+
 /// Starts renaming a group, or a group's input or output node.
 fn start_node_rename(state: &mut EditorState, project: &Project, id: NodeId) {
     let graph = project.graph();
@@ -2903,7 +2982,9 @@ fn start_node_rename(state: &mut EditorState, project: &Project, id: NodeId) {
             };
             (target, name)
         }
-        _ => return,
+        _ if node.type_id == noodle_nodes::TRACK_INPUT_ID => return,
+        // Any other node can be given a name of its own, shown as its title.
+        _ => (RenameTarget::Group(id), layout::node_name(graph, id)),
     };
     state.rename = Some(Rename {
         target,
@@ -3245,8 +3326,10 @@ fn rename_edit(project: &Project, target: RenameTarget, label: String) -> Option
             let graph = project.graph();
             let shown = if graph.node(id)?.type_id == spare::MIXER {
                 spare::mixer_name(graph, id)
-            } else {
+            } else if graph.node(id)?.type_id == GROUP {
                 layout::group_title(graph, id)
+            } else {
+                layout::node_name(graph, id)
             };
             if label == shown {
                 return None;

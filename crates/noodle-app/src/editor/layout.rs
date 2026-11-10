@@ -384,6 +384,19 @@ impl Scene {
                 title
             };
 
+            // Any other node shows the name it was given, if it has one.
+            let title = match node_name(graph, id) {
+                name if !name.is_empty()
+                    && !matches!(
+                        node.type_id.as_str(),
+                        group::GROUP | noodle_core::spare::MIXER
+                    ) =>
+                {
+                    name
+                }
+                _ => title,
+            };
+
             // Ports that wires refer to but the node doesn't have.
             for connection in &connections {
                 for (endpoint, side) in [
@@ -776,6 +789,14 @@ fn capitalised(text: &str) -> String {
         .next()
         .map(|first| first.to_uppercase().chain(chars).collect())
         .unwrap_or_default()
+}
+
+/// The name a node was given (its `name` config), or an empty string.
+pub fn node_name(graph: &Graph, id: NodeId) -> String {
+    match graph.node(id).and_then(|n| n.config.get(group::PORT_NAME)) {
+        Some(noodle_core::Value::Text(name)) => name.clone(),
+        _ => String::new(),
+    }
 }
 
 /// A group's name, from its `name` config, or just "Group".

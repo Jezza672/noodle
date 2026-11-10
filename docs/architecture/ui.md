@@ -133,6 +133,44 @@ It has these views:
     to run: atomics only, nothing allocated or locked, and only when a
     telemetry hub is attached. `Bodies` reads them with the other meters
     (`Bodies::tap`). Modulation inputs are left out.
+  - **Live feedback** (`display.rs`, View > Display Settings…). Each item
+    is a switch saved in the preferences (`Prefs::display`), and
+    *Performance mode* turns them all off without forgetting the choices.
+    Everything is on by default except the CPU heat tint.
+    - *What the engine measures.* `Telemetry::gather()` holds four flags
+      the audio thread reads once per node per block: input levels, output
+      levels, event counts and node state. `Display::apply` sets them every
+      frame from what is shown, so a user who wants raw performance pays one
+      relaxed load per node and nothing else. The writers are plan-time
+      channels like the input meters: `open_output_meter`, `open_events`
+      (a running count per event output) and `open_state` (a packed
+      `NodeActivity`: ran, silent, voices sounding, voices). They are
+      written after the node has run (`report_outputs` in `plan.rs`), from
+      the silent flags the engine already keeps. The input half of a split
+      node doesn't report.
+    - *Wires.* An audio wire follows the level at the input it ends on
+      (`Bodies::tap`, or a mixer's channel meter), a modulation wire how
+      lately its parameter's reading moved, an event wire how lately its
+      output's count changed (`Bodies::event_glow`, which fades over about
+      a third of a second). A lit wire gets a halo and brightens towards
+      white; a wire that clipped lately turns red. Wires into or out of a
+      group's boundary don't glow, since a group is flattened away and has
+      no engine node of its own.
+    - *Nodes.* A thin bar on each audio output (`Bodies::output_tap`), along
+      the foot of its row or of the title bar. Nodes that made no sound in
+      their last block, or that nothing listens to, are faded, unless
+      selected. Polyphonic nodes show one dot per voice, lit for those that
+      sound. A node whose type says `NodeType::pulses_on_beat` (clock,
+      arpeggiator, pattern player, metronome, swing, launch quantise)
+      pulses its outline on each beat while the transport runs. The CPU heat
+      tint outlines nodes from yellow to red as their worst recent block
+      approaches a quarter of the block time; it reads the same timings as
+      the header's CPU labels, which stay a separate View switch.
+    - *Clipping.* A meter channel that sees a peak over full scale lights a
+      red lamp at the end of its bar for a second (`MeterChannel::clip`),
+      and the wire it is on turns red.
+    - *Parameters.* With *Show modulation motion* off, a wired parameter
+      shows its live value but not the range marks.
   - **Problems** from compiling are drawn where they belong: a red outline
     and a warning sign on the node, or a red wire, with the message on hover.
   - **Parameters on nodes** are `ParamField`s (see below), one per
@@ -156,7 +194,11 @@ It has these views:
     add a change on the beat, drag a point to move it and set its tempo, and
     right-click or Delete removes it (the first change stays at the start).
     The ruler's right-click menu also adds a tempo change at the bar
-    clicked ("Add tempo change at bar N"), next to its time signature items;
+    clicked ("Add tempo change at bar N"), and one "Insert time signature change at
+    bar N", which places the change with the current signature and opens a text
+    field over its marker, text selected (type `3/4`; Enter or a click away sets
+    it, Escape keeps the old one). Clicking a signature label on the ruler opens the
+    same field in place;
     signature changes live in the same tempo map, on bar lines only, and show
     as markers on the ruler.
     Every edit is a `SetTempoMap` command, so undo and the engine's table follow
@@ -431,6 +473,10 @@ graph as `@level` and `@reduction`). Parametric EQ shows the combined response
 (`eq_response_db`) with a point per band along frequency and gain; a cut or
 notch has no gain, so its point moves in frequency only. A node's config can
 reach a graph too (`bands`, through `special_value`).
+
+## Editor header bars
+
+The piano roll, clip editor and sample editor share one header bar (`toolbar.rs`). It follows the transport pill's rules: each control sits in a slot of fixed width, related controls share a rounded pill, icons are drawn, and numbers live in popovers (Loop range, Humanise amounts, lanes, articulations, the hint under `?`). Clip-level controls (lane tool, Loop, Lanes) come first, then a divider and the selection group (`N notes selected`, Humanise, Articulation). Snap is a read-only chip; the snap step is set in the menu bar. When the panel is too narrow, `toolbar::fit` folds the slots with the highest `keep` into a `...` menu (hint first, then Snap, the selection group, Lanes, tools, Loop), so nothing is cut off. Close never moves.
 
 ## Mixer
 

@@ -35,9 +35,19 @@ use crate::clip_panel;
 use crate::session::{Edit, Session};
 use crate::theme::{self, timeline as colors};
 use crate::timeline::Loaded;
+use crate::toolbar::{Icon, Mode, Pill, Slot};
 use subject::Subject;
 
 const TOOLBAR: f32 = crate::toolbar::HEIGHT;
+const TITLE_WIDTH: f32 = 230.0;
+
+/// What a slot of the toolbar holds.
+#[derive(Clone, Copy)]
+enum Control {
+    Warp,
+    Loop,
+    Help,
+}
 const HINT_PLAIN: &str =
     "Drag the waveform to slide the audio under the clip · Warp gives it beats to pin";
 const HINT: &str = "Double-click to add a marker · drag a flag to move it (Shift picks several) · drag the waveform to line the beats up · Delete removes · Alt: no snap";
@@ -416,27 +426,49 @@ pub fn show(
         state.plain = unwarped;
         state.view.focus = true;
     }
+    // Warp and Loop only apply to audio with no beats pinned yet; the hint
+    // is always there.
+    let slots: &[(Slot, Control)] = if unwarped {
+        &[
+            (Slot::left(76.0, 1), Control::Warp),
+            (Slot::left(76.0, 2), Control::Loop),
+            (Slot::right(crate::toolbar::SQUARE, 3), Control::Help),
+        ]
+    } else {
+        &[(Slot::right(crate::toolbar::SQUARE, 3), Control::Help)]
+    };
+    let hint = if unwarped { HINT_PLAIN } else { HINT };
+    let layout: Vec<Slot> = slots.iter().map(|(slot, _)| *slot).collect();
     let closed = crate::toolbar::show(
         ui,
         toolbar,
         &title,
-        if unwarped { HINT_PLAIN } else { HINT },
-        |ui| {
-            if unwarped {
-                if ui
-                    .button("Warp")
-                    .on_hover_text(
-                        "Give this audio beats to pin: the tempo is guessed from its hits",
-                    )
-                    .clicked()
-                {
+        TITLE_WIDTH,
+        &layout,
+        &mut |ui, i, mode| match slots[i].1 {
+            Control::Warp => {
+                let spec = Pill {
+                    icon: Icon::Wave,
+                    label: "Warp",
+                    active: false,
+                    enabled: true,
+                    tip: "Give this audio beats to pin: the tempo is guessed from its hits",
+                };
+                let pressed = match mode {
+                    Mode::Bar => crate::toolbar::pill_only(ui, &spec),
+                    Mode::Menu => ui.button("Warp").on_hover_text(spec.tip).clicked(),
+                };
+                if pressed {
                     let analysis = loaded.and_then(|l| l.analysis.as_deref());
                     out.edits.extend(
                         clip_panel::start_warp(project, subject, analysis).map(Edit::Apply),
                     );
                 }
-                plain::loop_toggle(ui, project, subject, &section, span, &mut out.edits);
             }
+            Control::Loop => {
+                plain::loop_toggle(ui, mode, project, subject, &section, span, &mut out.edits);
+            }
+            Control::Help => crate::toolbar::hint_popover(ui, mode, hint),
         },
     );
     if closed {

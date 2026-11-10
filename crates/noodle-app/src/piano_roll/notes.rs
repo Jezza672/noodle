@@ -180,13 +180,35 @@ pub fn pasted(
     (!ids.is_empty()).then_some((out, ids))
 }
 
-/// `notes` with note `index`'s velocity set.
-pub fn with_velocity(notes: &[MidiNote], index: usize, velocity: f32) -> Vec<MidiNote> {
-    let mut notes = notes.to_vec();
-    if let Some(note) = notes.get_mut(index) {
-        note.velocity = velocity.clamp(0.0, 1.0);
+/// `notes` with the velocity of note `index` set to `velocity`, and every
+/// other selected note scaled by the same ratio, so a group keeps its shape.
+/// (A grabbed note with no velocity to scale from moves the group by the
+/// same amount instead.)
+pub fn with_group_velocity(
+    notes: &[MidiNote],
+    selected: &BTreeSet<u32>,
+    index: usize,
+    velocity: f32,
+) -> Vec<MidiNote> {
+    let Some(grabbed) = notes.get(index) else {
+        return notes.to_vec();
+    };
+    let velocity = velocity.clamp(0.0, 1.0);
+    let (from, id) = (grabbed.velocity, grabbed.id);
+    let mut out = notes.to_vec();
+    for note in &mut out {
+        if note.id == id {
+            note.velocity = velocity;
+        } else if selected.contains(&note.id) {
+            note.velocity = if from > 0.001 {
+                note.velocity * velocity / from
+            } else {
+                note.velocity + velocity - from
+            }
+            .clamp(0.0, 1.0);
+        }
     }
-    notes
+    out
 }
 
 #[cfg(test)]
@@ -333,10 +355,30 @@ mod tests {
     }
 
     #[test]
+    fn a_group_velocity_edit_scales_every_selected_note_by_the_same_ratio() {
+        let mut notes = [note(0, 10, 60), note(10, 10, 62), note(20, 10, 64)];
+        for (i, v) in [0.8, 0.4, 0.6].into_iter().enumerate() {
+            notes[i].id = i as u32;
+            notes[i].velocity = v;
+        }
+        let selected = BTreeSet::from([0, 1]);
+        let out = with_group_velocity(&notes, &selected, 0, 0.4);
+        assert!((out[0].velocity - 0.4).abs() < 1e-6);
+        assert!((out[1].velocity - 0.2).abs() < 1e-6, "halved too");
+        assert!((out[2].velocity - 0.6).abs() < 1e-6, "unselected stays");
+    }
+
+    #[test]
     fn velocity_is_clamped() {
         let notes = ided([note(0, 240, 60)]);
-        assert_eq!(with_velocity(&notes, 0, 1.7)[0].velocity, 1.0);
-        assert_eq!(with_velocity(&notes, 0, -1.0)[0].velocity, 0.0);
-        assert_eq!(with_velocity(&notes, 3, 0.1), notes);
+        assert_eq!(
+            with_group_velocity(&notes, &BTreeSet::new(), 0, 1.7)[0].velocity,
+            1.0
+        );
+        assert_eq!(
+            with_group_velocity(&notes, &BTreeSet::new(), 0, -1.0)[0].velocity,
+            0.0
+        );
+        assert_eq!(with_group_velocity(&notes, &BTreeSet::new(), 3, 0.1), notes);
     }
 }
