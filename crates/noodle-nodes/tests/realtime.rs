@@ -1558,6 +1558,9 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
             .with_param("timing", 10.0)
             .with_param("velocity", 0.3),
     );
+    // A Choke Gate before the split: the swung notes also arrive on its
+    // `choke` input, so each cuts the ones still sounding.
+    let gate = s.add(Node::new("noodle.event.choke_gate"));
     let split = s.add(
         Node::new("noodle.event.note_split")
             .with_config(
@@ -1583,7 +1586,9 @@ fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
     s.wire(key, "out", arp, "in");
     s.wire(arp, "out", swing, "in");
     s.wire(swing, "out", humanise, "in");
-    s.wire(humanise, "out", split, "in");
+    s.wire(humanise, "out", gate, "in");
+    s.wire(swing, "out", gate, "choke");
+    s.wire(gate, "out", split, "in");
     s.wire(split, "out1", low, "in");
     s.wire(split, "out2", high, "in");
     s.wire(low, "out", mix, "in1");

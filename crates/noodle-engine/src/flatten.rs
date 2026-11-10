@@ -140,17 +140,49 @@ pub(crate) fn output_stages<'a>(
     registry: &'a crate::Registry,
 ) -> impl Iterator<Item = NodeId> + 'a {
     let carries_events = move |boundary: NodeId, port: u32| {
-        let Some(from) = graph.source(&Endpoint::new(boundary, noodle_core::group::port_key(port)))
-        else {
-            return false;
-        };
-        let Some(node) = graph.node(from.node) else {
-            return false;
-        };
-        registry
-            .get(&node.type_id)
-            .and_then(|t| t.layout(&node.config).ok())
-            .is_some_and(|layout| layout.event_outputs.iter().any(|p| p.key == from.port))
+        let mut at = graph
+            .source(&Endpoint::new(boundary, noodle_core::group::port_key(port)))
+            .cloned();
+        // Each endpoint is crossed once, so a loop of pass-through groups ends.
+        let mut seen = BTreeSet::new();
+        while let Some(from) = at.take() {
+            if !seen.insert(from.clone()) {
+                return false;
+            }
+            let Some(node) = graph.node(from.node) else {
+                return false;
+            };
+            match node.type_id.as_str() {
+                // Out of a nested group: what feeds that output inside it.
+                GROUP => {
+                    at = graph
+                        .group_ports(from.node)
+                        .output(&from.port)
+                        .and_then(|p| graph.source(&Endpoint::new(p.node, p.key())).cloned());
+                }
+                // Passed through from the group's own input: what feeds it.
+                GROUP_INPUT => {
+                    let name = parse_port_key(&from.port).and_then(|id| {
+                        node.boundary_ports()
+                            .into_iter()
+                            .find(|&(port, _)| port == id)
+                            .map(|(_, name)| name)
+                    });
+                    at = node.parent.zip(name).and_then(|(group, name)| {
+                        graph.source(&Endpoint::new(group, name)).cloned()
+                    });
+                }
+                _ => {
+                    return registry
+                        .get(&node.type_id)
+                        .and_then(|t| t.layout(&node.config).ok())
+                        .is_some_and(|layout| {
+                            layout.event_outputs.iter().any(|p| p.key == from.port)
+                        });
+                }
+            }
+        }
+        false
     };
     graph
         .nodes()
@@ -802,5 +834,67 @@ mod tests {
             flat.source(&Endpoint::new(stage_id(input, 1), "mute")),
             Some(&Endpoint::new(lfo, "out"))
         );
+    }
+
+    /// A node with one event output, to stand for a note source.
+    struct Notes;
+
+    struct Idle;
+
+    impl crate::Node for Idle {
+        fn process(&mut self, _: &crate::Context, _: crate::Io<'_, '_>) {}
+    }
+
+    static NOTES_INFO: crate::NodeInfo = crate::NodeInfo {
+        id: "test.notes",
+        version: 1,
+        name: "Notes",
+        category: "Test",
+    };
+
+    impl crate::NodeType for Notes {
+        fn info(&self) -> &crate::NodeInfo {
+            &NOTES_INFO
+        }
+
+        fn config(&self) -> &[crate::ConfigInfo] {
+            &[]
+        }
+
+        fn layout(&self, _: &noodle_core::Config) -> Result<crate::Layout, crate::NodeError> {
+            Ok(crate::Layout::realtime().event_output("out", "Notes"))
+        }
+
+        fn instantiate(&self, _: &crate::Setup<'_>) -> Result<crate::Instance, crate::NodeError> {
+            Ok(crate::Instance::realtime(Idle))
+        }
+    }
+
+    #[test]
+    fn a_group_output_that_carries_notes_has_no_meter_stage_however_deep_the_source() {
+        let mut registry = crate::Registry::new();
+        registry.register(Notes);
+        let mut project = Project::new();
+        let mut history = History::new();
+        let notes = add(&mut project, &mut history, Node::new("test.notes"));
+        let sink = add(&mut project, &mut history, Node::new("sink"));
+        wire(&mut project, &mut history, (notes, "out"), (sink, "in"));
+        let (inner, command) =
+            group_nodes(&project.clone(), &[notes], || project.new_node_id()).unwrap();
+        history.apply(&mut project, command).unwrap();
+        let (outer, command) =
+            group_nodes(&project.clone(), &[inner], || project.new_node_id()).unwrap();
+        history.apply(&mut project, command).unwrap();
+        let graph = project.graph();
+        // Both groups have an output node, and both fed by notes: directly in
+        // the inner group, through the inner group in the outer one.
+        let outputs = |group: NodeId| {
+            graph
+                .children(Some(group))
+                .filter(|(_, n)| n.type_id == GROUP_OUTPUT)
+                .count()
+        };
+        assert_eq!((outputs(inner), outputs(outer)), (1, 1));
+        assert_eq!(output_stages(graph, &registry).count(), 0);
     }
 }
