@@ -365,6 +365,17 @@ impl EditorState {
         self.bodies.param_live(node, key)
     }
 
+    /// Sets what the graph shows of the sound as it plays.
+    pub fn set_display(&mut self, display: crate::display::Display) {
+        self.bodies.set_display(display);
+    }
+
+    /// What the graph is showing of the sound now (performance mode counts).
+    #[cfg(test)]
+    pub fn bodies_display(&self) -> crate::display::Display {
+        *self.bodies.display()
+    }
+
     /// Whether each node shows how much of the audio thread's time it takes.
     pub fn show_cpu(&self) -> bool {
         self.bodies.show_cpu()
@@ -631,19 +642,33 @@ pub fn show(ui: &mut egui::Ui, state: &mut EditorState, session: &Session) -> Ve
     state
         .bodies
         .set_sample_rate(session.engine_sample_rate().unwrap_or(0.0));
+    // The engine measures only what is shown, however the session came by
+    // its hub.
+    state.bodies.display().apply(session.telemetry().gather());
+    // The beat's pulse: 1 on the beat, gone by the next, while playing.
+    let beat = (session.engine_running() && session.transport_running()).then(|| {
+        let ticks = session
+            .playhead()
+            .0
+            .rem_euclid(noodle_core::TICKS_PER_QUARTER);
+        let fraction = ticks as f32 / noodle_core::TICKS_PER_QUARTER as f32;
+        (1.0 - fraction * 2.0).max(0.0).powi(2)
+    });
+    state.bodies.set_beat(beat);
     let liveness = state.bodies.update(
         session.telemetry(),
         session.project(),
         session.registry(),
         dt,
     );
+    let pulsing = state.bodies.any_pulsing();
     // Meters and scopes move with the audio, so keep drawing while they do,
     // and while their peaks and traces fall back. A still graph, silent or
     // with the transport stopped, costs nothing.
     if session.engine_running() {
         // Nothing else wakes a still editor when sound starts without input
         // (live MIDI with the transport stopped), so look again now and then.
-        let wait = if liveness == body::Liveness::Still {
+        let wait = if liveness == body::Liveness::Still && !pulsing {
             body::IDLE_POLL
         } else {
             body::METER_FRAME

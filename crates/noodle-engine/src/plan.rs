@@ -18,10 +18,10 @@ use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID, OUTPUT_ROUTING, parse_r
 use crate::parallel::{StepGraph, Workers};
 use crate::render::TAP_ID;
 use crate::{
-    BlockWriter, Context, CpuWriter, Diagnostic, Event, EventsOut, InputKind, InputSource,
-    Instance, Io, Level, MAX_LATENCY, MeterWriter, Node, NodeError, ParamInfo, ParamKind,
-    ParamWriter, Phase, Problem, Schedule, Settings, Setup, Shape, SignalIn, SignalOut,
-    SpectralBuf, SpectralDelay, SpectralIn, SpectralOut, Telemetry,
+    BlockWriter, Context, CpuWriter, Diagnostic, Event, EventWriter, EventsOut, Gather, InputKind,
+    InputSource, Instance, Io, Level, MAX_LATENCY, MeterWriter, Node, NodeActivity, NodeError,
+    ParamInfo, ParamKind, ParamWriter, Phase, Problem, Schedule, Settings, Setup, Shape, SignalIn,
+    SignalOut, SpectralBuf, SpectralDelay, SpectralIn, SpectralOut, StateWriter, Telemetry,
 };
 
 /// The value of an unconnected input, shared between the controller, which
@@ -198,6 +198,15 @@ struct PlanNode {
     probes: Vec<(usize, ParamWriter)>,
     /// Reports the level arriving at each wired audio input, by input index.
     input_meters: Vec<(usize, MeterWriter)>,
+    /// Reports the level leaving each audio output, by output index.
+    output_meters: Vec<(usize, MeterWriter)>,
+    /// Counts the events each event output sends, by event output index.
+    event_meters: Vec<(usize, EventWriter)>,
+    /// Reports whether the node ran and whether it sounded, when it is not
+    /// the input half of a split node.
+    state: Option<StateWriter>,
+    /// Which of the optional reports above to make.
+    gather: Option<Gather>,
     /// Reports how long the node takes, when something is watching.
     cpu: Option<CpuWriter>,
     /// The node runs whatever is downstream of it: an Output node, a tap, or
@@ -624,6 +633,37 @@ pub(crate) fn build(
             })
             .collect();
 
+        let output_meters: Vec<(usize, MeterWriter)> = telemetry
+            .filter(|_| !input_half)
+            .into_iter()
+            .flat_map(|telemetry| {
+                scheduled
+                    .layout
+                    .outputs
+                    .iter()
+                    .zip(&scheduled.output_shapes)
+                    .enumerate()
+                    .map(move |(index, (port, shape))| {
+                        (
+                            index,
+                            telemetry.open_output_meter(id, &port.key, shape.channels),
+                        )
+                    })
+            })
+            .collect();
+        let event_meters: Vec<(usize, EventWriter)> = telemetry
+            .filter(|_| !input_half)
+            .into_iter()
+            .flat_map(|telemetry| {
+                scheduled
+                    .layout
+                    .event_outputs
+                    .iter()
+                    .enumerate()
+                    .map(move |(index, port)| (index, telemetry.open_events(id, &port.key)))
+            })
+            .collect();
+
         let is_output = scheduled.node_type.info().id == OUTPUT_ID;
         let mut bus = None;
         if is_output {
@@ -704,6 +744,12 @@ pub(crate) fn build(
             is_input: scheduled.node_type.info().id == INPUT_ID,
             probes,
             input_meters,
+            output_meters,
+            event_meters,
+            state: telemetry
+                .filter(|_| !input_half)
+                .map(|telemetry| telemetry.open_state(id)),
+            gather: telemetry.map(|telemetry| telemetry.gather().clone()),
             cpu: telemetry
                 .filter(|_| !input_half)
                 .map(|telemetry| telemetry.open_cpu(id)),
@@ -1184,6 +1230,11 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
     let node = unsafe { &mut *nodes.add(index) };
     let home = node.owner.unwrap_or(index);
     if !frame.live[home] {
+        if let (Some(state), Some(gather)) = (&node.state, &node.gather)
+            && gather.state()
+        {
+            state.write(NodeActivity::default());
+        }
         // Nothing listens to this node, so it doesn't run. If something that
         // ignores it still reads its outputs, they have to hold silence.
         if frame.zero[home] {
@@ -1281,7 +1332,8 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
         }
     }
 
-    for (index, meter) in &node.input_meters {
+    let input_levels = node.gather.as_ref().is_none_or(Gather::input_levels);
+    for (index, meter) in node.input_meters.iter().filter(|_| input_levels) {
         let signal = &inputs[*index];
         let shape = signal.shape();
         for channel in 0..shape.channels.min(meter.channels()) {
@@ -1353,7 +1405,75 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
     node.scratch.event_outputs = recycle(event_outputs);
     node.scratch.spectral_inputs = recycle(spectral_inputs);
     node.scratch.spectral_outputs = recycle(spectral_outputs);
+    // SAFETY: the node has finished, and its views are dropped, so reading
+    // what it wrote races with nothing.
+    unsafe { report_outputs(node, pool, silent, events, frames, max_frames) };
     panicked
+}
+
+/// Reports what a node just wrote: the level of each audio output, the
+/// events each event output sent, and whether the node sounded. Each report
+/// is made only while the UI wants it (see [`Gather`]), and none allocates.
+///
+/// SAFETY: `pool`, `silent` and `events` must be the plan's, and nothing may
+/// be writing this node's outputs.
+unsafe fn report_outputs(
+    node: &PlanNode,
+    pool: *mut f32,
+    silent: *mut bool,
+    events: *mut Vec<Event>,
+    frames: usize,
+    max_frames: usize,
+) {
+    let Some(gather) = &node.gather else {
+        return;
+    };
+    if gather.output_levels() {
+        for (index, meter) in &node.output_meters {
+            let Some(view) = node.outputs.get(*index) else {
+                continue;
+            };
+            let signal = unsafe { view.read(pool, silent, frames, max_frames) };
+            for channel in 0..view.shape.channels.min(meter.channels()) {
+                meter.write(channel, input_level(&signal, channel));
+            }
+        }
+    }
+    if gather.events() {
+        for (index, meter) in &node.event_meters {
+            let sent = node
+                .event_outputs
+                .get(*index)
+                .map_or(0, |&buffer| unsafe { (*events.add(buffer)).len() });
+            meter.write(sent);
+        }
+    }
+    if let (Some(state), true) = (&node.state, gather.state()) {
+        let mut sounding = 0usize;
+        let mut voices = 0usize;
+        let mut all_silent = !node.outputs.is_empty();
+        for view in &node.outputs {
+            let signal = unsafe { view.read(pool, silent, frames, max_frames) };
+            let shape = view.shape;
+            voices = voices.max(shape.voices);
+            let mut here = 0;
+            for voice in 0..shape.voices {
+                if (0..shape.channels).any(|channel| !signal.is_silent(voice, channel)) {
+                    here += 1;
+                }
+            }
+            if here > 0 {
+                all_silent = false;
+            }
+            sounding = sounding.max(here);
+        }
+        state.write(NodeActivity {
+            ran: true,
+            silent: all_silent,
+            sounding: sounding.min(255) as u8,
+            voices: voices.min(255) as u8,
+        });
+    }
 }
 
 /// Works out which steps must wait for which, from the buffers each reads and

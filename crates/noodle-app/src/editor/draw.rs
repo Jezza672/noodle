@@ -126,7 +126,26 @@ pub fn wires(
             colors::WIRE
         };
         let points = wire::curve(wire.from, wire.to).map(|p| f.t.to_screen(p));
-        cable(painter, points, z, color);
+        let (glow, clipping) = if problem || splicing {
+            (0.0, false)
+        } else {
+            wire_glow(&state.bodies, f.project.graph(), wire)
+        };
+        if glow > 0.0 || clipping {
+            let lit = if clipping { colors::METER_OVER } else { color };
+            let amount = if clipping { 1.0 } else { glow };
+            // A soft halo under the cable, and the cable itself brightening
+            // towards white as the signal gets stronger.
+            curve(
+                painter,
+                points,
+                Stroke::new((9.0 * z).max(3.0), lit.gamma_multiply(0.30 * amount)),
+            );
+            let bright = lerp_color(lit, Color32::WHITE, 0.55 * amount);
+            cable(painter, points, z, bright);
+        } else {
+            cable(painter, points, z, color);
+        }
         if problem && z >= MIN_TEXT_ZOOM {
             let middle = wire::flatten(wire::curve(wire.from, wire.to))[12];
             warning(painter, f.t.to_screen(middle), z, Align2::CENTER_CENTER);
@@ -164,7 +183,25 @@ pub fn nodes(
             boxed(painter, f, node, outline, problem, state);
         }
         then(node);
+        if !node.reroute && fades(state, node.id) {
+            painter.rect_filled(
+                f.t.rect_to_screen(node.rect),
+                f32::from(theme::NODE_RADIUS) * f.t.zoom,
+                Color32::from_black_alpha(95),
+            );
+        }
     }
+}
+
+/// Whether a node is drawn faded: it made no sound in its last block, or
+/// nothing listens to it. A selected node stays clear, so it can be worked on.
+fn fades(state: &EditorState, id: NodeId) -> bool {
+    state.bodies.display().silent_dim
+        && !state.selected.contains(&id)
+        && state
+            .bodies
+            .node_state(id)
+            .is_some_and(|node| !node.ran || node.silent)
 }
 
 fn reroute(painter: &Painter, f: &Frame_<'_>, node: &NodeGeom, outline: Stroke) {
@@ -211,6 +248,50 @@ fn boxed(
         colors::header(&node.category),
     );
     painter.rect_stroke(rect, radius, outline, StrokeKind::Outside);
+    if !problem {
+        if let Some(pulse) = bodies.beat_at(node.id)
+            && pulse > 0.01
+        {
+            painter.rect_stroke(
+                rect.expand(1.5 * z),
+                radius + 1.5 * z,
+                Stroke::new(2.0 * z, colors::ACTIVE.gamma_multiply(0.85 * pulse)),
+                StrokeKind::Outside,
+            );
+        }
+        if let Some(load) = bodies.cpu_heat(node.id) {
+            // Nothing at a hundredth of the block, fully hot at a quarter.
+            let heat = ((load - 0.01) / 0.24).clamp(0.0, 1.0);
+            if heat > 0.0 {
+                let color = lerp_color(Color32::from_rgb(240, 200, 64), colors::METER_OVER, heat);
+                painter.rect_stroke(
+                    rect.expand(1.5 * z),
+                    radius + 1.5 * z,
+                    Stroke::new(2.5 * z, color.gamma_multiply(0.35 + 0.65 * heat)),
+                    StrokeKind::Outside,
+                );
+            }
+        }
+    }
+    if bodies.display().voice_leds
+        && let Some(state) = bodies.node_state(node.id)
+        && state.voices > 1
+    {
+        // One dot for each voice, the first few lit for those that sound.
+        let shown = usize::from(state.voices).min(16);
+        for voice in 0..shown {
+            let lit = voice < usize::from(state.sounding);
+            painter.circle_filled(
+                rect.left_bottom() + Vec2::new((10.0 + 5.0 * voice as f32) * z, -4.0 * z),
+                1.8 * z,
+                if lit {
+                    colors::ACTIVE
+                } else {
+                    colors::NODE_OUTLINE
+                },
+            );
+        }
+    }
 
     let text = z >= MIN_TEXT_ZOOM;
     let monitor = super::monitor_button(f.project, node);
@@ -372,6 +453,24 @@ fn boxed(
                 if let Some(area) = row_meter_area(painter, row, z, &port.name) {
                     body::meter(painter, area, z, levels, body::MeterAxis::Horizontal);
                 }
+            }
+        }
+        // Any audio output shows the level leaving it, as a thin bar along
+        // the bottom of its row (or of the title bar, for a port that sits
+        // there).
+        if text && !port.spare && port.side == Side::Output && port.kind == PortKind::Audio {
+            let levels = bodies.output_tap(node.id, &port.key);
+            if !levels.is_empty() {
+                let edge = if port.in_header {
+                    f.t.rect_to_screen(node.header())
+                } else {
+                    f.t.rect_to_screen(port.row)
+                };
+                let area = Rect::from_min_size(
+                    Pos2::new(edge.right() - 62.0 * z, edge.bottom() - 5.0 * z),
+                    Vec2::new(48.0 * z, 4.0 * z),
+                );
+                body::meter(painter, area, z, levels, body::MeterAxis::Horizontal);
             }
         }
         socket(painter, f, port);
@@ -654,6 +753,39 @@ fn warning(painter: &Painter, at: Pos2, z: f32, align: Align2) {
 }
 
 /// A wire drawn as a thick cable with a dark core.
+/// How much `wire` should shine, 0 to 1, and whether the signal in it has
+/// clipped lately. An audio wire follows the level arriving at its end, a
+/// modulation wire how lately its signal moved, an event wire how lately
+/// events came out of its start.
+fn wire_glow(
+    bodies: &body::Bodies,
+    graph: &noodle_core::Graph,
+    wire: &super::layout::WireGeom,
+) -> (f32, bool) {
+    let display = bodies.display();
+    let Endpoint { node, port } = &wire.connection.to;
+    if display.audio_wires {
+        let channels = match mixer_channel(graph, *node, port) {
+            Some(channel) => bodies.input_meters_of(*node, channel),
+            None => bodies.tap(*node, port),
+        };
+        if !channels.is_empty() {
+            let (level, clipped) = body::Bodies::level_of(channels);
+            return (level, clipped && display.clip_flash);
+        }
+    }
+    let from = &wire.connection.from;
+    if wire.event {
+        return (bodies.event_glow(from.node, &from.port), false);
+    }
+    (bodies.param_glow(*node, port), false)
+}
+
+fn lerp_color(a: Color32, b: Color32, t: f32) -> Color32 {
+    let mix = |x: u8, y: u8| (f32::from(x) + (f32::from(y) - f32::from(x)) * t).round() as u8;
+    Color32::from_rgb(mix(a.r(), b.r()), mix(a.g(), b.g()), mix(a.b(), b.b()))
+}
+
 fn cable(painter: &Painter, points: [Pos2; 4], z: f32, color: Color32) {
     curve(painter, points, Stroke::new((4.0 * z).max(1.5), color));
     curve(
@@ -846,5 +978,197 @@ mod default_tests {
             }
         });
         out.textures_delta.clear();
+    }
+}
+
+#[cfg(test)]
+mod glow_tests {
+    use noodle_core::{Command, Connection, Node, Project};
+    use noodle_engine::{Level, Telemetry};
+
+    use super::*;
+    use crate::display::Display;
+
+    fn wire(connection: Connection, event: bool) -> super::super::layout::WireGeom {
+        super::super::layout::WireGeom {
+            connection,
+            lane: None,
+            from: Pos2::ZERO,
+            to: Pos2::new(100.0, 0.0),
+            event,
+            spectral: false,
+            sample: false,
+        }
+    }
+
+    /// An oscillator wired into a filter's audio input.
+    fn audio_rig() -> (Project, Connection, Telemetry) {
+        let mut project = Project::new();
+        let (src, dst) = (project.new_node_id(), project.new_node_id());
+        for (id, type_id) in [(src, "noodle.osc.sine"), (dst, "noodle.filter.svf")] {
+            Command::AddNode {
+                id,
+                node: Node::new(type_id),
+            }
+            .apply(&mut project)
+            .unwrap();
+        }
+        let connection = Connection {
+            from: Endpoint::new(src, "out"),
+            to: Endpoint::new(dst, "in"),
+        };
+        Command::Connect(connection.clone())
+            .apply(&mut project)
+            .unwrap();
+        (project, connection, Telemetry::new())
+    }
+
+    fn registry() -> noodle_engine::Registry {
+        crate::session::Nodes::all().registry
+    }
+
+    #[test]
+    fn an_audio_wire_shines_with_its_level_and_flashes_when_it_clips() {
+        let (project, connection, telemetry) = audio_rig();
+        let writer = telemetry.open_input_meter(connection.to.node, "in", 1);
+        let mut bodies = body::Bodies::default();
+        let w = wire(connection.clone(), false);
+
+        // Silence: dark.
+        writer.write(0, Level::default());
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(wire_glow(&bodies, project.graph(), &w), (0.0, false));
+
+        // Quiet and loud signals shine differently.
+        writer.write(
+            0,
+            Level {
+                peak: 0.01,
+                rms: 0.005,
+            },
+        );
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        let (quiet, _) = wire_glow(&bodies, project.graph(), &w);
+        writer.write(
+            0,
+            Level {
+                peak: 0.8,
+                rms: 0.5,
+            },
+        );
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        let (loud, clipped) = wire_glow(&bodies, project.graph(), &w);
+        assert!(0.0 < quiet && quiet < loud && loud <= 1.0, "{quiet} {loud}");
+        assert!(!clipped);
+
+        // Over full scale it flashes, unless that is switched off.
+        writer.write(
+            0,
+            Level {
+                peak: 2.0,
+                rms: 1.0,
+            },
+        );
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert!(wire_glow(&bodies, project.graph(), &w).1);
+        bodies.set_display(Display {
+            clip_flash: false,
+            ..Display::default()
+        });
+        writer.write(
+            0,
+            Level {
+                peak: 2.0,
+                rms: 1.0,
+            },
+        );
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert!(!wire_glow(&bodies, project.graph(), &w).1);
+
+        // With the wire glow off, the wire stays plain.
+        bodies.set_display(Display {
+            audio_wires: false,
+            ..Display::default()
+        });
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(wire_glow(&bodies, project.graph(), &w), (0.0, false));
+    }
+
+    #[test]
+    fn an_event_wire_shines_while_events_leave_its_start() {
+        let mut project = Project::new();
+        let (src, dst) = (project.new_node_id(), project.new_node_id());
+        for (id, type_id) in [(src, "noodle.input.button"), (dst, "noodle.event.key")] {
+            Command::AddNode {
+                id,
+                node: Node::new(type_id),
+            }
+            .apply(&mut project)
+            .unwrap();
+        }
+        let connection = Connection {
+            from: Endpoint::new(src, "events"),
+            to: Endpoint::new(dst, "events"),
+        };
+        let telemetry = Telemetry::new();
+        let writer = telemetry.open_events(src, "events");
+        let mut bodies = body::Bodies::default();
+        bodies.set_sample_rate(48_000.0);
+        let w = wire(connection, true);
+        writer.write(0);
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(wire_glow(&bodies, project.graph(), &w).0, 0.0);
+        writer.write(3);
+        bodies.update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert_eq!(wire_glow(&bodies, project.graph(), &w).0, 1.0);
+    }
+
+    #[test]
+    fn a_faded_node_is_one_that_did_not_sound_and_is_not_selected() {
+        let mut project = Project::new();
+        let id = project.new_node_id();
+        Command::AddNode {
+            id,
+            node: Node::new("noodle.osc.sine"),
+        }
+        .apply(&mut project)
+        .unwrap();
+        let telemetry = Telemetry::new();
+        let writer = telemetry.open_state(id);
+        let mut state = EditorState::default();
+        state.bodies.set_sample_rate(48_000.0);
+        let sounding = noodle_engine::NodeActivity {
+            ran: true,
+            silent: false,
+            sounding: 1,
+            voices: 1,
+        };
+        writer.write(sounding);
+        state
+            .bodies
+            .update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert!(!fades(&state, id));
+        writer.write(noodle_engine::NodeActivity {
+            silent: true,
+            ..sounding
+        });
+        state
+            .bodies
+            .update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert!(fades(&state, id));
+        state.selected.insert(id);
+        assert!(!fades(&state, id));
+        state.selected.clear();
+        // Not running at all (nothing listens) fades too.
+        writer.write(noodle_engine::NodeActivity::default());
+        state
+            .bodies
+            .update(&telemetry, &project, &registry(), 1.0 / 60.0);
+        assert!(fades(&state, id));
+        state.bodies.set_display(Display {
+            silent_dim: false,
+            ..Display::default()
+        });
+        assert!(!fades(&state, id));
     }
 }

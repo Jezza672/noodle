@@ -93,9 +93,9 @@ pub use spectral::{
     SpectralIn, SpectralOut, Synthesizer, bin_frequency, frame_capacity,
 };
 pub use telemetry::{
-    ACTIVITY_FLOOR, BlockStats, BlockWriter, CpuReading, CpuTotals, CpuWriter, LOAD_BUCKETS, Level,
-    MeterReader, MeterWriter, ParamReading, ParamWriter, PositionWriter, ScopeView, ScopeWriter,
-    Telemetry,
+    ACTIVITY_FLOOR, BlockStats, BlockWriter, CpuReading, CpuTotals, CpuWriter, EventWriter, Gather,
+    LOAD_BUCKETS, Level, MeterReader, MeterWriter, NodeActivity, ParamReading, ParamWriter,
+    PositionWriter, ScopeView, ScopeWriter, StateWriter, Telemetry,
 };
 pub use tempo::TempoTable;
 pub mod wake;
