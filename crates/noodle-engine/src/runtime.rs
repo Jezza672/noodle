@@ -494,13 +494,6 @@ impl Controller {
     }
 }
 
-/// Renders the current plan. Everything here is real-time safe.
-///
-/// A plan that changes what's audible (a node on the output's path is added,
-/// removed, rewired or rebuilt) would switch the sound abruptly and click. So
-/// the processor fades the output out over a few milliseconds, installs the
-/// plan, and fades back in. Other plans go in at once. A seek, and a tempo map
-/// that moves the playhead, are handled the same way.
 /// What the audio thread converts time with. The timeline (the playhead,
 /// seeks, loops and where clips sit) always follows the project's tempo map,
 /// so what is under the playhead is what plays. `live` is the tempo the
@@ -520,6 +513,13 @@ impl Tempos {
     }
 }
 
+/// Renders the current plan. Everything here is real-time safe.
+///
+/// A plan that changes what's audible (a node on the output's path is added,
+/// removed, rewired or rebuilt) would switch the sound abruptly and click. So
+/// the processor fades the output out over a few milliseconds, installs the
+/// plan, and fades back in. Other plans go in at once. A seek, and a tempo map
+/// that moves the playhead, are handled the same way.
 pub struct Processor {
     settings: Settings,
     plan: Option<Box<Plan>>,
