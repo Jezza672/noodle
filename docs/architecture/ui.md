@@ -524,7 +524,7 @@ so a reused ID can't inherit a deleted track's place.
 
 ## Command palette and keymap
 
-`app/commands.rs` registers each menu and transport action once (`ENTRIES`: id, name, `Action`, default chord). Cmd+K searches them; "Edit shortcuts" rebinds one. Only changed chords are saved, as `keymap` in the preferences; a chord belongs to one command. Chords the views catch themselves (Cut, Copy, F) keep doing so; a user's binding for them is caught globally.
+`app/commands.rs` registers each menu and transport action once (`ENTRIES`: id, name, `Action`, default chord). Cmd+K searches them; "Edit shortcuts" rebinds one. Only changed chords are saved, as `keymap` in the preferences (which are the user settings: snap, display, keymap and the other per-person choices, exportable, and saved into each project but only imported by Open with Settings, Cmd/Ctrl+Shift+O; see `features/user-settings.md`); a chord belongs to one command. Chords the views catch themselves (Cut, Copy, F) keep doing so; a user's binding for them is caught globally.
 
 ## Project templates
 

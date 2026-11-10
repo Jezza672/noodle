@@ -1913,7 +1913,12 @@ impl Session {
     }
 
     /// Returns whether it saved. If not, the reason is in [`Self::message`].
+    /// The user's current settings go into the file, for whoever opens it to
+    /// import (see [`crate::prefs`]).
     pub fn save_as(&mut self, path: &Path) -> bool {
+        if let Some(settings) = crate::prefs::portable_text() {
+            self.project.set_user_settings(Some(settings));
+        }
         match write_atomically(path, &self.project.to_ron()) {
             Ok(()) => {
                 // Relative clip paths resolve against the file's directory.
@@ -2740,6 +2745,19 @@ impl Session {
 
     pub fn set_snap(&mut self, ticks: i64) {
         self.snap = ticks.max(1);
+    }
+
+    /// Takes the user settings that live in the session: the ones that aren't
+    /// about this machine's devices (those are set apart, at start-up).
+    pub fn apply_user_settings(&mut self, prefs: &crate::prefs::Prefs) {
+        self.set_sandbox_plugins(prefs.sandbox_plugins);
+        self.set_auto_cache(prefs.auto_cache);
+        self.set_count_in_bars(prefs.count_in_bars);
+        self.set_pre_roll_bars(prefs.pre_roll_bars);
+        self.set_record_midi(prefs.midi_record);
+        self.set_automation_mode(prefs.automation_mode);
+        self.set_snap(prefs.snap);
+        self.set_record_quantise(prefs.record_quantise);
     }
 
     /// How the MIDI of the next take is snapped to the beat.

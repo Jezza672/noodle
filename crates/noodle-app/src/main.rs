@@ -91,14 +91,9 @@ fn main() -> ExitCode {
     session.set_templates_dir(prefs::templates_dir());
     if let Some(path) = prefs::default_path() {
         let prefs = prefs::init(path);
-        session.set_audio_config(prefs.audio);
-        session.set_sandbox_plugins(prefs.sandbox_plugins);
+        session.set_audio_config(prefs.audio.clone());
         session.set_monitor_device(&prefs.monitor_device);
-        session.set_auto_cache(prefs.auto_cache);
-        session.set_count_in_bars(prefs.count_in_bars);
-        session.set_record_midi(prefs.midi_record);
-        session.set_pre_roll_bars(prefs.pre_roll_bars);
-        session.set_automation_mode(prefs.automation_mode);
+        session.apply_user_settings(&prefs);
     }
     // The engine runs from the start, as in Ableton, so live MIDI plays
     // before anything else is done. The toolbar turns it off.

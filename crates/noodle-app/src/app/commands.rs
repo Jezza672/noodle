@@ -73,6 +73,27 @@ pub static ENTRIES: &[Entry] = &[
         chord(CMD, Key::O),
         true,
     ),
+    entry(
+        "file.open_with_settings",
+        "Open Project with Settings…",
+        Action::OpenWithSettings,
+        chord(CMD_SHIFT, Key::O),
+        true,
+    ),
+    entry(
+        "file.import_settings",
+        "Import User Settings…",
+        Action::ImportSettings,
+        None,
+        false,
+    ),
+    entry(
+        "file.export_settings",
+        "Export User Settings…",
+        Action::ExportSettings,
+        None,
+        false,
+    ),
     entry("file.save", "Save", Action::Save, chord(CMD, Key::S), true),
     entry(
         "file.save_as",

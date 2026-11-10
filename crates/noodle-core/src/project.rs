@@ -54,6 +54,11 @@ pub struct Project {
     /// newly loaded project never has the revision of the one it replaces.
     /// Not saved, and not part of equality.
     revision: u64,
+    /// The user's settings as of the last save, as text the app understands
+    /// (the project doesn't read it). Carried so a project brings its author's
+    /// preferences along; the app applies them only when asked. Not part of
+    /// equality, and not an undo step.
+    user_settings: Option<String>,
 }
 
 impl Default for Project {
@@ -83,6 +88,7 @@ impl Default for Project {
             active_version: 0,
             articulations: Vec::new(),
             revision: next_revision(),
+            user_settings: None,
         }
     }
 }
@@ -156,6 +162,8 @@ struct ProjectFile {
     active_version: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     articulations: Vec<crate::Articulation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    user_settings: Option<String>,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -405,6 +413,18 @@ impl Project {
         std::mem::replace(&mut self.organisation, organisation)
     }
 
+    /// The user's settings saved with the project, if it has any (see
+    /// [`Project::set_user_settings`]).
+    pub fn user_settings(&self) -> Option<&str> {
+        self.user_settings.as_deref()
+    }
+
+    /// Sets the settings the next save writes into the file. They are the
+    /// app's own text, kept as it is, and not an undo step.
+    pub fn set_user_settings(&mut self, settings: Option<String>) {
+        self.user_settings = settings;
+    }
+
     /// The project as a template: the same routing, plugins and setup, with
     /// no clips. A project made from it is a copy and never follows it.
     pub fn as_template(&self) -> Self {
@@ -413,6 +433,7 @@ impl Project {
         template.clip_groups.clear();
         template.next_clip_id = 1;
         template.next_clip_group_id = 1;
+        template.user_settings = None;
         template.revision = next_revision();
         template
     }
@@ -1173,6 +1194,7 @@ impl Project {
             versions: self.versions.clone(),
             active_version: self.active_version,
             articulations: self.articulations.clone(),
+            user_settings: self.user_settings.clone(),
         };
         // Depth 3 puts each node and each connection on its own line.
         let pretty = ron::ser::PrettyConfig::default().depth_limit(3);
@@ -1225,6 +1247,7 @@ impl Project {
             active_version: file.active_version,
             articulations: file.articulations,
             revision: next_revision(),
+            user_settings: file.user_settings,
         };
         for (id, warp) in &project.warps {
             project.check_warp(*id, warp).map_err(LoadError::Broken)?;
