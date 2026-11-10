@@ -12,6 +12,7 @@ mod clip_panel;
 mod clipboard;
 mod devices;
 mod dialog;
+mod display;
 mod editor;
 mod export_dialog;
 mod freezing;

@@ -780,6 +780,11 @@ fn input_meters_report_without_allocating() {
     let level = reader.input_meter(svf, "in").expect("it reports")[0];
     assert!(level.peak > 0.0 && level.rms > 0.0, "{level:?}");
     assert!(reader.input_meter(output, "in").is_some());
+    // The same pass measured each output and recorded that the nodes ran,
+    // all without allocating.
+    let out_level = reader.output_meter(svf, "low").expect("it reports")[0];
+    assert!(out_level.peak > 0.0, "{out_level:?}");
+    assert!(s.telemetry.read_state(saw).is_some_and(|state| state.ran));
 }
 
 #[test]

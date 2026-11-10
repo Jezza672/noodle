@@ -216,6 +216,13 @@ pub static ENTRIES: &[Entry] = &[
         false,
     ),
     entry(
+        "view.display",
+        "Display Settings…",
+        Action::DisplaySettings,
+        None,
+        false,
+    ),
+    entry(
         "view.tempo_lane",
         "Show or Hide Tempo Lane",
         Action::ToggleTempoLane,

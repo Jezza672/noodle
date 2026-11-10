@@ -52,6 +52,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Metronome {
+    fn pulses_on_beat(&self) -> bool {
+        true
+    }
+
     fn always_runs(&self) -> bool {
         true
     }
