@@ -777,7 +777,7 @@ pub fn show(
             let local = playhead
                 .map(|p| p.0 - clip.start.0)
                 .filter(|at| (0..length).contains(at))
-                .unwrap_or(in_view.clamp(0, length - 1));
+                .unwrap_or(in_view.clamp(0, (length - 1).max(0)));
             clipboard_edits(action, state, &mut out, id, clip, midi, local);
         }
     }
