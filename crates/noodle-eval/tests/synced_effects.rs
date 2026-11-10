@@ -164,7 +164,19 @@ fn the_drum_rack_has_a_slot_per_general_midi_key_and_no_samples() {
             .map(|(_, n)| n)
             .collect()
     };
-    let samplers = inside("noodle.instrument.sampler");
+    // Each slot is a pad: a group holding one Sampler.
+    let pads: Vec<_> = graph
+        .children(Some(group))
+        .filter(|(_, n)| n.type_id == noodle_core::group::GROUP)
+        .map(|(id, _)| id)
+        .collect();
+    assert_eq!(pads.len(), 8);
+    let samplers: Vec<&Node> = pads
+        .iter()
+        .flat_map(|&pad| graph.children(Some(pad)))
+        .filter(|(_, n)| n.type_id == "noodle.instrument.sampler")
+        .map(|(_, n)| n)
+        .collect();
     assert_eq!(samplers.len(), 8);
     assert!(samplers.iter().all(|s| {
         s.config
