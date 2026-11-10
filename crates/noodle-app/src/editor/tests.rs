@@ -1950,6 +1950,8 @@ fn dragging_a_port_label_down_its_column_reorders_it_as_one_undo_step() {
     let rows = input_labels(&h, mix);
     let keys: Vec<_> = rows.iter().map(|r| r.0.clone()).collect();
     let (first, last) = (rows[0].1, rows[2].1);
+    // Edits need the node selected first.
+    click(&mut h, first, Modifiers::NONE);
     drag(
         &mut h,
         PointerButton::Primary,
@@ -1968,6 +1970,32 @@ fn dragging_a_port_label_down_its_column_reorders_it_as_one_undo_step() {
     assert_eq!(h.state().session.project(), &before);
     let again: Vec<_> = input_labels(&h, mix).into_iter().map(|r| r.0).collect();
     assert_eq!(again, keys);
+}
+
+#[test]
+fn dragging_a_port_label_of_an_unselected_node_moves_the_node_instead() {
+    let mut h = rig();
+    let mix = mix_of(&mut h, 3);
+    let keys: Vec<_> = input_labels(&h, mix).into_iter().map(|r| r.0).collect();
+    let rows = input_labels(&h, mix);
+    let (first, last) = (rows[0].1, rows[2].1);
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            first,
+            first + Vec2::new(0.0, 10.0),
+            last + Vec2::new(0.0, 8.0),
+        ],
+    );
+    let after: Vec<_> = input_labels(&h, mix).into_iter().map(|r| r.0).collect();
+    assert_eq!(after, keys, "ports were not reordered");
+    assert_ne!(
+        position(&h, mix),
+        Position { x: 0.0, y: 0.0 },
+        "the node moved"
+    );
 }
 
 #[test]
@@ -1998,6 +2026,7 @@ fn dragging_a_port_label_does_not_move_the_node() {
     let mix = mix_of(&mut h, 3);
     let rows = input_labels(&h, mix);
     let start = rows[0].1;
+    h.state_mut().editor.select_only([mix]);
     drag(
         &mut h,
         PointerButton::Primary,
@@ -2452,6 +2481,24 @@ fn f2_renames_the_selected_group_and_an_empty_name_puts_the_default_back() {
 }
 
 #[test]
+fn double_clicking_an_unselected_group_ports_label_does_not_rename_it() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    h.run();
+    let row = scene(&h)
+        .node(group)
+        .unwrap()
+        .port(Side::Input, "in1")
+        .unwrap()
+        .row
+        .center();
+    let at = screen(&h, row + Vec2::new(-20.0, 0.0));
+    double_click(&mut h, at);
+    assert!(h.state().editor.rename.is_none(), "needs selection first");
+}
+
+#[test]
 fn double_clicking_a_group_ports_label_renames_it_and_keeps_its_wire() {
     use noodle_core::group::GROUP;
     let mut h = rig();
@@ -2470,6 +2517,7 @@ fn double_clicking_a_group_ports_label_renames_it_and_keeps_its_wire() {
         .row
         .center();
     let at = screen(&h, row + Vec2::new(-20.0, 0.0));
+    h.state_mut().editor.select_only([group]);
     double_click(&mut h, at);
     assert!(h.state().editor.rename.is_some(), "the port's box opened");
     assert_eq!(h.state().editor.group, None, "and the group wasn't entered");
@@ -2787,6 +2835,7 @@ fn a_group_input_name_follows_the_group_port_both_ways() {
         .row
         .center();
     let at = screen(&h, row + Vec2::new(-20.0, 0.0));
+    h.state_mut().editor.select_only([group]);
     double_click(&mut h, at);
     type_name(&mut h, "feed");
     assert_eq!(boundary_name(&h, input).as_deref(), Some("feed"));
@@ -2828,6 +2877,7 @@ fn double_clicking_a_group_inputs_own_port_row_renames_it_in_place() {
         .row
         .center();
     let at = screen(&h, row + Vec2::new(40.0, 0.0));
+    h.state_mut().editor.select_only([input]);
     double_click(&mut h, at);
     let rename = h
         .state()

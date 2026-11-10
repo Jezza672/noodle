@@ -27,6 +27,7 @@
 //! | Tab | Enter the selected group, or leave the current one |
 //! | Double-click a group | Enter it |
 //! | Double-click a frame title, F2 | Rename the frame |
+//! | Drag a port label, double-click a group's port row | Reorder or rename the port; only on a node that was already selected (dragging an unselected node's label moves the node) |
 //!
 //! Each frame the editor rebuilds where everything goes from the project (see
 //! [`layout`]), handles input against that, then draws it. It never changes
@@ -106,6 +107,11 @@ pub struct EditorState {
     gesture: Gesture,
     search: Option<Search>,
     rename: Option<Rename>,
+    /// Whether the node under the latest press was already selected when the
+    /// press began (a double-click's second press keeps the first's answer).
+    /// In-node edits (reordering or renaming ports) need it; moving and wiring
+    /// do not.
+    press_selected: Option<(NodeId, bool, f64)>,
     /// The group the canvas's context menu is about: the one a right-click
     /// landed on. The menu stays open until egui closes it.
     group_menu: Option<NodeId>,
@@ -219,6 +225,7 @@ impl Default for EditorState {
             group_menu: None,
             group_name: None,
             rename: None,
+            press_selected: None,
             bodies: body::Bodies::default(),
             scene_cache: None,
             arrange_requested: false,
@@ -1214,6 +1221,22 @@ fn pointer(
         )
     });
 
+    // Remember whether a press landed on an already-selected node, before the
+    // click or drag selects it: in-node edits only work on a selected node.
+    if let (true, Some(p), now) =
+        ui.input(|i| (i.pointer.primary_pressed(), i.pointer.latest_pos(), i.time))
+    {
+        let target = match hit(f, p) {
+            Hit::Node(id) => Some(id),
+            _ => None,
+        };
+        let continues =
+            matches!(state.press_selected, Some((id, _, t)) if Some(id) == target && now - t < 0.8);
+        if !continues {
+            state.press_selected = target.map(|id| (id, state.selected.contains(&id), now));
+        }
+    }
+
     // A parameter field on a node takes any drag that starts on it, but only
     // plain primary drags (and right-clicks) are its own. Hand panning and
     // strokes to the canvas, before the field sees the drag.
@@ -1493,15 +1516,17 @@ fn pointer(
     } else if response.double_clicked_by(PointerButton::Primary)
         && let Some(p) = latest
     {
+        let editable = |id: NodeId| matches!(state.press_selected, Some((n, true, _)) if n == id);
         match hit(f, p) {
             Hit::FrameHeader(id) => start_rename(state, f.project, id),
-            // A group's port rows rename the port; the rest of the node
-            // opens it.
+            // A group's port rows rename the port (on a node that was
+            // already selected); the rest of the node opens it.
             Hit::Node(id) if is_group(f.project, id) => {
                 let port = f
                     .scene
                     .node(id)
-                    .and_then(|node| port_row_at(node, f.t.to_graph(p)));
+                    .and_then(|node| port_row_at(node, f.t.to_graph(p)))
+                    .filter(|_| editable(id));
                 match port {
                     Some(port) => start_port_rename(state, f.project, id, port),
                     None => state.enter(Some(id), None),
@@ -1513,7 +1538,8 @@ fn pointer(
                     .scene
                     .node(id)
                     .and_then(|node| port_row_at(node, f.t.to_graph(p)))
-                    .filter(|port| !matches!(port.kind, PortKind::Param(_)));
+                    .filter(|port| !matches!(port.kind, PortKind::Param(_)))
+                    .filter(|_| editable(id));
                 if let Some(port) = port {
                     start_boundary_rename(state, id, port);
                 }
@@ -1654,7 +1680,8 @@ fn start_primary_drag(
             }
         }
         Hit::Node(id) => {
-            if !state.selected.contains(&id) {
+            let was_selected = state.selected.contains(&id);
+            if !was_selected {
                 if modifiers.shift {
                     state.selected.insert(id);
                 } else {
@@ -1662,11 +1689,14 @@ fn start_primary_drag(
                 }
             }
             state.active = Some(id);
-            // A port's label is its handle: dragging it reorders the column.
-            if let Some(port) = f
-                .scene
-                .node(id)
-                .and_then(|node| label_at(node, f.t.to_graph(start)))
+            // A port's label is its handle: dragging it reorders the column,
+            // but only on a node that was already selected; otherwise the drag
+            // moves the node.
+            if was_selected
+                && let Some(port) = f
+                    .scene
+                    .node(id)
+                    .and_then(|node| label_at(node, f.t.to_graph(start)))
             {
                 return Gesture::Reorder {
                     node: id,
