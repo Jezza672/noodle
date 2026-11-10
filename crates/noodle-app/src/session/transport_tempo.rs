@@ -3,7 +3,7 @@
 
 use std::time::Instant;
 
-use noodle_core::{Command, Tick};
+use noodle_core::{Command, TempoMap, Tick};
 
 use super::{Edit, Session};
 use crate::tempo_source::{ClockAction, TempoSource};
@@ -42,9 +42,26 @@ impl Session {
         self.apply_live_tempo();
     }
 
-    /// Counts a tap. The first switches the source to Tap, and the third
-    /// onwards give the tempo.
+    /// Counts a tap. The third onwards give the tempo. With one tempo in the
+    /// map, a tap sets that tempo in the map (an undo step) and the source
+    /// stays the map. Otherwise the first tap switches the source to Tap and
+    /// the tempo is live, leaving the map alone.
     pub fn tap_tempo(&mut self, now: Instant) {
+        let single = self.project.tempo_map().tempos().len() == 1;
+        if single && self.tempo_source != TempoSource::MidiClock {
+            if self.tempo_source == TempoSource::Tap {
+                self.set_tempo_source(TempoSource::Map);
+            }
+            if let Some(bpm) = self.taps.tap(now) {
+                let bpm = bpm.clamp(TempoMap::MIN_BPM, TempoMap::MAX_BPM);
+                if let Some((map, _)) =
+                    crate::tempo::with_change(self.project.tempo_map(), Tick::ZERO, bpm)
+                {
+                    self.edit([Edit::Apply(Command::SetTempoMap(map))]);
+                }
+            }
+            return;
+        }
         if self.tempo_source != TempoSource::Tap {
             self.set_tempo_source(TempoSource::Tap);
         }
