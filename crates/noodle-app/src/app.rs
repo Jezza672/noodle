@@ -3715,6 +3715,7 @@ mod tests {
         crate::prefs::remember_monitor_device("local-speakers");
         let theirs = crate::prefs::Prefs {
             monitor_device: "their-speakers".into(),
+            sandbox_plugins: true,
             snap: noodle_core::TICKS_PER_QUARTER / 8,
             ..Default::default()
         };
@@ -3724,6 +3725,7 @@ mod tests {
         app.run(&ctx, Action::ImportSettings);
         let kept = crate::prefs::load(&prefs).unwrap();
         assert_eq!(kept.monitor_device, "local-speakers");
+        assert!(!kept.sandbox_plugins);
         assert_eq!(kept.snap, theirs.snap);
         // A project nobody saved settings into says so.
         let bare = dir.path().join("bare.ron");

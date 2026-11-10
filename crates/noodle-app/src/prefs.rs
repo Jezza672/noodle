@@ -73,12 +73,13 @@ impl Default for Prefs {
 
 impl Prefs {
     /// The settings that mean the same on another machine: everything but
-    /// the audio device choices and the monitor device, which name this
-    /// machine's hardware. What is exported, and kept in a project.
+    /// the audio device choices, the monitor device and the plugin sandbox,
+    /// which are about this machine (its hardware, and what it trusts). What is exported, and kept in a project.
     pub fn portable(&self) -> Self {
         Self {
             audio: AudioConfig::default(),
             monitor_device: String::new(),
+            sandbox_plugins: false,
             ..self.clone()
         }
     }
@@ -309,6 +310,7 @@ pub fn adopt(imported: &Prefs) -> Prefs {
         *prefs = Prefs {
             audio: prefs.audio.clone(),
             monitor_device: prefs.monitor_device.clone(),
+            sandbox_plugins: prefs.sandbox_plugins,
             ..imported.portable()
         };
         if let Err(error) = save(path, prefs) {

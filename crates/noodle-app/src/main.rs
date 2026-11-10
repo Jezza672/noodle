@@ -92,6 +92,7 @@ fn main() -> ExitCode {
     if let Some(path) = prefs::default_path() {
         let prefs = prefs::init(path);
         session.set_audio_config(prefs.audio.clone());
+        session.set_sandbox_plugins(prefs.sandbox_plugins);
         session.set_monitor_device(&prefs.monitor_device);
         session.apply_user_settings(&prefs);
     }

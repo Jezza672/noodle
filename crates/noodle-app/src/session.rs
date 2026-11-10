@@ -2748,9 +2748,8 @@ impl Session {
     }
 
     /// Takes the user settings that live in the session: the ones that aren't
-    /// about this machine's devices (those are set apart, at start-up).
+    /// about this machine (its devices and plugin sandbox are set at start-up).
     pub fn apply_user_settings(&mut self, prefs: &crate::prefs::Prefs) {
-        self.set_sandbox_plugins(prefs.sandbox_plugins);
         self.set_auto_cache(prefs.auto_cache);
         self.set_count_in_bars(prefs.count_in_bars);
         self.set_pre_roll_bars(prefs.pre_roll_bars);
