@@ -3642,3 +3642,90 @@ fn the_inputs_grow_with_the_wires_and_the_type_goes_when_the_last_wire_does() {
         );
     }
 }
+
+/// A Drum Rack added from the library, in a session.
+fn session_with_rack() -> (Session, NodeId) {
+    let mut session = Session::new(crate::session::Nodes::all());
+    let (id, template) = session
+        .library()
+        .templates()
+        .find(|(_, t)| t.name == "Drum Rack")
+        .map(|(id, t)| (id.to_string(), t.clone()))
+        .expect("the library has a Drum Rack");
+    let mut next = session.new_node_id().0;
+    let mut ids = || {
+        next += 1;
+        NodeId(next - 1)
+    };
+    let (rack, add) = template.instantiate(&id, None, Position { x: 0.0, y: 0.0 }, &mut ids);
+    session.edit([Edit::Apply(add)]);
+    (session, rack)
+}
+
+fn pad_named(session: &Session, rack: NodeId, name: &str) -> NodeId {
+    let graph = session.project().graph();
+    graph
+        .children(Some(rack))
+        .find(|(id, _)| super::layout::group_title(graph, *id) == name)
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| panic!("no pad named {name}"))
+}
+
+#[test]
+fn the_drum_rack_has_a_named_pad_for_each_drum_and_a_sample_dropped_on_it_reaches_its_sampler() {
+    let (session, rack) = session_with_rack();
+    let graph = session.project().graph();
+    for name in [
+        "Kick",
+        "Snare",
+        "Closed Hat",
+        "Open Hat",
+        "Clap",
+        "Low Tom",
+        "High Tom",
+        "Crash",
+    ] {
+        let pad = pad_named(&session, rack, name);
+        let sampler = super::pad_sampler(graph, pad).expect("a pad has a Sampler");
+        assert_eq!(graph.node(sampler).unwrap().parent, Some(pad));
+        assert_eq!(super::pad_sampler(graph, sampler), Some(sampler));
+    }
+    // The rack itself holds many Samplers one level down, so it isn't a pad.
+    assert_eq!(super::pad_sampler(graph, rack), None);
+}
+
+#[test]
+fn any_node_can_be_renamed_and_the_name_goes_back_to_the_default_when_cleared() {
+    let (mut session, rack) = session_with_rack();
+    let pad = pad_named(&session, rack, "Kick");
+    let sampler = super::pad_sampler(session.project().graph(), pad).unwrap();
+    let edit = super::rename_edit(
+        session.project(),
+        super::RenameTarget::Group(sampler),
+        "Boom".into(),
+    )
+    .expect("a new name is an edit");
+    session.edit([edit]);
+    let graph = session.project().graph();
+    assert_eq!(super::layout::node_name(graph, sampler), "Boom");
+    // The same name again changes nothing.
+    assert!(
+        super::rename_edit(
+            session.project(),
+            super::RenameTarget::Group(sampler),
+            "Boom".into()
+        )
+        .is_none()
+    );
+    let clear = super::rename_edit(
+        session.project(),
+        super::RenameTarget::Group(sampler),
+        String::new(),
+    )
+    .expect("clearing the name is an edit");
+    session.edit([clear]);
+    assert_eq!(
+        super::layout::node_name(session.project().graph(), sampler),
+        ""
+    );
+}

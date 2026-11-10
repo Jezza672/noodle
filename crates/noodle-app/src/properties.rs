@@ -225,26 +225,7 @@ fn group_control_targets(
         let from = Endpoint::new(port.node, port.key());
         let mut targets = Vec::new();
         let mut first_info = None;
-        for c in graph.connections().filter(|c| c.from == from) {
-            let Some(node) = graph.node(c.to.node) else {
-                continue;
-            };
-            let Some(layout) = session
-                .registry()
-                .get(&node.type_id)
-                .and_then(|t| t.layout(&node.config).ok())
-            else {
-                continue;
-            };
-            let info = layout.inputs.iter().find_map(|input| match &input.kind {
-                InputKind::Param(info) if input.key == c.to.port => Some(info.clone()),
-                _ => None,
-            });
-            if let Some(info) = info {
-                first_info.get_or_insert(info);
-                targets.push(c.to.clone());
-            }
-        }
+        param_targets(session, &from, &mut targets, &mut first_info);
         if let Some(info) = first_info {
             found.push((port.name, targets, info));
         }
@@ -252,13 +233,53 @@ fn group_control_targets(
     found
 }
 
+/// The parameters a wire from `from` feeds, going through the inputs of
+/// groups inside (a drum pad's `level` reaches its Sampler's gain).
+fn param_targets(
+    session: &Session,
+    from: &Endpoint,
+    targets: &mut Vec<Endpoint>,
+    first_info: &mut Option<noodle_engine::ParamInfo>,
+) {
+    let graph = session.project().graph();
+    for c in graph.connections().filter(|c| c.from == *from) {
+        let Some(node) = graph.node(c.to.node) else {
+            continue;
+        };
+        if node.type_id == noodle_core::group::GROUP {
+            if let Some(inner) = graph.group_ports(c.to.node).input(&c.to.port) {
+                param_targets(
+                    session,
+                    &Endpoint::new(inner.node, inner.key()),
+                    targets,
+                    first_info,
+                );
+            }
+            continue;
+        }
+        let Some(layout) = session
+            .registry()
+            .get(&node.type_id)
+            .and_then(|t| t.layout(&node.config).ok())
+        else {
+            continue;
+        };
+        let info = layout.inputs.iter().find_map(|input| match &input.kind {
+            InputKind::Param(info) if input.key == c.to.port => Some(info.clone()),
+            _ => None,
+        });
+        if let Some(info) = info {
+            first_info.get_or_insert(info);
+            targets.push(c.to.clone());
+        }
+    }
+}
+
 /// What to say about a group the library makes, from its name.
 fn group_hint(title: &str) -> Option<&'static str> {
     match title {
         "Drum Rack" => Some(
-            "Swing delays the off-beat notes. Slots with the same non-zero choke group cut \
-             each other off (the closed and open hat share group 1). Slots play keys 36, \
-             38, 42, 46, 39, 45, 50 and 49. To program a pattern: wire a track's MIDI into \
+            "Swing delays the off-beat notes. Drop a sample on a pad (Kick, Snare, ...) to load it. Each pad plays the key in its `key` control (36, 38, 42, 46, 39, 45, 50 and 49). To cut one drum off with another, open the rack and wire a pad's `choke out` to another pad's `choke in` (the closed and open hat already do this). To program a pattern: wire a track's MIDI into \
              notes, right-click the track's lane and choose New MIDI clip, then open the \
              clip (double-click) for the piano roll.",
         ),
@@ -273,7 +294,8 @@ fn group_hint(title: &str) -> Option<&'static str> {
 /// The Controls section of a group's panel: each group input that feeds a
 /// parameter inside it, as a field, so the group is set from outside (a rack's
 /// swing and choke, a pad's loop and launch grid) without opening it.
-/// "Slot 3 level" and "Slot 3 tune" are listed together under "Slot 3".
+/// "Kick level" and "Kick tune" are listed together under "Kick" (and "Pad 2
+/// loop" under "Pad 2").
 fn group_controls(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Edit>) {
     let controls = group_control_targets(session, id);
     let title = crate::editor::group_title(session.project().graph(), id);
@@ -284,9 +306,12 @@ fn group_controls(ui: &mut Ui, session: &Session, id: NodeId, edits: &mut Vec<Ed
     if let Some(hint) = group_hint(&title) {
         ui.label(RichText::new(hint).weak().small());
     }
-    // "Slot 3 level" splits into the section "Slot 3" and the label "level".
+    // "Kick level" splits into the section "Kick" and the label "level".
     let split = |name: &str| match name.rsplit_once(' ') {
-        Some((head, tail)) if head.ends_with(|c: char| c.is_ascii_digit()) => {
+        Some((head, tail))
+            if head.ends_with(|c: char| c.is_ascii_digit())
+                || ["level", "tune", "pan", "key", "choke"].contains(&tail) =>
+        {
             Some((head.to_owned(), tail.to_owned()))
         }
         _ => None,
@@ -2804,19 +2829,19 @@ mod tests {
         // Swing is a control of the panel; typing a value sets the Swing node.
         h.get_by_label("Swing").click();
         h.run();
-        h.get_by_label("Slot 4").click();
+        h.get_by_label("Open Hat").click();
         h.run();
-        h.get_by_label("choke");
+        h.get_by_label("key");
         let names: Vec<_> = group_control_targets(&h.state().session, group)
             .into_iter()
             .map(|(name, ..)| name)
             .collect();
         assert!(names.contains(&"Swing".to_owned()));
-        assert!(names.contains(&"Slot 4 choke".to_owned()));
+        assert!(names.contains(&"Open Hat key".to_owned()));
         assert_eq!(
             names.len(),
             33,
-            "swing and four controls for each of eight slots"
+            "swing, and key, level, tune and pan for each of eight pads"
         );
     }
 

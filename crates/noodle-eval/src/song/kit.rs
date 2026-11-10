@@ -14,7 +14,7 @@
 //! The group's name is its kind ("Pluck"), and the track that plays it is
 //! named after the part.
 
-use super::patch::{Patch, Port, spec};
+use super::patch::{Patch, Port, Spec, spec};
 use noodle_core::{NodeId, Value};
 
 /// Oscillator shapes.
@@ -281,24 +281,17 @@ pub fn build(p: &mut Patch, instrument: &Instrument, column: f32, row: f32) -> N
 /// named after the slot; its output is `out`. Inside are a Note Split with an
 /// output per slot, a Sampler and a Pan for each, and a Mix.
 fn drum_rack(p: &mut Patch, rack: &Rack) {
+    if rack.controls {
+        return pad_rack(p, rack);
+    }
     let n = rack.slots.len();
     let notes = p.input("notes", 0.0);
-    let swing = rack.controls.then(|| {
-        let swing = p.add(spec("noodle.event.swing"), 1.0, 0.0);
-        p.connect(notes, (swing, "in"));
-        let input = p.input("Swing", 0.0);
-        p.connect(input, (swing, "amount"));
-        swing
-    });
     let split = p.add(
         spec("noodle.event.note_split").config("outputs", Value::Int(n as i64)),
         2.0,
         0.0,
     );
-    match swing {
-        Some(swing) => p.connect((swing, "out"), (split, "in")),
-        None => p.connect(notes, (split, "in")),
-    }
+    p.connect(notes, (split, "in"));
     let mix = p.add(
         spec("noodle.util.mix").config("inputs", Value::Int(n as i64)),
         6.0,
@@ -311,36 +304,11 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
         let key = f32::from(slot.key);
         set_param(p, split, &format!("low{}", i + 1), key);
         set_param(p, split, &format!("high{}", i + 1), key);
-        let label = if let Some(label) = slot.label {
-            label.to_owned()
-        } else if slot.sample.is_empty() {
-            format!("Slot {}", i + 1)
-        } else {
-            format!("{} {}", drum_label(slot.drum), i + 1)
-        };
+        let label = slot_label(slot, i);
         let level = p.input(&format!("{label} level"), row * 2.0 + 1.0);
         let tune = p.input(&format!("{label} tune"), row * 2.0 + 2.0);
         let slot_pan = p.input(&format!("{label} pan"), row * 2.0 + 3.0);
-        if rack.controls {
-            // The hats cut each other off.
-            let group = if matches!(slot.key, 42 | 46) {
-                1.0
-            } else {
-                0.0
-            };
-            set_param(p, split, &format!("choke{}", i + 1), group);
-            let choke = p.input(&format!("{label} choke"), row * 2.0 + 4.0);
-            p.connect(choke, (split, choke_key(i)));
-        }
-        let sampler = p.add(
-            spec("noodle.instrument.sampler")
-                .config("sample", Value::Text(sample_hash(&slot.sample)))
-                .param("keytrack", 0.0)
-                .param("mode", 0.0)
-                .param("gain", slot.db),
-            3.0,
-            row,
-        );
+        let sampler = p.add(slot_sampler(slot), 3.0, row);
         let pan = p.add(spec("noodle.util.pan").param("pan", slot.pan), 4.0, row);
         p.connect((split, out_key(i)), (sampler, "in"));
         p.connect(level, (sampler, "gain"));
@@ -349,6 +317,121 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
         p.connect((sampler, "out"), (pan, "in"));
         p.connect((pan, "out"), (mix, wire_in(i)));
     }
+}
+
+fn slot_label(slot: &Slot, i: usize) -> String {
+    if let Some(label) = slot.label {
+        label.to_owned()
+    } else if slot.sample.is_empty() {
+        format!("Slot {}", i + 1)
+    } else {
+        format!("{} {}", drum_label(slot.drum), i + 1)
+    }
+}
+
+fn slot_sampler(slot: &Slot) -> Spec {
+    spec("noodle.instrument.sampler")
+        .config("sample", Value::Text(sample_hash(&slot.sample)))
+        .param("keytrack", 0.0)
+        .param("mode", 0.0)
+        .param("gain", slot.db)
+}
+
+/// The library template's rack: a Swing in front of a named Drum Pad for
+/// each slot, mixed. Its inputs are `notes`, `Swing`, and for each pad
+/// `<name> key`, `<name> level`, `<name> tune` and `<name> pan`; its output
+/// is `out`. The two hats choke each other: each pad's `choke out` is wired
+/// to the other's `choke in`, and more can be wired the same way.
+fn pad_rack(p: &mut Patch, rack: &Rack) {
+    let n = rack.slots.len();
+    let notes = p.input("notes", 0.0);
+    let swing = p.add(spec("noodle.event.swing"), 1.0, 0.0);
+    p.connect(notes, (swing, "in"));
+    let amount = p.input("Swing", 0.0);
+    p.connect(amount, (swing, "amount"));
+    let mix = p.add(
+        spec("noodle.util.mix").config("inputs", Value::Int(n as i64)),
+        6.0,
+        0.0,
+    );
+    let out = p.output("out", 7.0, 0.0);
+    p.connect((mix, "out"), out);
+    let mut pads = Vec::new();
+    for (i, slot) in rack.slots.iter().enumerate() {
+        let row = i as f32;
+        let label = slot_label(slot, i);
+        let key = p.input(&format!("{label} key"), row * 2.0 + 1.0);
+        let level = p.input(&format!("{label} level"), row * 2.0 + 2.0);
+        let tune = p.input(&format!("{label} tune"), row * 2.0 + 3.0);
+        let slot_pan = p.input(&format!("{label} pan"), row * 2.0 + 4.0);
+        // The pad is a named group holding the Sampler, so a sample dropped on
+        // it is the sample of that drum.
+        let pad = drum_pad(p, &label, slot, 3.0, row);
+        p.connect((swing, "out"), (pad, "notes"));
+        p.connect(key, (pad, "key"));
+        p.connect(level, (pad, "level"));
+        p.connect(tune, (pad, "tune"));
+        p.connect(slot_pan, (pad, "pan"));
+        p.connect((pad, "out"), (mix, wire_in(i)));
+        pads.push((slot.key, pad));
+    }
+    // The hats cut each other off.
+    let hats: Vec<NodeId> = pads
+        .iter()
+        .filter(|(key, _)| matches!(key, 42 | 46))
+        .map(|&(_, pad)| pad)
+        .collect();
+    for &from in &hats {
+        for &to in hats.iter().filter(|&&to| to != from) {
+            p.connect((from, "choke out"), (to, "choke in"));
+        }
+    }
+}
+
+/// A drum pad: a group named `name` that plays one drum. Its inputs are
+/// `notes`, `key` (the one it answers to), `level` (decibels), `tune` (cents),
+/// `pan` and `choke in` (notes that cut it off); its outputs are `out` and
+/// `choke out` (the notes it plays, to wire into other pads' `choke in`).
+/// Drop a sample on the pad and it plays it.
+///
+/// There is no loop when two pads choke each other. `choke out` is the
+/// pad's key filter, which sits before its Choke Gate, and the Choke Gate
+/// is what reads `choke in`, so a pad's output never depends on its own.
+fn drum_pad(p: &mut Patch, name: &str, slot: &Slot, column: f32, row: f32) -> NodeId {
+    let group = p.enter(name, column, row);
+    let notes = p.input("notes", 0.0);
+    let key = p.input("key", 1.0);
+    let level = p.input("level", 2.0);
+    let tune = p.input("tune", 3.0);
+    let spread = p.input("pan", 4.0);
+    let choke_in = p.input("choke in", 5.0);
+    let filter = p.add(
+        spec("noodle.event.note_split")
+            .config("outputs", Value::Int(1))
+            .param("low1", f32::from(slot.key))
+            .param("high1", f32::from(slot.key)),
+        1.0,
+        0.0,
+    );
+    let gate = p.add(spec("noodle.event.choke_gate"), 2.0, 0.0);
+    let sampler = p.add(slot_sampler(slot), 3.0, 0.0);
+    let pan = p.add(spec("noodle.util.pan").param("pan", slot.pan), 4.0, 0.0);
+    let out = p.output("out", 5.0, 0.0);
+    let choke_out = p.output("choke out", 5.0, 1.0);
+    p.connect(notes, (filter, "in"));
+    p.connect(key, (filter, "low1"));
+    p.connect(key, (filter, "high1"));
+    p.connect((filter, "out1"), (gate, "in"));
+    p.connect(choke_in, (gate, "choke"));
+    p.connect((filter, "out1"), choke_out);
+    p.connect((gate, "out"), (sampler, "in"));
+    p.connect(level, (sampler, "gain"));
+    p.connect(tune, (sampler, "tune"));
+    p.connect(spread, (pan, "pan"));
+    p.connect((sampler, "out"), (pan, "in"));
+    p.connect((pan, "out"), out);
+    p.leave(group);
+    group
 }
 
 /// The hash a slot's Sampler plays; a slot with no sample (a library
@@ -466,13 +549,6 @@ pub fn drum_label(drum: Drum) -> &'static str {
 fn out_key(i: usize) -> &'static str {
     const KEYS: [&str; 8] = [
         "out1", "out2", "out3", "out4", "out5", "out6", "out7", "out8",
-    ];
-    KEYS[i]
-}
-
-fn choke_key(i: usize) -> &'static str {
-    const KEYS: [&str; 8] = [
-        "choke1", "choke2", "choke3", "choke4", "choke5", "choke6", "choke7", "choke8",
     ];
     KEYS[i]
 }
