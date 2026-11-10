@@ -4054,6 +4054,53 @@ mod tests {
         assert_eq!(seen, (false, true), "A is taken, Delete is not");
     }
 
+    /// Typing in a text field wins over the note keys: the letters reach the
+    /// field and no note sounds, from the first key after it is clicked.
+    #[test]
+    fn a_focused_text_field_overrides_the_note_keys() {
+        let mut app = empty();
+        app.keyboard.set_on(true);
+        let ctx = egui::Context::default();
+        let mut heard = app.session.midi_bus().subscribe();
+        let mut text = String::new();
+        let field = egui::Id::new("a text field");
+        let frame = |app: &mut App, events: Vec<egui::Event>, text: &mut String| {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut seen = true;
+            let mut output = ctx.run_ui(input, |ui| {
+                app.keyboard_midi(ui.ctx());
+                seen = ui.ctx().input(|i| i.key_pressed(Key::A));
+                let edit = ui.add(egui::TextEdit::singleline(text).id(field));
+                if !edit.has_focus() {
+                    edit.request_focus();
+                }
+            });
+            output.textures_delta.clear();
+            seen
+        };
+        // The frame that opens the field has focus after the keys are read,
+        // so a key arriving with it may still be a note; the next ones not.
+        frame(&mut app, vec![], &mut text);
+        let key = egui::Event::Key {
+            key: Key::A,
+            physical_key: Some(Key::A),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let seen = frame(
+            &mut app,
+            vec![key, egui::Event::Text("a".into())],
+            &mut text,
+        );
+        assert!(seen, "the field sees A, it was not taken as a note");
+        assert_eq!(text, "a");
+        assert_eq!(heard.pop(), None, "no note sounded");
+    }
+
     #[test]
     fn modified_keys_stay_shortcuts_with_the_keyboard_on() {
         let mut app = empty();
