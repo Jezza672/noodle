@@ -651,6 +651,12 @@ fn letters(query: &str, name: &str) -> Option<usize> {
     Some(cost)
 }
 
+/// The name of the first registered command, for tests.
+#[cfg(test)]
+pub fn first_name() -> &'static str {
+    ENTRIES[0].name
+}
+
 /// What the palette is doing.
 #[derive(Debug, Default)]
 pub struct Palette {
@@ -661,6 +667,9 @@ pub struct Palette {
     keys: bool,
     /// The command waiting for the next chord pressed.
     capturing: Option<&'static str>,
+    /// The selection moved by key or the query changed, so the list should
+    /// scroll to it once. Scrolling every frame would fight the mouse wheel.
+    follow_selection: bool,
 }
 
 /// What the palette asks the app to do.
@@ -787,9 +796,11 @@ impl Palette {
         };
         if up {
             self.selected = self.selected.saturating_sub(1);
+            self.follow_selection = true;
         }
         if down {
             self.selected = (self.selected + 1).min(rows.len().saturating_sub(1));
+            self.follow_selection = true;
         }
         if escape {
             self.close();
@@ -832,6 +843,7 @@ impl Palette {
             }
             if field.changed() {
                 self.selected = 0;
+                self.follow_selection = true;
             }
             ui.add_space(4.0);
             egui::ScrollArea::vertical()
@@ -856,7 +868,7 @@ impl Palette {
                                     r
                                 })
                                 .inner;
-                            if n == self.selected {
+                            if n == self.selected && self.follow_selection {
                                 response.scroll_to_me(None);
                             }
                             if response.clicked() {
@@ -865,6 +877,7 @@ impl Palette {
                         }
                     }
                 });
+            self.follow_selection = false;
         });
         if out.run.is_some() {
             self.close();
