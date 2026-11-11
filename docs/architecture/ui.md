@@ -133,7 +133,7 @@ It has these views:
     to run: atomics only, nothing allocated or locked, and only when a
     telemetry hub is attached. `Bodies` reads them with the other meters
     (`Bodies::tap`). Modulation inputs are left out.
-  - **Live feedback** (`display.rs`, View > Display Settings…). Each item
+  - **Live feedback** (`display.rs`, Settings > Display). Each item
     is a switch saved in the preferences (`Prefs::display`), and
     *Performance mode* turns them all off without forgetting the choices.
     Everything is on by default except the CPU heat tint.
@@ -348,7 +348,7 @@ It has these views:
   (`widgets/curve.rs`): drag points and handles, click the line to add a
   point, double-click or right-click a point to delete it; a drag is one undo step. A parameter with a wire into it is greyed out and shows the live value.
   (Its live value and range come from the editor, as on the node.)
-- **Dialogs:** the audio settings, export and stem-model dialogs are modals.
+- **Dialogs:** the settings window, export and stem-model dialogs are modals.
   A modal is not a scrolling container: egui clips its area to the window, so
   a dialog with more in it than the window has would lose the bottom of
   itself, buttons and all. Each of these dialogs is built with

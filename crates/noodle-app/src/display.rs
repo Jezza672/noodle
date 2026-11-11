@@ -1,6 +1,6 @@
 //! What the editor shows of the audio as it plays: wires that light when
 //! signal or notes flow, meters on outputs, and so on. Each is a switch in
-//! the Display Settings dialog, saved in the preferences, and each costs a
+//! the Display tab of Settings, saved in the preferences, and each costs a
 //! little: the audio thread measures levels and counts events for the ones
 //! that need it, and the editor redraws while they move. The engine stops
 //! the measuring when its switch is off (see
@@ -187,60 +187,31 @@ static SWITCHES: [Switch; 10] = [
     ),
 ];
 
-/// The dialog that holds the switches. They take effect as they are
-/// clicked, so there is nothing to apply.
-#[derive(Default)]
-pub struct DisplayDialog {
-    open: bool,
-}
-
-impl DisplayDialog {
-    pub fn open(&mut self) {
-        self.open = true;
-    }
-
-    pub fn is_open(&self) -> bool {
-        self.open
-    }
-
-    /// Draws the dialog while it is open. Says whether a switch changed.
-    pub fn show(&mut self, ctx: &egui::Context, display: &mut Display) -> bool {
-        if !self.open {
-            return false;
-        }
-        let mut changed = false;
-        let modal = crate::dialog::modal(ctx, "display settings", |ui| {
-            ui.heading("Display Settings");
-            ui.weak("What the graph shows of the sound as it plays.");
-            ui.add_space(6.0);
-            changed |= ui
-                .checkbox(&mut display.performance, "Performance mode")
-                .on_hover_text("Turns all of the below off, and keeps your choices for later")
-                .changed();
-            ui.add_space(4.0);
-            ui.add_enabled_ui(!display.performance, |ui| {
-                for switch in Display::switches() {
-                    let mut on = display.get(switch);
-                    if ui
-                        .checkbox(&mut on, switch.label)
-                        .on_hover_text(switch.hint)
-                        .changed()
-                    {
-                        display.set(switch, on);
-                        changed = true;
-                    }
-                }
-            });
-            ui.add_space(8.0);
-            if ui.button("Close").clicked() {
-                self.open = false;
+/// Draws the Display tab of the Settings window: the switches take effect as
+/// they are clicked, so there is nothing to apply. Says whether one changed.
+pub fn body(ui: &mut egui::Ui, display: &mut Display) -> bool {
+    let mut changed = false;
+    ui.weak("What the graph shows of the sound as it plays.");
+    ui.add_space(6.0);
+    changed |= ui
+        .checkbox(&mut display.performance, "Performance mode")
+        .on_hover_text("Turns all of the below off, and keeps your choices for later")
+        .changed();
+    ui.add_space(4.0);
+    ui.add_enabled_ui(!display.performance, |ui| {
+        for switch in Display::switches() {
+            let mut on = display.get(switch);
+            if ui
+                .checkbox(&mut on, switch.label)
+                .on_hover_text(switch.hint)
+                .changed()
+            {
+                display.set(switch, on);
+                changed = true;
             }
-        });
-        if modal.should_close() {
-            self.open = false;
         }
-        changed
-    }
+    });
+    changed
 }
 
 #[cfg(test)]
