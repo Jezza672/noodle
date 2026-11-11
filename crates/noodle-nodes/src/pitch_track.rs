@@ -6,8 +6,8 @@
 //! sensitivity is the one scale the slicer and the transient pins use too.
 
 use noodle_engine::{
-    Config, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
-    NoteId, ParamInfo, Ports, Setup, Shape,
+    Config, Context, Event, EventKind, EventsOut, Instance, Io, Layout, Node, NodeError, NodeInfo,
+    NodeType, NoteId, ParamInfo, Ports, Setup, Shape,
 };
 use noodle_io::{HOP_SECONDS, NoteSegmenter, PitchFrame, PitchTracker};
 
@@ -72,15 +72,18 @@ impl NodeType for PitchTrack {
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         Ok(Instance::realtime(PitchTrackNode {
             tracker: PitchTracker::new(setup.sample_rate as u32, 0.5),
-            held: PitchFrame {
-                key: None,
-                confidence: 0.0,
-                level_db: -120.0,
-            },
+            held: NO_PITCH,
             pitch: 0.0,
         }))
     }
 }
+
+/// What the tracker reports before it has heard anything.
+const NO_PITCH: PitchFrame = PitchFrame {
+    key: None,
+    confidence: 0.0,
+    level_db: -120.0,
+};
 
 struct PitchTrackNode {
     tracker: PitchTracker,
@@ -122,11 +125,7 @@ impl Node for PitchTrackNode {
 
     fn reset(&mut self) {
         self.tracker.reset();
-        self.held = PitchFrame {
-            key: None,
-            confidence: 0.0,
-            level_db: -120.0,
-        };
+        self.held = NO_PITCH;
         self.pitch = 0.0;
     }
 }
@@ -198,7 +197,7 @@ struct ToNotesNode {
 }
 
 impl ToNotesNode {
-    fn note_off(&mut self, time: u32, out: &mut noodle_engine::EventsOut<'_>) {
+    fn note_off(&mut self, time: u32, out: &mut EventsOut<'_>) {
         if let Some(id) = self.sounding.take() {
             let _ = out.push(Event {
                 time,

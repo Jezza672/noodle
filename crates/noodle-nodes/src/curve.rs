@@ -187,24 +187,8 @@ impl Curve {
             .windows(2)
             .position(|w| x < w[1].x)
             .unwrap_or(self.points.len() - 2);
-        let [p0, p3] = [self.points[i], self.points[i + 1]];
-        let c = [
-            (p0.x, p0.y),
-            (p0.x + p0.out_handle.0, p0.y + p0.out_handle.1),
-            (p3.x + p3.in_handle.0, p3.y + p3.in_handle.1),
-            (p3.x, p3.y),
-        ];
-        // Find t where the segment is at `x` (x is monotone in t).
-        let (mut lo, mut hi) = (0.0f32, 1.0f32);
-        for _ in 0..32 {
-            let mid = 0.5 * (lo + hi);
-            if bezier(&c, mid).0 < x {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        let t = 0.5 * (lo + hi);
+        let c = segment(&self.points[i], &self.points[i + 1]);
+        let t = param_at(&c, x, 32);
         // De Casteljau: split the segment in two at t.
         let q0 = lerp(c[0], c[1], t);
         let q1 = lerp(c[1], c[2], t);
@@ -237,12 +221,7 @@ impl Curve {
     pub fn lut(&self) -> Box<[f32]> {
         let mut poly: Vec<(f32, f32)> = Vec::with_capacity(self.points.len() * SEGMENT_SAMPLES);
         for w in self.points.windows(2) {
-            let c = [
-                (w[0].x, w[0].y),
-                (w[0].x + w[0].out_handle.0, w[0].y + w[0].out_handle.1),
-                (w[1].x + w[1].in_handle.0, w[1].y + w[1].in_handle.1),
-                (w[1].x, w[1].y),
-            ];
+            let c = segment(&w[0], &w[1]);
             for s in 0..=SEGMENT_SAMPLES {
                 poly.push(bezier(&c, s as f32 / SEGMENT_SAMPLES as f32));
             }
@@ -274,23 +253,8 @@ impl Curve {
             .windows(2)
             .position(|w| x <= w[1].x)
             .unwrap_or(self.points.len() - 2);
-        let (p0, p3) = (self.points[i], self.points[i + 1]);
-        let c = [
-            (p0.x, p0.y),
-            (p0.x + p0.out_handle.0, p0.y + p0.out_handle.1),
-            (p3.x + p3.in_handle.0, p3.y + p3.in_handle.1),
-            (p3.x, p3.y),
-        ];
-        let (mut lo, mut hi) = (0.0f32, 1.0f32);
-        for _ in 0..24 {
-            let mid = 0.5 * (lo + hi);
-            if bezier(&c, mid).0 < x {
-                lo = mid;
-            } else {
-                hi = mid;
-            }
-        }
-        bezier(&c, 0.5 * (lo + hi)).1.clamp(0.0, 1.0)
+        let c = segment(&self.points[i], &self.points[i + 1]);
+        bezier(&c, param_at(&c, x, 24)).1.clamp(0.0, 1.0)
     }
 }
 
@@ -303,6 +267,30 @@ pub fn lookup(lut: &[f32], x: f32) -> f32 {
     let i = (pos as usize).min(lut.len() - 2);
     let frac = pos - i as f32;
     lut[i] + (lut[i + 1] - lut[i]) * frac
+}
+
+/// The Bézier control points of the segment between two anchors.
+fn segment(a: &CurvePoint, b: &CurvePoint) -> [(f32, f32); 4] {
+    [
+        (a.x, a.y),
+        (a.x + a.out_handle.0, a.y + a.out_handle.1),
+        (b.x + b.in_handle.0, b.y + b.in_handle.1),
+        (b.x, b.y),
+    ]
+}
+
+/// The `t` at which the segment is at `x`, by bisection (x is monotone in t).
+fn param_at(c: &[(f32, f32); 4], x: f32, iterations: usize) -> f32 {
+    let (mut lo, mut hi) = (0.0f32, 1.0f32);
+    for _ in 0..iterations {
+        let mid = 0.5 * (lo + hi);
+        if bezier(c, mid).0 < x {
+            lo = mid;
+        } else {
+            hi = mid;
+        }
+    }
+    0.5 * (lo + hi)
 }
 
 fn clamp_handle(h: (f32, f32), x: f32, y: f32, x_lo: f32, x_hi: f32) -> (f32, f32) {

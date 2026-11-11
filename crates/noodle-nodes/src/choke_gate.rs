@@ -2,8 +2,8 @@
 //! arrives on its `choke` input.
 
 use noodle_engine::{
-    Config, ConfigInfo, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo,
-    NodeType, NoteId, Setup,
+    Config, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
+    NoteId, Setup,
 };
 
 use crate::note_split::CHOKE;
@@ -41,10 +41,6 @@ const LIVE: usize = 128;
 impl NodeType for ChokeGate {
     fn info(&self) -> &NodeInfo {
         &INFO
-    }
-
-    fn config(&self) -> &[ConfigInfo] {
-        &[]
     }
 
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {

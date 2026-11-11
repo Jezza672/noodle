@@ -6,7 +6,7 @@
 //! so a project, a preset and a saved group all name the same audio, and the
 //! node plays the same on every machine that has the file.
 
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -196,7 +196,7 @@ struct Inner {
     /// Hashes the folder did not have when last looked, so a view that asks
     /// every frame does not read the disk every frame. Forgotten when the
     /// folder changes or a sample comes in.
-    missing: std::collections::HashSet<String>,
+    missing: HashSet<String>,
     /// The fundamental found for a hash, `None` if it has no pitch. The
     /// audio behind a hash never changes, so this is never stale.
     pitch: HashMap<String, Option<f32>>,
@@ -220,9 +220,7 @@ impl SampleStore {
     /// [`save`](Self::save) writes to, normally `samples` beside the project
     /// file.
     pub fn set_dir(&self, dir: impl Into<PathBuf>) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.dir = Some(dir.into());
-        inner.missing.clear();
+        self.set_dir_option(Some(dir.into()));
     }
 
     /// Like [`set_dir`](Self::set_dir) but `None` means there is no folder

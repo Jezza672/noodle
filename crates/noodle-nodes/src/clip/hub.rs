@@ -39,11 +39,9 @@ pub(super) const POSITION_STEP: f64 = LOOKAHEAD / 8.0;
 /// How long before a file that failed to open is tried again, so one that
 /// turns up later (restored, or a drive mounted) starts playing.
 pub(super) const RETRY: Duration = Duration::from_secs(2);
-/// The settings of a track input's `monitor` parameter.
-#[allow(dead_code)]
-pub const MONITOR_OFF: u8 = 0;
-pub const MONITOR_AUTO: u8 = 1;
-pub const MONITOR_IN: u8 = 2;
+/// The settings of a track input's `monitor` parameter, besides Off (0).
+pub(super) const MONITOR_AUTO: u8 = 1;
+pub(super) const MONITOR_IN: u8 = 2;
 
 /// Things sent to the node and not yet returned. The return queue is bigger,
 /// so the node can always hand a retired one back.
@@ -192,10 +190,8 @@ impl Shared {
     }
 
     pub fn is_empty(&self) -> bool {
-        {
-            let latest = self.latest.lock().expect("schedule lock");
-            latest.1.is_empty() && latest.2.is_empty()
-        }
+        let latest = self.latest.lock().expect("schedule lock");
+        latest.1.is_empty() && latest.2.is_empty()
     }
 
     /// The files that couldn't be opened, one entry each.
@@ -402,8 +398,8 @@ impl Hub {
             };
             let preview = shared.preview.load(Ordering::Relaxed);
             for (clip, head) in wanted(&schedule, position, lookahead, looping) {
-                // A stretched section is played from its own lane (see
-                // `ahead.rs`), unless it is being edited.
+                // A stretched section is played from its own lane, unless it is
+                // being edited.
                 if clip.stretched() && !preview {
                     continue;
                 }
@@ -435,6 +431,16 @@ impl Hub {
                     start: clip.stream_start(from.saturating_sub(clip.start)),
                     chunks: STREAM_CHUNKS,
                 };
+                let mut fail = |message: String| {
+                    failed.insert(key, Instant::now());
+                    shared.fail(
+                        key,
+                        FileError {
+                            path: clip.source.path.clone(),
+                            message,
+                        },
+                    );
+                };
                 match open_stream(spec) {
                     Ok((stream, worker)) if stream.channels() <= MAX_CHANNELS => {
                         let serial = *next_serial;
@@ -460,26 +466,8 @@ impl Hub {
                             *outstanding += 1;
                         }
                     }
-                    Ok(_) => {
-                        failed.insert(key, Instant::now());
-                        shared.fail(
-                            key,
-                            FileError {
-                                path: clip.source.path.clone(),
-                                message: format!("more than {MAX_CHANNELS} channels"),
-                            },
-                        );
-                    }
-                    Err(e) => {
-                        failed.insert(key, Instant::now());
-                        shared.fail(
-                            key,
-                            FileError {
-                                path: clip.source.path.clone(),
-                                message: e.to_string(),
-                            },
-                        );
-                    }
+                    Ok(_) => fail(format!("more than {MAX_CHANNELS} channels")),
+                    Err(e) => fail(e.to_string()),
                 }
             }
         }

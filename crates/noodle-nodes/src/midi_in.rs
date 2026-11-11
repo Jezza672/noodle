@@ -58,7 +58,7 @@ static INFO: NodeInfo = NodeInfo {
     category: "Events",
 };
 
-/// Registered by [`register_library`](crate::register_library).
+/// The MIDI In node.
 pub struct MidiIn {
     bus: MidiBus,
     clock: Option<Clock>,

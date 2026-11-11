@@ -130,10 +130,8 @@ mod tests {
 
     fn pluck(hz: f32) -> Vec<f32> {
         // A few harmonics, decaying, with the fundamental weaker than the second.
-        tone(hz, 1.0)
-            .iter()
-            .enumerate()
-            .map(|(i, _)| {
+        (0..RATE as usize)
+            .map(|i| {
                 let t = i as f32 / RATE as f32;
                 let partial = |n: f32, a: f32| a * (TAU * hz * n * t).sin();
                 (partial(1.0, 0.3) + partial(2.0, 0.5) + partial(3.0, 0.25)) * (-3.0 * t).exp()

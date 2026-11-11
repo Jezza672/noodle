@@ -32,6 +32,7 @@ mod humanise;
 mod ladder;
 mod lag;
 mod launch_quantise;
+mod level;
 mod lfo;
 mod math;
 mod meter;

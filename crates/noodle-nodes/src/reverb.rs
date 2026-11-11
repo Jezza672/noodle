@@ -74,13 +74,13 @@ const LINES: [f32; 8] = [
 /// The allpass delays at 48 kHz, for the left and right input.
 const ALLPASS: [[f32; 2]; 2] = [[142.0, 107.0], [379.0, 277.0]];
 const ALLPASS_GAIN: f32 = 0.6;
-/// Depth of the length wobble, in samples at 48 kHz, and its speed in hertz.
 /// Below this (about -120 dB) the input or the tail counts as silent.
 const INAUDIBLE: f32 = 1e-6;
 /// How many silent samples in a row, with the tail gone, before the node
 /// stops processing. More than the longest pre-delay, so nothing is still in
 /// flight.
 const IDLE_AFTER: usize = 48_000;
+/// Depth of the length wobble, in samples at 48 kHz, and its speed in hertz.
 const WOBBLE: f32 = 6.0;
 const WOBBLE_RATE: f32 = 0.31;
 /// What the input is scaled by going in and the wet by coming out, so a
@@ -356,6 +356,7 @@ impl Node for ReverbNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::level::rms;
     use noodle_engine::testing::Harness;
 
     const RATE: f32 = 48_000.0;
@@ -411,10 +412,6 @@ mod tests {
             assert!(worst < 1e-4, "differs by {worst}");
         }
         assert!(rms(&whole.0) > 0.01, "the reverb sounds");
-    }
-
-    fn rms(x: &[f32]) -> f32 {
-        (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
     }
 
     #[test]

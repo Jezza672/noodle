@@ -10,6 +10,7 @@
 //! ([`SYNTH_LATENCY`], which the engine compensates where the spectral path
 //! meets a path that doesn't have it).
 
+use crate::level::db_to_gain;
 use noodle_engine::{
     Analyzer, BINS, Bin, Config, Context, FFT_SIZE, FormantWarp, HOP, Instance, Io, Layout, Node,
     NodeError, NodeInfo, NodeType, ParamInfo, Ports, SYNTH_LATENCY, Setup, Shape, SignalIn,
@@ -17,10 +18,6 @@ use noodle_engine::{
 };
 
 const CATEGORY: &str = "Spectral";
-
-fn db_to_amp(db: f32) -> f32 {
-    10f32.powf(db / 20.0)
-}
 
 fn wrap_phase(x: f32) -> f32 {
     let tau = std::f32::consts::TAU;
@@ -275,7 +272,7 @@ impl Node for GateNode {
                 } else {
                     f32::from(level >= threshold)
                 };
-                *out = bin.scaled(db_to_amp(-reduction * (1.0 - open)));
+                *out = bin.scaled(db_to_gain(-reduction * (1.0 - open)));
             }
         });
     }

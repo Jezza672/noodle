@@ -122,6 +122,7 @@ impl OfflineNode for NormalizeNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::level::db_to_gain;
     use noodle_engine::Shape;
     use noodle_engine::testing::Harness;
 
@@ -141,7 +142,7 @@ mod tests {
         h.run(FRAMES).unwrap();
         let out = h.output(OUT).lane(0, 0).to_vec();
         let peak = out.iter().fold(0.0f32, |m, x| m.max(x.abs()));
-        assert!((peak - 10f32.powf(-6.0 / 20.0)).abs() < 1e-6, "{peak}");
+        assert!((peak - db_to_gain(-6.0)).abs() < 1e-6, "{peak}");
         // The shape is kept: the same ratios, the same sign.
         assert!((out[1] / out[2] + 0.4).abs() < 1e-6);
     }
@@ -200,7 +201,7 @@ mod tests {
         level.lane_mut(0, 1).fill(-6.0);
         h.run(FRAMES).unwrap();
         assert!((h.output(OUT).lane(0, 0)[0] - 1.0).abs() < 1e-6);
-        assert!((h.output(OUT).lane(0, 1)[0] - 10f32.powf(-6.0 / 20.0)).abs() < 1e-6);
+        assert!((h.output(OUT).lane(0, 1)[0] - db_to_gain(-6.0)).abs() < 1e-6);
     }
 
     #[test]
@@ -223,6 +224,6 @@ mod tests {
         h.run(FRAMES).unwrap();
         let out = h.output(OUT).lane(0, 0);
         assert!((out[0] - 1.0).abs() < 1e-6);
-        assert!((out[FRAMES - 1] - 10f32.powf(-6.0 / 20.0)).abs() < 1e-6);
+        assert!((out[FRAMES - 1] - db_to_gain(-6.0)).abs() < 1e-6);
     }
 }

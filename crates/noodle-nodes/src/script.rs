@@ -7,6 +7,7 @@ use noodle_engine::{
     Setup, Shape, Unit,
 };
 
+use crate::level::db_to_gain;
 use crate::math::{scan_number, unary_function};
 
 /// Runs the program in its `script` setting once per sample, per voice and
@@ -28,9 +29,10 @@ use crate::math::{scan_number, unary_function};
 ///
 /// - **Declarations** (at the top level) make the node's ports, in order:
 ///   `input x` is an audio input, `param p = 0.5 [0, 1]` a parameter (default
-///   and range optional, the range being 0 to 1 unless given; flags `log`, `hz`, `db`, `s`), `output y` an output.
-///   `state z = 0` is a variable that keeps its value from one sample to the
-///   next (and starts at the value given, or 0).
+///   and range optional, the range being 0 to 1 unless given; flags `log`,
+///   `hz`, `db`, `s`), `output y` an output. `state z = 0` is a variable that
+///   keeps its value from one sample to the next (and starts at the value
+///   given, or 0).
 /// - **Statements:** `let k = expr` makes a variable for this sample, `y =
 ///   expr` (also `+=`, `-=`, `*=`, `/=`) sets an output, state or `let`
 ///   variable, and `if cond { ... } else { ... }` chooses. A statement ends
@@ -39,11 +41,11 @@ use crate::math::{scan_number, unary_function};
 /// - **Arrays:** `array buf[480]` (or `array buf[8] = 0.5` to fill it) is
 ///   memory that lasts between samples, one copy per voice and channel, with
 ///   at most [`ARRAY_TOTAL`] values in all (keep a head in `state` wrapped, not
-///   counting up for ever: an `f32` stops counting at 16 million). `buf[i]` reads and writes it (also
-///   `+=` and the like); the index is rounded down and wraps round the array,
-///   so a write head that wraps (`head = (head + 1) % len(buf)`)
-///   makes a delay line. `len(buf)` is
-///   the length.
+///   counting up for ever: an `f32` stops counting at 16 million). `buf[i]`
+///   reads and writes it (also `+=` and the like); the index is rounded down
+///   and wraps round the array, so a write head that wraps
+///   (`head = (head + 1) % len(buf)`) makes a delay line. `len(buf)` is the
+///   length.
 /// - **Loops:** `for i in 0 to 8 { ... }` runs the block with `i` from 0 to 7.
 ///   The ends are whole numbers or `len(buf)`, so the number of steps is known
 ///   when the script is read: a loop runs at most 256 times, and loops inside
@@ -63,8 +65,9 @@ use crate::math::{scan_number, unary_function};
 /// - **Names:** `sr` (sample rate), `bpm`, `beat` (position in quarter
 ///   notes, still while the transport is stopped), `time` (seconds since the
 ///   node started; an `f32`, so coarse after a few minutes: keep a phase in
-///   `state` rather than computing `sin(time * freq)`), `pi`, `tau`, `e`, and `rand()` (a noise sample between
-///   -1 and 1; the sequence is the same every run, and every voice and channel has its own).
+///   `state` rather than computing `sin(time * freq)`), `pi`, `tau`, `e`, and
+///   `rand()` (a noise sample between -1 and 1; the sequence is the same every
+///   run, and every voice and channel has its own).
 /// - **Functions:** those of Math, plus `db(x)` (decibels to gain), `mtof(n)`
 ///   (MIDI note to Hz) and `select(cond, a, b)`.
 ///
@@ -982,10 +985,6 @@ fn reserved(name: &str) -> bool {
         || unary_function(name).is_some()
 }
 
-fn db_to_gain(db: f32) -> f32 {
-    10f32.powf(db / 20.0)
-}
-
 fn midi_to_hz(note: f32) -> f32 {
     440.0 * 2f32.powf((note - 69.0) / 12.0)
 }
@@ -1414,6 +1413,25 @@ impl Parser {
         self.vars.iter().rev().find(|v| v.name == name)
     }
 
+    /// Reads `=` or a compound assignment after `target`: the op that
+    /// combines the old value with the new, if any.
+    fn assignment_op(&mut self, target: &str) -> Result<Option<Op>, String> {
+        let op = match self.peek() {
+            Some(Tok::Symbol("=")) => None,
+            Some(Tok::Symbol("+=")) => Some(Op::Add),
+            Some(Tok::Symbol("-=")) => Some(Op::Sub),
+            Some(Tok::Symbol("*=")) => Some(Op::Mul),
+            Some(Tok::Symbol("/=")) => Some(Op::Div),
+            Some(other) => {
+                let other = other.describe();
+                return self.err(format!("expected `=` after `{target}`, found {other}"));
+            }
+            None => return self.err(format!("expected `=` after `{target}` at the end")),
+        };
+        self.at += 1;
+        Ok(op)
+    }
+
     fn assignment(&mut self, name: &str) -> Result<(), String> {
         if let Some(array) = self.array(name) {
             return self.array_assignment(name, array);
@@ -1427,19 +1445,7 @@ impl Parser {
                 "`{name}` is an input, so it can't be set (copy it with `let`)"
             ));
         }
-        let compound = match self.peek() {
-            Some(Tok::Symbol("=")) => None,
-            Some(Tok::Symbol("+=")) => Some(Op::Add),
-            Some(Tok::Symbol("-=")) => Some(Op::Sub),
-            Some(Tok::Symbol("*=")) => Some(Op::Mul),
-            Some(Tok::Symbol("/=")) => Some(Op::Div),
-            Some(other) => {
-                let other = other.describe();
-                return self.err(format!("expected `=` after `{name}`, found {other}"));
-            }
-            None => return self.err(format!("expected `=` after `{name}` at the end")),
-        };
-        self.at += 1;
+        let compound = self.assignment_op(name)?;
         if let Some(op) = compound {
             self.program.ops.push(Op::Load(slot));
             self.expression(0)?;
@@ -1453,19 +1459,7 @@ impl Parser {
 
     fn array_assignment(&mut self, name: &str, array: u8) -> Result<(), String> {
         self.index()?;
-        let compound = match self.peek() {
-            Some(Tok::Symbol("=")) => None,
-            Some(Tok::Symbol("+=")) => Some(Op::Add),
-            Some(Tok::Symbol("-=")) => Some(Op::Sub),
-            Some(Tok::Symbol("*=")) => Some(Op::Mul),
-            Some(Tok::Symbol("/=")) => Some(Op::Div),
-            Some(other) => {
-                let other = other.describe();
-                return self.err(format!("expected `=` after `{name}[...]`, found {other}"));
-            }
-            None => return self.err(format!("expected `=` after `{name}[...]` at the end")),
-        };
-        self.at += 1;
+        let compound = self.assignment_op(&format!("{name}[...]"))?;
         if let Some(op) = compound {
             self.program.ops.push(Op::Dup);
             self.program.ops.push(Op::LoadIdx(array));
@@ -1698,6 +1692,17 @@ mod tests {
         run_with(text, 1, &[])[0][0]
     }
 
+    /// Asserts that each script fails to compile, with a message containing
+    /// the paired text.
+    fn assert_compile_errors(cases: &[(&str, &str)]) {
+        for &(text, wanted) in cases {
+            let error = Program::compile(text)
+                .err()
+                .unwrap_or_else(|| panic!("{text:?} should fail"));
+            assert!(error.contains(wanted), "{text:?}: {error}");
+        }
+    }
+
     #[test]
     fn expressions_follow_the_maths_rules_and_add_comparisons() {
         let at = |e: &str| first(&format!("output o\no = {e}"));
@@ -1879,7 +1884,7 @@ mod tests {
 
     #[test]
     fn mistakes_are_reported_with_their_line() {
-        for (text, wanted) in [
+        assert_compile_errors(&[
             ("output o\no = ", "line 2: the expression ends too soon"),
             ("output o\no = (1", "expected `)`"),
             ("output o\no = 1 2", "unexpected number 2"),
@@ -1902,12 +1907,7 @@ mod tests {
             ("param p [0, 1] loud\noutput o", "unknown flag"),
             ("param p [0, 1] log\noutput o", "above 0"),
             ("output o\no", "expected `=`"),
-        ] {
-            let error = Program::compile(text)
-                .err()
-                .unwrap_or_else(|| panic!("{text:?} should fail"));
-            assert!(error.contains(wanted), "{text:?}: {error}");
-        }
+        ]);
         let many = (0..=MAX_OUTPUTS)
             .map(|i| format!("output o{i}\n"))
             .collect::<String>();
@@ -2008,7 +2008,7 @@ mod tests {
 
     #[test]
     fn array_mistakes_are_reported() {
-        for (text, wanted) in [
+        assert_compile_errors(&[
             ("output o\narray a[0]", "whole number"),
             ("output o\narray a[2.5]", "whole number"),
             ("output o\narray a[5000]\narray b[5000]", "at most"),
@@ -2017,12 +2017,7 @@ mod tests {
             ("output o\narray a[2]\nlet a = 1", "already used"),
             ("output o\no = len(zz)", "not an array"),
             ("output o\nzz[0] = 1", "unknown name"),
-        ] {
-            let error = Program::compile(text)
-                .err()
-                .unwrap_or_else(|| panic!("{text:?} should fail"));
-            assert!(error.contains(wanted), "{text:?}: {error}");
-        }
+        ]);
     }
 
     fn note_on(time: u32, id: u32, key: u8, velocity: f32) -> Event {
@@ -2166,18 +2161,13 @@ mod tests {
 
     #[test]
     fn event_mistakes_are_reported() {
-        for (text, wanted) in [
+        assert_compile_errors(&[
             ("output o\nnote_on(p, 60, 1)", "not an event output"),
             ("events out p\nnote_on(p, 60)", "expected `,`"),
             ("events up p\noutput o", "expected `in` or `out`"),
             ("events in p\nevents out p\noutput o", "already used"),
             ("events in p\noutput p_on", "already used"),
-        ] {
-            let error = Program::compile(text)
-                .err()
-                .unwrap_or_else(|| panic!("{text:?} should fail"));
-            assert!(error.contains(wanted), "{text:?}: {error}");
-        }
+        ]);
         // A script of event ports alone is a script.
         assert!(Program::compile("events in a\nevents out b").is_ok());
     }

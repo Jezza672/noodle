@@ -1,8 +1,9 @@
 use noodle_engine::{
     Config, Context, Instance, Io, Lane, LaneKernel, Layout, Node, NodeError, NodeInfo, NodeType,
-    ParamInfo, PerLane, Ports, Setup, Skip, Telemetry, Unit,
+    NodeView, ParamInfo, PerLane, Ports, Setup, Skip, Telemetry, Unit,
 };
 
+use crate::level::db_to_gain;
 use crate::meter::{LevelProbe, voice_sum_out};
 
 /// Scales its input by a gain in dB. It reports its output's level through
@@ -51,8 +52,8 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Gain {
-    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
-        noodle_engine::NodeView::Meter
+    fn view(&self, _config: &Config) -> NodeView {
+        NodeView::Meter
     }
 
     fn info(&self) -> &NodeInfo {
@@ -131,21 +132,17 @@ impl LaneKernel for GainKernel {
         let out = lane.outputs.get_mut(OUT);
         // The gain is rarely modulated, so usually convert from dB once per block.
         if let Some(db) = lane.inputs.constant(GAIN) {
-            let gain = db_to_amplitude(db);
+            let gain = db_to_gain(db);
             for (o, x) in out.iter_mut().zip(input) {
                 *o = x * gain;
             }
         } else {
             let gain = lane.inputs.get(GAIN);
             for ((o, x), db) in out.iter_mut().zip(input).zip(gain) {
-                *o = x * db_to_amplitude(*db);
+                *o = x * db_to_gain(*db);
             }
         }
     }
-}
-
-fn db_to_amplitude(db: f32) -> f32 {
-    10f32.powf(db / 20.0)
 }
 
 #[cfg(test)]

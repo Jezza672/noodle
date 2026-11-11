@@ -188,7 +188,6 @@ pub fn parse_name(stem: &str, middle_c: i64) -> NameInfo {
         {
             info.note = Some(note);
         } else if bare.is_none()
-            && !token.is_empty()
             && token.chars().all(|c| c.is_ascii_digit())
             && let Ok(n) = token.parse::<u32>()
             && n <= 127
@@ -596,16 +595,15 @@ mod tests {
 
     #[test]
     fn layers_are_ranked_per_note_softest_first() {
-        let files: Vec<(String, String)> = [
-            ("C4_ff.wav", "a"),
-            ("C4_pp.wav", "b"),
-            ("D4_mf.wav", "c"),
-            ("C4_pp_rr2.wav", "d"),
-        ]
-        .iter()
-        .map(|(n, h)| ((*n).to_owned(), (*h).to_owned()))
-        .collect();
-        let rows = rows_from_files(&files, 4);
+        let rows = rows_from_files(
+            &files(&[
+                ("C4_ff.wav", "a"),
+                ("C4_pp.wav", "b"),
+                ("D4_mf.wav", "c"),
+                ("C4_pp_rr2.wav", "d"),
+            ]),
+            4,
+        );
         let by = |name: &str| rows.iter().find(|r| r.name == name).unwrap().entry.clone();
         assert_eq!(by("C4_pp.wav").layer, 1);
         assert_eq!(by("C4_ff.wav").layer, 2);

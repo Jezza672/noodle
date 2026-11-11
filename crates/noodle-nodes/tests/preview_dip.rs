@@ -4,7 +4,7 @@
 
 mod common;
 
-use common::{BLOCK, Rig};
+use common::{BLOCK, Rig, biggest_step};
 use noodle_core::WarpMode;
 
 /// Plays on from `at` for `blocks` and returns what came out (left channel)
@@ -18,13 +18,6 @@ fn play(rig: &mut Rig, mut at: u64, blocks: usize) -> (Vec<f32>, u64) {
         at += BLOCK as u64;
     }
     (out, at)
-}
-
-fn biggest_step(signal: &[f32]) -> f32 {
-    signal
-        .windows(2)
-        .map(|w| (w[1] - w[0]).abs())
-        .fold(0.0, f32::max)
 }
 
 #[test]

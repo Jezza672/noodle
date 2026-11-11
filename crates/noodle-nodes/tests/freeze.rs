@@ -104,6 +104,19 @@ impl Rig {
         self.apply(command);
     }
 
+    /// Groups `nodes` and returns the group.
+    fn group(&mut self, nodes: &[NodeId]) -> NodeId {
+        let project = self.project.clone();
+        let mut next = project.next_node_id().0;
+        let (group, command) = noodle_core::group::group_nodes(&project, nodes, || {
+            next += 1;
+            NodeId(next - 1)
+        })
+        .unwrap();
+        self.apply(command);
+        group
+    }
+
     fn request(&self) -> RenderRequest {
         RenderRequest {
             project: self.project.clone(),
@@ -201,10 +214,6 @@ fn reversed(samples: &[f32]) -> Vec<f32> {
         .collect()
 }
 
-fn offline_kind(node: NodeId) -> TargetKind {
-    TargetKind::Offline(node)
-}
-
 #[test]
 fn an_offline_node_plays_its_cached_render() {
     let mut rig = setup("reverse");
@@ -222,20 +231,20 @@ fn an_offline_node_plays_its_cached_render() {
         .freezer
         .plan(&rig.analyze(), SETTINGS, FRAMES, true, None);
     assert_eq!(
-        before.state(offline_kind(reverse)),
+        before.state(TargetKind::Offline(reverse)),
         Some(&TargetState::Missing)
     );
     assert!(rig.play(true, None).iter().all(|&s| s == 0.0));
 
     let report = rig.freeze();
-    assert_eq!(report.rendered, [offline_kind(reverse)]);
+    assert_eq!(report.rendered, [TargetKind::Offline(reverse)]);
     let expected = reversed(&original);
     assert_close(&rig.play(true, None), &expected, "blocking player");
 
     // Already rendered: nothing to do the second time.
     let again = rig.freeze();
     assert!(again.rendered.is_empty());
-    assert_eq!(again.cached, [offline_kind(reverse)]);
+    assert_eq!(again.cached, [TargetKind::Offline(reverse)]);
 }
 
 #[test]
@@ -269,10 +278,10 @@ fn an_offline_node_renders_again_when_something_upstream_changes() {
         .freezer
         .plan(&rig.analyze(), SETTINGS, FRAMES, true, None);
     assert_eq!(
-        plan.state(offline_kind(reverse)),
+        plan.state(TargetKind::Offline(reverse)),
         Some(&TargetState::Missing)
     );
-    assert_eq!(rig.freeze().rendered, [offline_kind(reverse)]);
+    assert_eq!(rig.freeze().rendered, [TargetKind::Offline(reverse)]);
     let second = rig.play(true, None);
     let half: Vec<f32> = first.iter().map(|s| s * 0.5).collect();
     assert_close(&second, &half, "after the clip was turned down");
@@ -312,7 +321,7 @@ fn live_input_cant_be_cached() {
     rig.wire((reverse, "out"), (out, "in"));
     let analysis = rig.analyze();
     let plan = rig.freezer.plan(&analysis, SETTINGS, FRAMES, true, None);
-    let Some(TargetState::Blocked(why)) = plan.state(offline_kind(reverse)) else {
+    let Some(TargetState::Blocked(why)) = plan.state(TargetKind::Offline(reverse)) else {
         panic!("expected the offline node to be blocked");
     };
     assert!(why.to_string().contains("same every time"), "{why}");
@@ -344,7 +353,7 @@ fn a_missing_file_is_not_cached() {
         .freezer
         .plan(&rig.analyze(), SETTINGS, FRAMES, true, None);
     assert!(matches!(
-        plan.state(offline_kind(reverse.unwrap())),
+        plan.state(TargetKind::Offline(reverse.unwrap())),
         Some(TargetState::Blocked(_))
     ));
 }
@@ -383,14 +392,7 @@ fn synth_group(rig: &mut Rig) -> (NodeId, NodeId, NodeId) {
     });
     rig.wire((osc, "out"), (gain, "in"));
     rig.wire((gain, "out"), (out, "in"));
-    let project = rig.project.clone();
-    let mut next = project.next_node_id().0;
-    let (group, command) = noodle_core::group::group_nodes(&project, &[osc, gain], || {
-        next += 1;
-        NodeId(next - 1)
-    })
-    .unwrap();
-    rig.apply(command);
+    let group = rig.group(&[osc, gain]);
     (group, osc, out)
 }
 
@@ -466,20 +468,22 @@ fn a_frozen_group_plays_from_the_cache_and_stops_running_live() {
 #[test]
 fn chained_offline_nodes_and_freezes_render_upstream_first() {
     let mut rig = setup("chain");
-    let (track, first, out) = rig.clip_chain(Some(REVERSE));
+    let (_, first, out) = rig.clip_chain(Some(REVERSE));
     let first = first.unwrap();
     // Track -> reverse -> reverse -> output: the original again.
     let second = rig.add(4, REVERSE);
     rig.wire((first, "out"), (second, "in"));
     rig.wire((second, "out"), (out, "in"));
-    let _ = track;
     let original = {
         let mut plain = setup("chain-plain");
         plain.clip_chain(None);
         plain.live()
     };
     let report = rig.freeze();
-    assert_eq!(report.rendered, [offline_kind(first), offline_kind(second)]);
+    assert_eq!(
+        report.rendered,
+        [TargetKind::Offline(first), TargetKind::Offline(second)]
+    );
     assert_close(&rig.play(true, None), &original, "reverse twice");
 }
 
@@ -501,7 +505,7 @@ fn an_offline_node_after_a_spectral_chain_renders_again_when_the_chain_changes()
     let clip = Clip::audio(track, Tick(0), "tone.wav", FRAMES as u64);
     rig.apply(Command::AddClip { id, clip });
 
-    assert_eq!(rig.freeze().rendered, [offline_kind(reverse)]);
+    assert_eq!(rig.freeze().rendered, [TargetKind::Offline(reverse)]);
     assert!(rig.freeze().rendered.is_empty(), "nothing changed");
 
     // A knob on a spectral node, upstream of the offline node only through
@@ -515,10 +519,10 @@ fn an_offline_node_after_a_spectral_chain_renders_again_when_the_chain_changes()
         .freezer
         .plan(&rig.analyze(), SETTINGS, FRAMES, true, None);
     assert_eq!(
-        plan.state(offline_kind(reverse)),
+        plan.state(TargetKind::Offline(reverse)),
         Some(&TargetState::Missing)
     );
-    assert_eq!(rig.freeze().rendered, [offline_kind(reverse)]);
+    assert_eq!(rig.freeze().rendered, [TargetKind::Offline(reverse)]);
 }
 
 /// The key of the Reverse node after a track playing `tone.wav`, once
@@ -705,9 +709,6 @@ fn the_warp_preview_is_in_the_key_of_a_warped_clip() {
     assert_ne!(normal, preview);
 }
 
-// The playback cache's automatic targets: top-level groups, cut before their
-// outputs' stages, and keyed by the start of the pass (ADR 0010).
-
 /// Blocks of output skipped after a seek, which fades out and back in.
 const FADE_SKIP: usize = 2 * 512 * 2;
 
@@ -718,14 +719,7 @@ fn second_group(rig: &mut Rig) -> (NodeId, NodeId) {
     let out = rig.add(13, OUTPUT_ID);
     rig.wire((osc, "out"), (gain, "in"));
     rig.wire((gain, "out"), (out, "in"));
-    let project = rig.project.clone();
-    let mut next = project.next_node_id().0;
-    let (group, command) = noodle_core::group::group_nodes(&project, &[osc, gain], || {
-        next += 1;
-        NodeId(next - 1)
-    })
-    .unwrap();
-    rig.apply(command);
+    let group = rig.group(&[osc, gain]);
     (group, osc)
 }
 
@@ -918,14 +912,7 @@ fn a_group_that_cant_be_cached_is_left_live_and_the_others_still_are() {
     let out = rig.add(33, OUTPUT_ID);
     rig.wire((input, "out"), (gain, "in"));
     rig.wire((gain, "out"), (out, "in"));
-    let project = rig.project.clone();
-    let mut next = project.next_node_id().0;
-    let (live_group, command) = noodle_core::group::group_nodes(&project, &[input, gain], || {
-        next += 1;
-        NodeId(next - 1)
-    })
-    .unwrap();
-    rig.apply(command);
+    let live_group = rig.group(&[input, gain]);
     let (synth, _, _) = synth_group(&mut rig);
     let analysis = rig.analyze();
     assert!(analysis.target(TargetKind::Auto(live_group)).is_none());
@@ -937,14 +924,7 @@ fn only_top_level_groups_that_arent_frozen_are_targets() {
     let mut rig = setup("auto-which");
     let (group, osc, _) = synth_group(&mut rig);
     // A group inside a group is part of the outer one's cluster.
-    let project = rig.project.clone();
-    let mut next = project.next_node_id().0;
-    let (inner, command) = noodle_core::group::group_nodes(&project, &[osc], || {
-        next += 1;
-        NodeId(next - 1)
-    })
-    .unwrap();
-    rig.apply(command);
+    let inner = rig.group(&[osc]);
     let analysis = rig.analyze();
     assert!(analysis.target(TargetKind::Auto(group)).is_some());
     assert!(analysis.target(TargetKind::Auto(inner)).is_none());
@@ -1005,8 +985,6 @@ fn an_entry_grows_with_the_project_instead_of_rendering_again() {
     assert_eq!(plan.state(auto), Some(&TargetState::Ready));
 }
 
-// The tiers (ADR 0010): which entries serve which starts, and the loop rule.
-
 /// A group of the track playing `tone.wav` into `middle` (if any), with
 /// `time` set on it, and an output after it.
 fn clip_group(rig: &mut Rig, middle: Option<(&str, f32)>) -> NodeId {
@@ -1030,15 +1008,7 @@ fn clip_group(rig: &mut Rig, middle: Option<(&str, f32)>) -> NodeId {
         (last, port) = (node, "out");
     }
     rig.wire((last, port), (out, "in"));
-    let project = rig.project.clone();
-    let mut next = project.next_node_id().0;
-    let (group, command) = noodle_core::group::group_nodes(&project, &inside, || {
-        next += 1;
-        NodeId(next - 1)
-    })
-    .unwrap();
-    rig.apply(command);
-    group
+    rig.group(&inside)
 }
 
 fn table(rig: &Rig) -> TempoTable {
@@ -1097,8 +1067,9 @@ fn a_bounded_cluster_is_warmed_from_before_the_start_and_serves_a_range() {
     let late = 6_000 * 2;
     assert_close(&cached[late..], &fresh[late..], "after the delay");
 
-    // Far from 0 (past what the entry from 0 holds), the entry starts on a bar before the start less what the
-    // cluster remembers (2 s), and serves the starts in the same stretch.
+    // Far from 0 (past what the entry from 0 holds), the entry starts on a
+    // bar, at least what the cluster remembers (2 s) before the start, and
+    // serves the starts in the same stretch.
     let far = |ticks: i64| pass_at(&rig, 20 * SECOND + ticks);
     let spec = analysis.entries(target, &far(100))[0];
     assert_eq!(
@@ -1425,15 +1396,8 @@ fn a_cheap_chain_is_not_cached_and_a_cheap_group_is_looked_inside() {
     rig.wire((last, "out"), (out, "in"));
     assert_eq!(cut_kinds(&rig.analyze()), []);
     // Grouped, the chain is a prior and no more: still nothing.
-    let project = rig.project.clone();
-    let mut next = project.next_node_id().0;
     let inside: Vec<NodeId> = (1..22).map(NodeId).collect();
-    let (group, command) = noodle_core::group::group_nodes(&project, &inside, || {
-        next += 1;
-        NodeId(next - 1)
-    })
-    .unwrap();
-    rig.apply(command);
+    let group = rig.group(&inside);
     assert!(rig.analyze().target(TargetKind::Auto(group)).is_none());
     assert_eq!(cut_kinds(&rig.analyze()), []);
     assert!(rig.freeze_passes(&[pass_at(&rig, 0)]).rendered.is_empty());
@@ -1443,15 +1407,8 @@ fn a_cheap_chain_is_not_cached_and_a_cheap_group_is_looked_inside() {
     let mut rig = setup("cheap-group");
     with_default_cost(&mut rig);
     let (send, _, _, _) = shared_send(&mut rig);
-    let project = rig.project.clone();
-    let mut next = project.next_node_id().0;
     let inside: Vec<NodeId> = (21..26).map(NodeId).collect();
-    let (group, command) = noodle_core::group::group_nodes(&project, &inside, || {
-        next += 1;
-        NodeId(next - 1)
-    })
-    .unwrap();
-    rig.apply(command);
+    let group = rig.group(&inside);
     let analysis = rig.analyze();
     assert!(analysis.target(TargetKind::Auto(group)).is_none());
     assert_eq!(cut_kinds(&analysis), [TargetKind::Cut(send)]);
@@ -1469,15 +1426,8 @@ fn a_render_writes_the_entries_of_the_cuts_inside_it() {
         input: Endpoint::new(NodeId(26), "in"),
     });
     rig.wire((after, "out"), (NodeId(26), "in"));
-    let project = rig.project.clone();
-    let mut next = project.next_node_id().0;
     let inside: Vec<NodeId> = [21, 22, 23, 24, 25, 27].map(NodeId).to_vec();
-    let (group, command) = noodle_core::group::group_nodes(&project, &inside, || {
-        next += 1;
-        NodeId(next - 1)
-    })
-    .unwrap();
-    rig.apply(command);
+    let group = rig.group(&inside);
     let (sink, cut) = (TargetKind::Auto(group), TargetKind::Cut(send));
     assert_eq!(cut_kinds(&rig.analyze()), [cut, sink]);
 

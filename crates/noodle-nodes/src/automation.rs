@@ -9,8 +9,8 @@ use noodle_engine::{
 ///
 /// It outputs `value`, a number from 0 to 1 mapped onto `min` to `max` (the
 /// range of the parameter it was made for, by the Automate shortcut; the
-/// default 0 to 1 passes it through), along a linear or log taper, and an automation lane on
-/// `value` (made by the timeline's "+ Add automation" button, which adds
+/// default 0 to 1 passes it through), along a linear or log taper, and an
+/// automation lane on `value` (made by the timeline's "+ Add automation" button, which adds
 /// this node and the lane together) moves it along the timeline, with points
 /// you click in and drag. Wire `out` into any input: a parameter (where it
 /// sweeps the slider's travel, or replaces the value, as the parameter

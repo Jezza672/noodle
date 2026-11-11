@@ -1,5 +1,6 @@
 use std::f32::consts::TAU;
 
+use crate::level::db_to_gain;
 use noodle_engine::{
     Config, Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType, ParamInfo, Setup,
     Unit,
@@ -140,7 +141,7 @@ impl Node for Click {
             .first()
             .copied()
             .unwrap_or(-12.0);
-        let level = 10f32.powf(db / 20.0);
+        let level = db_to_gain(db);
         let beat_hz = io.inputs[PITCH]
             .lane(0, 0)
             .first()
@@ -152,9 +153,8 @@ impl Node for Click {
             .first()
             .is_none_or(|&accent| accent >= 0.5);
 
-        // The first beat to start in this block, as a frame. Beats are
-        // counted from tick 0. A
-        // stopped transport starts none, but a click that's sounding rings out.
+        // The first beat to start in this block, as a frame. A stopped
+        // transport starts none, but a click that's sounding rings out.
         let beat_ticks =
             TICKS_PER_QUARTER * 4.0 / f64::from(transport.signature.denominator.max(1));
         let frames_per_tick =

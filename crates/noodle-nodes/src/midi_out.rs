@@ -54,8 +54,6 @@ static INFO: NodeInfo = NodeInfo {
     category: "Events",
 };
 
-/// Registered by [`register_library`](crate::register_library).
-///
 /// Sends notes, controllers, pitch bend and the other raw MIDI that arrive on
 /// its `in` wire to the port named by its `port` config, as MIDI 1.0. Per-note
 /// expression has no MIDI 1.0 form and is not sent.

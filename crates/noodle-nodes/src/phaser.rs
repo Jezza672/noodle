@@ -164,6 +164,7 @@ impl LaneKernel for PhaserKernel {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::level::rms;
     use noodle_engine::Shape;
     use noodle_engine::testing::Harness;
 
@@ -192,10 +193,6 @@ mod tests {
         (0..frames)
             .map(|i| (TAU * hz * i as f32 / RATE_HZ).sin())
             .collect()
-    }
-
-    fn rms(x: &[f32]) -> f32 {
-        (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
     }
 
     #[test]

@@ -5,24 +5,19 @@ mod common;
 use std::time::Duration;
 
 use common::{BEAT, BLOCK, Rig};
-use noodle_engine::EventKind;
+use noodle_core::{ControlKind, ControlPoint, ExpressionKind, NoteExpression, Tick};
+use noodle_engine::{ChannelControl, EventKind, Expression};
 
 /// (sample, is a note-on, key or note id) for every event in a stretch.
 fn run(rig: &mut Rig, from: u64, to: u64, playing: bool) -> Vec<(u64, bool, u32)> {
-    let mut out = Vec::new();
-    let mut at = from;
-    while at < to {
-        let n = BLOCK.min((to - at) as usize);
-        for (time, kind) in rig.run_events(at, n, playing) {
-            match kind {
-                EventKind::NoteOn { key, .. } => out.push((time, true, u32::from(key))),
-                EventKind::NoteOff { note, .. } => out.push((time, false, note.0)),
-                other => panic!("unexpected {other:?}"),
-            }
-        }
-        at += n as u64;
-    }
-    out
+    all(rig, from, to, playing)
+        .into_iter()
+        .map(|(time, kind)| match kind {
+            EventKind::NoteOn { key, .. } => (time, true, u32::from(key)),
+            EventKind::NoteOff { note, .. } => (time, false, note.0),
+            other => panic!("unexpected {other:?}"),
+        })
+        .collect()
 }
 
 /// The node waits for each schedule instead of playing silence until it
@@ -53,9 +48,7 @@ fn notes_start_and_end_where_the_clip_puts_them() {
     );
     assert_eq!(events[0].2, 60);
     assert_eq!(events[2].2, 64);
-    // Each off names the note it ends.
-    let on_ids = events.iter().filter(|e| !e.1).count();
-    assert_eq!(on_ids, 2);
+    assert_eq!(events.iter().filter(|e| !e.1).count(), 2);
 }
 
 #[test]
@@ -164,7 +157,7 @@ fn nothing_plays_while_the_transport_stands_still() {
 #[test]
 fn an_auditioned_key_sounds_on_its_own_track_even_when_stopped() {
     let mut rig = rig("midi-audition");
-    let other = Rig::blocking("midi-audition-other");
+    let mut other = Rig::blocking("midi-audition-other");
     rig.feeds.audition(rig.id, 62, true);
     let events = rig.run_events(0, BLOCK, false);
     assert_eq!(events.len(), 1, "{events:?}");
@@ -178,7 +171,6 @@ fn an_auditioned_key_sounds_on_its_own_track_even_when_stopped() {
     ));
     // Held: nothing more. Another track's input is not touched.
     assert!(rig.run_events(0, BLOCK, false).is_empty());
-    let mut other = other;
     assert!(other.run_events(0, BLOCK, false).is_empty());
     // Let go: one off, naming the same note.
     rig.feeds.audition(rig.id, 62, false);
@@ -362,14 +354,10 @@ fn a_looping_clip_plays_its_loop_again_until_it_ends() {
     let mut rig = rig("midi-loop");
     // A four beat clip at the start whose first beat is the loop.
     let id = rig.add_midi_clip(0, 4, &[(0, 240, 60), (480, 240, 62), (1500, 100, 71)]);
-    rig.edit_clip(id, |clip| {
-        let noodle_core::ClipContent::Midi(midi) = &mut clip.content else {
-            unreachable!()
-        };
-        midi.set_loop(noodle_core::Tick(0), noodle_core::Tick(960));
+    midi_of(&mut rig, id, |midi| {
+        midi.set_loop(Tick(0), Tick(960));
         midi.loop_on = true;
     });
-    rig.settle();
     let events = run(&mut rig, 0, 5 * BEAT, true);
     let on: Vec<_> = events
         .iter()
@@ -384,9 +372,6 @@ fn a_looping_clip_plays_its_loop_again_until_it_ends() {
     // Every note-on has its note-off.
     assert_eq!(events.iter().filter(|e| !e.1).count(), expect.len());
 }
-
-use noodle_core::{ControlKind, ControlPoint, ExpressionKind, NoteExpression, Tick};
-use noodle_engine::{ChannelControl, Expression};
 
 /// The pedal's controller number.
 const PEDAL: u8 = 64;
