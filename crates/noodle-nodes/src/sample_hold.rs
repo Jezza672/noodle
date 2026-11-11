@@ -78,7 +78,7 @@ impl LaneKernel for HoldKernel {
         for i in 0..out.len() {
             let high = trigger[i] >= 0.5;
             let track = mode[i] >= 0.5;
-            if (high && !state.gate) || (track && high) {
+            if high && (track || !state.gate) {
                 state.held = input[i];
             }
             state.gate = high;

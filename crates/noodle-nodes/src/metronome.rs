@@ -153,9 +153,8 @@ impl Node for Click {
             .first()
             .is_none_or(|&accent| accent >= 0.5);
 
-        // The first beat to start in this block, as a frame. Beats are
-        // counted from tick 0. A
-        // stopped transport starts none, but a click that's sounding rings out.
+        // The first beat to start in this block, as a frame. A stopped
+        // transport starts none, but a click that's sounding rings out.
         let beat_ticks =
             TICKS_PER_QUARTER * 4.0 / f64::from(transport.signature.denominator.max(1));
         let frames_per_tick =

@@ -151,7 +151,7 @@ static INFO: NodeInfo = NodeInfo {
 /// The note IDs of live monitoring; see [`TrackInput::with_midi`].
 const LIVE_ID: u32 = 0x2000_0000;
 
-/// Registered by [`register_library`](crate::register_library).
+/// The track input node.
 pub struct TrackInput {
     feeds: ClipFeeds,
     midi: Option<MidiBus>,

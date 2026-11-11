@@ -598,11 +598,11 @@ mod tests {
     fn avoid_repeat_never_picks_the_same_input_twice() {
         let mut h = signal(3, 9);
         h.set(avoid(3), 1.0);
-        let picks = picks(&mut h, 3, 60);
-        assert!(picks.windows(2).all(|w| w[0] != w[1]), "{picks:?}");
-        assert_ne!(picks[0], 1.0);
+        let avoided = picks(&mut h, 3, 60);
+        assert!(avoided.windows(2).all(|w| w[0] != w[1]), "{avoided:?}");
+        assert_ne!(avoided[0], 1.0);
         // Without it, repeats happen.
-        let free = super::tests::picks(&mut signal(3, 9), 3, 60);
+        let free = picks(&mut signal(3, 9), 3, 60);
         assert!(free.windows(2).any(|w| w[0] == w[1]));
     }
 
@@ -767,11 +767,10 @@ mod tests {
         h.run(FRAMES).unwrap();
         assert_eq!(h.events(0), [off(5, 2), on(8, 1)]);
     }
+
     /// A Random Select of samples, whose output is the number of the pick.
     fn samples(n: i64) -> Harness {
-        let config = Config::new()
-            .with("inputs", Value::Int(n))
-            .with("kind", Value::Int(2));
+        let config = config(n, false).with("kind", Value::Int(2));
         Harness::new(
             &RandomSelect,
             &config,
@@ -786,9 +785,7 @@ mod tests {
     fn samples_put_the_number_of_the_pick_on_the_signal_from_the_trigger() {
         let mut h = samples(2);
         h.set(AVOID_REPEAT, 1.0);
-        let mut trigger = h.input(0, FRAMES);
-        trigger.fill(0.0);
-        trigger.lane_mut(0, 0)[20] = 1.0;
+        fire(&mut h, 20);
         h.run(FRAMES).unwrap();
         // The out is a sample port; the signal is the only output buffer.
         let pick = h.output(0).lane(0, 0).to_vec();

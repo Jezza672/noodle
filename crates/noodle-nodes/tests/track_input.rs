@@ -7,7 +7,7 @@
 
 mod common;
 
-use common::{BEAT, BLOCK, RATE, Rig};
+use common::{BEAT, BLOCK, RATE, Rig, biggest_step};
 
 /// A ramp whose value says which frame it is, so any misplaced frame shows.
 fn ramp(channel: usize, frame: usize) -> f32 {
@@ -53,10 +53,7 @@ fn a_muted_clip_is_silent_and_comes_back_when_unmuted() {
     assert_close(&left[300..], |_| 0.5, "before the mute");
 
     let mute = |rig: &mut Rig, muted: bool| {
-        rig.edit_clip(id, |clip| {
-            let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
-                unreachable!("not an audio clip")
-            };
+        rig.edit_audio(id, |audio| {
             audio.muted = muted;
         });
         rig.settle();
@@ -97,10 +94,7 @@ fn gain_and_fades_shape_the_clip() {
     let mut rig = Rig::blocking("fades");
     rig.wav("one.wav", 1, 30_000, |_, _| 1.0);
     let id = rig.add_clip(0, "one.wav", 0, 8_000);
-    rig.edit_clip(id, |clip| {
-        let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
-            unreachable!("not an audio clip")
-        };
+    rig.edit_audio(id, |audio| {
         audio.gain = 0.5;
         audio.fade_in = 1_000;
         audio.fade_out = 2_000;
@@ -156,13 +150,8 @@ fn stopping_fades_out_and_starting_again_picks_up_in_place() {
     for _ in 0..4 {
         stopped.extend(rig.run(5_000, BLOCK, false).0);
     }
-    let biggest_step = std::iter::once(before)
-        .chain(stopped.iter().copied())
-        .collect::<Vec<_>>()
-        .windows(2)
-        .map(|w| (w[1] - w[0]).abs())
-        .fold(0.0, f32::max);
-    assert!(biggest_step < 0.01, "stopping jumped by {biggest_step}");
+    let step = biggest_step(&[&[before], &stopped[..]].concat());
+    assert!(step < 0.01, "stopping jumped by {step}");
     assert!(stopped[300..].iter().all(|&s| s == 0.0), "stays silent");
 
     // Start again from the same place; the node waits for the stream to line up.
@@ -261,10 +250,7 @@ fn an_edit_to_the_clip_that_is_playing_dips_and_returns() {
     let id = rig.add_clip(0, "one.wav", 0, 50_000);
     rig.wait_ready(0, 1);
     rig.play(0, 2_000);
-    rig.edit_clip(id, |clip| {
-        let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
-            unreachable!("not an audio clip")
-        };
+    rig.edit_audio(id, |audio| {
         audio.gain = 0.5;
     });
     rig.settle();
@@ -273,11 +259,8 @@ fn an_edit_to_the_clip_that_is_playing_dips_and_returns() {
     let min = left.iter().copied().fold(f32::MAX, f32::min);
     assert!(min < 0.01, "never dipped: {min}");
     assert!((left[left.len() - 1] - 0.5).abs() < 1e-6);
-    let biggest_step = left
-        .windows(2)
-        .map(|w| (w[1] - w[0]).abs())
-        .fold(0.0, f32::max);
-    assert!(biggest_step < 0.01, "jumped by {biggest_step}");
+    let step = biggest_step(&left);
+    assert!(step < 0.01, "jumped by {step}");
 }
 
 #[test]
@@ -291,10 +274,7 @@ fn dragging_a_fade_away_from_the_playhead_does_not_dip() {
     // clip, nowhere near either fade.
     let mut position = 2_000;
     for (fade_in, fade_out) in [(300, 0), (600, 1_000), (900, 3_000), (1_200, 6_000)] {
-        rig.edit_clip(id, |clip| {
-            let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
-                unreachable!("not an audio clip")
-            };
+        rig.edit_audio(id, |audio| {
             audio.fade_in = fade_in;
             audio.fade_out = fade_out;
         });
@@ -304,10 +284,7 @@ fn dragging_a_fade_away_from_the_playhead_does_not_dip() {
         position += 1_000;
     }
     // A fade that reaches the playhead is heard, with a dip.
-    rig.edit_clip(id, |clip| {
-        let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
-            unreachable!("not an audio clip")
-        };
+    rig.edit_audio(id, |audio| {
         audio.fade_in = 0;
         audio.fade_out = 49_000;
     });
@@ -322,14 +299,13 @@ fn a_clip_whose_file_is_missing_is_reported_and_the_rest_play() {
     let mut rig = Rig::blocking("missing");
     rig.wav("here.wav", 1, 20_000, |_, _| 0.5);
     let missing = rig.add_clip(0, "gone.wav", 0, 5_000);
-    let here = rig.add_clip(1, "here.wav", 0, 5_000);
+    rig.add_clip(1, "here.wav", 0, 5_000);
     assert_eq!(rig.problems.len(), 1);
     assert_eq!(rig.problems[0].clip, missing);
     assert!(rig.problems[0].message.contains("gone.wav"));
     rig.wait_ready(BEAT, 1);
     let (left, _) = rig.play(BEAT, BEAT + 2_000);
     assert_close(&left[300..], |_| 0.5, "the clip that exists");
-    let _ = (here, RATE);
 }
 
 #[test]
@@ -605,21 +581,13 @@ fn an_error_stays_while_the_schedule_changes() {
     );
 }
 
-fn audio_of(clip: &mut noodle_core::Clip) -> &mut noodle_core::AudioClip {
-    let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
-        unreachable!("not an audio clip")
-    };
-    audio
-}
-
 #[test]
 fn gain_points_shape_the_clip_in_decibels_between_points() {
     use noodle_core::{GainPoint, Tick};
     let mut rig = Rig::blocking("envelope");
     rig.wav("one.wav", 1, 60_000, |_, _| 1.0);
     let id = rig.add_clip(0, "one.wav", 0, 40_000);
-    rig.edit_clip(id, |clip| {
-        let audio = audio_of(clip);
+    rig.edit_audio(id, |audio| {
         audio.gain = 0.5;
         audio.gain_points = vec![
             GainPoint {
@@ -663,8 +631,8 @@ fn butted_clips_crossfade_over_the_audio_each_has_to_spare() {
     rig.add_clip(0, "a.wav", 0, 24_000);
     let b = rig.add_clip(1, "b.wav", 6_000, 20_000);
     // 240 ticks is 6 000 frames at 120 beats per minute.
-    rig.edit_clip(b, |clip| {
-        audio_of(clip).crossfade = Some(Crossfade {
+    rig.edit_audio(b, |audio| {
+        audio.crossfade = Some(Crossfade {
             before: Tick(240),
             after: Tick(240),
         });
@@ -698,8 +666,8 @@ fn a_crossfade_stops_growing_where_a_clip_runs_out_of_audio() {
     rig.wav("b.wav", 1, 60_000, |_, _| 0.5);
     rig.add_clip(0, "a.wav", 0, 24_000);
     let b = rig.add_clip(1, "b.wav", 0, 20_000);
-    rig.edit_clip(b, |clip| {
-        audio_of(clip).crossfade = Some(Crossfade {
+    rig.edit_audio(b, |audio| {
+        audio.crossfade = Some(Crossfade {
             before: Tick(960),
             after: Tick(960),
         });

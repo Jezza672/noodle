@@ -1,5 +1,6 @@
 //! The Tempo node.
 
+use noodle_core::TICKS_PER_QUARTER;
 use noodle_engine::{
     Config, Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType, ParamInfo, Ports,
     Setup,
@@ -28,9 +29,6 @@ use crate::clock::{DIVISION_TICKS, DIVISIONS};
 pub struct Tempo;
 
 pub const TEMPO_ID: &str = "noodle.mod.tempo";
-
-/// Ticks to a quarter note; see `noodle_core::Tick`.
-const TICKS_PER_QUARTER: f64 = 960.0;
 
 #[derive(Ports)]
 #[ports(memoryless)]
@@ -87,7 +85,7 @@ struct TempoNode;
 #[inline]
 pub(crate) fn seconds(division: f32, bpm: f64) -> f32 {
     let division = (division.round().max(0.0) as usize).min(DIVISIONS.len() - 1);
-    (DIVISION_TICKS[division] / TICKS_PER_QUARTER * 60.0 / bpm.max(1.0)) as f32
+    (DIVISION_TICKS[division] / TICKS_PER_QUARTER as f64 * 60.0 / bpm.max(1.0)) as f32
 }
 
 impl Node for TempoNode {

@@ -57,15 +57,20 @@ samples![
 
 const INDEX: &str = include_str!("../assets/samples/index.txt");
 
+/// The `(name, hash)` lines of the index.
+fn index() -> impl Iterator<Item = (&'static str, &'static str)> {
+    INDEX
+        .lines()
+        .filter_map(|line| line.split_once(' ').map(|(name, hash)| (name, hash.trim())))
+}
+
 fn by_hash() -> &'static HashMap<&'static str, &'static [u8]> {
     static MAP: OnceLock<HashMap<&'static str, &'static [u8]>> = OnceLock::new();
     MAP.get_or_init(|| {
-        INDEX
-            .lines()
-            .filter_map(|line| {
-                let (name, hash) = line.split_once(' ')?;
+        index()
+            .filter_map(|(name, hash)| {
                 let bytes = SAMPLES.iter().find(|(n, _)| *n == name)?.1;
-                Some((hash.trim(), bytes))
+                Some((hash, bytes))
             })
             .collect()
     })
@@ -76,12 +81,8 @@ fn by_hash() -> &'static HashMap<&'static str, &'static [u8]> {
 /// # Panics
 /// If there is no such sample.
 pub fn hash(name: &str) -> &'static str {
-    INDEX
-        .lines()
-        .find_map(|line| {
-            let (n, h) = line.split_once(' ')?;
-            (n == name).then(|| h.trim())
-        })
+    index()
+        .find_map(|(n, h)| (n == name).then_some(h))
         .unwrap_or_else(|| panic!("no shipped sample called {name}"))
 }
 

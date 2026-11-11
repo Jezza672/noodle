@@ -16,7 +16,7 @@ use noodle_engine::{
 };
 use noodle_io::{CacheInfo, CacheStore};
 
-use crate::{ClipProblem, FileError, register_library_blocking};
+use crate::{ClipProblem, FileError, Library, register_library_blocking};
 
 /// Frames handed to the sink at a time: about 340 ms at 48 kHz.
 pub const CHUNK_FRAMES: usize = 16_384;
@@ -60,14 +60,9 @@ impl RenderReport {
     }
 }
 
-/// Renders `request` on the calling thread, handing the audio to `sink` in
-/// chunks. This is [`render_project_with_clips`](crate::render_project_with_clips)
-/// without holding the whole render in memory; the samples are the same.
-pub fn render_streaming<E>(
-    request: &RenderRequest,
-    progress: &Progress,
-    sink: impl FnMut(&[f32]) -> Result<(), E>,
-) -> Result<RenderReport, StreamError<E>> {
+/// Builds the render's own registry and library, and schedules the project's
+/// clips; returns the clips that couldn't be scheduled.
+pub(crate) fn prepare(request: &RenderRequest) -> (Registry, Library, Vec<ClipProblem>) {
     let mut registry = Registry::with_builtins();
     let library = register_library_blocking(&mut registry);
     library.samples.set_dir(request.base.join("samples"));
@@ -80,6 +75,19 @@ pub fn render_streaming<E>(
     let problems = library
         .clips
         .update(&request.project, &table, rate, &request.base);
+    (registry, library, problems)
+}
+
+/// Renders `request` on the calling thread, handing the audio to `sink` in
+/// chunks. This is [`render_project_with_clips`](crate::render_project_with_clips)
+/// without holding the whole render in memory; the samples are the same.
+pub fn render_streaming<E>(
+    request: &RenderRequest,
+    progress: &Progress,
+    sink: impl FnMut(&[f32]) -> Result<(), E>,
+) -> Result<RenderReport, StreamError<E>> {
+    let (registry, library, problems) = prepare(request);
+    let settings = request.settings;
     let diagnostics = render_project_streaming(
         &request.project,
         &registry,
@@ -105,18 +113,8 @@ pub fn profile(
     workers: usize,
     always: bool,
 ) -> Result<(Profile, RenderReport), RenderError> {
-    let mut registry = Registry::with_builtins();
-    let library = register_library_blocking(&mut registry);
-    library.samples.set_dir(request.base.join("samples"));
-    if let Some(extend) = &request.extend_registry {
-        extend(&mut registry);
-    }
+    let (registry, library, problems) = prepare(request);
     let settings = request.settings;
-    let rate = settings.sample_rate.round() as u32;
-    let table = TempoTable::new(request.project.tempo_map(), settings.sample_rate);
-    let problems = library
-        .clips
-        .update(&request.project, &table, rate, &request.base);
     let profile = profile_project(
         &request.project,
         &registry,

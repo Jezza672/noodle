@@ -42,10 +42,11 @@ thread_local! {
     static DECIDING: Cell<bool> = const { Cell::new(false) };
 }
 
-/// The role of the calling thread (a thread that is exiting, with its
-/// thread-locals gone, would abort in here; none does while watching): workers by name (the engine names them),
-/// anything else, such as the test harness's own threads or the system's,
-/// is none of the audio path's business. The test marks its own thread.
+/// The role of the calling thread: workers by name (the engine names them);
+/// anything else, such as the test harness's own threads or the system's, is
+/// none of the audio path's business. The test marks its own thread. (A thread
+/// that is exiting, with its thread-locals gone, would abort in here; none
+/// does while watching.)
 fn role() -> Role {
     let known = ROLE.get();
     if known != Role::Unknown {

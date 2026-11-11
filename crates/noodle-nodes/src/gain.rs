@@ -1,6 +1,6 @@
 use noodle_engine::{
     Config, Context, Instance, Io, Lane, LaneKernel, Layout, Node, NodeError, NodeInfo, NodeType,
-    ParamInfo, PerLane, Ports, Setup, Skip, Telemetry, Unit,
+    NodeView, ParamInfo, PerLane, Ports, Setup, Skip, Telemetry, Unit,
 };
 
 use crate::level::db_to_gain;
@@ -52,8 +52,8 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Gain {
-    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
-        noodle_engine::NodeView::Meter
+    fn view(&self, _config: &Config) -> NodeView {
+        NodeView::Meter
     }
 
     fn info(&self) -> &NodeInfo {

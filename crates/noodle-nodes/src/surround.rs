@@ -8,7 +8,8 @@
 use crate::level::db_to_gain;
 use noodle_engine::{
     ChannelLayout, Config, ConfigInfo, Context, Instance, Io, Layout, MAX_LAYOUT_CHANNELS, Node,
-    NodeError, NodeInfo, NodeType, ParamInfo, Ports, Setup, Shape, SignalIn, Unit, Value,
+    NodeError, NodeInfo, NodeType, NodeView, ParamInfo, Ports, Setup, Shape, SignalIn, Speaker,
+    Unit, Value,
 };
 
 /// The config key naming a layout (`"5.1"`, `"Stereo"`, ...).
@@ -40,11 +41,12 @@ fn voice_silent(input: &SignalIn<'_>, voice: usize) -> bool {
 /// ahead, positive to the right, wrapping at ±180) with constant power between
 /// the two speakers either side of it. `elevation` (0 at ear level, 90
 /// overhead) raises it toward the height speakers of a layout that has them
-/// (7.1.2, 7.1.4) and is ignored by one that has none. `spread` blends toward every speaker
-/// playing the source equally, and `lfe` sends some of it to the LFE channel
-/// of a layout that has one (off at its minimum). A wire into `azimuth` moves
-/// it along its range, so a full-scale LFO circles the listener. It works per
-/// voice, and every parameter may be a polyphonic signal.
+/// (7.1.2, 7.1.4) and is ignored by one that has none. `spread` blends toward
+/// every speaker playing the source equally, and `lfe` sends some of it to the
+/// LFE channel of a layout that has one (off at its minimum). A wire into
+/// `azimuth` moves it along its range, so a full-scale LFO circles the
+/// listener. It works per voice, and every parameter may be a polyphonic
+/// signal.
 pub struct SurroundPan;
 
 pub const SURROUND_PAN_ID: &str = "noodle.util.surround_pan";
@@ -89,8 +91,8 @@ pub fn default_layout(type_id: &str) -> Option<ChannelLayout> {
 }
 
 impl NodeType for SurroundPan {
-    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
-        noodle_engine::NodeView::Panner
+    fn view(&self, _config: &Config) -> NodeView {
+        NodeView::Panner
     }
 
     fn info(&self) -> &NodeInfo {
@@ -158,7 +160,7 @@ impl Node for SurroundPanNode {
         let out = &mut io.outputs[PanPorts::OUT];
         let layout = self.layout;
         let channels = layout.channels();
-        let lfe_channel = layout.index_of(noodle_engine::Speaker::Lfe);
+        let lfe_channel = layout.index_of(Speaker::Lfe);
         let in_channels = input.shape().channels;
         let scale = 1.0 / in_channels.max(1) as f32;
 
@@ -233,10 +235,10 @@ impl Node for SurroundPanNode {
 }
 
 /// Converts a signal from the layout its channel count implies (1 mono, 2
-/// stereo, 3 as 3.0, 4 quad, 6 as 5.1, 8 as 7.1, 10 as 7.1.2, 12 as 7.1.4) to the layout in its
-/// `layout` setting, by the downmix and upmix rules of
-/// [`ChannelLayout::convert_matrix`]: -3 dB folds, the LFE dropped where
-/// there is no LFE, speakers the source lacks left silent.
+/// stereo, 3 as 3.0, 4 quad, 6 as 5.1, 8 as 7.1, 10 as 7.1.2, 12 as 7.1.4) to
+/// the layout in its `layout` setting, by the downmix and upmix rules of
+/// [`ChannelLayout::convert_matrix`]: -3 dB folds, the LFE dropped where there
+/// is no LFE, speakers the source lacks left silent.
 pub struct ConvertLayout;
 
 pub const CONVERT_LAYOUT_ID: &str = "noodle.util.convert_layout";
@@ -511,7 +513,8 @@ mod tests {
         Config::new().with(LAYOUT_KEY, Value::Text(name.into()))
     }
 
-    fn pan(config: &Config, azimuth: f32, spread: f32, lfe: f32) -> Vec<Vec<f32>> {
+    /// Pans a block of ones with `params` set, returning each channel's lane.
+    fn pan_with(config: &Config, params: &[(usize, f32)]) -> Vec<Vec<f32>> {
         let mut h = Harness::new(
             &SurroundPan,
             config,
@@ -521,9 +524,9 @@ mod tests {
         )
         .unwrap();
         h.input(PanPorts::INPUT, FRAMES).fill(1.0);
-        h.set(PanPorts::AZIMUTH, azimuth);
-        h.set(PanPorts::SPREAD, spread);
-        h.set(PanPorts::LFE, lfe);
+        for &(port, value) in params {
+            h.set(port, value);
+        }
         h.run(FRAMES).unwrap();
         let out = h.output(PanPorts::OUT);
         (0..out.shape().channels)
@@ -531,24 +534,23 @@ mod tests {
             .collect()
     }
 
+    fn pan(config: &Config, azimuth: f32, spread: f32, lfe: f32) -> Vec<Vec<f32>> {
+        let params = [
+            (PanPorts::AZIMUTH, azimuth),
+            (PanPorts::SPREAD, spread),
+            (PanPorts::LFE, lfe),
+        ];
+        pan_with(config, &params)
+    }
+
     #[test]
     fn elevation_raises_a_pan_into_the_height_speakers() {
         let run = |layout: &str, elevation: f32| {
-            let mut h = Harness::new(
-                &SurroundPan,
-                &with_layout(layout),
-                &[(PanPorts::INPUT, Shape::MONO)],
-                48_000.0,
-                FRAMES,
-            )
-            .unwrap();
-            h.input(PanPorts::INPUT, FRAMES).fill(1.0);
-            h.set(PanPorts::AZIMUTH, -45.0);
-            h.set(PanPorts::ELEVATION, elevation);
-            h.run(FRAMES).unwrap();
-            let out = h.output(PanPorts::OUT);
-            (0..out.shape().channels)
-                .map(|c| out.lane(0, c)[FRAMES - 1])
+            let params = [(PanPorts::AZIMUTH, -45.0), (PanPorts::ELEVATION, elevation)];
+            let lanes = pan_with(&with_layout(layout), &params);
+            lanes
+                .iter()
+                .map(|lane| lane[FRAMES - 1])
                 .collect::<Vec<_>>()
         };
         let low = run("7.1.4", 0.0);

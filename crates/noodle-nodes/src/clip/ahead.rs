@@ -485,8 +485,8 @@ fn onsets_of(
     }
 }
 
-#[allow(clippy::too_many_arguments)]
 /// Opens a job for `clip`, starting at its frame `from`.
+#[allow(clippy::too_many_arguments)]
 fn open(
     clip: &ScheduledClip,
     head: bool,

@@ -1,8 +1,8 @@
 //! The Arpeggiator node.
 
 use noodle_engine::{
-    Config, Context, Event, EventKind, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
-    NoteId, ParamInfo, Ports, Setup, Unit,
+    Config, Context, Event, EventKind, EventsOut, Instance, Io, Layout, Node, NodeError, NodeInfo,
+    NodeType, NoteId, ParamInfo, Ports, Setup, Unit,
 };
 
 /// Plays the notes held on its input one at a time, in time with the tempo.
@@ -191,7 +191,7 @@ impl ArpNode {
 
     /// Ends the arpeggio when nothing is left to play: no keys, or latched
     /// ones with hold turned off.
-    fn stop_if_empty(&mut self, out: &mut noodle_engine::EventsOut<'_>, time: usize, hold: bool) {
+    fn stop_if_empty(&mut self, out: &mut EventsOut<'_>, time: usize, hold: bool) {
         if !hold && !self.any_down() {
             self.held_count = 0;
         }
@@ -302,7 +302,7 @@ impl Node for ArpNode {
         self.free_tick = end_tick;
 
         let sample_of = |tick: f64| ((tick - start_tick) / ticks_per_sample).max(0.0) as usize;
-        let push = |out: &mut noodle_engine::EventsOut<'_>, time: usize, kind| {
+        let push = |out: &mut EventsOut<'_>, time: usize, kind| {
             let _ = out.push(Event {
                 time: time.min(frames.saturating_sub(1)) as u32,
                 kind,
@@ -314,27 +314,26 @@ impl Node for ArpNode {
         // Input events and the arpeggio's own, in time order: the input's
         // changes apply at their time, between steps.
         let mut input = event_inputs[ArpPorts::NOTES].iter().peekable();
-        let mut apply_until =
-            |me: &mut Self, out: &mut noodle_engine::EventsOut<'_>, time: usize| {
-                while let Some(event) = input.next_if(|e| e.time as usize <= time) {
-                    match event.kind {
-                        EventKind::NoteOn {
-                            note,
-                            key,
-                            velocity,
-                            ..
-                        } => me.press(note, key, velocity, hold),
-                        EventKind::NoteOff { note, .. } => {
-                            me.release(note, hold);
-                            me.stop_if_empty(out, event.time as usize, hold);
-                        }
-                        EventKind::Midi(_) | EventKind::Channel { .. } => {
-                            push(out, event.time as usize, event.kind)
-                        }
-                        EventKind::Expression { .. } => {}
+        let mut apply_until = |me: &mut Self, out: &mut EventsOut<'_>, time: usize| {
+            while let Some(event) = input.next_if(|e| e.time as usize <= time) {
+                match event.kind {
+                    EventKind::NoteOn {
+                        note,
+                        key,
+                        velocity,
+                        ..
+                    } => me.press(note, key, velocity, hold),
+                    EventKind::NoteOff { note, .. } => {
+                        me.release(note, hold);
+                        me.stop_if_empty(out, event.time as usize, hold);
                     }
+                    EventKind::Midi(_) | EventKind::Channel { .. } => {
+                        push(out, event.time as usize, event.kind)
+                    }
+                    EventKind::Expression { .. } => {}
                 }
-            };
+            }
+        };
 
         loop {
             let tick = tick_of(self.step);
@@ -357,8 +356,7 @@ impl Node for ArpNode {
             };
             apply_until(self, out, time);
             if is_step {
-                let note = self.pick(pattern, octaves);
-                if let Some((key, velocity)) = note {
+                if let Some((key, velocity)) = self.pick(pattern, octaves) {
                     let id = NoteId(self.next_id);
                     self.next_id = self.next_id.wrapping_add(1);
                     let length = (step_ticks * gate / ticks_per_sample).max(1.0) as u64;

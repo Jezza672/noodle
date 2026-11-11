@@ -272,7 +272,7 @@ impl NodeType for Sampler {
 
     fn cache_inputs(
         &self,
-        _node: noodle_core::NodeId,
+        _node: NodeId,
         config: &Config,
         _env: &noodle_engine::CacheEnv<'_>,
         _key: &mut noodle_core::KeyBuilder,
@@ -377,6 +377,15 @@ struct Voice {
     xfade: u32,
     old_pos: f64,
     old_piece: usize,
+}
+
+impl Voice {
+    /// Lets go of the note, fading out by `fade_step` a frame.
+    fn release(&mut self, fade_step: f32) {
+        self.held = false;
+        self.releasing = true;
+        self.fade_step = fade_step;
+    }
 }
 
 /// The gain envelope as a table of linear gains across the sample.
@@ -548,7 +557,7 @@ impl SetPlay {
         Self {
             roots: entries
                 .iter()
-                .map(|e| f32::from(e.root.unwrap_or(60)))
+                .map(|e| e.root.map_or(DEFAULT_ROOT, f32::from))
                 .collect(),
             samples,
             tables,
@@ -556,9 +565,7 @@ impl SetPlay {
             last: vec![u32::MAX; layers].into_boxed_slice(),
         }
     }
-}
 
-impl SetPlay {
     /// The recording a note plays: the sample, the key it sounds at its own
     /// pitch, and the entry.
     fn pick(
@@ -776,14 +783,15 @@ impl SamplerNode {
         } + f64::from(s.tune) / 100.0;
         let step =
             f64::from(sample.sample_rate) / f64::from(self.sample_rate) * (semitones / 12.0).exp2();
-        let loop_range = (s.looping && !s.one_shot).then(|| {
-            let a = f64::from(s.loop_start) * frames;
-            let b = f64::from(s.loop_end) * frames;
-            // A loop must lie in the region and be a few samples long.
-            let (a, b) = (a.max(start), b.min(end));
-            (a, b)
-        });
-        let loop_range = loop_range.filter(|&(a, b)| b - a >= 2.0);
+        // A loop must lie in the region and be a few samples long.
+        let loop_range = (s.looping && !s.one_shot)
+            .then(|| {
+                (
+                    (f64::from(s.loop_start) * frames).max(start),
+                    (f64::from(s.loop_end) * frames).min(end),
+                )
+            })
+            .filter(|&(a, b)| b - a >= 2.0);
         // Positions are in the sample or in its stretched copy.
         let (start, end) = (from_source(domain, start), from_source(domain, end));
         let loop_range = loop_range.map(|(a, b)| (from_source(domain, a), from_source(domain, b)));
@@ -836,9 +844,7 @@ impl SamplerNode {
             .iter_mut()
             .filter(|v| v.active && v.note == id.0)
         {
-            v.held = false;
-            v.releasing = true;
-            v.fade_step = v.fade_step.max(step);
+            v.release(v.fade_step.max(step));
         }
     }
 
@@ -847,8 +853,7 @@ impl SamplerNode {
             if v.note == id.0 {
                 v.held = false;
                 if !v.one_shot {
-                    v.releasing = true;
-                    v.fade_step = 1.0 / (s.release * self.sample_rate).max(1.0);
+                    v.release(1.0 / (s.release * self.sample_rate).max(1.0));
                 }
             }
         }
@@ -938,9 +943,7 @@ impl SamplerNode {
                 .iter_mut()
                 .filter(|v| v.active && v.held && v.choice != index)
             {
-                v.held = false;
-                v.releasing = true;
-                v.fade_step = step;
+                v.release(step);
             }
         }
     }

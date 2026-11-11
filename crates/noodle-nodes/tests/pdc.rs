@@ -119,6 +119,10 @@ fn registry() -> Registry {
     registry
 }
 
+fn latent(latency: i64) -> Node {
+    Node::new("test.latent").with_config(Config::new().with("latency", Value::Int(latency)))
+}
+
 fn wire(from: (u64, &str), to: (u64, &str)) -> Connection {
     Connection {
         from: Endpoint::new(NodeId(from.0), from.1),
@@ -131,11 +135,7 @@ fn parallel(latency: i64) -> Graph {
     Graph::from_parts(
         vec![
             (NodeId(1), Node::new("test.impulse")),
-            (
-                NodeId(2),
-                Node::new("test.latent")
-                    .with_config(Config::new().with("latency", Value::Int(latency))),
-            ),
+            (NodeId(2), latent(latency)),
             (NodeId(3), Node::new("noodle.util.mix")),
             (NodeId(4), Node::new("noodle.io.output")),
         ],
@@ -183,11 +183,7 @@ fn a_latent_path_alone_is_trimmed_to_the_timeline() {
     let graph = Graph::from_parts(
         vec![
             (NodeId(1), Node::new("test.impulse")),
-            (
-                NodeId(2),
-                Node::new("test.latent")
-                    .with_config(Config::new().with("latency", Value::Int(100))),
-            ),
+            (NodeId(2), latent(100)),
             (NodeId(3), Node::new("noodle.io.output")),
         ],
         vec![wire((1, "out"), (2, "in")), wire((2, "out"), (3, "in"))],
@@ -241,14 +237,8 @@ fn two_latent_paths_align_to_the_slower() {
     let graph = Graph::from_parts(
         vec![
             (NodeId(1), Node::new("test.impulse")),
-            (
-                NodeId(2),
-                Node::new("test.latent").with_config(Config::new().with("latency", Value::Int(40))),
-            ),
-            (
-                NodeId(3),
-                Node::new("test.latent").with_config(Config::new().with("latency", Value::Int(90))),
-            ),
+            (NodeId(2), latent(40)),
+            (NodeId(3), latent(90)),
             (NodeId(4), Node::new("noodle.util.mix")),
             (NodeId(5), Node::new("noodle.io.output")),
         ],
@@ -275,11 +265,7 @@ fn editing_an_unrelated_node_does_not_fade_a_compensated_graph() {
                 NodeId(1),
                 Node::new("noodle.osc.sine").with_param("frequency", 480.0),
             ),
-            (
-                NodeId(2),
-                Node::new("test.latent")
-                    .with_config(Config::new().with("latency", Value::Int(150))),
-            ),
+            (NodeId(2), latent(150)),
             (NodeId(3), Node::new("noodle.util.mix")),
             (NodeId(4), Node::new("noodle.io.output")),
         ];
@@ -325,11 +311,7 @@ fn cross_of_unequal_paths(latency: i64) -> Graph {
         vec![
             (NodeId(1), Node::new("noodle.noise.white")),
             (NodeId(2), Node::new("noodle.spectral.analyze")),
-            (
-                NodeId(3),
-                Node::new("test.latent")
-                    .with_config(Config::new().with("latency", Value::Int(latency))),
-            ),
+            (NodeId(3), latent(latency)),
             (NodeId(4), Node::new("noodle.spectral.analyze")),
             (NodeId(5), Node::new("noodle.spectral.cross")),
             (NodeId(6), Node::new("noodle.spectral.synthesize")),

@@ -200,23 +200,27 @@ impl WarpMap {
         self.eval(src, |k| k.1, |k| k.0)
     }
 
+    /// The two knots of the segment that holds `x` on the axis `from` picks
+    /// (the end segments extend past the map).
+    fn segment(&self, x: f64, from: impl Fn(&(f64, f64)) -> f64) -> (&(f64, f64), &(f64, f64)) {
+        let n = self.knots.len();
+        let i = self.knots.partition_point(|k| from(k) <= x).clamp(1, n - 1) - 1;
+        (&self.knots[i], &self.knots[i + 1])
+    }
+
     fn eval(
         &self,
         x: f64,
         from: impl Fn(&(f64, f64)) -> f64,
         to: impl Fn(&(f64, f64)) -> f64,
     ) -> f64 {
-        let n = self.knots.len();
-        let i = self.knots.partition_point(|k| from(k) <= x).clamp(1, n - 1) - 1;
-        let (a, b) = (&self.knots[i], &self.knots[i + 1]);
+        let (a, b) = self.segment(x, &from);
         to(a) + (x - from(a)) / (from(b) - from(a)) * (to(b) - to(a))
     }
 
     /// How many source frames pass per output frame at output frame `out`.
     pub fn speed_at(&self, out: f64) -> f64 {
-        let n = self.knots.len();
-        let i = self.knots.partition_point(|k| k.0 <= out).clamp(1, n - 1) - 1;
-        let (a, b) = (&self.knots[i], &self.knots[i + 1]);
+        let (a, b) = self.segment(out, |k| k.0);
         (b.1 - a.1) / (b.0 - a.0)
     }
 

@@ -15,8 +15,8 @@
 //! with one segment and no attack.
 //!
 //! The stretcher does no I/O of its own: it reads the source through a
-//! [`Source`], and is meant to run on a worker thread ahead of the playhead
-//! (see `ahead.rs`). It allocates freely and is not real-time safe.
+//! [`Source`], and is meant to run on a worker thread ahead of the playhead.
+//! It allocates freely and is not real-time safe.
 
 use std::f32::consts::{FRAC_PI_2, PI};
 use std::sync::{Arc, Mutex};

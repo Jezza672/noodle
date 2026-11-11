@@ -113,6 +113,20 @@ impl Session {
         command.apply(&mut self.project).unwrap();
     }
 
+    /// Renders four blocks into `out` as the audio thread would, and fails if
+    /// that allocated or freed memory.
+    fn render_realtime(&mut self, out: &mut [f32], round: impl std::fmt::Display) {
+        let violations = realtime(|| {
+            for _ in 0..4 {
+                self.processor.process(out);
+            }
+        });
+        assert_eq!(
+            violations, 0,
+            "allocated on the audio thread in round {round}"
+        );
+    }
+
     fn update(&mut self) {
         let diagnostics = self
             .controller
@@ -197,15 +211,7 @@ fn rendering_never_allocates_even_while_editing() {
         s.controller.maintain();
 
         // Audio thread: installs any new plan, then renders.
-        let violations = realtime(|| {
-            for _ in 0..4 {
-                s.processor.process(&mut out);
-            }
-        });
-        assert_eq!(
-            violations, 0,
-            "allocated on the audio thread in round {round}"
-        );
+        s.render_realtime(&mut out, round);
 
         // UI thread: the meter and scope have reported.
         let levels = reader.meter(meter).unwrap();
@@ -295,15 +301,7 @@ fn spectral_chains_never_allocate_even_while_editing() {
             s.update();
         }
         s.controller.maintain();
-        let violations = realtime(|| {
-            for _ in 0..4 {
-                s.processor.process(&mut out);
-            }
-        });
-        assert_eq!(
-            violations, 0,
-            "allocated on the audio thread in round {round}"
-        );
+        s.render_realtime(&mut out, round);
     }
     assert!(out.iter().all(|x| x.is_finite()));
     assert!(out.iter().any(|&x| x != 0.0), "should be making sound");
@@ -523,15 +521,7 @@ fn the_transport_never_allocates_on_the_audio_thread() {
         s.controller.maintain();
 
         // Audio thread: seeks, loop wraps and tempo swaps all happen here.
-        let violations = realtime(|| {
-            for _ in 0..4 {
-                s.processor.process(&mut out);
-            }
-        });
-        assert_eq!(
-            violations, 0,
-            "allocated on the audio thread in round {round}"
-        );
+        s.render_realtime(&mut out, round);
     }
     assert!(out.iter().all(|x| x.is_finite()));
 }
@@ -563,15 +553,7 @@ fn group_stages_never_allocate_while_controls_change() {
         s.update();
         s.controller.maintain();
 
-        let violations = realtime(|| {
-            for _ in 0..4 {
-                s.processor.process(&mut out);
-            }
-        });
-        assert_eq!(
-            violations, 0,
-            "allocated on the audio thread in round {round}"
-        );
+        s.render_realtime(&mut out, round);
         assert!(out.iter().all(|x| x.is_finite()));
     }
 }
@@ -687,12 +669,7 @@ fn automation_lanes_never_allocate_on_the_audio_thread() {
         }
         transport.seek(Tick(300 * round));
         s.controller.maintain();
-        let violations = realtime(|| {
-            for _ in 0..4 {
-                s.processor.process(&mut out);
-            }
-        });
-        assert_eq!(violations, 0, "allocated in round {round}");
+        s.render_realtime(&mut out, round);
     }
     assert!(out.iter().all(|x| x.is_finite()));
 }
@@ -1063,12 +1040,7 @@ fn a_feedback_loop_through_a_delay_never_allocates_even_while_the_loop_is_made_a
         s.controller
             .set_param(delay, "time", 0.01 + 0.005 * round as f32);
         s.controller.maintain();
-        let violations = realtime(|| {
-            for _ in 0..4 {
-                s.processor.process(&mut out);
-            }
-        });
-        assert_eq!(violations, 0, "allocated in round {round}");
+        s.render_realtime(&mut out, round);
         assert!(
             out.iter().all(|x| x.is_finite() && x.abs() < 10.0),
             "round {round}"
@@ -1427,12 +1399,7 @@ fn delay_compensation_never_allocates_through_plan_swaps_and_seeks() {
             transport.seek(noodle_core::Tick(1_000));
         }
         s.controller.maintain();
-        let violations = realtime(|| {
-            for _ in 0..4 {
-                s.processor.process(&mut out);
-            }
-        });
-        assert_eq!(violations, 0, "allocated in round {round}");
+        s.render_realtime(&mut out, round);
         assert!(out.iter().all(|x| x.is_finite()), "round {round}");
         assert!(
             out.iter().any(|&x| x.abs() > 1e-3),
@@ -1497,7 +1464,8 @@ fn spectral_delay_lines_never_allocate_through_plan_swaps_and_seeks() {
 }
 
 #[test]
-fn the_m9_nodes_never_allocate_through_notes_edits_and_config_changes() {
+fn a_sampler_chain_with_dynamics_and_reverb_never_allocates_through_notes_edits_and_config_changes()
+{
     use noodle_io::Audio;
     use noodle_nodes::{SAMPLE_KEY, SampleStore, Sampler};
 
@@ -1927,7 +1895,7 @@ fn a_sampler_plays_a_stretched_warp_and_takes_live_edits_without_allocating() {
 }
 
 #[test]
-fn the_batch_4_nodes_never_allocate_through_triggers_seeks_and_config_changes() {
+fn envelope_modulation_and_effect_nodes_never_allocate_through_triggers_seeks_and_config_changes() {
     use noodle_core::{AutomationLane, AutomationPoint, Curve, Tick};
 
     // A square LFO (4 Hz) and a clock both trigger envelopes (one per voice,
@@ -2974,12 +2942,7 @@ fn pitch_track_and_to_notes_never_allocate_while_the_voice_and_sensitivity_chang
         s.controller
             .set_param(notes, "sensitivity", (round % 3) as f32 / 2.0);
         s.controller.maintain();
-        let violations = realtime(|| {
-            for _ in 0..4 {
-                s.processor.process(&mut out);
-            }
-        });
-        assert_eq!(violations, 0, "allocated in round {round}");
+        s.render_realtime(&mut out, round);
     }
     assert!(out.iter().all(|x| x.is_finite()));
 }
@@ -3040,12 +3003,7 @@ fn version_values_and_articulation_maps_never_allocate_through_switches_and_edit
             s.update();
         }
         s.controller.maintain();
-        let violations = realtime(|| {
-            for _ in 0..4 {
-                s.processor.process(&mut out);
-            }
-        });
-        assert_eq!(violations, 0, "allocated in round {round}");
+        s.render_realtime(&mut out, round);
         assert!(out.iter().all(|x| x.is_finite()), "round {round}");
     }
 }

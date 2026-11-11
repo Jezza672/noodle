@@ -149,21 +149,26 @@ fn the_sampler_plays_the_window_of_the_wired_sample() {
         wire(&mut project, (key, "out"), (sampler, "in"));
         wire(&mut project, (source, "sample"), (sampler, "sample"));
         wire(&mut project, (sampler, "out"), (out, "in"));
-        let (mut controller, mut processor) = engine(SETTINGS).unwrap();
-        let diagnostics = controller.update_project(&project, &registry);
-        assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        let mut block = vec![0.0; SETTINGS.max_frames * SETTINGS.channels];
-        let mut peak = 0.0f32;
-        for _ in 0..40 {
-            processor.process(&mut block);
-            peak = block.iter().fold(peak, |p, x| p.max(x.abs()));
-        }
-        peak
+        peak_of(&project, &registry)
     };
     // The sampler's end is half of what it is given. Of the whole sample that
     // is the silent half; of the second half it is the first half of the tone.
     assert!(peak(hash.clone()) < 1e-6);
     assert!(peak(format!("{hash}:0.5:1")) > 0.1);
+}
+
+/// The loudest output sample from running `project` for 40 blocks.
+fn peak_of(project: &Project, registry: &Registry) -> f32 {
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    let diagnostics = controller.update_project(project, registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let mut block = vec![0.0; SETTINGS.max_frames * SETTINGS.channels];
+    let mut peak = 0.0f32;
+    for _ in 0..40 {
+        processor.process(&mut block);
+        peak = block.iter().fold(peak, |p, x| p.max(x.abs()));
+    }
+    peak
 }
 
 /// Samples wired into a Random Select of samples, and it into a Sampler.
@@ -221,11 +226,10 @@ fn a_pick_that_feeds_a_pick_is_reported() {
     let registry = registry(&store);
     let mut project = Project::new();
     let (inner, _) = picking(&mut project, &["aaa", "bbb"]);
-    let (outer, sampler) = picking(&mut project, &["ccc", "ddd"]);
+    let (outer, _) = picking(&mut project, &["ccc", "ddd"]);
     wire(&mut project, (inner, "out"), (outer, "in1"));
     let (_, diagnostics) = compile(project.graph(), &registry);
     assert_eq!(diagnostics.len(), 1, "{diagnostics:?}");
-    let _ = sampler;
 }
 
 #[test]
@@ -246,8 +250,7 @@ fn the_sampler_plays_the_sample_the_trigger_picked() {
         // Avoiding a repeat from the first, the first trigger picks the second.
         let button = add(
             &mut project,
-            Node::new("noodle.input.button")
-                .with_param("state", f64::from(u8::from(trigger)) as f32),
+            Node::new("noodle.input.button").with_param("state", f32::from(u8::from(trigger))),
         );
         wire(&mut project, (button, "out"), (select, "trigger"));
         let notes = add(
@@ -259,16 +262,7 @@ fn the_sampler_plays_the_sample_the_trigger_picked() {
         wire(&mut project, (notes, "out"), (key, "gate"));
         wire(&mut project, (key, "out"), (sampler, "in"));
         wire(&mut project, (sampler, "out"), (out, "in"));
-        let (mut controller, mut processor) = engine(SETTINGS).unwrap();
-        let diagnostics = controller.update_project(&project, &registry);
-        assert!(diagnostics.is_empty(), "{diagnostics:?}");
-        let mut block = vec![0.0; SETTINGS.max_frames * SETTINGS.channels];
-        let mut peak = 0.0f32;
-        for _ in 0..40 {
-            processor.process(&mut block);
-            peak = block.iter().fold(peak, |p, x| p.max(x.abs()));
-        }
-        peak
+        peak_of(&project, &registry)
     };
     assert!(
         (0.05..0.3).contains(&peak(false)),

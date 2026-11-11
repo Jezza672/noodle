@@ -198,7 +198,7 @@ impl NodeType for Selector {
         Ok(match Counts::of(config)?.kind {
             Kind::Samples => vec![Shape::MONO],
             Kind::Spectral => {
-                // The spectral inputs' shapes follow the signal inputs'.
+                // The spectral inputs come after the layout's signal inputs.
                 let shape = Shape::broadcast_all(inputs[layout.inputs.len()..].iter().copied())?;
                 vec![shape]
             }
@@ -289,9 +289,8 @@ impl SelectorNode {
                 // came from an input known to be silent.
                 let mut silent = true;
                 for i in 0..ctx.frames {
-                    while edge < self.edges.len() && self.edges[edge].0 == i {
-                        now = self.edges[edge].1;
-                        edge += 1;
+                    if let Some(input) = change_at(&self.edges, &mut edge, i) {
+                        now = input;
                     }
                     if lane.active != now {
                         let old = io.inputs[lane.active].lane(voice, channel)[i];
@@ -332,9 +331,8 @@ impl SelectorNode {
         let out = io.outputs[OUT].lane_mut(0, 0);
         let mut edge = 0;
         for (i, slot) in out.iter_mut().enumerate().take(ctx.frames) {
-            while edge < self.edges.len() && self.edges[edge].0 == i {
-                now = self.edges[edge].1;
-                edge += 1;
+            if let Some(input) = change_at(&self.edges, &mut edge, i) {
+                now = input;
             }
             *slot = now as f32 + flag;
         }
@@ -349,9 +347,8 @@ impl SelectorNode {
         let mut edge = 0;
         let mut start = 0;
         while start < ctx.frames {
-            while edge < self.edges.len() && self.edges[edge].0 == start {
-                now = self.edges[edge].1;
-                edge += 1;
+            if let Some(input) = change_at(&self.edges, &mut edge, start) {
+                now = input;
             }
             let end = self.edges.get(edge).map_or(ctx.frames, |&(frame, _)| frame);
             for (input, frames) in io.spectral_inputs.iter().enumerate().take(self.inputs) {
@@ -387,9 +384,8 @@ impl SelectorNode {
         let mut edge = 0;
         let mut start = 0;
         while start < ctx.frames {
-            while edge < self.edges.len() && self.edges[edge].0 == start {
-                now = self.edges[edge].1;
-                edge += 1;
+            if let Some(input) = change_at(&self.edges, &mut edge, start) {
+                now = input;
                 if cut {
                     // A cut that can't be output keeps its note held, so a
                     // later cut can still end it rather than leaving it on.
@@ -464,6 +460,16 @@ impl Node for SelectorNode {
         self.lanes.fill(Lane::default());
         self.held.clear();
     }
+}
+
+/// The input chosen by the change at `frame`, if there is one, moving `edge`
+/// past it. `edges` has at most one change per frame.
+fn change_at(edges: &[(usize, usize)], edge: &mut usize, frame: usize) -> Option<usize> {
+    let &(at, input) = edges.get(*edge)?;
+    (at == frame).then(|| {
+        *edge += 1;
+        input
+    })
 }
 
 /// The input a `which` value chooses: rounded and clamped to
@@ -586,6 +592,21 @@ mod tests {
         assert_eq!(out[30], 2.0, "switches at the crossing");
     }
 
+    /// Runs blocks until the output reaches input 2's value (2.0); returns
+    /// the longest wait allowed and the frames it took.
+    fn run_until_switched(h: &mut Harness) -> (usize, usize) {
+        let wait = (48_000.0 * MAX_WAIT_MS / 1000.0) as usize;
+        let mut seen = 0;
+        loop {
+            h.run(FRAMES).unwrap();
+            seen += FRAMES;
+            if h.output(OUT).lane(0, 0)[FRAMES - 1] == 2.0 {
+                return (wait, seen);
+            }
+            assert!(seen < wait + 4 * FRAMES, "never switched");
+        }
+    }
+
     #[test]
     fn zero_crossing_gives_up_waiting_on_dc() {
         let mut h = signal(2);
@@ -600,16 +621,7 @@ mod tests {
         // A DC input never crosses, so the switch waits out MAX_WAIT_MS.
         h.set(2, 1.0);
         h.set(3, 1.0);
-        let wait = (48_000.0 * MAX_WAIT_MS / 1000.0) as usize;
-        let mut seen = 0;
-        loop {
-            h.run(FRAMES).unwrap();
-            seen += FRAMES;
-            if h.output(OUT).lane(0, 0)[FRAMES - 1] == 2.0 {
-                break;
-            }
-            assert!(seen < wait + 4 * FRAMES, "never switched");
-        }
+        let (wait, seen) = run_until_switched(&mut h);
         assert!(seen >= wait, "switched before giving up");
     }
 
@@ -634,16 +646,7 @@ mod tests {
 
         // A fresh request must get the whole 20 ms, not the cancelled wait.
         h.set(2, 1.0);
-        let wait = (48_000.0 * MAX_WAIT_MS / 1000.0) as usize;
-        let mut seen = 0;
-        loop {
-            h.run(FRAMES).unwrap();
-            seen += FRAMES;
-            if h.output(OUT).lane(0, 0)[FRAMES - 1] == 2.0 {
-                break;
-            }
-            assert!(seen < wait + 4 * FRAMES, "never switched");
-        }
+        let (wait, seen) = run_until_switched(&mut h);
         assert!(seen >= wait, "inherited a cancelled wait");
     }
 

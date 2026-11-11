@@ -1,5 +1,6 @@
 //! The Clock node.
 
+use noodle_core::TICKS_PER_QUARTER;
 use noodle_engine::{
     Config, Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType, ParamInfo, Ports,
     Setup,
@@ -59,9 +60,6 @@ const RATE: usize = ClockPorts::RATE;
 const WIDTH: usize = ClockPorts::WIDTH;
 const OUT: usize = ClockPorts::OUT;
 
-/// Ticks to a quarter note; see `noodle_core::Tick`.
-const TICKS_PER_QUARTER: f64 = 960.0;
-
 static INFO: NodeInfo = NodeInfo {
     id: CLOCK_ID,
     version: 1,
@@ -112,7 +110,7 @@ impl Node for ClockNode {
         }
         let (rate, width) = (io.inputs[RATE].lane(0, 0), io.inputs[WIDTH].lane(0, 0));
         let ticks_per_sample =
-            transport.bpm / 60.0 * TICKS_PER_QUARTER / f64::from(ctx.sample_rate);
+            transport.bpm / 60.0 * TICKS_PER_QUARTER as f64 / f64::from(ctx.sample_rate);
         for (i, sample) in out.iter_mut().enumerate() {
             let division = (rate[i].round().max(0.0) as usize).min(DIVISIONS.len() - 1);
             let tick = transport.tick + i as f64 * ticks_per_sample;

@@ -84,11 +84,8 @@ fn analyze_into_synthesize_gives_the_dry_signal_back_on_the_timeline() {
     assert!(dry.samples.iter().any(|x| x.abs() > 0.5));
     // The render drops the pair's latency, so the two line up from the
     // first sample.
-    assert!(
-        worst_difference(&wet.samples, &dry.samples) < 1e-3,
-        "worst {}",
-        worst_difference(&wet.samples, &dry.samples)
-    );
+    let worst = worst_difference(&wet.samples, &dry.samples);
+    assert!(worst < 1e-3, "worst {worst}");
 }
 
 #[test]

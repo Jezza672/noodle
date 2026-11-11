@@ -83,8 +83,7 @@ impl ScheduledClip {
         fade_out: u64,
         source: ClipSource,
     ) -> Self {
-        let mut hasher = DefaultHasher::new();
-        source.hash(&mut hasher);
+        let key = source_key(&source);
         Self {
             id,
             start,
@@ -103,7 +102,7 @@ impl ScheduledClip {
             head_room: 0,
             tail_room: 0,
             src_ratio: 1.0,
-            key: hasher.finish(),
+            key,
             lane: 0,
         }
     }
@@ -158,10 +157,7 @@ impl ScheduledClip {
         clip.tail_room -= tail;
         let (mut head_src, mut tail_src) = (head as f64, tail as f64);
         if let Some(map) = &self.warp {
-            let knots = map.knots();
-            let first = knots[1].1 / knots[1].0;
-            let n = knots.len();
-            let last = (knots[n - 1].1 - knots[n - 2].1) / (knots[n - 1].0 - knots[n - 2].0);
+            let (first, last) = edge_slopes(map);
             head_src *= first;
             tail_src *= last;
             clip.warp = Some(Arc::new(map.extended(
@@ -187,9 +183,7 @@ impl ScheduledClip {
                     .collect(),
             );
         }
-        let mut hasher = DefaultHasher::new();
-        clip.source.hash(&mut hasher);
-        clip.key = hasher.finish();
+        clip.key = source_key(&clip.source);
         clip.lane = clip.lane_hash();
         clip
     }
@@ -268,6 +262,23 @@ impl ScheduledClip {
     pub(super) fn stream_key(&self) -> (ClipId, u64) {
         (self.id, self.key)
     }
+}
+
+fn source_key(source: &ClipSource) -> u64 {
+    let mut hasher = DefaultHasher::new();
+    source.hash(&mut hasher);
+    hasher.finish()
+}
+
+/// The source frames a warp reads per engine frame at its first and last
+/// knots, which is the speed an extension at either end plays at.
+fn edge_slopes(map: &WarpMap) -> (f64, f64) {
+    let knots = map.knots();
+    let n = knots.len();
+    (
+        knots[1].1 / knots[1].0,
+        (knots[n - 1].1 - knots[n - 2].1) / (knots[n - 1].0 - knots[n - 2].0),
+    )
 }
 
 /// The envelope's level in dB at `frame`: straight lines in dB between the
@@ -824,7 +835,7 @@ fn schedule_controls(
     midi: &noodle_core::MidiClip,
     out: &mut Notes,
 ) {
-    let at = |ticks: i64| table.sample_at_tick(noodle_core::Tick(clip.start.0 + ticks));
+    let at = |ticks: i64| table.sample_at_tick(Tick(clip.start.0 + ticks));
     let clip_end = at(midi.length.0);
     let mut groups: std::collections::BTreeMap<(u8, ControlKind), Vec<noodle_core::ControlPoint>> =
         Default::default();
@@ -927,7 +938,7 @@ fn schedule_notes(
     midi: &noodle_core::MidiClip,
     out: &mut Notes,
 ) {
-    let at = |ticks: i64| table.sample_at_tick(noodle_core::Tick(clip.start.0 + ticks));
+    let at = |ticks: i64| table.sample_at_tick(Tick(clip.start.0 + ticks));
     let clip_end = at(midi.length.0);
     for note in &midi.played() {
         let start = at(note.start.0);
@@ -1094,15 +1105,12 @@ pub struct ClipFeeds {
 
 #[derive(Default)]
 struct Inner {
-    /// See [`ClipFeeds::blocking`].
     blocking: bool,
     hubs: Mutex<HashMap<NodeId, Arc<Shared>>>,
     /// What each Pattern Player plays: the clips it owns.
     patterns: Mutex<HashMap<NodeId, Arc<crate::pattern::PatternShared>>>,
-    /// See [`ClipFeeds::set_preview`].
     preview: Arc<std::sync::atomic::AtomicBool>,
     files: Mutex<HashMap<PathBuf, (Option<FileStamp>, FileInfo)>>,
-    /// See [`ClipFeeds::set_input_tap`].
     input: Mutex<Option<Arc<noodle_engine::InputTap>>>,
 }
 
@@ -1434,15 +1442,10 @@ impl ClipFeeds {
                 // section's first piece back before its window, its last
                 // past it. A warped piece reads at the speed it has there.
                 let (mut head_room, mut tail_room) = (0, 0);
-                let slopes = piece.warp.as_ref().map(|(map, _)| {
-                    let knots = map.knots();
-                    let n = knots.len();
-                    (
-                        knots[1].1 / knots[1].0,
-                        (knots[n - 1].1 - knots[n - 2].1) / (knots[n - 1].0 - knots[n - 2].0),
-                    )
-                });
-                let (head_slope, tail_slope) = slopes.unwrap_or((1.0, 1.0));
+                let (head_slope, tail_slope) = piece
+                    .warp
+                    .as_ref()
+                    .map_or((1.0, 1.0), |(map, _)| edge_slopes(map));
                 let spanned = audio.takes.is_some();
                 if k == 0 || spanned {
                     head_room = (to_engine(piece.offset) as f64 / head_slope).floor() as u64;
@@ -1556,7 +1559,7 @@ impl ClipFeeds {
                 let start = table.sample_at_tick(clip.start);
                 match &clip.content {
                     ClipContent::Midi(midi) => {
-                        table.sample_at_tick(noodle_core::Tick(clip.start.0 + midi.length.0))
+                        table.sample_at_tick(Tick(clip.start.0 + midi.length.0))
                     }
                     ClipContent::Audio(audio) => {
                         let path = base.join(&audio.source);
@@ -1593,7 +1596,7 @@ impl ClipFeeds {
 mod tests {
     use super::*;
 
-    pub(crate) fn clip(id: u64, start: u64, length: u64) -> ScheduledClip {
+    fn clip(id: u64, start: u64, length: u64) -> ScheduledClip {
         ScheduledClip::new(
             ClipId(id),
             start,

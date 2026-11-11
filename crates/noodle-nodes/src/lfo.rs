@@ -1,8 +1,8 @@
 //! The low-frequency oscillator.
 
 use noodle_engine::{
-    Config, Context, Instance, Lane, LaneKernel, Layout, NodeError, NodeInfo, NodeType, ParamInfo,
-    PerLane, Ports, Setup, Unit,
+    Config, Context, GraphKind, Instance, Lane, LaneKernel, Layout, NodeError, NodeInfo, NodeType,
+    NodeView, ParamInfo, PerLane, Ports, Setup, Unit,
 };
 
 /// A control-rate oscillator for modulating parameters: sine, triangle, saw,
@@ -61,8 +61,8 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Lfo {
-    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
-        noodle_engine::NodeView::Graph(noodle_engine::GraphKind::Lfo)
+    fn view(&self, _config: &Config) -> NodeView {
+        NodeView::Graph(GraphKind::Lfo)
     }
 
     fn info(&self) -> &NodeInfo {
