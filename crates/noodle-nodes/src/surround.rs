@@ -5,6 +5,7 @@
 //! The channel order of every layout is the one WAV files use (see
 //! [`ChannelLayout`]), so a 5.1 bus is L, R, C, LFE, Lb, Rb.
 
+use crate::level::db_to_gain;
 use noodle_engine::{
     ChannelLayout, Config, ConfigInfo, Context, Instance, Io, Layout, MAX_LAYOUT_CHANNELS, Node,
     NodeError, NodeInfo, NodeType, ParamInfo, Ports, Setup, Shape, SignalIn, Unit, Value,
@@ -141,11 +142,7 @@ struct SurroundPanNode {
 
 /// The linear gain of an LFE send of `db`, 0 at the minimum.
 fn lfe_gain(db: f32) -> f32 {
-    if db <= -60.0 {
-        0.0
-    } else {
-        10f32.powf(db / 20.0)
-    }
+    if db <= -60.0 { 0.0 } else { db_to_gain(db) }
 }
 
 impl Node for SurroundPanNode {

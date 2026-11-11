@@ -32,6 +32,7 @@ use noodle_io::{
     TruePeakLimiter, cue_sheet,
 };
 
+use crate::level::db_to_gain;
 use crate::render_clip::CLIP_SILENCE;
 use crate::{
     CHUNK_FRAMES, ClipProblem, FileError, FreezeError, Freezer, RenderRequest,
@@ -356,7 +357,7 @@ pub fn export(
             // The limiter takes some loudness with the peaks: measure what
             // it leaves and make the gain up, once.
             next_window(progress);
-            let gain = 10f32.powf(gain_db as f32 / 20.0);
+            let gain = db_to_gain(gain_db as f32);
             let sink = new_sink(&None, gain, Some(ceiling), untagged())?;
             let (limited, _) = mix_pass(sink, progress)?.finish(0, false)?;
             if limited.lufs.is_finite() && (limited.lufs - target).abs() > 0.05 {
@@ -364,7 +365,7 @@ pub fn export(
             }
         }
     }
-    let gain = 10f32.powf(gain_db as f32 / 20.0);
+    let gain = db_to_gain(gain_db as f32);
     if request.mixdown.is_some() {
         next_window(progress);
         mix_sink = Some(mix_pass(

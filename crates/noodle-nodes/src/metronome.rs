@@ -1,5 +1,6 @@
 use std::f32::consts::TAU;
 
+use crate::level::db_to_gain;
 use noodle_engine::{
     Config, Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType, ParamInfo, Setup,
     Unit,
@@ -140,7 +141,7 @@ impl Node for Click {
             .first()
             .copied()
             .unwrap_or(-12.0);
-        let level = 10f32.powf(db / 20.0);
+        let level = db_to_gain(db);
         let beat_hz = io.inputs[PITCH]
             .lane(0, 0)
             .first()

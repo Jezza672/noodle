@@ -7,6 +7,7 @@ use noodle_engine::{
     Setup, Shape, Unit,
 };
 
+use crate::level::db_to_gain;
 use crate::math::{scan_number, unary_function};
 
 /// Runs the program in its `script` setting once per sample, per voice and
@@ -980,10 +981,6 @@ fn reserved(name: &str) -> bool {
         || CONSTANTS.contains(&name)
         || FUNCTIONS.contains(&name)
         || unary_function(name).is_some()
-}
-
-fn db_to_gain(db: f32) -> f32 {
-    10f32.powf(db / 20.0)
 }
 
 fn midi_to_hz(note: f32) -> f32 {

@@ -1,5 +1,6 @@
 //! The Distortion node.
 
+use crate::level::db_to_gain;
 use noodle_engine::{
     Config, Context, Instance, Lane, LaneKernel, Layout, NodeError, NodeInfo, NodeType, ParamInfo,
     PerLane, Ports, Setup, Skip, Unit,
@@ -122,9 +123,9 @@ impl LaneKernel for DistortionKernel {
         let mix = lane.inputs.get(MIX);
         let out = lane.outputs.get_mut(OUT);
         for i in 0..out.len() {
-            let gain = 10f32.powf(drive[i] / 20.0);
-            let wet = shaper(shape[i].round().max(0.0) as usize, input[i] * gain)
-                * 10f32.powf(level[i] / 20.0);
+            let gain = db_to_gain(drive[i]);
+            let wet =
+                shaper(shape[i].round().max(0.0) as usize, input[i] * gain) * db_to_gain(level[i]);
             let mix = mix[i].clamp(0.0, 1.0);
             out[i] = input[i] + (wet - input[i]) * mix;
         }

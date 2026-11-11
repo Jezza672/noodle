@@ -356,6 +356,7 @@ impl Node for ReverbNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::level::rms;
     use noodle_engine::testing::Harness;
 
     const RATE: f32 = 48_000.0;
@@ -411,10 +412,6 @@ mod tests {
             assert!(worst < 1e-4, "differs by {worst}");
         }
         assert!(rms(&whole.0) > 0.01, "the reverb sounds");
-    }
-
-    fn rms(x: &[f32]) -> f32 {
-        (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
     }
 
     #[test]

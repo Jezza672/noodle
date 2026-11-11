@@ -18,6 +18,7 @@ use noodle_io::{AudioFiles, Decoder, FileInfo, FileStamp, clip_frames};
 use super::hub::Shared;
 use super::pitch::PitchPath;
 pub use super::warp::WarpMap;
+use crate::level::db_to_gain;
 
 /// Which part of which file a clip plays.
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -281,10 +282,6 @@ fn envelope_db(points: &[(i64, f32)], frame: i64) -> f32 {
         (Some(p), None) | (None, Some(p)) => p.1,
         (Some(a), Some(b)) => a.1 + (b.1 - a.1) * (frame - a.0) as f32 / (b.0 - a.0).max(1) as f32,
     }
-}
-
-fn db_to_gain(db: f32) -> f32 {
-    10f32.powf(db / 20.0)
 }
 
 /// The gain of one side of an equal-power crossfade, `x` of the way (0 to 1)

@@ -10,6 +10,7 @@ use noodle_engine::{
     Shape, Telemetry, Unit,
 };
 
+use crate::level::db_to_gain;
 use crate::sample::{Sample, SampleRef, SampleStore};
 use crate::sample_set::{
     CHOICE_CUT, CHOICE_SEPARATOR, SetEntry, SetTables, is_choice, is_set, parse_set,
@@ -407,7 +408,7 @@ impl Envelope {
         let table = (0..=ENVELOPE_STEPS)
             .map(|i| {
                 let tick = i as f64 / ENVELOPE_STEPS as f64 * GAIN_ENV_SCALE;
-                10f32.powf(db_at(tick) / 20.0)
+                db_to_gain(db_at(tick))
             })
             .collect();
         Self { table: Some(table) }
@@ -727,7 +728,7 @@ impl Settings {
             loop_start: get(SamplerPorts::LOOP_START).clamp(0.0, 1.0),
             loop_end: get(SamplerPorts::LOOP_END).clamp(0.0, 1.0),
             release: get(SamplerPorts::RELEASE).max(0.001),
-            gain: 10f32.powf(get(SamplerPorts::GAIN) / 20.0),
+            gain: db_to_gain(get(SamplerPorts::GAIN)),
             bend_range: get(SamplerPorts::BEND_RANGE).clamp(0.0, 48.0),
             vel_curve: get(SamplerPorts::VEL_CURVE).clamp(-1.0, 1.0),
             rr_mode: get(SamplerPorts::RR_MODE).round().clamp(0.0, 2.0) as u8,
