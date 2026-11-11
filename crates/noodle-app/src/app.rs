@@ -88,8 +88,8 @@ pub struct App {
     /// piano roll follows a change of selection and nothing else.
     roll_followed: Option<noodle_core::ClipId>,
     devices: DevicePicker,
+    settings: crate::settings::Settings,
     display: crate::display::Display,
-    display_dialog: crate::display::DisplayDialog,
     export: ExportDialog,
     /// An action waiting for the user to decide what to do with unsaved
     /// changes.
@@ -206,6 +206,9 @@ pub(crate) enum Action {
     /// Chooses the device the monitor plays on: the nth listed output, or
     /// the main output for `None`.
     SetMonitorDevice(Option<usize>),
+    /// Opens the Settings window.
+    Settings,
+    /// Opens the Settings window on its Audio tab.
     AudioSettings,
     ToggleMixer,
     ToggleMetronome,
@@ -229,7 +232,6 @@ pub(crate) enum Action {
     TogglePlugins,
     ToggleCache,
     ToggleCpu,
-    DisplaySettings,
     ImportAudio,
     ExportAudio,
     /// Asks where the export the dialog chose is to be written.
@@ -324,7 +326,7 @@ impl App {
             roll_followed: None,
             devices: DevicePicker::default(),
             display: crate::prefs::display(),
-            display_dialog: Default::default(),
+            settings: Default::default(),
             export: ExportDialog::default(),
             confirming: None,
             after_save: None,
@@ -815,13 +817,26 @@ impl App {
         if self.export.has_choice() {
             actions.push(Action::StartExport);
         }
-        if let Some(config) = self.devices.show(ui.ctx(), self.session.latency_report()) {
+        let settings = self.settings.show(
+            ui.ctx(),
+            &mut self.devices,
+            self.session.latency_report(),
+            &mut self.display,
+            &mut self.session,
+        );
+        if let Some(config) = settings.audio {
             self.session.set_audio_config(config);
             crate::prefs::remember_audio(self.session.audio_config());
         }
-        if self.display_dialog.show(ui.ctx(), &mut self.display) {
+        if settings.display_changed {
             crate::prefs::remember_display(self.display);
             self.editor.set_display(self.display);
+        }
+        if settings.import {
+            actions.push(Action::ImportSettings);
+        }
+        if settings.export {
+            actions.push(Action::ExportSettings);
         }
         self.editor.retain_existing(&self.session);
         // A safety net for undo grouping: a drag's edits are one undo step,
@@ -863,8 +878,7 @@ impl App {
         }
         let typing = ctx.egui_wants_keyboard_input()
             && ctx.memory(|m| m.focused()) != Some(crate::editor::canvas_id());
-        let dialog = self.devices.is_open()
-            || self.display_dialog.is_open()
+        let dialog = self.settings.is_open()
             || self.export.is_open()
             || self.confirming.is_some()
             || self.palette.is_open()
@@ -920,8 +934,7 @@ impl App {
         // A dialog has the user's attention; shortcuts would act behind it.
         // The editor's own keys are safe too, since they need the pointer
         // over the canvas and a modal's backdrop covers it. Keep it so.
-        let dialog = self.devices.is_open()
-            || self.display_dialog.is_open()
+        let dialog = self.settings.is_open()
             || self.export.is_open()
             || self.confirming.is_some()
             || self.palette.is_open()
@@ -1011,31 +1024,10 @@ impl App {
                 });
             });
             ui.separator();
-            item(
-                ui,
-                "Import User Settings…",
-                None,
-                true,
-                Action::ImportSettings,
-            );
-            item(
-                ui,
-                "Export User Settings…",
-                None,
-                true,
-                Action::ExportSettings,
-            );
-            ui.separator();
             item(ui, "Import Audio…", None, true, Action::ImportAudio);
             item(ui, "Export Audio…", None, true, Action::ExportAudio);
             ui.separator();
-            item(
-                ui,
-                "Audio Settings…",
-                Some(&SETTINGS),
-                true,
-                Action::AudioSettings,
-            );
+            item(ui, "Settings…", Some(&SETTINGS), true, Action::Settings);
         });
         ui.menu_button("Edit", |ui| {
             item(
@@ -1199,14 +1191,6 @@ impl App {
                 .clicked()
             {
                 actions.push(Action::ToggleCpu);
-            }
-            if ui
-                .button("Display Settings…")
-                .on_hover_text("Choose what the graph shows of the sound as it plays")
-                .clicked()
-            {
-                actions.push(Action::DisplaySettings);
-                ui.close();
             }
         });
     }
@@ -2329,6 +2313,12 @@ impl App {
         }
     }
 
+    /// Opens the Settings window on `tab`, listing the devices afresh.
+    fn open_settings(&mut self, tab: crate::settings::Tab) {
+        self.devices.open(self.session.audio_config());
+        self.settings.open(tab);
+    }
+
     /// Makes `settings` the user's own, here and in the settings file.
     fn adopt_settings(&mut self, settings: &crate::prefs::Prefs) {
         let now = crate::prefs::adopt(settings);
@@ -2530,7 +2520,8 @@ impl App {
                     self.session.record();
                 }
             }
-            Action::AudioSettings => self.devices.open(self.session.audio_config()),
+            Action::Settings => self.open_settings(crate::settings::Tab::General),
+            Action::AudioSettings => self.open_settings(crate::settings::Tab::Audio),
             Action::ToggleMixer => self.mixer_open = !self.mixer_open,
             Action::ToggleMetronome => {
                 let ids = || std::array::from_fn(|_| self.session.new_node_id());
@@ -2596,7 +2587,6 @@ impl App {
             }
             Action::ToggleTempoLane => self.timeline.set_tempo_lane(!self.timeline.tempo_lane()),
             Action::ToggleCpu => self.editor.set_show_cpu(!self.editor.show_cpu()),
-            Action::DisplaySettings => self.display_dialog.open(),
             Action::ToggleOutputs => {
                 self.outputs_open = !self.outputs_open;
                 if self.outputs_open {
@@ -3016,6 +3006,36 @@ mod tests {
         h.run();
         assert!(!h.state().palette.is_open(), "it closes after running one");
         assert!(folded(&h));
+    }
+
+    #[test]
+    fn the_palette_keeps_the_scroll_the_mouse_wheel_gave_it() {
+        let mut h = harness(folded_app());
+        h.run();
+        let at = egui::pos2(300.0, 200.0);
+        crate::testkit::press(&mut h, at, Modifiers::COMMAND, Key::K);
+        h.run();
+        let first = commands::first_name();
+        let top = |h: &Harness<'_, App>| h.get_by_label(first).rect().min.y;
+        let before = top(&h);
+        for _ in 0..4 {
+            crate::testkit::wheel(
+                &mut h,
+                egui::pos2(500.0, 300.0),
+                egui::MouseWheelUnit::Point,
+                egui::vec2(0.0, -80.0),
+            );
+        }
+        h.run_steps(10);
+        let scrolled = h.query_by_label(first).map(|n| n.rect().min.y);
+        assert!(
+            scrolled.is_none_or(|y| y < before - 20.0),
+            "the wheel scrolled the list ({before} -> {scrolled:?})"
+        );
+        // Every later frame must leave it there, not snap back to the selection.
+        h.run_steps(10);
+        let later = h.query_by_label(first).map(|n| n.rect().min.y);
+        assert_eq!(scrolled, later, "the list stays where the wheel left it");
     }
 
     fn palette_run(app: App, query: &str) -> Harness<'static, App> {
@@ -3605,15 +3625,13 @@ mod tests {
     }
 
     #[test]
-    fn running_plugins_in_separate_processes_is_switched_from_the_plugin_browser_and_remembered() {
+    fn running_plugins_in_separate_processes_is_switched_from_settings_and_remembered() {
         let dir = tempfile::tempdir().unwrap();
         let prefs = dir.path().join("prefs.ron");
         crate::prefs::init(prefs.clone());
         let mut harness = harness(empty());
         harness.run();
-        harness.get_by_label("View").click();
-        harness.run();
-        harness.get_by_label("Plugins").click();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Comma);
         harness.run();
         assert!(!harness.state().session().sandbox_plugins());
         harness
@@ -3742,11 +3760,11 @@ mod tests {
         crate::prefs::init(prefs.clone());
         let mut harness = harness(empty());
         harness.run();
-        harness.get_by_label("View").click();
+        harness
+            .state_mut()
+            .settings
+            .open(crate::settings::Tab::Display);
         harness.run();
-        harness.get_by_label("Display Settings…").click();
-        harness.run();
-        assert!(harness.state().display_dialog.is_open());
         // Everything is on but the CPU tint.
         assert!(harness.state().editor.bodies_display().event_wires);
         assert!(!harness.state().editor.bodies_display().cpu_heat);
@@ -4134,7 +4152,20 @@ mod tests {
     }
 
     #[test]
-    fn audio_settings_open_from_the_shortcut_and_reach_the_session() {
+    fn the_shortcut_opens_settings_and_close_shuts_them() {
+        let mut harness = harness(empty());
+        harness.run();
+        assert!(!harness.state().settings.is_open());
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Comma);
+        harness.run();
+        assert!(harness.state().settings.is_open());
+        harness.get_by_label("Close").click();
+        harness.run();
+        assert!(!harness.state().settings.is_open());
+    }
+
+    #[test]
+    fn audio_settings_reach_the_session() {
         let dir = tempfile::tempdir().unwrap();
         let prefs = dir.path().join("prefs.ron");
         crate::prefs::init(prefs.clone());
@@ -4142,9 +4173,11 @@ mod tests {
         app.devices = no_devices();
         let mut harness = harness(app);
         harness.run();
-        assert!(harness.query_by_label("Audio Settings").is_none());
+        assert!(!harness.state().settings.is_open());
 
-        harness.key_press_modifiers(Modifiers::COMMAND, Key::Comma);
+        harness
+            .state_mut()
+            .open_settings(crate::settings::Tab::Audio);
         harness.run();
         harness.get_by_label("Buffer size").click();
         harness.run();
@@ -4152,8 +4185,10 @@ mod tests {
         harness.run();
         harness.get_by_label("Apply").click();
         harness.run();
+        harness.get_by_label("Close").click();
+        harness.run();
 
-        assert!(harness.query_by_label("Audio Settings").is_none());
+        assert!(!harness.state().settings.is_open());
         let session = harness.state().session();
         assert_eq!(session.audio_config().buffer_size, Some(256));
         assert!(!session.engine_running());
@@ -4392,7 +4427,7 @@ mod tests {
         app.session
             .edit([Edit::Apply(Command::AddNode { id, node })]);
         app.devices = no_devices();
-        app.devices.open(&noodle_io::AudioConfig::default());
+        app.open_settings(crate::settings::Tab::Audio);
         let mut harness = harness(app);
         harness.run();
 

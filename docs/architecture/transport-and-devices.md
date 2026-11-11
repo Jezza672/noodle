@@ -88,7 +88,7 @@ output's delay.
   the drivers' own latencies into a `LatencyReport`. Where a driver reports
   zero (ALSA does), the buffer's duration stands in. `round_trip` is
   `input + (backlog + block) + output`: an estimate, not a measurement. The
-  Audio Settings dialog shows it live with its parts, and the Audio button's
+  Audio tab of Settings shows it live with its parts, and the Audio button's
   tooltip shows the figure.
 - **Bluetooth.** The dialog warns when a chosen device's name looks like
   Bluetooth (`looks_like_bluetooth`) or the running output reports over
@@ -176,7 +176,7 @@ the conventions and nodes that make them usable.
 - **Devices.** `AudioConfig::channels` opens the main device with that many
   channels (the device's default, usually two, if `None`); `choose_config` takes
   it as the first preference and refuses a count no configuration has
-  (`AudioError::UnsupportedChannels`) rather than guessing. The audio settings
+  (`AudioError::UnsupportedChannels`) rather than guessing. The Audio tab of Settings
   have an "Output channels" drop-down (1, 2, 4, 6, 8, 10, 12 and the device's maximum),
   `noodle play --channels N` the same, and the virtual output takes 1 to 12
   (`testkit::virtual_audio()` stays stereo unless told otherwise), so a surround

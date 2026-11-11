@@ -603,7 +603,7 @@ pub(crate) fn block_label(stats: &BlockStats) -> (String, Color32) {
     } else if stats.misses > 0 {
         (
             format!(
-                "{} block{} ran too slow (worst {worst}% of its time)\nFreeze a track, or raise the buffer in Audio Settings",
+                "{} block{} ran too slow (worst {worst}% of its time)\nFreeze a track, or raise the buffer in Settings > Audio",
                 stats.misses,
                 if stats.misses == 1 { "" } else { "s" }
             ),

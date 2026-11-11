@@ -47,5 +47,5 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [formants-and-latency.md](formants-and-latency.md) | Formant Shift node, Keep formants on a transposed clip (#424), per-node latency and delay-compensation display (#429) |
 | [first-use-discoverability.md](first-use-discoverability.md) | Add menu on right-click and double-click, one track menu, clip actions in the panel and palette, tooltips, export messages, problems list (#396-#406) |
 | [default-instruments.md](default-instruments.md) | Playable default instruments: ten synths, three sampled instruments with shipped CC0 audio |
-| [live-feedback.md](live-feedback.md) | Live visual feedback: wires that light, output meters, faded silent nodes, voice lights, beat pulse, heat tint, Display Settings |
+| [live-feedback.md](live-feedback.md) | Live visual feedback: wires that light, output meters, faded silent nodes, voice lights, beat pulse, heat tint, the Display tab of Settings |
 | [user-settings.md](user-settings.md) | Snap and take quantise saved as user settings; export, import, saved in the project, Open with Settings |
