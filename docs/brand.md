@@ -37,4 +37,4 @@ From `theme.rs`: lime `#C8F169` (accent), canvas `#0E1014`, panel `#171A20`, blu
 
 ## Type
 
-Space Grotesk (wordmark, headings) and Inter (body text on the site and docs). Both are SIL OFL, and the app loads them from `crates/noodle-app/assets/fonts`.
+Space Grotesk (wordmark, headings) and Inter (body text on the site and docs). Both are SIL OFL, from Google Fonts. Using them inside the app is a separate change.

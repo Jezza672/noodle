@@ -1,7 +1,7 @@
 """Turn the letters "oodle" into SVG outlines, so the wordmark never needs the font installed.
 
 Usage: python3 outline.py SpaceGrotesk_500Medium.ttf SpaceGrotesk_700Bold.ttf > oodle.json
-(needs `pip install fonttools`). The fonts are SIL OFL; see crates/noodle-app/assets/fonts.
+(needs `pip install fonttools`). The fonts are Space Grotesk, SIL OFL, from Google Fonts.
 Coordinates are in a 1000-unit em with y pointing down and the baseline at y = 0.
 """
 import json, sys
