@@ -1,5 +1,5 @@
 //! Freezing and offline nodes: the glue between cache keys, the cache on
-//! disk and the renders that fill it. See "Caching" in docs/architecture/caching.md.
+//! disk and the renders that fill it.
 //!
 //! The pieces:
 //!

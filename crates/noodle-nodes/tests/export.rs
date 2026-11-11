@@ -361,8 +361,6 @@ fn a_background_export_reports_progress_and_finishes() {
     assert_eq!(job.fraction(), 1.0);
 }
 
-// Track export.
-
 /// Two tracks, each playing its own tone, into a mixer into an Output.
 /// Returns the track groups, their track inputs, and the mixer.
 fn two_tracks(rig: &mut Rig) -> ([NodeId; 2], [NodeId; 2], NodeId) {

@@ -1,4 +1,4 @@
-//! More buttons on the transport pill. Like the metronome's, each one is a
+//! More buttons, in the switch strip along the top of the node editor. Like the metronome's, each one is a
 //! [`Button`](noodle_nodes::Button) node in the graph, so pressing it is an
 //! ordinary undoable edit and the same wiring can be changed in the node
 //! editor. The pill shows every top-level Button except the metronome's,
@@ -11,7 +11,7 @@ use noodle_nodes::{BUTTON_ID, BUTTON_STATE};
 
 use crate::metronome::{self, Binding};
 
-/// A Button in the pill.
+/// A Button in the strip.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Extra {
     pub button: NodeId,
@@ -20,7 +20,7 @@ pub struct Extra {
     pub target: String,
 }
 
-/// The buttons the pill shows after the metronome's, in node order.
+/// The buttons the strip shows, in node order.
 pub fn extras(project: &Project, registry: &Registry) -> Vec<Extra> {
     let graph = project.graph();
     let metronome = match metronome::binding(project) {

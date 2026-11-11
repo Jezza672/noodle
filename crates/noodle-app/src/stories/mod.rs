@@ -241,11 +241,12 @@ fn live_edit(route: &Route, n: usize) -> LiveEdit {
 /// the same and that the route's done check still passes on it.
 fn reopen(h: &mut AppHarness, route: &Route, n: usize) -> Reopen {
     let session = h.state_mut().session_mut();
-    let saved = session.project_ron();
     let playing = session.transport_running();
     if !matches!(session.save(), Saved::Yes) {
         return Reopen::CannotSave;
     }
+    // After the save, which writes the user's settings into the project.
+    let saved = session.project_ron();
     let Some(path) = session.path().map(Path::to_owned) else {
         return Reopen::CannotSave;
     };

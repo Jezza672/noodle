@@ -340,7 +340,7 @@ pub(crate) fn compile_with(
     let mut diagnostics = Vec::new();
     let mut keep = crate::automation::boundary_targets(graph, lanes, &mut diagnostics);
     // A group's outputs keep their stages, which meter what leaves the group.
-    keep.extend(crate::flatten::output_stages(graph));
+    keep.extend(crate::flatten::output_stages(graph, registry));
     let retargeted = crate::automation::retarget_lanes(graph, lanes);
     let lanes: Vec<_> = retargeted.iter().map(|(id, lane)| (*id, lane)).collect();
     let original = graph;
@@ -882,7 +882,7 @@ fn sort(candidates: &[Candidate<'_>], wires: &[Wire]) -> Vec<Step> {
     order
 }
 
-/// How many times shape inference may start over for loops (see below).
+/// How many times shape inference may start over for loops.
 const SHAPE_PASSES: usize = 4;
 
 fn infer_shapes(
@@ -960,7 +960,7 @@ fn infer_shapes(
                         found.push(Diagnostic::node(c.id, Problem::Node(problem)));
                         // Nodes downstream took their shapes from the
                         // outputs; they stay as inferred, and this node
-                        // simply doesn't run.
+                        // doesn't run.
                         candidates[i].output_shapes = None;
                     }
                 } else {

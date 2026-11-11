@@ -7,7 +7,7 @@
 use noodle_core::{TICKS_PER_QUARTER, TempoMap, Tick, TimeSignature};
 
 /// A stretch of constant tempo.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Segment {
     start_tick: i64,
     /// The sample the segment starts on, fractions included.
@@ -17,13 +17,13 @@ struct Segment {
 }
 
 /// A stretch of constant time signature.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 struct Meter {
     start_tick: i64,
     signature: TimeSignature,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct TempoTable {
     segments: Box<[Segment]>,
     meters: Box<[Meter]>,

@@ -40,8 +40,9 @@ pub fn is_key(key: Key) -> bool {
     semitone(key).is_some() || matches!(key, Key::Z | Key::X | Key::C | Key::V)
 }
 
-/// The lowest and highest octave. C3 is note 60, so octave 3 starts there.
-const OCTAVES: std::ops::RangeInclusive<i8> = -2..=8;
+/// The lowest and highest octave, named as the piano roll names them: C4 is
+/// note 60, so octave 4 starts there.
+pub const OCTAVES: std::ops::RangeInclusive<i8> = -1..=9;
 const VELOCITY_STEP: u8 = 16;
 const CHANNEL: u8 = 0;
 
@@ -60,7 +61,7 @@ impl Default for KeyboardMidi {
     fn default() -> Self {
         Self {
             on: false,
-            octave: 3,
+            octave: 4,
             velocity: 100,
             held: Vec::new(),
         }
@@ -78,9 +79,18 @@ impl KeyboardMidi {
         if on { Vec::new() } else { self.release_all() }
     }
 
-    #[cfg(test)]
     pub fn octave(&self) -> i8 {
         self.octave
+    }
+
+    /// Sets the octave the note keys play at, kept in range.
+    pub fn set_octave(&mut self, octave: i8) {
+        self.octave = octave.clamp(*OCTAVES.start(), *OCTAVES.end());
+    }
+
+    /// Sets the velocity the note keys play at, kept in range.
+    pub fn set_velocity(&mut self, velocity: u8) {
+        self.velocity = velocity.clamp(1, 127);
     }
 
     pub fn velocity(&self) -> u8 {
@@ -90,7 +100,7 @@ impl KeyboardMidi {
     /// The note a key plays at the current octave, if it is a note key and
     /// the note is a valid MIDI note.
     fn note(&self, key: Key) -> Option<u8> {
-        let note = (i16::from(self.octave) + 2) * 12 + i16::from(semitone(key)?);
+        let note = (i16::from(self.octave) + 1) * 12 + i16::from(semitone(key)?);
         u8::try_from(note).ok().filter(|&n| n < 128)
     }
 
@@ -138,7 +148,7 @@ impl KeyboardMidi {
             .collect()
     }
 
-    /// The octave's C as a name, such as "C3", for the button's label.
+    /// The octave's C as a name, such as "C4", for the button's label.
     pub fn octave_label(&self) -> String {
         format!("C{}", self.octave)
     }
@@ -175,7 +185,7 @@ mod tests {
         let mut keyboard = on();
         keyboard.press(Key::A);
         keyboard.press(Key::X);
-        assert_eq!(keyboard.octave(), 4);
+        assert_eq!(keyboard.octave(), 5);
         keyboard.press(Key::C);
         assert_eq!(keyboard.velocity(), 84);
         assert_eq!(keyboard.press(Key::S), vec![[0x90, 74, 84]]);
@@ -190,13 +200,13 @@ mod tests {
             keyboard.press(Key::Z);
             keyboard.press(Key::C);
         }
-        assert_eq!((keyboard.octave(), keyboard.velocity()), (-2, 1));
+        assert_eq!((keyboard.octave(), keyboard.velocity()), (-1, 1));
         for _ in 0..20 {
             keyboard.press(Key::X);
             keyboard.press(Key::V);
         }
-        assert_eq!((keyboard.octave(), keyboard.velocity()), (8, 127));
-        // At octave 8 the top keys would be past note 127: no note.
+        assert_eq!((keyboard.octave(), keyboard.velocity()), (9, 127));
+        // At octave 9 the top keys would be past note 127: no note.
         assert!(keyboard.press(Key::Semicolon).is_empty());
     }
 

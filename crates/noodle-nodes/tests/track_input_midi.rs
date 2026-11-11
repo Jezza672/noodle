@@ -385,8 +385,6 @@ fn a_looping_clip_plays_its_loop_again_until_it_ends() {
     assert_eq!(events.iter().filter(|e| !e.1).count(), expect.len());
 }
 
-// Controllers and expressions in clips.
-
 use noodle_core::{ControlKind, ControlPoint, ExpressionKind, NoteExpression, Tick};
 use noodle_engine::{ChannelControl, Expression};
 

@@ -34,9 +34,6 @@ fn voice_silent(input: &SignalIn<'_>, voice: usize) -> bool {
     (0..input.shape().channels).all(|c| input.is_silent(voice, c))
 }
 
-// ---------------------------------------------------------------------------
-// Surround Pan
-
 /// Places a signal among the speakers of a layout. The input's channels are
 /// averaged to one source, which is panned by `azimuth` (degrees from straight
 /// ahead, positive to the right, wrapping at ±180) with constant power between
@@ -238,9 +235,6 @@ impl Node for SurroundPanNode {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Convert Layout
-
 /// Converts a signal from the layout its channel count implies (1 mono, 2
 /// stereo, 3 as 3.0, 4 quad, 6 as 5.1, 8 as 7.1, 10 as 7.1.2, 12 as 7.1.4) to the layout in its
 /// `layout` setting, by the downmix and upmix rules of
@@ -344,9 +338,6 @@ impl Node for ConvertNode {
         }
     }
 }
-
-// ---------------------------------------------------------------------------
-// Split and Merge Channels
 
 /// The most channels Split and Merge Channels will have.
 const MAX_CHANNELS: i64 = 32;

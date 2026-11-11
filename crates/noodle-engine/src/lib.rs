@@ -1,6 +1,5 @@
 //! Compiles the project graph into a `RenderPlan` and runs it, either from the
-//! real-time audio callback or from the offline renderer. See
-//! `docs/ARCHITECTURE.md` for the real-time rules this crate must follow.
+//! real-time audio callback or from the offline renderer.
 //!
 //! The node API, for writing nodes, starts at [`NodeType`].
 
@@ -93,9 +92,9 @@ pub use spectral::{
     SpectralIn, SpectralOut, Synthesizer, bin_frequency, frame_capacity,
 };
 pub use telemetry::{
-    ACTIVITY_FLOOR, BlockStats, BlockWriter, CpuReading, CpuTotals, CpuWriter, LOAD_BUCKETS, Level,
-    MeterReader, MeterWriter, ParamReading, ParamWriter, PositionWriter, ScopeView, ScopeWriter,
-    Telemetry,
+    ACTIVITY_FLOOR, BlockStats, BlockWriter, CpuReading, CpuTotals, CpuWriter, EventWriter, Gather,
+    LOAD_BUCKETS, Level, MeterReader, MeterWriter, NodeActivity, ParamReading, ParamWriter,
+    PositionWriter, ScopeView, ScopeWriter, StateWriter, Telemetry,
 };
 pub use tempo::TempoTable;
 pub mod wake;

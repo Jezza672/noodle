@@ -1340,7 +1340,7 @@ mod tests {
         for (got, want) in slid.iter().zip([0.3, 0.8, 1.3]) {
             close(*got, want);
         }
-        // Stored markers are untouched, and 0 is the old behaviour.
+        // Stored markers are untouched, and an offset of 0 changes nothing.
         assert_eq!(warp.markers[0].beat, 0.35);
         warp.grid_offset = 0.0;
         assert_eq!(beats(&warp), vec![0.5, 1.0, 1.5]);
@@ -1500,8 +1500,7 @@ mod tests {
         let curve = warp.curve();
         // Warped beat 4 is 2 s at the first tempo, so the pin lands there.
         close(curve.at(0.5), 2.0);
-        // Past it, the beat count runs 3 beats a... check against the direct
-        // composition at many points.
+        // Past it, the curve matches the direct composition at many points.
         let beats = warp.tempo.as_curve();
         let m = warp.marker_map().unwrap();
         for i in 0..400 {

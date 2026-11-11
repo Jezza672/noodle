@@ -3,9 +3,8 @@
 //! A [`CacheKey`] names a render by what went into it. Keys are built
 //! Merkle-style: a node's key hashes its own description together with the
 //! keys of everything upstream, so any change anywhere upstream gives a new
-//! key and a stale render can never be served (see "Caching" in
-//! `docs/architecture/caching.md`). This module only supplies the hashing; deciding
-//! what goes into a key is the compiler's job.
+//! key and a stale render can never be served. This module only supplies the
+//! hashing; deciding what goes into a key is the compiler's job.
 
 use std::fmt;
 

@@ -8,8 +8,7 @@
 //!
 //! Ports come from what the project uses: the keys of the wires that touch
 //! the node and the parameters it stores values for. A plugin's port keys
-//! follow one scheme (see `docs/architecture/plugins.md`), which says what
-//! kind of port each key is.
+//! follow one scheme, which says what kind of port each key is.
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;
@@ -124,7 +123,7 @@ pub fn placeholder(graph: &Graph, id: NodeId, node: &GraphNode) -> Option<Missin
     })
 }
 
-/// See the module docs.
+/// A stand-in for a plugin that isn't installed, keeping its wires and values.
 pub struct MissingPlugin {
     info: NodeInfo,
     inputs: Vec<(Kind, String)>,

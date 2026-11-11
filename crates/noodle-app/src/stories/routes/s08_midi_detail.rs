@@ -132,6 +132,16 @@ const FIRST: i64 = 30;
 
 fn halve(h: &mut Handle, _size: usize) {
     h.step("halve the timing amount");
+    // The amounts live in the arrow beside Humanise, or in the "..." menu
+    // when the panel is too narrow for it.
+    let opener = if h.probe().has("Humanise amounts") {
+        "Humanise amounts"
+    } else {
+        "More controls"
+    };
+    let amounts = h.find(opener);
+    h.click(amounts, Modifiers::NONE);
+    h.probe().settle();
     let at = h.field_after("Timing");
     h.click(at, Modifiers::NONE);
     h.press(at, Modifiers::COMMAND, Key::A);

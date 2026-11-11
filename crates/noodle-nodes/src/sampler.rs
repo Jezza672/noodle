@@ -1689,8 +1689,6 @@ mod tests {
         assert_eq!(play(&mut used), play(&mut fresh));
     }
 
-    // --- sample sets and bend ---
-
     use crate::sample_set::{SetEntry, set_to_text};
 
     /// A store with one constant sample per value (each 200 frames long) and
@@ -1864,7 +1862,6 @@ mod tests {
         let want = 10.0 * (2.0f32 / 12.0).exp2() * 0.001;
         assert!((left(&h)[10] - want).abs() < 2e-4, "{}", left(&h)[10]);
     }
-    // --- samples picked while audio runs ---
 
     /// A store with a constant sample per value, and a config that lists
     /// them as candidates to pick from.

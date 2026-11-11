@@ -99,7 +99,7 @@ pre-roll, punch refused past its range, the count-in waiting and cancelling).
   soon as recording stops; "Show takes" in the folder's menu still opens and
   closes them.
 - **MIDI takes.** A loop recording of MIDI makes a take per pass when the
-  Takes or Merge setting (in the Q dropdown, an app preference) says Takes,
+  Takes or Merge setting (in the record options under the arrow beside Record, an app preference) says Takes,
   and one merged clip when it says Merge. A MIDI take folder is a `MidiClip`
   with `MidiTakes` (see data-model.md) and uses the same lanes, swipe and
   audition. Editing the notes of a MIDI take folder by hand turns it into a plain

@@ -251,7 +251,7 @@ struct Shared {
     closed: AtomicBool,
 }
 
-/// The worker of one Sampler node type. See the module.
+/// The worker of one Sampler node type.
 pub(crate) struct Service {
     shared: Arc<Shared>,
     started: Mutex<bool>,

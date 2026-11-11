@@ -1,6 +1,5 @@
 //! Cache keys and cacheability: which nodes' output is a pure function of the
-//! timeline, and what to call a render of it. See "Caching" in
-//! docs/architecture/caching.md.
+//! timeline, and what to call a render of it.
 //!
 //! [`analyze`] compiles the project as the live engine would, except that
 //! offline nodes stay in, then walks the schedule once, upstream first. Each
@@ -625,7 +624,7 @@ pub fn analyze(project: &Project, registry: &Registry, env: &CacheEnv<'_>) -> An
         }
     }
 
-    analysis.targets = targets(project, &analysis, env.min_cost);
+    analysis.targets = targets(project, registry, &analysis, env.min_cost);
     analysis
 }
 
@@ -741,7 +740,12 @@ fn outputs_of(analysis: &Analysis, endpoints: &[Endpoint]) -> Vec<(NodeId, usize
 
 /// What to render, upstream first: each offline node's outputs, the outputs
 /// a frozen node or group exposes, and the groups the playback cache picks.
-fn targets(project: &Project, analysis: &Analysis, min_cost: u32) -> Vec<Target> {
+fn targets(
+    project: &Project,
+    registry: &Registry,
+    analysis: &Analysis,
+    min_cost: u32,
+) -> Vec<Target> {
     let mut targets = Vec::new();
     for (&id, node) in &analysis.nodes {
         if node.offline {
@@ -755,7 +759,7 @@ fn targets(project: &Project, analysis: &Analysis, min_cost: u32) -> Vec<Target>
     let mut keep = crate::automation::boundary_targets(project.graph(), &lanes, &mut Vec::new());
     // As compiled (see `compile_with`), so a frozen group's outputs are the
     // stages that meter them.
-    keep.extend(crate::flatten::output_stages(project.graph()));
+    keep.extend(crate::flatten::output_stages(project.graph(), registry));
     for &frozen in project.frozen() {
         let Some(node) = project.graph().node(frozen) else {
             continue;

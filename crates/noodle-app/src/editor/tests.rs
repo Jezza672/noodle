@@ -783,8 +783,8 @@ fn the_search_box_can_be_driven_with_arrows() {
     assert_eq!(graph.nodes().next().unwrap().1.type_id, "noodle.osc.sine");
 }
 
-/// Issue #418: a run saw "sequenc" arrive as "sequend". Characters arriving
-/// one per frame, straight after the box opens, all land in the box.
+/// Characters arriving one per frame, straight after the box opens, all land
+/// in the box (once "sequenc" arrived as "sequend").
 #[test]
 fn the_search_box_keeps_every_character_typed_quickly() {
     let mut h = rig();
@@ -1838,7 +1838,7 @@ fn deleting_a_group_removes_what_is_inside_and_undo_brings_it_back() {
 /// Tab still enters and leaves a group with another widget in the window.
 /// This does not prove the `tab: true` focus filter: kittest delivers Tab to
 /// the editor either way, so that line needs a manual Tab press in the real
-/// window (see docs/architecture/ui.md).
+/// window.
 #[test]
 fn tab_enters_and_leaves_a_group_with_another_widget_present() {
     let mut h = rig_with(true);
@@ -1950,6 +1950,8 @@ fn dragging_a_port_label_down_its_column_reorders_it_as_one_undo_step() {
     let rows = input_labels(&h, mix);
     let keys: Vec<_> = rows.iter().map(|r| r.0.clone()).collect();
     let (first, last) = (rows[0].1, rows[2].1);
+    // Edits need the node selected first.
+    click(&mut h, first, Modifiers::NONE);
     drag(
         &mut h,
         PointerButton::Primary,
@@ -1968,6 +1970,32 @@ fn dragging_a_port_label_down_its_column_reorders_it_as_one_undo_step() {
     assert_eq!(h.state().session.project(), &before);
     let again: Vec<_> = input_labels(&h, mix).into_iter().map(|r| r.0).collect();
     assert_eq!(again, keys);
+}
+
+#[test]
+fn dragging_a_port_label_of_an_unselected_node_moves_the_node_instead() {
+    let mut h = rig();
+    let mix = mix_of(&mut h, 3);
+    let keys: Vec<_> = input_labels(&h, mix).into_iter().map(|r| r.0).collect();
+    let rows = input_labels(&h, mix);
+    let (first, last) = (rows[0].1, rows[2].1);
+    drag(
+        &mut h,
+        PointerButton::Primary,
+        Modifiers::NONE,
+        &[
+            first,
+            first + Vec2::new(0.0, 10.0),
+            last + Vec2::new(0.0, 8.0),
+        ],
+    );
+    let after: Vec<_> = input_labels(&h, mix).into_iter().map(|r| r.0).collect();
+    assert_eq!(after, keys, "ports were not reordered");
+    assert_ne!(
+        position(&h, mix),
+        Position { x: 0.0, y: 0.0 },
+        "the node moved"
+    );
 }
 
 #[test]
@@ -1998,6 +2026,7 @@ fn dragging_a_port_label_does_not_move_the_node() {
     let mix = mix_of(&mut h, 3);
     let rows = input_labels(&h, mix);
     let start = rows[0].1;
+    h.state_mut().editor.select_only([mix]);
     drag(
         &mut h,
         PointerButton::Primary,
@@ -2030,7 +2059,6 @@ fn drag_node_to(h: &mut H, node: NodeId, modifiers: Modifiers, to: Pos2) {
     );
 }
 
-/// Issue #416.
 #[test]
 fn clicking_a_cable_selects_it_and_delete_removes_it_through_undo() {
     let mut h = rig();
@@ -2452,6 +2480,24 @@ fn f2_renames_the_selected_group_and_an_empty_name_puts_the_default_back() {
 }
 
 #[test]
+fn double_clicking_an_unselected_group_ports_label_does_not_rename_it() {
+    use noodle_core::group::GROUP;
+    let mut h = rig();
+    let group = add(&mut h, Node::new(GROUP).at(400.0, 0.0));
+    h.run();
+    let row = scene(&h)
+        .node(group)
+        .unwrap()
+        .port(Side::Input, "in1")
+        .unwrap()
+        .row
+        .center();
+    let at = screen(&h, row + Vec2::new(-20.0, 0.0));
+    double_click(&mut h, at);
+    assert!(h.state().editor.rename.is_none(), "needs selection first");
+}
+
+#[test]
 fn double_clicking_a_group_ports_label_renames_it_and_keeps_its_wire() {
     use noodle_core::group::GROUP;
     let mut h = rig();
@@ -2470,6 +2516,7 @@ fn double_clicking_a_group_ports_label_renames_it_and_keeps_its_wire() {
         .row
         .center();
     let at = screen(&h, row + Vec2::new(-20.0, 0.0));
+    h.state_mut().editor.select_only([group]);
     double_click(&mut h, at);
     assert!(h.state().editor.rename.is_some(), "the port's box opened");
     assert_eq!(h.state().editor.group, None, "and the group wasn't entered");
@@ -2787,6 +2834,7 @@ fn a_group_input_name_follows_the_group_port_both_ways() {
         .row
         .center();
     let at = screen(&h, row + Vec2::new(-20.0, 0.0));
+    h.state_mut().editor.select_only([group]);
     double_click(&mut h, at);
     type_name(&mut h, "feed");
     assert_eq!(boundary_name(&h, input).as_deref(), Some("feed"));
@@ -2828,6 +2876,7 @@ fn double_clicking_a_group_inputs_own_port_row_renames_it_in_place() {
         .row
         .center();
     let at = screen(&h, row + Vec2::new(40.0, 0.0));
+    h.state_mut().editor.select_only([input]);
     double_click(&mut h, at);
     let rename = h
         .state()
@@ -3591,4 +3640,91 @@ fn the_inputs_grow_with_the_wires_and_the_type_goes_when_the_last_wire_does() {
             "{type_id}"
         );
     }
+}
+
+/// A Drum Rack added from the library, in a session.
+fn session_with_rack() -> (Session, NodeId) {
+    let mut session = Session::new(crate::session::Nodes::all());
+    let (id, template) = session
+        .library()
+        .templates()
+        .find(|(_, t)| t.name == "Drum Rack")
+        .map(|(id, t)| (id.to_string(), t.clone()))
+        .expect("the library has a Drum Rack");
+    let mut next = session.new_node_id().0;
+    let mut ids = || {
+        next += 1;
+        NodeId(next - 1)
+    };
+    let (rack, add) = template.instantiate(&id, None, Position { x: 0.0, y: 0.0 }, &mut ids);
+    session.edit([Edit::Apply(add)]);
+    (session, rack)
+}
+
+fn pad_named(session: &Session, rack: NodeId, name: &str) -> NodeId {
+    let graph = session.project().graph();
+    graph
+        .children(Some(rack))
+        .find(|(id, _)| super::layout::group_title(graph, *id) == name)
+        .map(|(id, _)| id)
+        .unwrap_or_else(|| panic!("no pad named {name}"))
+}
+
+#[test]
+fn the_drum_rack_has_a_named_pad_for_each_drum_and_a_sample_dropped_on_it_reaches_its_sampler() {
+    let (session, rack) = session_with_rack();
+    let graph = session.project().graph();
+    for name in [
+        "Kick",
+        "Snare",
+        "Closed Hat",
+        "Open Hat",
+        "Clap",
+        "Low Tom",
+        "High Tom",
+        "Crash",
+    ] {
+        let pad = pad_named(&session, rack, name);
+        let sampler = super::pad_sampler(graph, pad).expect("a pad has a Sampler");
+        assert_eq!(graph.node(sampler).unwrap().parent, Some(pad));
+        assert_eq!(super::pad_sampler(graph, sampler), Some(sampler));
+    }
+    // The rack itself holds many Samplers one level down, so it isn't a pad.
+    assert_eq!(super::pad_sampler(graph, rack), None);
+}
+
+#[test]
+fn any_node_can_be_renamed_and_the_name_goes_back_to_the_default_when_cleared() {
+    let (mut session, rack) = session_with_rack();
+    let pad = pad_named(&session, rack, "Kick");
+    let sampler = super::pad_sampler(session.project().graph(), pad).unwrap();
+    let edit = super::rename_edit(
+        session.project(),
+        super::RenameTarget::Group(sampler),
+        "Boom".into(),
+    )
+    .expect("a new name is an edit");
+    session.edit([edit]);
+    let graph = session.project().graph();
+    assert_eq!(super::layout::node_name(graph, sampler), "Boom");
+    // The same name again changes nothing.
+    assert!(
+        super::rename_edit(
+            session.project(),
+            super::RenameTarget::Group(sampler),
+            "Boom".into()
+        )
+        .is_none()
+    );
+    let clear = super::rename_edit(
+        session.project(),
+        super::RenameTarget::Group(sampler),
+        String::new(),
+    )
+    .expect("clearing the name is an edit");
+    session.edit([clear]);
+    assert_eq!(
+        super::layout::node_name(session.project().graph(), sampler),
+        ""
+    );
 }

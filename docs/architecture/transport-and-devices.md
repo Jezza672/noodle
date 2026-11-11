@@ -88,7 +88,7 @@ output's delay.
   the drivers' own latencies into a `LatencyReport`. Where a driver reports
   zero (ALSA does), the buffer's duration stands in. `round_trip` is
   `input + (backlog + block) + output`: an estimate, not a measurement. The
-  Audio Settings dialog shows it live with its parts, and the Audio button's
+  Audio tab of Settings shows it live with its parts, and the Audio button's
   tooltip shows the figure.
 - **Bluetooth.** The dialog warns when a chosen device's name looks like
   Bluetooth (`looks_like_bluetooth`) or the running output reports over
@@ -176,7 +176,7 @@ the conventions and nodes that make them usable.
 - **Devices.** `AudioConfig::channels` opens the main device with that many
   channels (the device's default, usually two, if `None`); `choose_config` takes
   it as the first preference and refuses a count no configuration has
-  (`AudioError::UnsupportedChannels`) rather than guessing. The audio settings
+  (`AudioError::UnsupportedChannels`) rather than guessing. The Audio tab of Settings
   have an "Output channels" drop-down (1, 2, 4, 6, 8, 10, 12 and the device's maximum),
   `noodle play --channels N` the same, and the virtual output takes 1 to 12
   (`testkit::virtual_audio()` stays stereo unless told otherwise), so a surround
@@ -291,10 +291,15 @@ to a second Mix and is not routed.
 
 The transport's tempo is the project's tempo map unless a live tempo stands in
 for it (`Controller::set_live_tempo`): tap tempo or an external MIDI clock, chosen
-in the transport bar. The controller keeps the project's map and the one the
-engine plays by (the live tempo with the project's time signatures)
-separately; the engine gets a new `TempoTable` the way it does for an edit, which
-keeps the playhead's tick. It is session state: no command, no undo step, no
+in the transport bar. The timeline (the playhead, seeks, loops, and where clips
+sit) always runs on the project's map, so the playhead moves at the map's speed
+and what is under it is what plays; the waveforms are drawn by the same map. The
+live tempo (with the project's time signatures) is only what the transport tells
+nodes (`Transport::bpm` and `tick`: Tempo, Clock, the metronome, MIDI out). The
+engine gets a `Tempos` pair (live and timeline `TempoTable`s) the way it does for
+an edit; a change to the live one alone does not move the position. With a single
+tempo in the map, a tap sets that tempo in the map instead (an undo step) and no
+live tempo is made. It is session state: no command, no undo step, no
 cache invalidation. "Write to map" makes it a `SetTempoMap`. MIDI timing
 messages reach the session through `MidiBus::clock_tap`, never the MIDI In
 nodes, and `tempo_source.rs` holds the tap and clock estimators. Details and

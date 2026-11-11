@@ -133,6 +133,44 @@ It has these views:
     to run: atomics only, nothing allocated or locked, and only when a
     telemetry hub is attached. `Bodies` reads them with the other meters
     (`Bodies::tap`). Modulation inputs are left out.
+  - **Live feedback** (`display.rs`, Settings > Display). Each item
+    is a switch saved in the preferences (`Prefs::display`), and
+    *Performance mode* turns them all off without forgetting the choices.
+    Everything is on by default except the CPU heat tint.
+    - *What the engine measures.* `Telemetry::gather()` holds four flags
+      the audio thread reads once per node per block: input levels, output
+      levels, event counts and node state. `Display::apply` sets them every
+      frame from what is shown, so a user who wants raw performance pays one
+      relaxed load per node and nothing else. The writers are plan-time
+      channels like the input meters: `open_output_meter`, `open_events`
+      (a running count per event output) and `open_state` (a packed
+      `NodeActivity`: ran, silent, voices sounding, voices). They are
+      written after the node has run (`report_outputs` in `plan.rs`), from
+      the silent flags the engine already keeps. The input half of a split
+      node doesn't report.
+    - *Wires.* An audio wire follows the level at the input it ends on
+      (`Bodies::tap`, or a mixer's channel meter), a modulation wire how
+      lately its parameter's reading moved, an event wire how lately its
+      output's count changed (`Bodies::event_glow`, which fades over about
+      a third of a second). A lit wire gets a halo and brightens towards
+      white; a wire that clipped lately turns red. Wires into or out of a
+      group's boundary don't glow, since a group is flattened away and has
+      no engine node of its own.
+    - *Nodes.* A thin bar on each audio output (`Bodies::output_tap`), along
+      the foot of its row or of the title bar. Nodes that made no sound in
+      their last block, or that nothing listens to, are faded, unless
+      selected. Polyphonic nodes show one dot per voice, lit for those that
+      sound. A node whose type says `NodeType::pulses_on_beat` (clock,
+      arpeggiator, pattern player, metronome, swing, launch quantise)
+      pulses its outline on each beat while the transport runs. The CPU heat
+      tint outlines nodes from yellow to red as their worst recent block
+      approaches a quarter of the block time; it reads the same timings as
+      the header's CPU labels, which stay a separate View switch.
+    - *Clipping.* A meter channel that sees a peak over full scale lights a
+      red lamp at the end of its bar for a second (`MeterChannel::clip`),
+      and the wire it is on turns red.
+    - *Parameters.* With *Show modulation motion* off, a wired parameter
+      shows its live value but not the range marks.
   - **Problems** from compiling are drawn where they belong: a red outline
     and a warning sign on the node, or a red wire, with the message on hover.
   - **Parameters on nodes** are `ParamField`s (see below), one per
@@ -156,7 +194,11 @@ It has these views:
     add a change on the beat, drag a point to move it and set its tempo, and
     right-click or Delete removes it (the first change stays at the start).
     The ruler's right-click menu also adds a tempo change at the bar
-    clicked ("Add tempo change at bar N"), next to its time signature items;
+    clicked ("Add tempo change at bar N"), and one "Insert time signature change at
+    bar N", which places the change with the current signature and opens a text
+    field over its marker, text selected (type `3/4`; Enter or a click away sets
+    it, Escape keeps the old one). Clicking a signature label on the ruler opens the
+    same field in place;
     signature changes live in the same tempo map, on bar lines only, and show
     as markers on the ruler.
     Every edit is a `SetTempoMap` command, so undo and the engine's table follow
@@ -306,7 +348,7 @@ It has these views:
   (`widgets/curve.rs`): drag points and handles, click the line to add a
   point, double-click or right-click a point to delete it; a drag is one undo step. A parameter with a wire into it is greyed out and shows the live value.
   (Its live value and range come from the editor, as on the node.)
-- **Dialogs:** the audio settings, export and stem-model dialogs are modals.
+- **Dialogs:** the settings window, export and stem-model dialogs are modals.
   A modal is not a scrolling container: egui clips its area to the window, so
   a dialog with more in it than the window has would lose the bottom of
   itself, buttons and all. Each of these dialogs is built with
@@ -321,6 +363,51 @@ through the telemetry API.
 the scroll delta they use, so a view that pans or zooms with the wheel has to
 clear it too: otherwise one turn acts twice, once on the view and once on a
 scroll area around it.
+
+## The top bar
+
+One row (`app.rs`, `top_bar`): the menus and the tempo group on the left, the
+transport centred on the window, and the audio chip, mix version and keyboard on
+the right.
+
+- **Nothing moves by itself.** A status is a dot, a toggle never changes its
+  label, and every field has a fixed width, so a button never shifts while it
+  is being pressed. The Audio chip's dot says how the sound is made (grey
+  live, a ring caching, lime from the cache, amber when the engine runs on
+  something other than what was chosen); the words are in its tooltip and
+  popover. The transport's width is measured one frame late and the centre is
+  clamped between the left and right groups, so a narrow window pushes it
+  off-centre instead of overlapping them.
+- **Split buttons.** Record, the Audio chip and the keyboard toggle each have an
+  options arrow flush against them (`transport_widgets::split_button`, no outline),
+  opening a popover. The record options open centred under the whole transport
+  capsule, in two columns: quantise down the left, and on the right count-in and
+  pre-roll (bars), loop recording and automation write, each on one row. The
+  audio popover has three parts: the engine (on/off, whether it runs as chosen,
+  latency, underruns), where monitoring plays, and the playback cache (what it is,
+  the automatic switch, and where the sound is coming from now, with the same dot as
+  the chip). The keyboard popover holds its octave and velocity. A lime dot on
+  Record says a count-in or pre-roll is set. The tempo field has a fixed width, so
+  typing a tempo (which drops the " bpm" suffix) moves nothing.
+- **Typefaces.** `theme::apply_fonts` loads the brand pair from
+  `crates/noodle-app/assets/fonts/` (both SIL OFL, licences beside them): Inter for
+  running text, Space Grotesk Medium for headings and buttons. Both are scaled to
+  0.92 (`INTER_SCALE`, `GROTESK_SCALE`) because they set larger than egui's own face,
+  and the app's hard-coded sizes were written for that one; this keeps column widths,
+  fixed-width headers and row heights as they were. Don't tune individual sizes
+  for the new faces: change the scale. egui's own fonts stay as fallbacks for symbols.
+- **Drawn arrows and icons.** The bundled font has no glyph for the
+  drop-down arrow or for a plus, and typed ones show as empty boxes, so arrows
+  are painted (`paint_chevron`, also used by `widgets::Dropdown`) and the
+  keyboard is a drawn icon.
+- **The position field** shows bar.beat.tick. Drag it sideways to move the
+  playhead (a beat per dozen pixels, landing on sixteenths; Shift for finer),
+  or click it and type `5`, `5.2` or `5.2.480`. A place that is not in the music
+  (bar 0, a fifth beat in 4/4) is refused. Both send `Action::Seek`.
+- **Switches** are not in this bar. They are Button nodes in the graph, shown in a
+  strip along the top of the node editor. The strip is only there once there is
+  a switch (Edit > Add Switch Button makes the first, and the strip's "+ Switch"
+  menu the rest), so an empty graph keeps all its height.
 
 ## Parameter widgets
 
@@ -399,6 +486,10 @@ graph as `@level` and `@reduction`). Parametric EQ shows the combined response
 notch has no gain, so its point moves in frequency only. A node's config can
 reach a graph too (`bands`, through `special_value`).
 
+## Editor header bars
+
+The piano roll, clip editor and sample editor share one header bar (`toolbar.rs`). It follows the transport pill's rules: each control sits in a slot of fixed width, related controls share a rounded pill, icons are drawn, and numbers live in popovers (Loop range, Humanise amounts, lanes, articulations, the hint under `?`). Clip-level controls (lane tool, Loop, Lanes) come first, then a divider and the selection group (`N notes selected`, Humanise, Articulation). Snap is a read-only chip; the snap step is set in the menu bar. When the panel is too narrow, `toolbar::fit` folds the slots with the highest `keep` into a `...` menu (hint first, then Snap, the selection group, Lanes, tools, Loop), so nothing is cut off. Close never moves.
+
 ## Mixer
 
 The mixer (`noodle-app/src/mixer.rs`, View > Mixer) is a view over the
@@ -440,7 +531,7 @@ so a reused ID can't inherit a deleted track's place.
 
 ## Command palette and keymap
 
-`app/commands.rs` registers each menu and transport action once (`ENTRIES`: id, name, `Action`, default chord). Cmd+K searches them; "Edit shortcuts" rebinds one. Only changed chords are saved, as `keymap` in the preferences; a chord belongs to one command. Chords the views catch themselves (Cut, Copy, F) keep doing so; a user's binding for them is caught globally.
+`app/commands.rs` registers each menu and transport action once (`ENTRIES`: id, name, `Action`, default chord). Cmd+K searches them; "Edit shortcuts" rebinds one. Only changed chords are saved, as `keymap` in the preferences (which are the user settings: snap, display, keymap and the other per-person choices, exportable, and saved into each project but only imported by Open with Settings, Cmd/Ctrl+Shift+O; see `features/user-settings.md`); a chord belongs to one command. Chords the views catch themselves (Cut, Copy, F) keep doing so; a user's binding for them is caught globally.
 
 ## Project templates
 
