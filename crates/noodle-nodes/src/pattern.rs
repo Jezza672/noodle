@@ -136,10 +136,6 @@ static INFO: NodeInfo = NodeInfo {
     category: "Events",
 };
 
-// ---------------------------------------------------------------------
-// The patterns, handed from the project to the audio thread.
-// ---------------------------------------------------------------------
-
 /// One note of a pattern, in ticks from the start of its clip.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PatternNote {
@@ -262,10 +258,6 @@ impl PatternShared {
     }
 }
 
-// ---------------------------------------------------------------------
-// The node type.
-// ---------------------------------------------------------------------
-
 impl NodeType for PatternPlayer {
     fn info(&self) -> &NodeInfo {
         &INFO
@@ -299,10 +291,6 @@ impl NodeType for PatternPlayer {
         Ok(Instance::realtime(PatternNode::new(shared, salt)))
     }
 }
-
-// ---------------------------------------------------------------------
-// The node.
-// ---------------------------------------------------------------------
 
 /// The most notes sounding at once.
 const MAX_SOUNDING: usize = 64;

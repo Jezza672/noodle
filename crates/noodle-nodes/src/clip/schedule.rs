@@ -326,7 +326,7 @@ fn piece_id(id: ClipId, k: usize) -> ClipId {
 /// How a section of an audio clip is laid out in engine frames: the pieces it
 /// plays, each with the map from its frames to the source's if it is warped.
 /// A warp that leaves the clip at its natural speed is left out, so those
-/// play as they always did.
+/// play as unwarped clips.
 fn lay_out(
     project: &Project,
     clip: &noodle_core::Clip,

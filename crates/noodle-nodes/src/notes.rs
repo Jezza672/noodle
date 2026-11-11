@@ -2,8 +2,8 @@
 //! [`MonoNote`] turns them into the pitch, gate and velocity signals that a
 //! monophonic patch plays from.
 //!
-//! The *Voices* node does the same for many notes at once, once polyphony
-//! lands; this one plays the most recent note.
+//! The *Voices* node does the same for many notes at once; this one plays the
+//! most recent note.
 
 use noodle_engine::{
     Config, Context, Event, EventKind, Expression, Instance, Io, Layout, Node, NodeError, NodeInfo,

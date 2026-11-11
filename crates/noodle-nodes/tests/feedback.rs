@@ -148,7 +148,6 @@ fn inside_a_loop_the_delay_is_at_least_one_block() {
 #[test]
 fn a_loop_with_no_delay_is_still_refused() {
     let mut graph = echo(0.01);
-    // Replace the Delay with a plain gain.
     graph
         .wires
         .retain(|w| w.from.node.0 != 3 && w.to.node.0 != 3);
