@@ -1,5 +1,5 @@
-# Publishes site/ (the landing page) to GitHub Pages. The domain is the one line in site/CNAME (dev.noodledaw.com for now).
-# One-off setup in the repo: Settings > Pages > Source: GitHub Actions, and set the custom domain to match site/CNAME.
+# Publishes site/ (the landing page) to GitHub Pages. The domain is the custom domain in Settings > Pages (dev.noodledaw.com for now).
+# One-off setup in the repo: Settings > Pages > Source: GitHub Actions, then set the custom domain.
 name: Pages
 
 on:
