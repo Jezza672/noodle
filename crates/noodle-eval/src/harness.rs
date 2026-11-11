@@ -52,7 +52,7 @@ pub enum Method {
     Beats,
     /// The floor: plain resampling, so the pitch follows the speed.
     Repitch,
-    /// The M10 ceiling: the song's exact stems and residual, each warped with
+    /// The ceiling: the song's exact stems and residual, each warped with
     /// the mode that suits it (Beats for the drums, Grain for the rest) and
     /// added up. Only [`Harness::run_ceiling`] makes it.
     Stems,

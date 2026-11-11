@@ -429,8 +429,8 @@ impl Unit {
         Ok(())
     }
 
-    /// Hands the unit a render callback for each input bus: it pulls from
-    /// `pull`, which must outlive the unit's use.
+    /// Sets the render callback that supplies input bus `bus`. `data` must
+    /// outlive the unit's use.
     pub fn set_input_callback(
         &self,
         bus: u32,
@@ -539,7 +539,7 @@ impl Unit {
         let name = match long_name {
             Some(name) => name.to_string(),
             None => {
-                // SAFETY: a NUL-terminated C string within the array.
+                // The short name is a NUL-terminated C string in a fixed array.
                 let bytes = info.name.map(|c: c_char| c as u8);
                 let end = bytes.iter().position(|&b| b == 0).unwrap_or(bytes.len());
                 String::from_utf8_lossy(&bytes[..end]).into_owned()

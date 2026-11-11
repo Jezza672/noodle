@@ -2,9 +2,9 @@
 //! macOS its Objective-C objects can outlive its instance in the main thread's
 //! autorelease pool, and releasing them after the plugin is deinitialised or
 //! unloaded crashes (the Surge XT editor crash); on Linux it is a mitigation
-//! for an abort at process exit seen in CI. The test plugins record their `deinit` (CLAP) or
-//! module exit (VST3) in a file, so this can be seen even though a Rust
-//! plugin library is never unmapped.
+//! for an abort at process exit seen in CI. The test plugins record their
+//! `deinit` (CLAP) or module exit (VST3) in a file, so this can be seen even
+//! though a Rust plugin library is never unmapped.
 //!
 //! This is its own test binary, so no other test loads a plugin meanwhile.
 

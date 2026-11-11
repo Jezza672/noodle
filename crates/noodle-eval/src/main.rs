@@ -1,5 +1,6 @@
 //! `noodle-eval compare REF TEST [SPEED]` prints every metric as JSON;
 //! `noodle-eval validate MANIFEST` correlates them with listener scores;
+//! `noodle-eval fit MANIFEST` fits a score from them to the listeners' scores;
 //! `noodle-eval probes` warps the probe signals and scores the result;
 //! `noodle-eval songs` does the same for the generated songs;
 //! `noodle-eval borrowed` scores them against reference stretchers on audio
@@ -223,7 +224,7 @@ const SONGS_HELP: &str =
   each method and scores them. By default the 15 to 20 s excerpt that joins the
   CI gate; --full takes the whole song (rows are named NAME-full). --stems scores each
   part (instrument) of the song on its own instead of the mix, as NAME/PART, without
-  touching the committed baseline unless --update is given. --ceiling is the M10
+  touching the committed baseline unless --update is given. --ceiling is the
   perfect-stem experiment: the mix warped whole (auto, grain, beats), by harmonic and
   percussive split (hpss), and as the song's exact stems plus residual with none, 30,
   20 and 10 dB of leakage between stems (stems, stems-30, ...), all scored against the

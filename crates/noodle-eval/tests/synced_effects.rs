@@ -1,5 +1,5 @@
 //! The library's tempo-synced effects follow the project's tempo, and the
-//! Drum Rack template is a working group (#142, #143).
+//! Drum Rack template is a working group.
 
 use std::path::Path;
 

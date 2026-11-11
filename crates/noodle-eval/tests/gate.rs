@@ -1,4 +1,4 @@
-//! The CI gate on the probes (M8).
+//! The CI gate on the probes.
 //!
 //! Noodle's warp modes are run on the probes and compared with the reference
 //! stretchers' numbers, committed in `baseline/borrowed.json`. The rule is the

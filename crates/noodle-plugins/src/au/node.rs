@@ -1,8 +1,7 @@
 //! The AU half of a plugin node: how parameter changes, MIDI, the transport
-//! and the audio are handed to the unit, and the calls that make it render
-//! (see [`crate::bridge`] for the rest). An AU takes parameter changes and MIDI
-//! as calls made just before a render, each with a sample offset into that
-//! render.
+//! and the audio are handed to the unit, and the calls that make it render.
+//! An AU takes parameter changes and MIDI as calls made just before a render,
+//! each with a sample offset into that render.
 
 use std::ffi::c_void;
 use std::mem::ManuallyDrop;

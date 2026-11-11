@@ -740,7 +740,7 @@ fn loop_pads(p: &mut Patch, grid: f32, mode: f32) -> NodeId {
 }
 
 /// The Drum Rack with no samples (they are picked per slot after adding it):
-/// eight slots on General MIDI keys, at `db` and spread by `pan`.
+/// eight slots on General MIDI keys, at `db` and spread by `spread`.
 fn drum_rack(db: f32, spread: f32) -> Instrument {
     let slots = [
         (

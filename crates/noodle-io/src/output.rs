@@ -953,8 +953,8 @@ impl Playback {
             .stop()
     }
 
-    /// The recording so far as peaks, for drawing it while it runs. See
-    /// [`Recorder::live_peaks`].
+    /// The recording so far as peaks, for drawing it while it runs
+    /// ([`Recorder::live_peaks`]).
     pub fn live_peaks(&self, columns: usize) -> Option<(u64, Vec<crate::Peak>)> {
         self.recorder.as_ref().map(|r| r.live_peaks(columns))
     }
@@ -1751,7 +1751,7 @@ mod tests {
         DeviceWriter::new(processor)
     }
 
-    /// input → gain 1 → output, fed by a stereo input path.
+    /// input → output, fed by a stereo input path.
     fn passthrough() -> (DeviceWriter, Capture) {
         let mut project = Project::new();
         let input = project.new_node_id();

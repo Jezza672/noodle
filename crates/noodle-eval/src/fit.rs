@@ -367,7 +367,7 @@ pub struct Fit {
     pub model: Model,
     /// Cross-validated, with the chosen penalty.
     pub overall: Agreement,
-    /// The same agreement with a constant prediction (the mean), for scale.
+    /// The RMSE of a constant prediction (the mean), for scale.
     pub baseline_rmse: f64,
     /// (lambda, RMSE) over the grid.
     pub grid: Vec<(f64, f64)>,

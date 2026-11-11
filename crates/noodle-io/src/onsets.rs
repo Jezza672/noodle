@@ -1,5 +1,5 @@
 //! Finding the transients (onsets) in a piece of audio, for the warp engine's
-//! Beats mode and, later, the clip editor's transient ticks.
+//! Beats mode and the clip editor's transient ticks.
 
 /// How far apart two onsets must be, in seconds. Of two closer ones the
 /// stronger stays.
@@ -12,9 +12,9 @@ const MIN_RISE_DB: f32 = 5.0;
 const FLOOR_DB: f32 = -60.0;
 
 /// How readily audio is taken to have a transient, from 0 (only the sharpest
-/// attacks) to 1 (any rise at all). The default is the threshold the warp
-/// engine has always used; the slicer, the transient pins and the note
-/// segmentation all take their sensitivity from this one scale.
+/// attacks) to 1 (any rise at all). The default is the warp engine's
+/// threshold; the slicer, the transient pins and the note segmentation all
+/// take their sensitivity from this one scale.
 pub const DEFAULT_SENSITIVITY: f32 = 0.5;
 
 /// How much louder, in decibels, a stretch of audio must be than what came
@@ -102,11 +102,10 @@ pub fn detect_onsets_with(mono: &[f32], rate: u32, sensitivity: f32) -> Vec<u64>
         })
         .collect();
     // How much each block rises over the average power of the 30 ms before
-    // it. The quietest of a couple of short blocks would do for noise, but a
-    // low held tone is about one cycle per block and its block power swings
-    // from one to the next, so a held chord looked like an attack every few
-    // blocks; the average of several blocks is steady for a held sound and
-    // still far below a real attack.
+    // it. A low held tone is about one cycle per block and its block power
+    // swings from one to the next, so the quietest of a couple of blocks would
+    // make a held chord look like an attack every few blocks; the average of
+    // several is steady for a held sound and still far below a real attack.
     const BEFORE: usize = 6;
     let power: Vec<f32> = level.iter().map(|db| 10f32.powf(db / 10.0)).collect();
     let rise: Vec<f32> = (0..blocks)
@@ -260,7 +259,6 @@ pub fn estimate_grid(times: &[f64]) -> Option<TempoEstimate> {
     }
     scores.sort_by(f64::total_cmp);
     let median = scores[scores.len() / 2];
-    // Refine around the best.
     let mut refined = best;
     let mut bpm = best.0 - 0.1;
     while bpm <= best.0 + 0.1 {
@@ -565,7 +563,7 @@ mod tests {
 
     const RATE: u32 = 48_000;
 
-    /// Hits of decreasing loudness, 0.5 s apart: 0 dB, then softer steps.
+    /// Hits of decreasing loudness, 1 s apart: 0 dB, then softer steps.
     fn soft_hits() -> Vec<f32> {
         let mut x = vec![0.0f32; 4 * RATE as usize];
         // A steady bed so the soft hits are a few dB over it, not over silence.
@@ -870,7 +868,7 @@ mod tests {
     }
 
     /// Mixes are low-cut and bus-compressed, and neither moves where a bass
-    /// line's onsets fall: the tempo and the beat stay put (#156).
+    /// line's onsets fall: the tempo and the beat stay put.
     #[test]
     fn the_tempo_survives_a_low_cut_and_bus_compression() {
         let bpm = 110.0;
@@ -899,7 +897,7 @@ mod tests {
     }
 
     /// Clicks on the off-beats only, over a pad whose chord changes every
-    /// bar from `start` seconds on.
+    /// bar if `chords`.
     fn off_beat_clicks(bpm: f64, bars: usize, chords: bool, rate: u32) -> Vec<f32> {
         let beat = 60.0 / bpm;
         let seconds = (bars * 4) as f64 * beat;

@@ -115,8 +115,7 @@ struct Entry {
 static INSTANCES: Mutex<Vec<Entry>> = Mutex::new(Vec::new());
 
 /// Editor keys for sandboxed instances have this bit set (VST3 keys use bit
-/// 63), so they never meet
-/// an in-process instance's key.
+/// 63), so they never meet an in-process instance's key.
 pub(crate) const REMOTE_KEY_BIT: u64 = 1 << 62;
 
 pub(crate) fn is_remote_key(key: u64) -> bool {

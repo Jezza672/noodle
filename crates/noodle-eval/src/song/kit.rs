@@ -218,8 +218,7 @@ pub struct Rack {
     /// Whether the group has the library template's extra controls: a
     /// Swing node in front of the Note Split with a `Swing` input, and a
     /// `choke` input for each slot (the closed and open hats share group 1).
-    /// The songs' racks leave them out, so their sound and shape stay as
-    /// they were.
+    /// The songs' racks leave them out.
     pub controls: bool,
 }
 
@@ -671,7 +670,7 @@ fn set_param(p: &mut Patch, node: NodeId, key: &str, value: f32) {
         .expect("a valid parameter");
 }
 
-/// The group's `gate` and `velocity` inputs, and its `out`, shared by drums.
+/// The group's `gate` and `velocity` inputs, shared by drums.
 struct DrumFrame {
     gate: Port,
     velocity: Port,
