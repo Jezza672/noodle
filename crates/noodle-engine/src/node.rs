@@ -692,8 +692,8 @@ impl Instance {
 
 /// An instance of a real-time node.
 ///
-/// Both methods run on the audio thread and must follow the real-time rules
-/// in `docs/ARCHITECTURE.md`: no allocation, locks, I/O or unbounded loops.
+/// Both methods run on the audio thread, so they must not allocate, lock, do
+/// I/O or loop without bound.
 pub trait Node: Send + 'static {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>);
 

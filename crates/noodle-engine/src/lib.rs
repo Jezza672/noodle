@@ -1,6 +1,5 @@
 //! Compiles the project graph into a `RenderPlan` and runs it, either from the
-//! real-time audio callback or from the offline renderer. See
-//! `docs/ARCHITECTURE.md` for the real-time rules this crate must follow.
+//! real-time audio callback or from the offline renderer.
 //!
 //! The node API, for writing nodes, starts at [`NodeType`].
 

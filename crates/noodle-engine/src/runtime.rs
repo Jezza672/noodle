@@ -778,9 +778,9 @@ impl Processor {
     /// meanwhile. A new tempo table goes in at once. It keeps the playhead's
     /// tick, so everything that reads ticks carries on unbroken, and it
     /// doesn't reset nodes, so a tempo drag leaves reverb tails alone. Only
-    /// something reading the sample position can notice the move, which in
-    /// M2 means a clip schedule; when one exists it must raise its own
-    /// discontinuity. Returns whether a seek is still waiting.
+    /// something reading the sample position can notice the move, which
+    /// today is a clip schedule; it must raise its own discontinuity. Returns
+    /// whether a seek is still waiting.
     fn install_time_changes(&mut self, silent: bool) -> bool {
         if let Some(tick) = self.control.take_seek(&mut self.seen_seek) {
             self.pending_seek = Some(tick);
@@ -797,9 +797,9 @@ impl Processor {
             let Ok(next) = self.tempo_in.peek() else {
                 break;
             };
-            // The playhead keeps its tick, so its sample position moves.
-            // The playhead keeps its tick on the timeline. A change to the
-            // live tempo alone leaves the timeline, and so the position, be.
+            // The playhead keeps its tick, so its sample position moves. A
+            // change to the live tempo alone leaves the timeline, and so the
+            // position, be.
             let position = if next.timeline == self.table.timeline {
                 self.position
             } else {

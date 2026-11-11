@@ -831,7 +831,7 @@ mod tests {
         let (_, command) =
             group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
-        // gain is now inside a group; osc isn't.
+        // gain is inside a group; osc isn't.
         let error = history
             .apply(
                 &mut project,
@@ -1008,7 +1008,7 @@ mod tests {
             graph.source(&Endpoint::new(NodeId(5), "p2")),
             Some(&Endpoint::new(NodeId(7), "out"))
         );
-        // Outside wires use the names, as they always did.
+        // Outside wires use the names.
         assert_eq!(
             graph.source(&Endpoint::new(NodeId(2), "a")),
             Some(&Endpoint::new(NodeId(1), "out"))
@@ -1025,7 +1025,7 @@ mod tests {
         let (_, lane) = project.lanes().next().unwrap();
         assert_eq!(lane.target, Endpoint::new(NodeId(5), "gain.2"));
         assert_eq!(graph.control_port(NodeId(2)).unwrap().name, "left");
-        // And it saves in the new form, which loads as it is.
+        // It saves and loads unchanged.
         let text = project.to_ron();
         assert_eq!(Project::from_ron(&text).unwrap(), project, "{text}");
     }

@@ -10,7 +10,6 @@ use crate::{Part, Quality, SeparateError, Separator, Stem, Stereo};
 /// What to split.
 #[derive(Clone, Debug)]
 pub struct SplitRequest {
-    /// The audio file.
     pub source: PathBuf,
     /// How much of the file to separate, from its start, in its sample frames.
     /// The parts are this long, so a clip that shows a window of the file can
