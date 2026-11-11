@@ -422,8 +422,8 @@ impl Mapping {
         if file.metadata()?.len() < layout.total as u64 {
             return Err(std::io::Error::other("the shared file is too small"));
         }
-        // SAFETY: shared with the node by design; the handshake above keeps the
-        // two sides from touching the same bytes at once.
+        // SAFETY: shared with the host by design; the req_seq/done_seq handshake
+        // (module docs) keeps the two sides from touching the same bytes at once.
         let map = unsafe { MmapMut::map_mut(&file)? };
         let mapping = Self {
             map,

@@ -1,5 +1,4 @@
 //! The VST3 test plugin as a node, driven through the engine's test harness.
-//! The twin of `plugin_node.rs`.
 
 mod common;
 

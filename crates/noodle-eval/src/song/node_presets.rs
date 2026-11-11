@@ -3,8 +3,7 @@
 //! `library/system/nodes.ron`.
 //!
 //! Compressor, Limiter, Gate and Expander are presets of the one Dynamics node,
-//! not groups.
-//! The Sampler's presets leave its loaded sample alone.
+//! not groups. The Sampler's presets leave its loaded sample alone.
 
 use noodle_core::library::{Item, NodePreset, slugify};
 use noodle_core::{Config, Node, Value};
@@ -292,7 +291,6 @@ fn table() -> Vec<Row> {
             "Dotted Eighths",
             &[("bpm", 120.0), ("division", 14.0)],
         ),
-        // Effects.
         // Dynamics.
         row(
             "noodle.effect.dynamics",

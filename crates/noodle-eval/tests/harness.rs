@@ -1,8 +1,8 @@
 //! The harness on probes: the time maps line a native render up with the
 //! source, the engine's warp comes out the length it should, and the metrics
 //! tell the floor (Repitch) from a pitch-keeping mode. Bounds are loose and
-//! catch only gross breakage, not how good Grain or Beats sound; ADR 0003 holds that back until the metrics are
-//! checked against listeners.
+//! catch only gross breakage, not how good Grain or Beats sound; ADR 0003 holds
+//! that back until the metrics are checked against listeners.
 
 use noodle_eval::harness::{Harness, Method, Row, View};
 use noodle_eval::probe::Probe;

@@ -1,12 +1,12 @@
 //! Hosting CLAP, VST3 and (on macOS) Audio Unit plugins as graph nodes.
 //!
-//! - [`scan`](ScanCache) finds `.clap` and `.vst3` files and scans each in a child
-//!   process; results are cached.
+//! - [`scan`](ScanCache) finds `.clap` and `.vst3` files and scans each in a
+//!   child process; results are cached.
 //! - A [`Catalog`] turns scan results into node types, one per plugin
-//!   (`clap.<plugin id>`, `vst3.<class id>` or `au.<component id>`), whose ports are the plugin's audio ports, note
-//!   ports and parameters.
-//! - [`set_sandbox`] runs plugins in separate host processes, so a crashing plugin
-//!   can't take the session with it.
+//!   (`clap.<plugin id>`, `vst3.<class id>` or `au.<component id>`), whose
+//!   ports are the plugin's audio ports, note ports and parameters.
+//! - [`set_sandbox`] runs plugins in separate host processes, so a crashing
+//!   plugin can't take the session with it.
 //! - [`Catalog::extender`] is for `RenderRequest::extend_registry`, so
 //!   freezes, exports and background renders see the same plugins as live
 //!   playback.

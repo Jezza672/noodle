@@ -1,6 +1,6 @@
-//! Loading CLAP plugins (VST3 is in `vst3/`, AU in `au/`), with clack: the host's callbacks, and describing a
-//! plugin file for the scanner. Live instances belong to the shared plugin
-//! thread (see `thread.rs`).
+//! Loading CLAP plugins (VST3 is in `vst3/`, AU in `au/`), with clack: the
+//! host's callbacks, and describing a plugin file for the scanner. Live
+//! instances belong to the shared plugin thread.
 
 use std::io::Cursor;
 use std::path::Path;

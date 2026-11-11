@@ -1,5 +1,6 @@
 //! `noodle-eval compare REF TEST [SPEED]` prints every metric as JSON;
 //! `noodle-eval validate MANIFEST` correlates them with listener scores;
+//! `noodle-eval fit MANIFEST` fits a score from them to the listeners' scores;
 //! `noodle-eval probes` warps the probe signals and scores the result;
 //! `noodle-eval songs` does the same for the generated songs;
 //! `noodle-eval borrowed` scores them against reference stretchers on audio

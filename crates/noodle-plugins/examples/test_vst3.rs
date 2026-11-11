@@ -691,7 +691,7 @@ impl IMidiMappingTrait for Controller {
     }
 }
 
-/// The editor. It draws nothing; attaching it plays the user (see the top).
+/// The editor. It draws nothing; attaching it plays the user.
 struct View {
     shared: Rc<Shared>,
     frame: RefCell<Option<ComPtr<IPlugFrame>>>,

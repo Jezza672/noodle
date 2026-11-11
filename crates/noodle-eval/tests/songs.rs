@@ -206,10 +206,9 @@ fn a_song_renders_the_same_every_time_and_stays_under_full_scale() {
         let peak = a.iter().cloned().fold(0.0, f64::max);
         let worst = (0..n).map(|i| (a[i] - b[i]).abs()).fold(0.0, f64::max);
         assert!(
-            // The long and short renders never shared note IDs (they hash the
+            // The long and short renders never share note IDs (they hash the
             // clip ID and the start within the clip), which decides the voice
-            // each note gets, so this measures a random draw; the clip IDs
-            // moved it by a few percent.
+            // each note gets, so this measures a random draw.
             worst < 0.15 * peak,
             "{}: excerpt loudness differs by {worst} of {peak}",
             song.name

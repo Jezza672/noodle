@@ -164,7 +164,7 @@ pub(crate) fn capture(key: u64, with_state: bool) -> Result<Captured, HostError>
     })?
 }
 
-/// Editors the user closed. Called by the plugin thread each time round.
+/// Closes the editors whose windows the user closed. Called by the plugin thread each time round.
 pub(crate) fn housekeeping() {
     GUIS.with(|guis| {
         let Ok(mut guis) = guis.try_borrow_mut() else {

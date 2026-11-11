@@ -260,8 +260,8 @@ impl Captured {
 
     /// One `SetParam` per exposed parameter whose value differs from `seen`
     /// since `seen` (a parameter's first reading is only a baseline) and from
-    /// what the node `stored` holds; `seen` is updated to match. This is how edits made in an open editor reach the
-    /// project without storing the state.
+    /// what the node `stored` holds; `seen` is updated to match. Edits made in
+    /// an open editor reach the project this way without storing the state.
     pub fn changed_params(
         &self,
         node: NodeId,

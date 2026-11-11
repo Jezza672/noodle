@@ -178,8 +178,8 @@ fn phasiness(
     (mw, sw, mn, sn)
 }
 
-/// The coefficients (c1, c2, c3) of the cubic fitted to `y` over `x` in
-/// `[-1, 1]`; the intercept is fitted and then dropped, which removes level.
+/// A least-squares cubic over `x` in `[-1, 1]`; the intercept is fitted and
+/// then dropped, which removes level.
 struct CubicFit {
     xs: Vec<f64>,
     inverse: [[f64; 4]; 4],

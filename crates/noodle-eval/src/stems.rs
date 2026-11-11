@@ -1,5 +1,5 @@
 //! The perfect-stem ceiling: what Stem warp could score if the separator were
-//! flawless, before any model exists.
+//! flawless, with no model involved.
 //!
 //! A generated song knows which instrument played what, so its stems can be
 //! rendered exactly: [`stem_of`] maps each part to one of the four stems an
@@ -186,8 +186,8 @@ mod tests {
         for (x, y) in before.iter().zip(&after) {
             assert!((x - y).abs() < 1e-6);
         }
-        // The empty stem now holds a tenth of each of the others, a lost
-        // fifth of the first stem is gone from it.
+        // The empty stem holds a tenth of each of the others; the first keeps
+        // four fifths of itself.
         assert!((out[2][0] - 0.1).abs() < 1e-6 && (out[2][1] - 0.1).abs() < 1e-6);
         assert!((out[0][0] - 0.8).abs() < 1e-6);
         assert_eq!(leak(std::slice::from_ref(&a), 0.5), vec![a]);

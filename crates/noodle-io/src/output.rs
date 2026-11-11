@@ -1751,7 +1751,7 @@ mod tests {
         DeviceWriter::new(processor)
     }
 
-    /// input → gain 1 → output, fed by a stereo input path.
+    /// input → output, fed by a stereo input path.
     fn passthrough() -> (DeviceWriter, Capture) {
         let mut project = Project::new();
         let input = project.new_node_id();

@@ -129,7 +129,6 @@ fn never_allocates(
 ) {
     let config = Config::new();
     let layout = node_type.layout(&config).unwrap();
-    // Wire audio in and the gain parameter.
     let input_shapes: Vec<_> = layout
         .inputs
         .iter()

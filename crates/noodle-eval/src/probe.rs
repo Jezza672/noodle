@@ -153,8 +153,8 @@ fn lone_kick(canvas: &mut Canvas, map: &TempoMap) {
 }
 
 fn held_chord(canvas: &mut Canvas, map: &TempoMap) {
-    // A minor, then F major, an octave and a half up so the harmonics stay
-    // below the Nyquist frequency at any rate in use.
+    // A minor, then F major; the six harmonics of each note stay below the
+    // Nyquist frequency at any rate in use.
     let chords: [(f64, f64, [f64; 3]); 2] = [
         (1.0, 7.0, [220.0, 261.63, 329.63]),
         (8.0, 14.0, [174.61, 220.0, 261.63]),
