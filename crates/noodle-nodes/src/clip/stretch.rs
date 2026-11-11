@@ -597,7 +597,6 @@ impl<S: Source> Band<S> {
         }
         self.prev = Some(start);
 
-        // Sum the windowed grain into the output.
         let needed = ((a + win as i64 - self.base) * 2) as usize;
         if self.acc.len() < needed {
             self.acc.resize(needed, 0.0);

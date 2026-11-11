@@ -558,8 +558,7 @@ fn dragging_the_edge_out_never_changes_what_plays_before_it() {
 #[test]
 fn a_looping_section_dragged_shorter_than_its_window_ends_there() {
     let dir = folder("loop-shorter");
-    // 3 beats of a 4 s window, past the loop's end at beat 3? No: 2 beats,
-    // before it, so nothing repeats.
+    // Dragged to 2 beats, before the loop's end at beat 3, so nothing repeats.
     let project = section(Some(looping(1.0, 3.0)), 0, 4 * 48_000, Some(Tick(2 * 960)));
     let samples = render(&project, &dir, SETTINGS, 4 * 48_000).render.samples;
     follows(&samples, FADE, 48_000 - 4, |f| f);

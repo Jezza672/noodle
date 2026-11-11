@@ -117,9 +117,6 @@ pub fn sample_hashes(text: &str) -> Vec<String> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Reading file names
-
 /// What a file name says about its recording.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NameInfo {
@@ -260,9 +257,6 @@ fn file_stem(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(stem, _)| stem)
 }
 
-// ---------------------------------------------------------------------------
-// Rescan
-
 /// What a rescan of a folder would change in a set.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct Rescan {
@@ -336,9 +330,6 @@ pub fn rescan(old: &[Row], found: &[(String, String)], middle_c: i64) -> Rescan 
         .collect();
     out
 }
-
-// ---------------------------------------------------------------------------
-// Playing a set
 
 /// One velocity layer of one key: the entries that take turns.
 #[derive(Clone, Debug)]
@@ -438,9 +429,6 @@ impl SetTables {
         zone.layers.get(((midi - 1) * n / 127).min(n - 1))
     }
 }
-
-// ---------------------------------------------------------------------------
-// The node
 
 /// Holds a list of recordings, each with its key, velocity layer and
 /// round-robin slot, and puts the whole set on its `sample` output. Wire it to
