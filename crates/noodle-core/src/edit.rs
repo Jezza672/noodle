@@ -179,121 +179,86 @@ impl Command {
     }
 
     fn apply_inner(self, project: &mut Project) -> Result<Command, EditError> {
-        if let Command::Batch(commands) = self {
-            let mut inverses = Vec::with_capacity(commands.len());
-            for command in commands {
-                match command.apply(project) {
-                    Ok(inverse) => inverses.push(inverse),
-                    Err(error) => {
-                        for inverse in inverses.into_iter().rev() {
-                            inverse
-                                .apply(project)
-                                .expect("undoing part of a failed batch can't fail");
-                        }
-                        return Err(error);
-                    }
-                }
-            }
-            inverses.reverse();
-            return Ok(Command::Batch(inverses));
-        }
-
-        match self {
+        Ok(match self {
             Command::AddFrame { id, frame } => {
                 project.insert_frame(id, frame)?;
-                return Ok(Command::RemoveFrame { id });
+                Command::RemoveFrame { id }
             }
             Command::RemoveFrame { id } => {
                 let frame = project.remove_frame(id)?;
-                return Ok(Command::AddFrame { id, frame });
+                Command::AddFrame { id, frame }
             }
             Command::SetFrame { id, frame } => {
                 let old = std::mem::replace(project.frame_mut(id)?, frame);
-                return Ok(Command::SetFrame { id, frame: old });
+                Command::SetFrame { id, frame: old }
             }
-            Command::SetTempoMap(map) => {
-                return Ok(Command::SetTempoMap(project.replace_tempo_map(map)));
-            }
-            Command::SetMarkers(markers) => {
-                return Ok(Command::SetMarkers(project.replace_markers(markers)));
-            }
-            Command::SetLoop(region) => {
-                return Ok(Command::SetLoop(project.replace_loop(region)));
-            }
-            Command::SetKey(key) => {
-                return Ok(Command::SetKey(project.replace_key(key)));
-            }
-            Command::SetPunch(range) => {
-                return Ok(Command::SetPunch(project.replace_punch(range)));
-            }
+            Command::SetTempoMap(map) => Command::SetTempoMap(project.replace_tempo_map(map)),
+            Command::SetMarkers(markers) => Command::SetMarkers(project.replace_markers(markers)),
+            Command::SetLoop(region) => Command::SetLoop(project.replace_loop(region)),
+            Command::SetKey(key) => Command::SetKey(project.replace_key(key)),
+            Command::SetPunch(range) => Command::SetPunch(project.replace_punch(range)),
             Command::SetExportSettings(settings) => {
-                return Ok(Command::SetExportSettings(
-                    project.replace_export_settings(settings),
-                ));
+                Command::SetExportSettings(project.replace_export_settings(settings))
             }
             Command::SetFrozen { node, frozen } => {
                 if project.graph().node(node).is_none() {
                     return Err(EditError::NoSuchNode(node));
                 }
                 let was = project.set_frozen(node, frozen);
-                return Ok(Command::SetFrozen { node, frozen: was });
+                Command::SetFrozen { node, frozen: was }
             }
             Command::SetTrackOrder(order) => {
-                return Ok(Command::SetTrackOrder(project.replace_track_order(order)));
+                Command::SetTrackOrder(project.replace_track_order(order))
             }
             Command::SetVersions { names, active } => {
                 let (names, active) = project.replace_versions(names, active)?;
-                return Ok(Command::SetVersions { names, active });
+                Command::SetVersions { names, active }
             }
             Command::SetArticulations(list) => {
-                return Ok(Command::SetArticulations(
-                    project.replace_articulations(list)?,
-                ));
+                Command::SetArticulations(project.replace_articulations(list)?)
             }
             Command::SetOrganisation(organisation) => {
-                return Ok(Command::SetOrganisation(
-                    project.replace_organisation(organisation),
-                ));
+                Command::SetOrganisation(project.replace_organisation(organisation))
             }
             Command::AddClip { id, clip } => {
                 project.insert_clip(id, clip)?;
-                return Ok(Command::RemoveClip { id });
+                Command::RemoveClip { id }
             }
             Command::RemoveClip { id } => {
                 let clip = project.remove_clip(id)?;
-                return Ok(Command::AddClip { id, clip });
+                Command::AddClip { id, clip }
             }
             Command::SetClip { id, clip } => {
                 let old = project.replace_clip(id, clip)?;
-                return Ok(Command::SetClip { id, clip: old });
+                Command::SetClip { id, clip: old }
             }
             Command::SetClipGroup { id, group } => {
                 let old = project.replace_clip_group(id, group)?;
-                return Ok(Command::SetClipGroup { id, group: old });
+                Command::SetClipGroup { id, group: old }
             }
             Command::AddWarp { id, warp } => {
                 project.insert_warp(id, warp)?;
-                return Ok(Command::RemoveWarp { id });
+                Command::RemoveWarp { id }
             }
             Command::RemoveWarp { id } => {
                 let warp = project.remove_warp(id)?;
-                return Ok(Command::AddWarp { id, warp });
+                Command::AddWarp { id, warp }
             }
             Command::SetWarp { id, warp } => {
                 let old = project.replace_warp(id, warp)?;
-                return Ok(Command::SetWarp { id, warp: old });
+                Command::SetWarp { id, warp: old }
             }
             Command::AddLane { id, lane } => {
                 project.insert_lane(id, lane)?;
-                return Ok(Command::RemoveLane { id });
+                Command::RemoveLane { id }
             }
             Command::RemoveLane { id } => {
                 let lane = project.remove_lane(id)?;
-                return Ok(Command::AddLane { id, lane });
+                Command::AddLane { id, lane }
             }
             Command::SetLane { id, lane } => {
                 let old = project.replace_lane(id, lane)?;
-                return Ok(Command::SetLane { id, lane: old });
+                Command::SetLane { id, lane: old }
             }
             Command::RemoveNode { id } => {
                 // Contents first, so a parent is always added back before
@@ -325,30 +290,25 @@ impl Command {
                 nodes.extend(wires);
                 nodes.extend(clips);
                 nodes.extend(lanes);
-                return Ok(Command::Batch(nodes));
+                Command::Batch(nodes)
             }
-            _ => {}
-        }
-
-        let graph = project.graph_mut();
-        Ok(match self {
             Command::AddNode { id, node } => {
-                graph.insert_node(id, node)?;
+                project.graph_mut().insert_node(id, node)?;
                 Command::RemoveNode { id }
             }
             Command::Connect(connection) => {
                 let input = connection.to.clone();
-                match graph.connect(connection)? {
+                match project.graph_mut().connect(connection)? {
                     Some(from) => Command::Connect(Connection { from, to: input }),
                     None => Command::Disconnect { input },
                 }
             }
             Command::Disconnect { input } => {
-                let from = graph.disconnect(&input)?;
+                let from = project.graph_mut().disconnect(&input)?;
                 Command::Connect(Connection { from, to: input })
             }
             Command::SetParam { node, key, value } => {
-                let params = &mut graph.node_mut(node)?.params;
+                let params = &mut project.graph_mut().node_mut(node)?.params;
                 let old = match value {
                     Some(value) => params.insert(key.clone(), value),
                     None => params.remove(&key),
@@ -360,7 +320,7 @@ impl Command {
                 }
             }
             Command::SetConfig { node, key, value } => {
-                let config = &mut graph.node_mut(node)?.config;
+                let config = &mut project.graph_mut().node_mut(node)?.config;
                 let old = match value {
                     Some(value) => config.set(key.clone(), value),
                     None => config.remove(&key),
@@ -372,18 +332,20 @@ impl Command {
                 }
             }
             Command::MoveNode { node, position } => {
-                let old = std::mem::replace(&mut graph.node_mut(node)?.position, position);
+                let old =
+                    std::mem::replace(&mut project.graph_mut().node_mut(node)?.position, position);
                 Command::MoveNode {
                     node,
                     position: old,
                 }
             }
             Command::SetPortOrder { node, order } => {
-                let old = std::mem::replace(&mut graph.node_mut(node)?.port_order, order);
+                let old =
+                    std::mem::replace(&mut project.graph_mut().node_mut(node)?.port_order, order);
                 Command::SetPortOrder { node, order: old }
             }
             Command::SetParamShown { node, key, shown } => {
-                let map = &mut graph.node_mut(node)?.param_shown;
+                let map = &mut project.graph_mut().node_mut(node)?.param_shown;
                 let old = match shown {
                     Some(shown) => map.insert(key.clone(), shown),
                     None => map.remove(&key),
@@ -395,43 +357,37 @@ impl Command {
                 }
             }
             Command::SetParent { node, parent } => {
-                let old = graph.set_parent(node, parent)?;
+                let old = project.graph_mut().set_parent(node, parent)?;
                 Command::SetParent { node, parent: old }
             }
             Command::SetNodeType { node, type_id } => {
-                let old = std::mem::replace(&mut graph.node_mut(node)?.type_id, type_id);
+                let old =
+                    std::mem::replace(&mut project.graph_mut().node_mut(node)?.type_id, type_id);
                 Command::SetNodeType { node, type_id: old }
             }
             Command::SetPreset { node, preset } => {
-                let old = std::mem::replace(&mut graph.node_mut(node)?.preset, preset);
+                let old =
+                    std::mem::replace(&mut project.graph_mut().node_mut(node)?.preset, preset);
                 Command::SetPreset { node, preset: old }
             }
-            Command::Batch(_)
-            | Command::RemoveNode { .. }
-            | Command::AddFrame { .. }
-            | Command::RemoveFrame { .. }
-            | Command::SetFrame { .. }
-            | Command::SetTempoMap(_)
-            | Command::SetLoop(_)
-            | Command::SetMarkers(_)
-            | Command::SetKey(_)
-            | Command::SetPunch(_)
-            | Command::SetExportSettings(_)
-            | Command::SetTrackOrder(_)
-            | Command::SetVersions { .. }
-            | Command::SetArticulations(_)
-            | Command::SetOrganisation(_)
-            | Command::SetFrozen { .. }
-            | Command::AddClip { .. }
-            | Command::RemoveClip { .. }
-            | Command::SetClip { .. }
-            | Command::SetClipGroup { .. }
-            | Command::AddWarp { .. }
-            | Command::RemoveWarp { .. }
-            | Command::SetWarp { .. }
-            | Command::AddLane { .. }
-            | Command::RemoveLane { .. }
-            | Command::SetLane { .. } => unreachable!("handled above"),
+            Command::Batch(commands) => {
+                let mut inverses = Vec::with_capacity(commands.len());
+                for command in commands {
+                    match command.apply(project) {
+                        Ok(inverse) => inverses.push(inverse),
+                        Err(error) => {
+                            for inverse in inverses.into_iter().rev() {
+                                inverse
+                                    .apply(project)
+                                    .expect("undoing part of a failed batch can't fail");
+                            }
+                            return Err(error);
+                        }
+                    }
+                }
+                inverses.reverse();
+                Command::Batch(inverses)
+            }
         })
     }
 }

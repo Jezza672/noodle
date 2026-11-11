@@ -6,7 +6,7 @@
 // half as loud as the one before it. Inside a loop the Delay's time can't be
 // shorter than one audio block.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.input.button", params: {"state": 1.0}, position: (x: 0.0, y: 0.0)),

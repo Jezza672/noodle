@@ -11,7 +11,7 @@
 // moment its release ends. The group's `fade` input (Voices' steal fade) goes
 // through a last VCA. The clip rolls an A minor 7th chord.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.track.input", position: (x: 0.0, y: 0.0)),

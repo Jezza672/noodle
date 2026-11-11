@@ -3,7 +3,7 @@
 // low-pass filter whose cutoff an LFO sweeps (the wire offsets the cutoff
 // along its slider), and an ADSR shapes the note through a VCA.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.input.button", params: {"state": 1.0}, position: (x: 0.0, y: 0.0)),

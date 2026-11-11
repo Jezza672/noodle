@@ -8,7 +8,7 @@
 // reports when it has finished to the Voices node's busy input (a feedback
 // loop), so a voice is retired the moment its release ends.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.track.input", position: (x: 0.0, y: 0.0)),

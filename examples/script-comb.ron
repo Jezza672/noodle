@@ -2,7 +2,7 @@
 // line (its write head wraps), a loop adds the taps, and the "wet" parameter is
 // swept by an LFO.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.osc.saw", params: {"frequency": 220.0}, position: (x: 0.0, y: 0.0)),

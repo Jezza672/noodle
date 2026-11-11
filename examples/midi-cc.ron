@@ -9,7 +9,7 @@
 // The clip holds two short notes, each with the pedal down before it and up well
 // after it ends, and the wheel opening in a ramp from closed to open.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.track.input", position: (x: 0.0, y: 0.0)),

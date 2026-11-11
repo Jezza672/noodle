@@ -773,7 +773,7 @@ mod tests {
     fn lanes_stay_apart() {
         let shape = Shape::STEREO;
         let left = noise(4096);
-        let mut data = left.clone();
+        let mut data = left;
         data.extend(std::iter::repeat_n(0.0, 4096));
         let mut analyzer = Analyzer::new(shape);
         let mut synth = Synthesizer::new(shape);

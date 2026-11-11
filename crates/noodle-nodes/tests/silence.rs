@@ -479,16 +479,16 @@ fn skipping_works_through_a_group_and_its_stage() {
     registry.register(Counter(Arc::clone(&counted)));
     let project = Project::from_ron(
         r#"(
-        format: 1,
+        format: 4,
         graph: (
             nodes: {
                 1: (type: "noodle.event.midi_in"),
                 2: (type: "noodle.poly.voices", config: {"voices": 4}, params: {"tail": 0.05}),
                 3: (type: "noodle.osc.sine"),
                 4: (type: "noodle.group"),
-                5: (type: "noodle.group.input", config: {"name": "in"}, parent: Some(4)),
+                5: (type: "noodle.group.input", config: {"ports": "1:in"}, parent: Some(4)),
                 6: (type: "test.counter", parent: Some(4)),
-                7: (type: "noodle.group.output", config: {"name": "out"}, params: {"gain": 0.0, "mute": 0.0}, parent: Some(4)),
+                7: (type: "noodle.group.output", config: {"ports": "1:out"}, params: {"gain.1": 0.0, "mute.1": 0.0}, parent: Some(4)),
                 8: (type: "noodle.poly.voice_mix"),
                 9: (type: "noodle.io.output"),
             },
@@ -496,8 +496,8 @@ fn skipping_works_through_a_group_and_its_stage() {
                 (from: (node: 1, port: "out"), to: (node: 2, port: "in")),
                 (from: (node: 2, port: "pitch"), to: (node: 3, port: "frequency")),
                 (from: (node: 3, port: "out"), to: (node: 4, port: "in")),
-                (from: (node: 5, port: "out"), to: (node: 6, port: "in")),
-                (from: (node: 6, port: "out"), to: (node: 7, port: "in")),
+                (from: (node: 5, port: "p1"), to: (node: 6, port: "in")),
+                (from: (node: 6, port: "out"), to: (node: 7, port: "p1")),
                 (from: (node: 4, port: "out"), to: (node: 8, port: "in")),
                 (from: (node: 8, port: "out"), to: (node: 9, port: "in")),
             ],

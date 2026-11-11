@@ -215,7 +215,7 @@ impl Telemetry {
         let mut channels = self
             .inner
             .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
+            .unwrap_or_else(std::sync::PoisonError::into_inner);
         channels.prune();
         channels
     }
