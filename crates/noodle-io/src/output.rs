@@ -2078,8 +2078,8 @@ mod tests {
         let converter = extra._converter.take().expect("a converter");
         let stop = Arc::clone(&converter.stop);
         drop(extra);
-        // Taken out of the output, the converter keeps running until it is
-        // dropped, which stops and joins its thread.
+        // Dropping the output left the converter running (it was taken); now
+        // dropping that stops and joins its thread.
         assert!(!stop.load(Ordering::Relaxed));
         drop(converter);
         assert!(stop.load(Ordering::Relaxed));
