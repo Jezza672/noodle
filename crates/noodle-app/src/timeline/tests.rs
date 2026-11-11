@@ -1784,8 +1784,7 @@ fn double_clicking_a_midi_clip_opens_it_and_audio_clips_do_not() {
     assert_eq!(h.state().opened, [id]);
 }
 
-/// Issue #419: a double-click on empty lane space starts a MIDI clip, as the
-/// menu does.
+/// A double-click on empty lane space starts a MIDI clip, as the menu does.
 #[test]
 fn double_clicking_an_empty_lane_makes_a_midi_clip_and_opens_it() {
     let (mut h, _) = rig();
@@ -2811,7 +2810,7 @@ fn dropping_a_track_between_a_folders_tracks_puts_it_in_the_folder() {
 
 #[test]
 fn double_clicking_right_on_the_lane_edge_shrinks_the_track() {
-    // Issue #422: on the edge itself, either side of it, and just inside.
+    // On the edge itself, either side of it, and just inside.
     for dy in [-3.0, -0.5, 0.5, 2.0] {
         let (mut h, _) = rig();
         let (_, input, _) = add_real_track(&mut h);
