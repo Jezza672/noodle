@@ -190,7 +190,7 @@ fn topology_ignores_ids_but_not_wiring() {
     let graph = project.graph();
     let (ta, tb) = (topology::topology(graph, a), topology::topology(graph, b));
     assert_eq!(ta.key, tb.key, "IDs, positions and values don't count");
-    // One more wire between the same nodes does. between the same nodes.
+    // One more wire between the same nodes does.
     let c = synth(&mut project, &mut history, 800.0, false);
     let graph = project.graph();
     let inside = |kind: &str| {

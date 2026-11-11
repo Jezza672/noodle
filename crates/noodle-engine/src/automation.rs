@@ -1,6 +1,6 @@
 //! Automation lanes in the engine: each lane becomes a hidden node wired into
 //! the parameter it drives, so it modulates what a wire would and the target
-//! needs no support for it. See "Automation" in docs/architecture/automation.md.
+//! needs no support for it.
 
 use std::borrow::Cow;
 use std::collections::BTreeSet;

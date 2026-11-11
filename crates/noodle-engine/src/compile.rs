@@ -882,7 +882,7 @@ fn sort(candidates: &[Candidate<'_>], wires: &[Wire]) -> Vec<Step> {
     order
 }
 
-/// How many times shape inference may start over for loops (see below).
+/// How many times shape inference may start over for loops.
 const SHAPE_PASSES: usize = 4;
 
 fn infer_shapes(
@@ -960,7 +960,7 @@ fn infer_shapes(
                         found.push(Diagnostic::node(c.id, Problem::Node(problem)));
                         // Nodes downstream took their shapes from the
                         // outputs; they stay as inferred, and this node
-                        // simply doesn't run.
+                        // doesn't run.
                         candidates[i].output_shapes = None;
                     }
                 } else {
