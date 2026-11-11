@@ -3018,6 +3018,36 @@ mod tests {
         assert!(folded(&h));
     }
 
+    #[test]
+    fn the_palette_keeps_the_scroll_the_mouse_wheel_gave_it() {
+        let mut h = harness(folded_app());
+        h.run();
+        let at = egui::pos2(300.0, 200.0);
+        crate::testkit::press(&mut h, at, Modifiers::COMMAND, Key::K);
+        h.run();
+        let first = commands::first_name();
+        let top = |h: &Harness<'_, App>| h.get_by_label(first).rect().min.y;
+        let before = top(&h);
+        for _ in 0..4 {
+            crate::testkit::wheel(
+                &mut h,
+                egui::pos2(500.0, 300.0),
+                egui::MouseWheelUnit::Point,
+                egui::vec2(0.0, -80.0),
+            );
+        }
+        h.run_steps(10);
+        let scrolled = h.query_by_label(first).map(|n| n.rect().min.y);
+        assert!(
+            scrolled.is_none_or(|y| y < before - 20.0),
+            "the wheel scrolled the list ({before} -> {scrolled:?})"
+        );
+        // Every later frame must leave it there, not snap back to the selection.
+        h.run_steps(10);
+        let later = h.query_by_label(first).map(|n| n.rect().min.y);
+        assert_eq!(scrolled, later, "the list stays where the wheel left it");
+    }
+
     fn palette_run(app: App, query: &str) -> Harness<'static, App> {
         let mut h = harness(app);
         h.run();
