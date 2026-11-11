@@ -7,7 +7,7 @@
 // result is the plain resampling of the warp. The warp is part of the project,
 // not of the graph.
 (
-    format: 3,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.track.input", position: (x: 0.0, y: 0.0)),

@@ -42,11 +42,7 @@ The **Project** is the single source of truth. It holds one global graph:
     the boundary, and a rename (`rename_group_port`) rewrites the wires on
     the group in one step. The ID never changes, so nothing inside moves: the
     wires and lanes inside use the ID, not the name. They are structure only,
-    so they need no registry entry and flatten drops them. Format 4 files
-    only: older files had a boundary node per port, named by its `name`
-    config, and `Project::from_ron` migrates them (the lowest-ID node of each
-    side keeps all the ports, in ID order, with wires, gain, mute, solo and
-    lanes moved to the port's keys).
+    so they need no registry entry and flatten drops them.
   - **Boundary parameters.** Every port carries gain (dB), mute and solo as
     parameters of its boundary node, keyed `gain.<id>`, `mute.<id>` and
     `solo.<id>` (`Node::port_controls`, `Graph::group_controls`). Flatten

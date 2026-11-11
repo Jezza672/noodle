@@ -534,7 +534,7 @@ fn a_copy_of_a_template_with_unnamed_ports_keeps_its_ports_and_topology() {
         project.new_node_id(),
         project.new_node_id(),
     );
-    // Boundary nodes with no `name`, as an older file may have.
+    // Boundary nodes with no ports config.
     history
         .apply(
             &mut project,

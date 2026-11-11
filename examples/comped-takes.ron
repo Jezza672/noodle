@@ -5,7 +5,7 @@
 // take 1, then take 2, a third of the window each, and each join crossfades
 // over 10 ms (the default) with audio from both sides of the join.
 (
-    format: 3,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.track.input", position: (x: 0.0, y: 0.0)),

@@ -1,6 +1,6 @@
 // Wind: white noise through a narrow, resonant band-pass filter.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.noise.white", position: (x: 0.0, y: 0.0)),

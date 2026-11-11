@@ -286,7 +286,7 @@ impl PunchRange {
 
 impl Project {
     /// The current file format version. Bump it when the format changes in a
-    /// way older versions can't read, and migrate older files when loading.
+    /// way older versions can't read.
     pub const FORMAT: u32 = 4;
 
     pub fn new() -> Self {
@@ -854,7 +854,7 @@ impl Project {
     /// tempo does under it, until `change` alters it. (The timeline tempo is
     /// only a guess at the clip's own, for the user to correct; with
     /// conversion on, later tempo changes inside the section would stretch a
-    /// clip that plays unwarped.)
+    /// clip that used to play unwarped.)
     ///
     /// Sections that show the same clip share a warp, so an edit that reaches
     /// them all is one `SetWarp`. When this section shares its warp with
@@ -1210,15 +1210,12 @@ impl Project {
         let next_clip_group_id = file.clip_groups.keys().last().map_or(1, |id| id.0 + 1);
         let next_warp_id = file.warps.keys().last().map_or(1, |id| id.0 + 1);
         let next_lane_id = file.lanes.keys().last().map_or(1, |id| id.0 + 1);
-        let mut lanes = file.lanes;
-        // Format 4: a group's ports share one boundary node on each side.
-        let graph = crate::group::migrate_boundaries(&file.graph, &mut lanes).unwrap_or(file.graph);
         let mut clips = file.clips;
         for clip in clips.values_mut() {
             clip.assign_note_ids();
         }
         let project = Self {
-            graph,
+            graph: file.graph,
             frames: file.frames,
             next_frame_id,
             tempo_map: file.tempo_map,
@@ -1237,7 +1234,7 @@ impl Project {
             next_clip_group_id,
             warps: file.warps,
             next_warp_id,
-            lanes,
+            lanes: file.lanes,
             next_lane_id,
             track_order: file.track_order,
             organisation: file.organisation,
@@ -1316,7 +1313,7 @@ mod tests {
 
     const HAND_WRITTEN: &str = r#"
         (
-            format: 1,
+            format: 4,
             graph: (
                 nodes: {
                     1: (type: "noodle.osc.sine", params: {"frequency": 220.0}),
@@ -1457,7 +1454,7 @@ mod tests {
 
     #[test]
     fn rejects_a_newer_format() {
-        let text = HAND_WRITTEN.replace("format: 1", "format: 99");
+        let text = HAND_WRITTEN.replace("format: 4", "format: 99");
         assert!(matches!(
             Project::from_ron(&text),
             Err(LoadError::NewerFormat(99))
@@ -1989,11 +1986,7 @@ mod tests {
         let org = Organisation::default()
             .with_new_folder("Drums", &[live, gone])
             .with_colour(&[live, gone], Some(4));
-        apply(
-            &mut project,
-            &mut history,
-            Command::SetOrganisation(org.clone()),
-        );
+        apply(&mut project, &mut history, Command::SetOrganisation(org));
         assert_eq!(project.organisation().colour(live), Some(4));
         let loaded = Project::from_ron(&project.to_ron()).unwrap();
         assert_eq!(loaded.organisation().colour(gone), None);
@@ -2179,7 +2172,7 @@ mod tests {
     fn a_link_survives_the_source_clip_forking_its_warp() {
         // The source is one of two sections that share a warp; editing it
         // forks the warp, and the follower must follow the section, not the
-        // old shared warp.
+        // warp it used to have.
         let (mut project, mut history, player, first, second, shared) = warped_pair();
         let (_, follower) = follower(&mut project, &mut history, player, first);
         let edit = project.warp_edit(first, swing(1.0625)).unwrap();
@@ -2326,7 +2319,7 @@ mod tests {
         assert!(kept_warp.tempo_conversion);
         assert_eq!(project.clips_using(warp).collect::<Vec<_>>(), [first]);
 
-        // It is the only user of its warp, so edits change it in place.
+        // Now it is the only user of its warp, so edits change it in place.
         let edit = project
             .warp_edit(second, |w| w.use_markers = false)
             .unwrap();
@@ -2407,12 +2400,11 @@ mod tests {
     }
 
     #[test]
-    fn projects_saved_before_warps_still_load() {
+    fn a_file_without_warps_loads_with_none() {
         let (project, _, _, clip, _) = with_timeline();
         let text = project.to_ron();
         assert!(!text.contains("warp"), "{text}");
-        let older = text.replace("format: 3", "format: 2");
-        let loaded = Project::from_ron(&older).unwrap();
+        let loaded = Project::from_ron(&text).unwrap();
         assert_eq!(loaded, project);
         assert!(
             loaded

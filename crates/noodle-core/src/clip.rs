@@ -302,22 +302,6 @@ fn value_along(of: impl Iterator<Item = (Tick, f32, bool)>, tick: Tick) -> Optio
     before.map(|p| p.1)
 }
 
-/// The value of a controller of `points` at `tick`; `None` before its first
-/// point.
-pub fn control_value_at(
-    points: &[ControlPoint],
-    channel: u8,
-    kind: ControlKind,
-    tick: Tick,
-) -> Option<f32> {
-    let mut of: Vec<&ControlPoint> = points
-        .iter()
-        .filter(|p| p.channel == channel && p.kind == kind)
-        .collect();
-    of.sort_by_key(|p| p.tick);
-    value_along(of.into_iter().map(|p| (p.tick, p.value, p.ramp)), tick)
-}
-
 /// The controllers `points` as they are from `delta` ticks in, for a clip
 /// cut there (or, if `delta` is negative, made longer at the front): the
 /// later points moved earlier by `delta`, and, for each controller that had a
@@ -654,7 +638,7 @@ impl MidiClip {
         let (from, end) = (self.loop_start.0, self.loop_end().0);
         let limit = self.length.0;
         let mut out = Vec::new();
-        for ((_, kind), group) in groups.iter_mut() {
+        for ((_, kind), group) in &mut groups {
             group.sort_by_key(|p| p.tick);
             let group = &*group;
             if group[0].tick.0 >= limit {

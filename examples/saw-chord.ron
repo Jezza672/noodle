@@ -1,7 +1,7 @@
 // An A minor chord from three saws, mixed and softened by a resonant
 // low-pass filter.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.osc.saw", params: {"frequency": 110.0}, position: (x: 0.0, y: 0.0)),
