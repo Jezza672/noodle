@@ -389,6 +389,11 @@ the right.
   the chip). The keyboard popover holds its octave and velocity. A lime dot on
   Record says a count-in or pre-roll is set. The tempo field has a fixed width, so
   typing a tempo (which drops the " bpm" suffix) moves nothing.
+- **Typefaces.** `theme::apply_fonts` loads the brand pair from
+  `crates/noodle-app/assets/fonts/` (both SIL OFL, licences beside them): Inter for
+  running text, Space Grotesk Medium for headings and buttons. `NOODLE_FONT=grotesk`
+  uses Space Grotesk everywhere and `NOODLE_FONT=default` keeps egui's own font.
+  Sizes have not been tuned for the new faces yet.
 - **Drawn arrows and icons.** The bundled font has no glyph for the
   drop-down arrow or for a plus, and typed ones show as empty boxes, so arrows
   are painted (`paint_chevron`, also used by `widgets::Dropdown`) and the

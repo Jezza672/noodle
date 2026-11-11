@@ -34,7 +34,66 @@ pub const SCOPE_VIEW_HEIGHT: f32 = 160.0;
 /// The properties panel's starting width.
 pub const PROPERTIES_WIDTH: f32 = 260.0;
 
+/// The brand typefaces (see the brand guidelines): Inter for running text and
+/// Space Grotesk Medium for headings and buttons. Set `NOODLE_FONT=grotesk` to
+/// use Space Grotesk for everything, or `NOODLE_FONT=default` for egui's own.
+fn apply_fonts(ctx: &egui::Context) {
+    use egui::{FontData, FontDefinitions, FontFamily, FontId, TextStyle};
+    use std::sync::Arc;
+
+    let choice = std::env::var("NOODLE_FONT").unwrap_or_default();
+    if choice == "default" {
+        return;
+    }
+    let mut fonts = FontDefinitions::default();
+    fonts.font_data.insert(
+        "inter".into(),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../assets/fonts/Inter_400Regular.ttf"
+        ))),
+    );
+    fonts.font_data.insert(
+        "space-grotesk".into(),
+        Arc::new(FontData::from_static(include_bytes!(
+            "../assets/fonts/SpaceGrotesk_500Medium.ttf"
+        ))),
+    );
+    let body = if choice == "grotesk" {
+        "space-grotesk"
+    } else {
+        "inter"
+    };
+    // Keep egui's own fonts after ours as fallbacks for symbols and emoji.
+    let fallbacks = fonts
+        .families
+        .get(&FontFamily::Proportional)
+        .cloned()
+        .unwrap_or_default();
+    let mut proportional = vec![body.to_string()];
+    proportional.extend(fallbacks.clone());
+    fonts
+        .families
+        .insert(FontFamily::Proportional, proportional);
+    let mut display = vec!["space-grotesk".to_string()];
+    display.extend(fallbacks);
+    fonts
+        .families
+        .insert(FontFamily::Name("display".into()), display);
+    ctx.set_fonts(fonts);
+
+    let display = FontFamily::Name("display".into());
+    ctx.all_styles_mut(|style| {
+        style
+            .text_styles
+            .insert(TextStyle::Heading, FontId::new(19.0, display.clone()));
+        style
+            .text_styles
+            .insert(TextStyle::Button, FontId::new(13.5, display.clone()));
+    });
+}
+
 pub fn apply(ctx: &egui::Context) {
+    apply_fonts(ctx);
     // The app is dark whatever the system is: without this a system in light
     // mode leaves the light theme's own style on every widget that reads it.
     ctx.set_theme(egui::ThemePreference::Dark);

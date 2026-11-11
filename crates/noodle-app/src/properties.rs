@@ -2197,7 +2197,7 @@ mod tests {
                 // Narrow rows fall back to the drop-down; the choice must not
                 // simply disappear.
                 assert!(
-                    harness.query_by_value("Instant").is_some(),
+                    harness.query_all_by_value("Instant").next().is_some(),
                     "at {width}px the switch is neither a segment nor a drop-down"
                 );
             }
