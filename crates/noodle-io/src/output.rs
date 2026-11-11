@@ -953,8 +953,8 @@ impl Playback {
             .stop()
     }
 
-    /// The recording so far as peaks, for drawing it while it runs. See
-    /// [`Recorder::live_peaks`].
+    /// The recording so far as peaks, for drawing it while it runs
+    /// ([`Recorder::live_peaks`]).
     pub fn live_peaks(&self, columns: usize) -> Option<(u64, Vec<crate::Peak>)> {
         self.recorder.as_ref().map(|r| r.live_peaks(columns))
     }
@@ -2078,8 +2078,8 @@ mod tests {
         let converter = extra._converter.take().expect("a converter");
         let stop = Arc::clone(&converter.stop);
         drop(extra);
-        // Dropping the output left the converter running (it was taken); now
-        // dropping that stops and joins its thread.
+        // Taken out of the output, the converter keeps running until it is
+        // dropped, which stops and joins its thread.
         assert!(!stop.load(Ordering::Relaxed));
         drop(converter);
         assert!(stop.load(Ordering::Relaxed));

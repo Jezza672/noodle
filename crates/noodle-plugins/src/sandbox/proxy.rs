@@ -95,7 +95,7 @@ pub(crate) struct Shared {
     /// 1 while the audio thread may be using `link`.
     in_audio: AtomicU32,
     shutdown: AtomicBool,
-    /// SAFETY: see the module docs. Only the monitor replaces it, and only
+    /// SAFETY: only the monitor replaces it, and only
     /// while `state` is not [`RUNNING`] and `in_audio` is zero.
     link: UnsafeCell<Option<Link>>,
     control: Mutex<Option<Channel>>,

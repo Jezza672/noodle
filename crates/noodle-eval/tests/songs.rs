@@ -305,7 +305,7 @@ fn every_excerpt_goes_through_the_harness() {
     });
 }
 
-/// Tempo detection on full mixes (#141): the kick and bass line carry the beat
+/// Tempo detection on full mixes: the kick and bass line carry the beat
 /// under hats, plucks and arpeggios that bury it in the full-band onsets. Both
 /// the excerpt and the whole song, since the app analyses up to two minutes.
 #[test]

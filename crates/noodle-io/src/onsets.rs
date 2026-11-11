@@ -870,7 +870,7 @@ mod tests {
     }
 
     /// Mixes are low-cut and bus-compressed, and neither moves where a bass
-    /// line's onsets fall: the tempo and the beat stay put (#156).
+    /// line's onsets fall: the tempo and the beat stay put.
     #[test]
     fn the_tempo_survives_a_low_cut_and_bus_compression() {
         let bpm = 110.0;

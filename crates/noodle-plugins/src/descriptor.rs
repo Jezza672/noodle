@@ -194,7 +194,6 @@ pub fn param_key(id: u32) -> String {
 /// A plugin with at most this many parameters shows all of them on a new
 /// node; one with more shows none, and the user opts in to the ones they
 /// want (a synth can have hundreds, which makes a node too tall to use).
-/// See [`initial_params`].
 pub const DEFAULT_EXPOSED_LIMIT: usize = 4;
 
 /// The `params` setting a newly added node of this plugin starts with, if it

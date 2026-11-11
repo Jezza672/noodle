@@ -1,5 +1,5 @@
-//! The perfect-stem ceiling (ROADMAP M10, batch 1): what Stem warp could
-//! score if the separator were flawless, before any model exists.
+//! The perfect-stem ceiling: what Stem warp could score if the separator were
+//! flawless, before any model exists.
 //!
 //! A generated song knows which instrument played what, so its stems can be
 //! rendered exactly: [`stem_of`] maps each part to one of the four stems an

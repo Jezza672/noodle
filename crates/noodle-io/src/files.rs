@@ -1,10 +1,9 @@
 //! What is on disk for the audio files a project plays: one answer, in one
 //! place, to "has this file changed?".
 //!
-//! Waveforms, the clip schedule and the session's change notices used to
-//! each `stat` the files on their own, with different ideas of what counts as
-//! a change. Now a [`FileStamp`] (size and modification time) is the one rule,
-//! and a single thread looks at the files that were asked about, once a
+//! Waveforms, the clip schedule and the session's change notices share one
+//! rule for what counts as a change: a [`FileStamp`] (size and modification
+//! time). A single thread looks at the files that were asked about, once a
 //! second, and wakes the UI when one differs. Everyone else compares stamps
 //! with [`AudioFiles::stamp`], which reads what the thread last saw and does
 //! no I/O for a file it already knows.
@@ -54,7 +53,7 @@ struct Shared {
     first_looks: AtomicUsize,
 }
 
-/// The watched audio files. See the module docs.
+/// The watched audio files.
 pub struct AudioFiles {
     shared: Arc<Shared>,
 }

@@ -16,7 +16,7 @@
 //! - which key each held note was played with, so a note-off can say;
 //! - [`musical_position`], the one reckoning of beats and bars;
 //! - the quiet state: while a plugin has nothing to do, it isn't called, and
-//!   its outputs are flagged silent (see "Plugins" in the architecture notes).
+//!   its outputs are flagged silent.
 //!
 //! Everything here runs on the audio thread: nothing allocates.
 
