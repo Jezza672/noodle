@@ -10,10 +10,10 @@ The graph shows more of what the sound is doing, and each piece can be switched 
 - **Voice lights**: a dot per voice on polyphonic nodes, lit for the voices that sound.
 - **Beat pulse** on clocks, arpeggiators, pattern players, the metronome, swing and launch quantise while playing. A node type opts in with `NodeType::pulses_on_beat`.
 - **CPU heat tint**, off by default.
-- **Display Settings** (View menu) holds a switch for each, and *Performance mode* turns all of them off at once. The choices are saved in the preferences.
+- The **Display** tab of Settings (File > Settings…, Cmd/Ctrl+,) holds a switch for each, and *Performance mode* turns all of them off at once. The choices are saved in the preferences.
 
 The engine side is `Telemetry::gather()` (four flags the audio thread reads once per node per block), output meters, event counts and per-node state. With a switch off the audio thread skips the measurement.
 
 Left out: wires through a group's boundary don't glow (a group has no engine node of its own).
 
-Tests: `telemetry` and `runtime/tests.rs` (output levels, event counts, node state, each stopping when switched off), `realtime.rs` (the reports don't allocate), `editor/body.rs` and `editor/draw.rs` (glow, fade, clipping, state, heat, beat), `display.rs`, `prefs.rs`, and the Display Settings dialog test in `app.rs`.
+Tests: `telemetry` and `runtime/tests.rs` (output levels, event counts, node state, each stopping when switched off), `realtime.rs` (the reports don't allocate), `editor/body.rs` and `editor/draw.rs` (glow, fade, clipping, state, heat, beat), `display.rs`, `prefs.rs`, and the Display tab test in `app.rs`.

@@ -35,6 +35,7 @@ mod sample_drop;
 mod sample_set_dialog;
 mod sample_view;
 mod session;
+mod settings;
 mod snap;
 mod stems_dialog;
 // The framework's API is ahead of the routes that will use it.
