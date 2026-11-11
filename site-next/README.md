@@ -7,4 +7,6 @@ The full landing page for noodledaw.com, held back while [`site/`](../site/READM
 - Fonts (Space Grotesk and Inter) load from Google Fonts. Self-host them if the site should work without that request.
 - `favicon.svg` is the app icon tile (`assets/brand/logo/icon.svg`).
 
-Not set up yet: hosting. Serving `site-next/` on dev.noodledaw.com from GitHub Pages (or any static host) is a repository setting plus a DNS record for noodledaw.com.
+Hosting: GitHub Pages serves this folder at dev.noodledaw.com. [.github/workflows/pages.yml](../.github/workflows/pages.yml) deploys it on every push to `main` that touches `site-next/`, and can be run by hand from the Actions tab. `CNAME` names the domain. The DNS record is a grey-cloud (DNS only) CNAME from `dev` to `jezza672.github.io` in Cloudflare, so GitHub can issue the HTTPS certificate.
+
+One-off repo setting: Settings > Pages > Source: GitHub Actions. GitHub Pages allows one custom domain per repo, so the coming-soon page in `site/` is not served from here.

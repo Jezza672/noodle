@@ -6,4 +6,4 @@ The "coming soon" holding page: one static file, `index.html`, with no build ste
 - Fonts (Space Grotesk and Inter) load from Google Fonts.
 - `favicon.svg` is the app icon tile (`assets/brand/logo/icon.svg`).
 
-The full landing page lives in [`site-next/`](../site-next/README.md). It is not served from here; it is what dev.noodledaw.com is meant to host until it replaces this page.
+The full landing page lives in [`site-next/`](../site-next/README.md). It is not served from here; GitHub Pages hosts it at dev.noodledaw.com. This page is hosted separately (a small Cloudflare Worker serving this file, deployed by hand for now).
