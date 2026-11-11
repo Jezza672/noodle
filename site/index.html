@@ -3,38 +3,208 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>Noodle · Coming soon</title>
-<meta name="description" content="Noodle is a node-based DAW. Coming soon.">
+<title>Noodle, a node-based DAW</title>
+<meta name="description" content="Noodle is a node-based DAW. Build instruments and mixes by connecting nodes, then arrange them on a timeline. Open source, built in Rust.">
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Space+Grotesk:wght@700&display=swap">
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Space+Grotesk:wght@500;700&display=swap">
+<script>
+/* Pick the theme before the first paint, so a dark-mode visitor never sees the light page. */
+(function(){var t=null;try{t=localStorage.getItem('noodle-theme');}catch(e){}
+if(t!=='paper'&&t!=='dark'){t=window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches?'dark':'paper';}
+document.documentElement.setAttribute('data-theme',t);})();
+</script>
 <style>
-/* The page noodledaw.com serves until launch: a name, a message and the diagonal wordmark texture.
-   No scripts and no links. Colours are the brand palette (docs/brand.md) and follow the system theme. */
-:root{--bg:#0e1014;--fg:#c8f169;--text:#e6e9ef;--mut:#9aa3b2;--tx:.38;color-scheme:dark;
-  --display:'Space Grotesk',system-ui,sans-serif;--body:'Inter',system-ui,sans-serif}
-@media (prefers-color-scheme:light){:root{--bg:#f4f4f1;--fg:#14161b;--text:#14161b;--mut:#5b6170;--tx:.16;color-scheme:light}}
-*{box-sizing:border-box}
-html,body{height:100%}
-body{margin:0;background:var(--bg);color:var(--text);font:400 1rem/1.6 var(--body);
-  padding:env(safe-area-inset-top,0px) max(16px,env(safe-area-inset-right,0px)) env(safe-area-inset-bottom,0px) max(16px,env(safe-area-inset-left,0px));
-  display:grid;place-items:center;overflow:hidden;position:relative}
-.tex{position:fixed;inset:0;width:100%;height:100%;opacity:var(--tx)}
-.veil{position:fixed;inset:0;background:radial-gradient(ellipse 60% 50% at 50% 50%,var(--bg) 0%,color-mix(in srgb,var(--bg) 78%,transparent) 45%,transparent 100%)}
-main{position:relative;display:flex;flex-direction:column;align-items:center;text-align:center;gap:18px;padding:24px 0}
-.wordmark{width:min(78vw,520px);height:auto;color:var(--fg);display:block}
-h1{margin:0;font:700 clamp(2rem,6vw,3.4rem)/1.05 var(--display);letter-spacing:-.03em}
-p{margin:0;color:var(--mut);font-size:1.05rem}
+/* The landing page for noodledaw.com. One static file, no build step. Colours are the brand palette (docs/brand.md). */
+:root{--display:'Space Grotesk',system-ui,sans-serif;--body:'Inter',system-ui,sans-serif}
+/* the site mockup */
+.site{position:relative;overflow:hidden;min-height:100vh;font-family:var(--body);background:var(--bg);color:var(--fg)}
+html[data-theme="paper"] .site{--bg:#f4f4f1;--fg:#14161b;--mut:#5b6170;--ln:#d6d6cf;--card:#ffffff;--cardln:#14161b1f;--hole:#f4f4f1;--acc:#14161b;--wire1:#14161b;--wire2:#3c5aa8;--port:#c8f169;--portln:#14161b;--grid:#e6e6e0;--ink:#14161b;--btnbg:#14161b;--btnfg:#f4f4f1;--c1:#3c5aa8;--c2:#c8f169;--c3:#ff7a6b;--c4:#14161b;--c1t:#fff;--c2t:#1c2a05;--c3t:#2a0a07;--c4t:#f4f4f1;--black:#14161b;--white:#fff;--note:#14161b;--notesel:#3c5aa8}
+html[data-theme="dark"] .site{--bg:#0e1014;--fg:#e6e9ef;--mut:#9aa3b2;--ln:#2a2f39;--card:#171a20;--cardln:#343a47;--hole:#0e1014;--acc:#c8f169;--wire1:#c8f169;--wire2:#3c5aa8;--port:#c8f169;--portln:#0e1014;--grid:#232831;--ink:#e6e9ef;--btnbg:#c8f169;--btnfg:#1c2a05;--c1:#3c5aa8;--c2:#c8f169;--c3:#ff7a6b;--c4:#4a5263;--c1t:#fff;--c2t:#1c2a05;--c3t:#2a0a07;--c4t:#e6e9ef;--black:#0e1014;--white:#2a303b;--note:#c8f169;--notesel:#ff7a6b}
+.tx{position:absolute;inset:0;pointer-events:none}
+.tx svg{display:block;width:100%;height:100%}
+.fade-b{-webkit-mask-image:linear-gradient(#000 35%,transparent 100%);mask-image:linear-gradient(#000 35%,transparent 100%)}
+.fade-t{-webkit-mask-image:linear-gradient(transparent 0%,#000 55%);mask-image:linear-gradient(transparent 0%,#000 55%)}
+.in{position:relative}
+.nav{display:flex;align-items:center;justify-content:space-between;gap:16px;padding:18px 28px;flex-wrap:wrap}
+.nav nav{display:flex;gap:20px;font-size:.85rem;color:var(--mut);flex-wrap:wrap}
+.wm{font:500 1.5rem/1 var(--display);letter-spacing:-.025em;display:inline-flex;align-items:baseline;white-space:nowrap;color:var(--acc)}
+.wm svg{height:.7em;width:.7em;margin-right:.05em;flex:none;overflow:visible}
+.btn{display:inline-flex;align-items:center;font:500 .9rem var(--body);border-radius:8px;padding:10px 18px;border:1px solid transparent;cursor:default}
+.btn.p{background:var(--btnbg);color:var(--btnfg)}
+.btn.s{border-color:var(--fg);color:var(--fg)}
+.hero{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:28px;align-items:center;padding:34px 28px 52px}
+@media(max-width:760px){.hero{grid-template-columns:minmax(0,1fr)}}
+.hero h1{font:700 clamp(2.3rem,6vw,3.8rem)/1.02 var(--display);letter-spacing:-.03em;margin:0}
+.hero p{color:var(--mut);font-size:1.05rem;margin-top:14px}
+.row{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}
+.status{font-size:.8rem;color:var(--mut);margin-top:14px}
+.icon{display:grid;place-items:center}
+.icon div{background:#c8f169;border-radius:28px;padding:26px;box-shadow:0 20px 40px -22px rgba(0,0,0,.55)}
+.feats{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;padding:0 28px 40px}
+@media(max-width:860px){.feats{grid-template-columns:minmax(0,1fr)}}
+.feat{border:1px solid var(--cardln);border-radius:12px;background:var(--card);overflow:hidden;display:flex;flex-direction:column;min-width:0}
+.feat svg.vis{display:block;width:100%;height:auto;background:var(--bg);border-bottom:1px solid var(--cardln)}
+.feat div{padding:14px 16px 18px}
+.feat h3{margin:0 0 4px;font:700 1.08rem var(--display)}
+.feat p{font-size:.88rem;color:var(--mut)}
+.src{margin:0 28px 36px;border:1px solid var(--cardln);border-radius:12px;background:var(--card);padding:18px 20px;display:flex;justify-content:space-between;align-items:center;gap:16px;flex-wrap:wrap}
+.src b{font:700 1.05rem var(--display)}
+.src code{font:500 .82rem ui-monospace,Menlo,monospace;background:var(--bg);border-radius:6px;padding:6px 10px;color:var(--fg);border:1px solid var(--cardln)}
+.footer{position:relative;min-height:150px}
+.footer .tx{inset:0}
+.footer .in{display:flex;justify-content:space-between;align-items:flex-end;gap:12px;flex-wrap:wrap;padding:60px 28px 20px;font-size:.8rem;color:var(--mut)}
+.footer .in .wm{font-size:1.1rem}
+/* illustration classes */
+.vis .t{font:500 11px var(--display);fill:var(--fg)}
+.vis .tm{font:500 9px var(--body);fill:var(--mut)}
+.vis .nd{fill:var(--card);stroke:var(--cardln);stroke-width:1}
+.vis .w1{fill:none;stroke:var(--wire1);stroke-width:3;stroke-linecap:round}
+.vis .w2{fill:none;stroke:var(--wire2);stroke-width:3;stroke-linecap:round}
+.vis .pt{fill:var(--port);stroke:var(--portln);stroke-width:1.5}
+.vis .gl{stroke:var(--grid);stroke-width:1}
+.vis .gl2{stroke:var(--mut);stroke-width:1;opacity:.5}
+
+html[data-theme="paper"] .site{color-scheme:light}
+html[data-theme="dark"] .site{color-scheme:dark}
+.nav nav{align-items:center}
+.nav nav a{color:inherit;text-decoration:none}
+.nav nav a:hover{color:var(--fg)}
+.mode{font:500 .8rem var(--body);color:var(--fg);background:transparent;border:1px solid var(--cardln);border-radius:999px;padding:4px 12px;cursor:pointer}
+.mode:focus-visible,.btn:focus-visible,.nav nav a:focus-visible{outline:2px solid var(--fg);outline-offset:3px}
+a.btn{text-decoration:none;cursor:pointer}
+body{margin:0}
+html[data-theme="paper"]{background:#f4f4f1;color-scheme:light}
+html[data-theme="dark"]{background:#0e1014;color-scheme:dark}
+.nav,.hero,.feats,.src,.footer .in{box-sizing:border-box}
+.src{margin-inline:max(16px,calc((100% - 1024px)/2))}
+.feats,.nav,.hero,.footer .in{padding-left:max(16px,calc((100% - 1024px)/2),env(safe-area-inset-left,0px));padding-right:max(16px,calc((100% - 1024px)/2),env(safe-area-inset-right,0px))}
+@media(max-width:600px){.src{margin-inline:16px}}
+
 </style>
 </head>
-<body>
-<svg class="tex" aria-hidden="true" focusable="false"><defs><g id="wd"><g transform="translate(22 44) scale(0.43333333333333335) translate(-60 -60)"><path d="M30 90 V30 C66 30 54 90 90 90 V30" stroke="currentColor" stroke-width="11.5" fill="none" stroke-linecap="round" stroke-linejoin="round"/><circle cx="30" cy="90" r="10.5" fill="currentColor"/><circle cx="30" cy="90" r="4" style="fill:var(--bg)"/><circle cx="30" cy="30" r="10.5" fill="currentColor"/><circle cx="30" cy="30" r="4" style="fill:var(--bg)"/><circle cx="90" cy="90" r="10.5" fill="currentColor"/><circle cx="90" cy="90" r="4" style="fill:var(--bg)"/><circle cx="90" cy="30" r="10.5" fill="currentColor"/><circle cx="90" cy="30" r="4" style="fill:var(--bg)"/></g><path transform="translate(46 62) scale(0.052)" d="M307 14Q233 14 175.5 -16.5Q118 -47 85 -104Q52 -161 52 -239V-254Q52 -332 85 -388.5Q118 -445 175.5 -476Q233 -507 307 -507Q381 -507 439 -476Q497 -445 530 -388.5Q563 -332 563 -254V-239Q563 -161 530 -104Q497 -47 439 -16.5Q381 14 307 14ZM307 -78Q375 -78 417.5 -121.5Q460 -165 460 -242V-251Q460 -328 418 -371.5Q376 -415 307 -415Q240 -415 197.5 -371.5Q155 -328 155 -251V-242Q155 -165 197.5 -121.5Q240 -78 307 -78ZM897 14Q823 14 765.5 -16.5Q708 -47 675 -104Q642 -161 642 -239V-254Q642 -332 675 -388.5Q708 -445 765.5 -476Q823 -507 897 -507Q971 -507 1029 -476Q1087 -445 1120 -388.5Q1153 -332 1153 -254V-239Q1153 -161 1120 -104Q1087 -47 1029 -16.5Q971 14 897 14ZM897 -78Q965 -78 1007.5 -121.5Q1050 -165 1050 -242V-251Q1050 -328 1008 -371.5Q966 -415 897 -415Q830 -415 787.5 -371.5Q745 -328 745 -251V-242Q745 -165 787.5 -121.5Q830 -78 897 -78ZM1460 14Q1399 14 1347 -16Q1295 -46 1263.5 -102.5Q1232 -159 1232 -239V-254Q1232 -333 1263 -390Q1294 -447 1346 -477Q1398 -507 1460 -507Q1508 -507 1540.5 -495Q1573 -483 1594 -464.5Q1615 -446 1626 -426H1642V-700H1745V0H1644V-70H1628Q1609 -38 1570.5 -12Q1532 14 1460 14ZM1489 -76Q1556 -76 1599.5 -119Q1643 -162 1643 -242V-251Q1643 -330 1600 -373Q1557 -416 1489 -416Q1423 -416 1379.5 -373Q1336 -330 1336 -251V-242Q1336 -162 1379.5 -119Q1423 -76 1489 -76ZM1872 0V-700H1975V0ZM2329 14Q2254 14 2198 -17.5Q2142 -49 2110.5 -106.5Q2079 -164 2079 -240V-252Q2079 -329 2110 -386.5Q2141 -444 2196.5 -475.5Q2252 -507 2325 -507Q2396 -507 2449.5 -475.5Q2503 -444 2533 -388Q2563 -332 2563 -257V-218H2184Q2186 -153 2227.5 -114.5Q2269 -76 2331 -76Q2389 -76 2418.5 -102Q2448 -128 2464 -162L2549 -118Q2535 -90 2508.5 -59Q2482 -28 2439 -7Q2396 14 2329 14ZM2185 -297H2458Q2454 -353 2418 -384.5Q2382 -416 2324 -416Q2266 -416 2229.5 -384.5Q2193 -353 2185 -297Z" fill="currentColor"/></g><pattern id="diag" style="color:var(--fg)" width="240" height="150" patternUnits="userSpaceOnUse" patternTransform="rotate(-22)"><use href="#wd"/><use href="#wd" x="120" y="75" opacity=".5"/><use href="#wd" x="-120" y="75" opacity=".5"/></pattern></defs><rect width="100%" height="100%" fill="url(#diag)"/></svg>
-<div class="veil"></div>
-<main>
-<svg class="wordmark" viewBox="-40 -740 3416 800" role="img" aria-label="Noodle"><defs><mask id="wmmask" maskUnits="userSpaceOnUse" x="0" y="0" width="120" height="120"><rect width="120" height="120" fill="#fff"/><circle cx="30" cy="90" r="4" fill="#000"/><circle cx="30" cy="30" r="4" fill="#000"/><circle cx="90" cy="90" r="4" fill="#000"/><circle cx="90" cy="30" r="4" fill="#000"/></mask></defs><g transform="translate(0 -700) scale(8.641975308641975) translate(-19.5 -19.5)"><g mask="url(#wmmask)"><path d="M30 90 V30 C66 30 54 90 90 90 V30" fill="none" stroke="currentColor" stroke-width="11.5" stroke-linecap="round" stroke-linejoin="round"/><circle cx="30" cy="90" r="10.5" fill="currentColor"/><circle cx="30" cy="30" r="10.5" fill="currentColor"/><circle cx="90" cy="90" r="10.5" fill="currentColor"/><circle cx="90" cy="30" r="10.5" fill="currentColor"/></g></g><path transform="translate(750 0)" d="M307 14Q233 14 175.5 -16.5Q118 -47 85 -104Q52 -161 52 -239V-254Q52 -332 85 -388.5Q118 -445 175.5 -476Q233 -507 307 -507Q381 -507 439 -476Q497 -445 530 -388.5Q563 -332 563 -254V-239Q563 -161 530 -104Q497 -47 439 -16.5Q381 14 307 14ZM307 -78Q375 -78 417.5 -121.5Q460 -165 460 -242V-251Q460 -328 418 -371.5Q376 -415 307 -415Q240 -415 197.5 -371.5Q155 -328 155 -251V-242Q155 -165 197.5 -121.5Q240 -78 307 -78ZM897 14Q823 14 765.5 -16.5Q708 -47 675 -104Q642 -161 642 -239V-254Q642 -332 675 -388.5Q708 -445 765.5 -476Q823 -507 897 -507Q971 -507 1029 -476Q1087 -445 1120 -388.5Q1153 -332 1153 -254V-239Q1153 -161 1120 -104Q1087 -47 1029 -16.5Q971 14 897 14ZM897 -78Q965 -78 1007.5 -121.5Q1050 -165 1050 -242V-251Q1050 -328 1008 -371.5Q966 -415 897 -415Q830 -415 787.5 -371.5Q745 -328 745 -251V-242Q745 -165 787.5 -121.5Q830 -78 897 -78ZM1460 14Q1399 14 1347 -16Q1295 -46 1263.5 -102.5Q1232 -159 1232 -239V-254Q1232 -333 1263 -390Q1294 -447 1346 -477Q1398 -507 1460 -507Q1508 -507 1540.5 -495Q1573 -483 1594 -464.5Q1615 -446 1626 -426H1642V-700H1745V0H1644V-70H1628Q1609 -38 1570.5 -12Q1532 14 1460 14ZM1489 -76Q1556 -76 1599.5 -119Q1643 -162 1643 -242V-251Q1643 -330 1600 -373Q1557 -416 1489 -416Q1423 -416 1379.5 -373Q1336 -330 1336 -251V-242Q1336 -162 1379.5 -119Q1423 -76 1489 -76ZM1872 0V-700H1975V0ZM2329 14Q2254 14 2198 -17.5Q2142 -49 2110.5 -106.5Q2079 -164 2079 -240V-252Q2079 -329 2110 -386.5Q2141 -444 2196.5 -475.5Q2252 -507 2325 -507Q2396 -507 2449.5 -475.5Q2503 -444 2533 -388Q2563 -332 2563 -257V-218H2184Q2186 -153 2227.5 -114.5Q2269 -76 2331 -76Q2389 -76 2418.5 -102Q2448 -128 2464 -162L2549 -118Q2535 -90 2508.5 -59Q2482 -28 2439 -7Q2396 14 2329 14ZM2185 -297H2458Q2454 -353 2418 -384.5Q2382 -416 2324 -416Q2266 -416 2229.5 -384.5Q2193 -353 2185 -297Z" fill="currentColor"/></svg>
-<h1>Coming soon</h1>
-<p>A node-based DAW. Wire up sound.</p>
-</main>
+<body class="site" id="site">
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+ <defs>
+  <symbol id="ngl" viewBox="19.5 19.5 81 81">
+   <path d="M30 90 V30 C66 30 54 90 90 90 V30" fill="none" stroke="currentColor" stroke-width="11.5" stroke-linecap="round" stroke-linejoin="round"/>
+   <g fill="currentColor"><circle cx="30" cy="90" r="10.5"/><circle cx="30" cy="30" r="10.5"/><circle cx="90" cy="90" r="10.5"/><circle cx="90" cy="30" r="10.5"/></g>
+   <g fill="var(--hole)"><circle cx="30" cy="90" r="4"/><circle cx="30" cy="30" r="4"/><circle cx="90" cy="90" r="4"/><circle cx="90" cy="30" r="4"/></g>
+  </symbol>
+ </defs>
+</svg>
+  <div class="tx fade-b" data-p="wave" style="height:760px;inset:0 0 auto 0"></div>
+  <div class="in">
+    <div class="nav"><span class="wm"><svg><use href="#ngl"/></svg>oodle</span><nav><a href="#features">Features</a><a href="https://github.com/Jezza672/noodle/tree/main/docs">Docs</a><a href="https://github.com/Jezza672/noodle">Source</a><button type="button" id="mode" class="mode" aria-label="Switch colour theme">Dark</button></nav></div>
+    <div class="hero">
+      <div>
+        <h1>Wire up sound.</h1>
+        <p>Noodle is a node-based DAW. Build instruments and mixes by connecting nodes, then arrange them on a timeline.</p>
+        <div class="row"><a class="btn p" href="https://github.com/Jezza672/noodle">Read the source</a><a class="btn s" href="https://github.com/Jezza672/noodle#trying-it">Build from source</a></div>
+        <div class="status">Open source, GPL-3.0. Built in Rust.</div>
+      </div>
+      <div class="icon"><div>
+        <svg width="140" height="140" viewBox="0 0 120 120" role="img" aria-label="Noodle app icon"><path d="M34 86 V34 C64 34 56 86 86 86 V34" fill="none" stroke="#1c2a05" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/><g fill="#1c2a05"><circle cx="34" cy="86" r="10"/><circle cx="34" cy="34" r="10"/><circle cx="86" cy="86" r="10"/><circle cx="86" cy="34" r="10"/></g><g fill="#c8f169"><circle cx="34" cy="86" r="4"/><circle cx="34" cy="34" r="4"/><circle cx="86" cy="86" r="4"/><circle cx="86" cy="34" r="4"/></g></svg>
+      </div></div>
+    </div>
+
+    <div class="feats" id="features">
+      <article class="feat">
+        <svg class="vis" viewBox="0 0 360 225" role="img" aria-label="Illustration of a node graph: an oscillator and an LFO wired into a filter, then a reverb and the output">
+          <path class="w1" d="M104 56 C140 56 120 104 156 104"/>
+          <path class="w2" d="M104 168 C140 168 120 124 156 124"/>
+          <path class="w1" d="M236 104 C262 104 250 160 276 160"/>
+          <g><rect class="nd" x="14" y="34" width="90" height="46" rx="9"/><text class="t" x="26" y="55">Oscillator</text><text class="tm" x="26" y="69">Saw · 220 Hz</text><circle class="pt" cx="104" cy="56" r="5.5"/></g>
+          <g><rect class="nd" x="14" y="146" width="90" height="46" rx="9"/><text class="t" x="26" y="167">LFO</text><text class="tm" x="26" y="181">0.4 Hz</text><circle class="pt" cx="104" cy="168" r="5.5"/></g>
+          <g><rect class="nd" x="156" y="86" width="80" height="62" rx="9"/><text class="t" x="168" y="107">Filter</text><text class="tm" x="168" y="121">Cutoff</text><text class="tm" x="168" y="137">Resonance</text><circle class="pt" cx="156" cy="104" r="5.5"/><circle class="pt" cx="156" cy="124" r="5.5"/><circle class="pt" cx="236" cy="104" r="5.5"/></g>
+          <g><rect class="nd" x="276" y="138" width="70" height="44" rx="9"/><text class="t" x="288" y="158">Output</text><circle class="pt" cx="276" cy="160" r="5.5"/></g>
+        </svg>
+        <div><h3>Patch</h3><p>Wire nodes into instruments, effects and mixes, like Blender's compositor. CLAP and VST3 plugins sit in the graph as nodes too.</p></div>
+      </article>
+
+      <article class="feat">
+        <svg class="vis" viewBox="0 0 360 225" role="img" aria-label="Illustration of an arrangement view: a bar ruler and four tracks with clips">
+          <g class="tm"><text x="62" y="14">1</text><text x="116" y="14">3</text><text x="170" y="14">5</text><text x="224" y="14">7</text><text x="278" y="14">9</text></g>
+          <path class="gl2" d="M58 20 H352"/>
+          <g class="gl"><path d="M58 20 V215 M112 20 V215 M166 20 V215 M220 20 V215 M274 20 V215 M328 20 V215"/></g>
+          <g class="t"><text x="8" y="50">Drums</text><text x="8" y="94">Bass</text><text x="8" y="138">Keys</text><text x="8" y="182">Vocal</text></g>
+          <g><rect x="58" y="32" width="102" height="30" rx="6" fill="var(--c1)"/><rect x="166" y="32" width="162" height="30" rx="6" fill="var(--c1)"/>
+             <path d="M64 47 h6 m6 0 h4 m8 0 h6 m6 0 h4 m8 0 h6 m6 0 h4 m8 0 h6 m6 0 h4" stroke="var(--c1t)" stroke-width="3" opacity=".7" fill="none"/></g>
+          <g><rect x="112" y="76" width="216" height="30" rx="6" fill="var(--c2)"/>
+             <path d="M118 91 q6 -10 12 0 t12 0 t12 0 t12 0 t12 0 t12 0 t12 0 t12 0 t12 0 t12 0 t12 0 t12 0 t12 0 t12 0 t12 0" stroke="var(--c2t)" stroke-width="2.5" fill="none"/></g>
+          <g><rect x="58" y="120" width="108" height="30" rx="6" fill="var(--c3)"/><rect x="220" y="120" width="108" height="30" rx="6" fill="var(--c3)"/>
+             <g fill="var(--c3t)" opacity=".75"><rect x="66" y="138" width="10" height="4"/><rect x="80" y="132" width="10" height="4"/><rect x="94" y="136" width="14" height="4"/><rect x="114" y="128" width="10" height="4"/><rect x="228" y="134" width="12" height="4"/><rect x="246" y="128" width="10" height="4"/><rect x="262" y="138" width="14" height="4"/></g></g>
+          <g><rect x="166" y="164" width="162" height="30" rx="6" fill="var(--c4)"/>
+             <path d="M172 179 q4 -8 8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0 t8 0" stroke="var(--c4t)" stroke-width="2" fill="none" opacity=".8"/></g>
+          <path d="M148 20 V215" stroke="var(--port)" stroke-width="2.5"/><path d="M142 14 h12 l-6 8 z" fill="var(--port)" stroke="var(--portln)" stroke-width="1"/>
+        </svg>
+        <div><h3>Arrange</h3><p>Lay clips out on tracks along a timeline, with tempo and meter changes, markers and time warping.</p></div>
+      </article>
+
+      <article class="feat">
+        <svg class="vis" viewBox="0 0 360 225" role="img" aria-label="Illustration of a piano roll: a keyboard on the left, note bars on a grid and a velocity lane below">
+          <g class="gl"><path d="M44 12 H352 M44 38 H352 M44 64 H352 M44 90 H352 M44 116 H352 M44 142 H352"/><path d="M44 12 V152 M96 12 V152 M148 12 V152 M200 12 V152 M252 12 V152 M304 12 V152"/></g>
+          <g><rect x="0" y="12" width="44" height="26" fill="var(--white)" stroke="var(--cardln)"/><rect x="0" y="38" width="44" height="26" fill="var(--white)" stroke="var(--cardln)"/><rect x="0" y="64" width="44" height="26" fill="var(--white)" stroke="var(--cardln)"/><rect x="0" y="90" width="44" height="26" fill="var(--white)" stroke="var(--cardln)"/><rect x="0" y="116" width="44" height="26" fill="var(--white)" stroke="var(--cardln)"/>
+             <rect x="0" y="30" width="28" height="16" fill="var(--black)"/><rect x="0" y="82" width="28" height="16" fill="var(--black)"/><rect x="0" y="108" width="28" height="16" fill="var(--black)"/></g>
+          <g fill="var(--note)"><rect x="52" y="64" width="40" height="18" rx="3"/><rect x="100" y="38" width="40" height="18" rx="3"/><rect x="148" y="90" width="40" height="18" rx="3"/><rect x="196" y="64" width="52" height="18" rx="3"/><rect x="256" y="116" width="40" height="18" rx="3"/><rect x="304" y="38" width="40" height="18" rx="3"/></g>
+          <rect x="196" y="64" width="52" height="18" rx="3" fill="var(--notesel)"/>
+          <path d="M44 160 H352" class="gl2"/><text class="tm" x="6" y="178">Velocity</text>
+          <g fill="var(--wire2)"><rect x="60" y="205" width="6" height="12"/><rect x="108" y="180" width="6" height="37"/><rect x="156" y="195" width="6" height="22"/><rect x="204" y="170" width="6" height="47" fill="var(--notesel)"/><rect x="264" y="200" width="6" height="17"/><rect x="312" y="184" width="6" height="33"/></g>
+        </svg>
+        <div><h3>Edit</h3><p>Write notes in a piano roll, shape velocity and controller lanes, and play ideas in live from a MIDI keyboard.</p></div>
+      </article>
+    </div>
+
+    <div class="src"><div><b>Open source, built in Rust</b><p style="color:var(--mut);font-size:.88rem">GPL-3.0. Clone it and run it today; there are no installers yet.</p></div><code>cargo run -p noodle-app</code></div>
+
+    <div class="footer">
+      <div class="tx fade-t" data-p="tiles"></div>
+      <div class="in"><span class="wm"><svg><use href="#ngl"/></svg>oodle</span><span>noodledaw.com · A node-based DAW</span></div>
+    </div>
+  </div>
+<script>
+var TH={
+  paper:{bg:'#f4f4f1',fg:'#e9e9e3'},
+  dark:{bg:'#0e1014',fg:'#1a2029'}
+};
+function port(p,fg,bg,r){return '<circle cx="'+p[0]+'" cy="'+p[1]+'" r="'+r+'" fill="'+fg+'"/><circle cx="'+p[0]+'" cy="'+p[1]+'" r="'+(r*.38)+'" fill="'+bg+'"/>';}
+function wrap(b,w,h,sx,sy){var o='';[-1,0,1].forEach(function(i){[-1,0,1].forEach(function(j){o+='<g transform="translate('+(sx+i*w)+' '+(sy+j*h)+')">'+b+'</g>';});});return o;}
+function tileIcon(cx,cy,size,rot,fg,bg){
+  var o='<g transform="translate('+cx+' '+cy+') rotate('+rot+') scale('+(size/120)+') translate(-60 -60)"><rect x="4" y="4" width="112" height="112" rx="28" fill="'+fg+'"/><path d="M34 86 V34 C64 34 56 86 86 86 V34" fill="none" stroke="'+bg+'" stroke-width="8" stroke-linecap="round" stroke-linejoin="round"/>';
+  [[34,86],[34,34],[86,86],[86,34]].forEach(function(p){o+='<circle cx="'+p[0]+'" cy="'+p[1]+'" r="10" fill="'+bg+'"/><circle cx="'+p[0]+'" cy="'+p[1]+'" r="4" fill="'+fg+'"/>';});
+  return o+'</g>';
+}
+function def(kind,th){
+  var fg=th.fg,bg=th.bg,b='',w,h;
+  if(kind==='wave'){
+    w=120;h=240;
+    var one='<path d="M0 0 C30 0 30 60 60 60 C90 60 90 0 120 0" fill="none" stroke="'+fg+'" stroke-width="6" stroke-linecap="round"/>'+[[0,0],[60,60],[120,0]].map(function(p){return port(p,fg,bg,8);}).join('');
+    var ops=[1,.7,.55,.4];
+    for(var k=0;k<4;k++){[-120,0].forEach(function(dx){b+='<g opacity="'+ops[k]+'" transform="translate('+(k*30+dx)+' '+(60*k)+')">'+one+'</g>';});}
+    b=wrap(b,w,h,15,30);
+  }else{
+    w=140;h=140;
+    b=tileIcon(35,35,52,-14,fg,bg)+'<g opacity=".6">'+tileIcon(105,105,52,14,fg,bg)+'</g>';
+  }
+  return {w:w,h:h,b:b};
+}
+var uid=0;
+function svg(kind,th){
+  var d=def(kind,th),id='z'+(uid++);
+  return '<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs><pattern id="'+id+'" width="'+d.w+'" height="'+d.h+'" patternUnits="userSpaceOnUse">'+d.b+'</pattern></defs><rect width="100%" height="100%" fill="'+th.bg+'"/><rect width="100%" height="100%" fill="url(#'+id+')"/></svg>';
+}
+function render(t){
+  document.documentElement.setAttribute('data-theme',t);
+  document.querySelectorAll('.tx').forEach(function(el){el.innerHTML=svg(el.getAttribute('data-p'),TH[t]);});
+  
+}
+
+var stored=null;try{stored=localStorage.getItem('noodle-theme');}catch(e){}
+var cur=stored||(window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches?'dark':'paper');
+function apply(t){cur=t;render(t);var m=document.getElementById('mode');m.textContent=t==='dark'?'Paper':'Dark';m.setAttribute('aria-label','Switch to the '+(t==='dark'?'paper':'dark')+' theme');}
+document.getElementById('mode').addEventListener('click',function(){var n=cur==='dark'?'paper':'dark';try{localStorage.setItem('noodle-theme',n);}catch(e){}apply(n);});
+apply(cur);
+</script>
 </body>
 </html>

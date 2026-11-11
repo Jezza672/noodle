@@ -1,4 +1,4 @@
-# Publishes site-next/ (the full landing page) to GitHub Pages, served at dev.noodledaw.com.
+# Publishes site/ (the landing page) to GitHub Pages. The domain is the one line in site/CNAME (dev.noodledaw.com for now).
 # One-off setup in the repo: Settings > Pages > Source: GitHub Actions, custom domain dev.noodledaw.com.
 name: Pages
 
@@ -6,7 +6,7 @@ on:
   push:
     branches: [main]
     paths:
-      - "site-next/**"
+      - "site/**"
       - ".github/workflows/pages.yml"
   workflow_dispatch:
 
@@ -30,6 +30,6 @@ jobs:
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
-          path: site-next
+          path: site
       - id: deployment
         uses: actions/deploy-pages@v4
