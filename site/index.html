@@ -9,13 +9,19 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500&family=Space+Grotesk:wght@500;700&display=swap">
+<script>
+/* Pick the theme before the first paint, so a dark-mode visitor never sees the light page. */
+(function(){var t=null;try{t=localStorage.getItem('noodle-theme');}catch(e){}
+if(t!=='paper'&&t!=='dark'){t=window.matchMedia&&matchMedia('(prefers-color-scheme: dark)').matches?'dark':'paper';}
+document.documentElement.setAttribute('data-theme',t);})();
+</script>
 <style>
 /* The landing page for noodledaw.com. One static file, no build step. Colours are the brand palette (docs/brand.md). */
 :root{--display:'Space Grotesk',system-ui,sans-serif;--body:'Inter',system-ui,sans-serif}
 /* the site mockup */
 .site{position:relative;overflow:hidden;min-height:100vh;font-family:var(--body);background:var(--bg);color:var(--fg)}
-.site[data-theme="paper"]{--bg:#f4f4f1;--fg:#14161b;--mut:#5b6170;--ln:#d6d6cf;--card:#ffffff;--cardln:#14161b1f;--hole:#f4f4f1;--acc:#14161b;--wire1:#14161b;--wire2:#3c5aa8;--port:#c8f169;--portln:#14161b;--grid:#e6e6e0;--ink:#14161b;--btnbg:#14161b;--btnfg:#f4f4f1;--c1:#3c5aa8;--c2:#c8f169;--c3:#ff7a6b;--c4:#14161b;--c1t:#fff;--c2t:#1c2a05;--c3t:#2a0a07;--c4t:#f4f4f1;--black:#14161b;--white:#fff;--note:#14161b;--notesel:#3c5aa8}
-.site[data-theme="dark"]{--bg:#0e1014;--fg:#e6e9ef;--mut:#9aa3b2;--ln:#2a2f39;--card:#171a20;--cardln:#343a47;--hole:#0e1014;--acc:#c8f169;--wire1:#c8f169;--wire2:#3c5aa8;--port:#c8f169;--portln:#0e1014;--grid:#232831;--ink:#e6e9ef;--btnbg:#c8f169;--btnfg:#1c2a05;--c1:#3c5aa8;--c2:#c8f169;--c3:#ff7a6b;--c4:#4a5263;--c1t:#fff;--c2t:#1c2a05;--c3t:#2a0a07;--c4t:#e6e9ef;--black:#0e1014;--white:#2a303b;--note:#c8f169;--notesel:#ff7a6b}
+html[data-theme="paper"] .site{--bg:#f4f4f1;--fg:#14161b;--mut:#5b6170;--ln:#d6d6cf;--card:#ffffff;--cardln:#14161b1f;--hole:#f4f4f1;--acc:#14161b;--wire1:#14161b;--wire2:#3c5aa8;--port:#c8f169;--portln:#14161b;--grid:#e6e6e0;--ink:#14161b;--btnbg:#14161b;--btnfg:#f4f4f1;--c1:#3c5aa8;--c2:#c8f169;--c3:#ff7a6b;--c4:#14161b;--c1t:#fff;--c2t:#1c2a05;--c3t:#2a0a07;--c4t:#f4f4f1;--black:#14161b;--white:#fff;--note:#14161b;--notesel:#3c5aa8}
+html[data-theme="dark"] .site{--bg:#0e1014;--fg:#e6e9ef;--mut:#9aa3b2;--ln:#2a2f39;--card:#171a20;--cardln:#343a47;--hole:#0e1014;--acc:#c8f169;--wire1:#c8f169;--wire2:#3c5aa8;--port:#c8f169;--portln:#0e1014;--grid:#232831;--ink:#e6e9ef;--btnbg:#c8f169;--btnfg:#1c2a05;--c1:#3c5aa8;--c2:#c8f169;--c3:#ff7a6b;--c4:#4a5263;--c1t:#fff;--c2t:#1c2a05;--c3t:#2a0a07;--c4t:#e6e9ef;--black:#0e1014;--white:#2a303b;--note:#c8f169;--notesel:#ff7a6b}
 .tx{position:absolute;inset:0;pointer-events:none}
 .tx svg{display:block;width:100%;height:100%}
 .fade-b{-webkit-mask-image:linear-gradient(#000 35%,transparent 100%);mask-image:linear-gradient(#000 35%,transparent 100%)}
@@ -30,7 +36,7 @@
 .btn.s{border-color:var(--fg);color:var(--fg)}
 .hero{display:grid;grid-template-columns:minmax(0,1.15fr) minmax(0,.85fr);gap:28px;align-items:center;padding:34px 28px 52px}
 @media(max-width:760px){.hero{grid-template-columns:minmax(0,1fr)}}
-.hero h2{font:700 clamp(2.3rem,6vw,3.8rem)/1.02 var(--display);letter-spacing:-.03em;margin:0}
+.hero h1{font:700 clamp(2.3rem,6vw,3.8rem)/1.02 var(--display);letter-spacing:-.03em;margin:0}
 .hero p{color:var(--mut);font-size:1.05rem;margin-top:14px}
 .row{display:flex;flex-wrap:wrap;gap:10px;margin-top:22px}
 .status{font-size:.8rem;color:var(--mut);margin-top:14px}
@@ -60,8 +66,8 @@
 .vis .gl{stroke:var(--grid);stroke-width:1}
 .vis .gl2{stroke:var(--mut);stroke-width:1;opacity:.5}
 
-.site[data-theme="paper"]{color-scheme:light}
-.site[data-theme="dark"]{color-scheme:dark}
+html[data-theme="paper"] .site{color-scheme:light}
+html[data-theme="dark"] .site{color-scheme:dark}
 .nav nav{align-items:center}
 .nav nav a{color:inherit;text-decoration:none}
 .nav nav a:hover{color:var(--fg)}
@@ -69,6 +75,8 @@
 .mode:focus-visible,.btn:focus-visible,.nav nav a:focus-visible{outline:2px solid var(--fg);outline-offset:3px}
 a.btn{text-decoration:none;cursor:pointer}
 body{margin:0}
+html[data-theme="paper"]{background:#f4f4f1;color-scheme:light}
+html[data-theme="dark"]{background:#0e1014;color-scheme:dark}
 .nav,.hero,.feats,.src,.footer .in{box-sizing:border-box}
 .src{margin-inline:max(16px,calc((100% - 1024px)/2))}
 .feats,.nav,.hero,.footer .in{padding-left:max(16px,calc((100% - 1024px)/2),env(safe-area-inset-left,0px));padding-right:max(16px,calc((100% - 1024px)/2),env(safe-area-inset-right,0px))}
@@ -76,7 +84,7 @@ body{margin:0}
 
 </style>
 </head>
-<body class="site" id="site" data-theme="paper">
+<body class="site" id="site">
 <svg width="0" height="0" style="position:absolute" aria-hidden="true">
  <defs>
   <symbol id="ngl" viewBox="19.5 19.5 81 81">
@@ -91,7 +99,7 @@ body{margin:0}
     <div class="nav"><span class="wm"><svg><use href="#ngl"/></svg>oodle</span><nav><a href="#features">Features</a><a href="https://github.com/Jezza672/noodle/tree/main/docs">Docs</a><a href="https://github.com/Jezza672/noodle">Source</a><button type="button" id="mode" class="mode" aria-label="Switch colour theme">Dark</button></nav></div>
     <div class="hero">
       <div>
-        <h2>Wire up sound.</h2>
+        <h1>Wire up sound.</h1>
         <p>Noodle is a node-based DAW. Build instruments and mixes by connecting nodes, then arrange them on a timeline.</p>
         <div class="row"><a class="btn p" href="https://github.com/Jezza672/noodle">Read the source</a><a class="btn s" href="https://github.com/Jezza672/noodle#trying-it">Build from source</a></div>
         <div class="status">Open source, GPL-3.0. Built in Rust.</div>
@@ -187,7 +195,7 @@ function svg(kind,th){
   return '<svg xmlns="http://www.w3.org/2000/svg" aria-hidden="true"><defs><pattern id="'+id+'" width="'+d.w+'" height="'+d.h+'" patternUnits="userSpaceOnUse">'+d.b+'</pattern></defs><rect width="100%" height="100%" fill="'+th.bg+'"/><rect width="100%" height="100%" fill="url(#'+id+')"/></svg>';
 }
 function render(t){
-  document.getElementById('site').setAttribute('data-theme',t);
+  document.documentElement.setAttribute('data-theme',t);
   document.querySelectorAll('.tx').forEach(function(el){el.innerHTML=svg(el.getAttribute('data-p'),TH[t]);});
   
 }
