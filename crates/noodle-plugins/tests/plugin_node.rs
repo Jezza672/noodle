@@ -7,7 +7,7 @@ use std::f32::consts::TAU;
 use base64::Engine as _;
 use common::*;
 use noodle_engine::testing::Harness;
-use noodle_engine::{Config, Event, EventKind, NodeType, NoteId, Shape, Value};
+use noodle_engine::{Config, NodeType, Shape, Value};
 use noodle_plugins::{STATE_KEY, capture_state};
 
 // Port order: in, Gain, Invert, out, notes.
@@ -20,15 +20,6 @@ const RATE: f32 = 48_000.0;
 fn harness(config: &Config, connected: &[(usize, Shape)]) -> Harness {
     let catalog = catalog();
     Harness::new(node_type(&catalog), config, connected, RATE, 256).expect("harness")
-}
-
-fn fill_input(h: &mut Harness, frames: usize, value: impl Fn(usize) -> f32) {
-    let mut input = h.input(IN, frames);
-    for channel in 0..input.shape().channels {
-        for (i, s) in input.lane_mut(0, channel).iter_mut().enumerate() {
-            *s = value(i);
-        }
-    }
 }
 
 #[test]
@@ -135,33 +126,11 @@ fn a_three_channel_signal_into_a_stereo_port_is_refused() {
     assert!(result.is_err());
 }
 
-fn note_on(time: u32, id: u32, key: u8, velocity: f32) -> Event {
-    Event {
-        time,
-        kind: EventKind::NoteOn {
-            note: NoteId(id),
-            channel: 0,
-            key,
-            velocity,
-        },
-    }
-}
-
-fn note_off(time: u32, id: u32) -> Event {
-    Event {
-        time,
-        kind: EventKind::NoteOff {
-            note: NoteId(id),
-            velocity: 0.0,
-        },
-    }
-}
-
 #[test]
 fn a_note_makes_the_plugin_sound_at_that_pitch_and_a_note_off_stops_it() {
     let mut h = harness(&Config::new(), &[]);
     // A4 at full velocity.
-    h.send_events(0, &[note_on(0, 7, 69, 1.0)]);
+    h.send_events(0, &[note_on(0, 7, 69)]);
     h.run(256).unwrap();
     {
         let out = h.output(0);
@@ -188,8 +157,8 @@ fn every_note_input_reaches_the_plugin_in_time_order() {
     // A4 on the second port (an octave up) at frame 0 and on the first at
     // frame 100: the later port's event is the earlier in time. Same note id
     // on both, so the notes are kept apart by port.
-    h.send_events(0, &[note_on(100, 1, 69, 1.0)]);
-    h.send_events(1, &[note_on(0, 1, 69, 1.0)]);
+    h.send_events(0, &[note_on(100, 1, 69)]);
+    h.send_events(1, &[note_on(0, 1, 69)]);
     h.run(256).unwrap();
     let out = h.output(0);
     for (i, &s) in out.lane(0, 0).iter().enumerate().skip(1) {
@@ -220,7 +189,7 @@ fn every_note_input_reaches_the_plugin_in_time_order() {
 #[test]
 fn a_note_starts_at_its_frame_within_the_block() {
     let mut h = harness(&Config::new(), &[]);
-    h.send_events(0, &[note_on(100, 1, 69, 1.0)]);
+    h.send_events(0, &[note_on(100, 1, 69)]);
     h.run(256).unwrap();
     // The plugin applies note events at their frame: silence until 100, and
     // the sine starts there (it's 0 at its first frame).

@@ -7,9 +7,9 @@
 mod common;
 
 use base64::Engine as _;
-use common::scanner;
+use common::{note_off, note_on, scanner};
 use noodle_engine::testing::Harness;
-use noodle_engine::{Config, Event, EventKind, NodeType, NoteId, Shape, Value};
+use noodle_engine::{Config, NodeType, Shape, Value};
 use noodle_plugins::{
     Catalog, Descriptor, PluginFile, PluginFormat, STATE_KEY, audio_unit_files, capture_state,
     describe_file, scan_file,
@@ -168,28 +168,6 @@ fn the_default_second_of_delay_echoes_the_input() {
         (180..=196).contains(&block),
         "a second is about 187 blocks, the echo came at {block}"
     );
-}
-
-fn note_on(time: u32, id: u32, key: u8) -> Event {
-    Event {
-        time,
-        kind: EventKind::NoteOn {
-            note: NoteId(id),
-            channel: 0,
-            key,
-            velocity: 1.0,
-        },
-    }
-}
-
-fn note_off(time: u32, id: u32) -> Event {
-    Event {
-        time,
-        kind: EventKind::NoteOff {
-            note: NoteId(id),
-            velocity: 0.0,
-        },
-    }
 }
 
 fn peak_of_block(h: &mut Harness) -> f32 {

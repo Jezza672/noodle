@@ -282,11 +282,11 @@ pub fn build(p: &mut Patch, instrument: &Instrument, column: f32, row: f32) -> N
 /// output per slot, a Sampler and a Pan for each, and a Mix.
 fn drum_rack(p: &mut Patch, rack: &Rack) {
     let n = rack.slots.len();
-    let notes = p.input("notes", 0.0);
+    let notes = p.input("notes");
     let swing = rack.controls.then(|| {
         let swing = p.add(spec("noodle.event.swing"), 1.0, 0.0);
         p.connect(notes, (swing, "in"));
-        let input = p.input("Swing", 0.0);
+        let input = p.input("Swing");
         p.connect(input, (swing, "amount"));
         swing
     });
@@ -304,7 +304,7 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
         6.0,
         0.0,
     );
-    let out = p.output("out", 7.0, 0.0);
+    let out = p.output("out");
     p.connect((mix, "out"), out);
     for (i, slot) in rack.slots.iter().enumerate() {
         let row = i as f32;
@@ -318,9 +318,9 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
         } else {
             format!("{} {}", drum_label(slot.drum), i + 1)
         };
-        let level = p.input(&format!("{label} level"), row * 2.0 + 1.0);
-        let tune = p.input(&format!("{label} tune"), row * 2.0 + 2.0);
-        let slot_pan = p.input(&format!("{label} pan"), row * 2.0 + 3.0);
+        let level = p.input(&format!("{label} level"));
+        let tune = p.input(&format!("{label} tune"));
+        let slot_pan = p.input(&format!("{label} pan"));
         if rack.controls {
             // The hats cut each other off.
             let group = if matches!(slot.key, 42 | 46) {
@@ -329,7 +329,7 @@ fn drum_rack(p: &mut Patch, rack: &Rack) {
                 0.0
             };
             set_param(p, split, &format!("choke{}", i + 1), group);
-            let choke = p.input(&format!("{label} choke"), row * 2.0 + 4.0);
+            let choke = p.input(&format!("{label} choke"));
             p.connect(choke, (split, choke_key(i)));
         }
         let sampler = p.add(
@@ -479,16 +479,16 @@ fn choke_key(i: usize) -> &'static str {
 
 fn tonal(p: &mut Patch, tone: &Tone) {
     let poly = tone.voices > 1;
-    let pitch = p.input("pitch", 0.0);
-    let gate = p.input("gate", 1.0);
-    let velocity = p.input("velocity", 2.0);
-    let fade: Option<Port> = poly.then(|| p.input("fade", 3.0));
-    let cutoff = p.input("cutoff", 4.0);
-    let resonance = p.input("resonance", 5.0);
-    let amount = p.input("amount", 6.0);
-    let detune = p.input("detune", 7.0);
-    let attack = p.input("attack", 8.0);
-    let release = p.input("release", 9.0);
+    let pitch = p.input("pitch");
+    let gate = p.input("gate");
+    let velocity = p.input("velocity");
+    let fade: Option<Port> = poly.then(|| p.input("fade"));
+    let cutoff = p.input("cutoff");
+    let resonance = p.input("resonance");
+    let amount = p.input("amount");
+    let detune = p.input("detune");
+    let attack = p.input("attack");
+    let release = p.input("release");
 
     // The oscillators, each at its own multiple of the pitch and its own
     // spread of the detune control.
@@ -568,10 +568,10 @@ fn tonal(p: &mut Patch, tone: &Tone) {
         p.connect(fade, (faded, "level"));
         last = (faded, "out");
     }
-    let out = p.output("out", 11.0, 0.0);
+    let out = p.output("out");
     p.connect(last, out);
     if poly {
-        let active = p.output("active", 11.0, 4.0);
+        let active = p.output("active");
         p.connect((amp, "active"), active);
     }
 }
@@ -604,10 +604,10 @@ struct DrumFrame {
 fn drum_frame(p: &mut Patch) -> DrumFrame {
     // A drum is played by its gate; a pitch input keeps the same wiring as the
     // tonal instruments, and is unused.
-    let _pitch = p.input("pitch", 0.0);
+    let _pitch = p.input("pitch");
     DrumFrame {
-        gate: p.input("gate", 1.0),
-        velocity: p.input("velocity", 2.0),
+        gate: p.input("gate"),
+        velocity: p.input("velocity"),
     }
 }
 
@@ -616,15 +616,15 @@ fn finish(p: &mut Patch, frame: &DrumFrame, signal: Port, column: f32) {
     let touch = p.add(spec("noodle.util.vca"), column, 0.0);
     p.connect(signal, (touch, "in"));
     p.connect(frame.velocity, (touch, "level"));
-    let out = p.output("out", column + 1.0, 0.0);
+    let out = p.output("out");
     p.connect((touch, "out"), out);
 }
 
 fn kick(p: &mut Patch, base: f32, sweep: f32, decay: f32) {
     let frame = drum_frame(p);
-    let tune = p.input("tune", 3.0);
-    let punch = p.input("sweep", 4.0);
-    let length = p.input("decay", 5.0);
+    let tune = p.input("tune");
+    let punch = p.input("sweep");
+    let length = p.input("decay");
     let fall = p.add(adsr(env(0.001, 0.04, 0.0, 0.02)), 2.0, 1.0);
     p.connect(frame.gate, (fall, "gate"));
     let frequency = p.add(
@@ -648,8 +648,8 @@ fn kick(p: &mut Patch, base: f32, sweep: f32, decay: f32) {
 
 fn snare(p: &mut Patch, tone: f32, noise: f32, decay: f32) {
     let frame = drum_frame(p);
-    let tune = p.input("tune", 3.0);
-    let length = p.input("decay", 4.0);
+    let tune = p.input("tune");
+    let length = p.input("decay");
     let hiss = p.add(spec("noodle.noise.white"), 2.0, 0.0);
     let band = p.add(
         spec("noodle.filter.svf")
@@ -687,8 +687,8 @@ fn snare(p: &mut Patch, tone: f32, noise: f32, decay: f32) {
 
 fn hat(p: &mut Patch, cutoff: f32, decay: f32) {
     let frame = drum_frame(p);
-    let brightness = p.input("cutoff", 3.0);
-    let length = p.input("decay", 4.0);
+    let brightness = p.input("cutoff");
+    let length = p.input("decay");
     let hiss = p.add(spec("noodle.noise.white"), 2.0, 0.0);
     let high = p.add(
         spec("noodle.filter.svf")
@@ -710,8 +710,8 @@ fn hat(p: &mut Patch, cutoff: f32, decay: f32) {
 
 fn clap(p: &mut Patch, cutoff: f32, decay: f32) {
     let frame = drum_frame(p);
-    let brightness = p.input("cutoff", 3.0);
-    let length = p.input("decay", 4.0);
+    let brightness = p.input("cutoff");
+    let length = p.input("decay");
     let hiss = p.add(spec("noodle.noise.white"), 2.0, 0.0);
     let band = p.add(
         spec("noodle.filter.svf")

@@ -327,7 +327,7 @@ fn wait<T>(receiver: &Receiver<Result<T, HostError>>, timeout: Duration) -> Resu
 }
 
 fn cstring(id: &str) -> Result<CString, HostError> {
-    CString::new(id).map_err(|e| HostError(e.to_string()))
+    CString::new(id).map_err(HostError::of)
 }
 
 /// Runs `job` on the plugin thread and waits up to `timeout` for what it
@@ -646,7 +646,7 @@ fn load(
                 max_frames_count: max_frames as u32,
             },
         )
-        .map_err(|e| HostError(e.to_string()))?;
+        .map_err(HostError::of)?;
     // Latency is only meaningful once the plugin is activated.
     let latency = {
         let handle = instance.plugin_handle();

@@ -24,6 +24,13 @@ mod stream;
 mod ump;
 mod wav;
 
+#[cfg(test)]
+fn temp(name: &str) -> std::path::PathBuf {
+    let dir = std::env::temp_dir().join("noodle-io-tests");
+    std::fs::create_dir_all(&dir).unwrap();
+    dir.join(name)
+}
+
 pub use cache::{CacheInfo, CacheStore, CacheUsage, CacheWriter, CachedAudio};
 pub use decode::{DecodeError, Decoder, FileInfo, decode_file};
 pub use devices::{

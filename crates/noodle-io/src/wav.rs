@@ -42,6 +42,23 @@ pub fn set_wav_channel_mask(path: &Path, channels: usize) -> std::io::Result<()>
     file.write_all(&layout.wav_mask().to_le_bytes())
 }
 
+/// The header of a 32-bit float WAV.
+pub(crate) fn float_spec(channels: usize, sample_rate: u32) -> Result<hound::WavSpec, WavError> {
+    Ok(hound::WavSpec {
+        channels: u16::try_from(channels).map_err(|_| WavError::Unsupported)?,
+        sample_rate,
+        bits_per_sample: 32,
+        sample_format: hound::SampleFormat::Float,
+    })
+}
+
+/// The sibling file a write goes to before it replaces `path`.
+pub(crate) fn partial_path(path: &Path) -> PathBuf {
+    let mut partial = path.as_os_str().to_owned();
+    partial.push(".partial");
+    PathBuf::from(partial)
+}
+
 /// Writes 32-bit float WAV, which keeps every sample exactly.
 pub fn write_wav(
     path: &Path,
@@ -49,13 +66,7 @@ pub fn write_wav(
     channels: usize,
     sample_rate: u32,
 ) -> Result<(), WavError> {
-    let spec = hound::WavSpec {
-        channels: u16::try_from(channels).map_err(|_| WavError::Unsupported)?,
-        sample_rate,
-        bits_per_sample: 32,
-        sample_format: hound::SampleFormat::Float,
-    };
-    let mut writer = hound::WavWriter::create(path, spec)?;
+    let mut writer = hound::WavWriter::create(path, float_spec(channels, sample_rate)?)?;
     for &sample in samples {
         writer.write_sample(sample)?;
     }
@@ -80,15 +91,8 @@ impl WavStreamWriter {
         if channels == 0 {
             return Err(WavError::Unsupported);
         }
-        let spec = hound::WavSpec {
-            channels: u16::try_from(channels).map_err(|_| WavError::Unsupported)?,
-            sample_rate,
-            bits_per_sample: 32,
-            sample_format: hound::SampleFormat::Float,
-        };
-        let mut partial = path.as_os_str().to_owned();
-        partial.push(".partial");
-        let partial = PathBuf::from(partial);
+        let spec = float_spec(channels, sample_rate)?;
+        let partial = partial_path(path);
         Ok(Self {
             writer: Some(hound::WavWriter::create(&partial, spec)?),
             partial,
@@ -177,12 +181,7 @@ mod tests {
     }
 
     use super::*;
-
-    fn temp(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("noodle-io-tests");
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join(name)
-    }
+    use crate::temp;
 
     #[test]
     fn float_wav_round_trips_exactly() {

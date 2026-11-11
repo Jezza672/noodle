@@ -220,11 +220,17 @@ pub(crate) fn new_instance(
         id,
         info,
     )
-    .map_err(|e| HostError(e.to_string()))
+    .map_err(HostError::of)
 }
 
 #[derive(Debug)]
 pub struct HostError(pub String);
+
+impl HostError {
+    pub(crate) fn of(error: impl std::fmt::Display) -> Self {
+        Self(error.to_string())
+    }
+}
 
 impl std::fmt::Display for HostError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -249,7 +255,7 @@ pub(crate) fn host_info() -> Result<HostInfo, HostError> {
         "https://github.com/Jezza672/noodle",
         env!("CARGO_PKG_VERSION"),
     )
-    .map_err(|e| HostError(e.to_string()))
+    .map_err(HostError::of)
 }
 
 pub(crate) fn load_entry(path: &Path) -> Result<PluginEntry, HostError> {
@@ -451,7 +457,7 @@ pub(crate) fn load_state(
         .get_extension::<PluginState>()
         .ok_or_else(|| HostError("this plugin can't load state".into()))?;
     ext.load(&handle, &mut Cursor::new(state))
-        .map_err(|error| HostError(error.to_string()))
+        .map_err(HostError::of)
 }
 
 pub(crate) fn save_state_of(instance: &mut PluginInstance<Host>) -> Result<Vec<u8>, HostError> {
@@ -460,8 +466,7 @@ pub(crate) fn save_state_of(instance: &mut PluginInstance<Host>) -> Result<Vec<u
         .get_extension::<PluginState>()
         .ok_or_else(|| HostError("this plugin can't save state".into()))?;
     let mut bytes = Vec::new();
-    ext.save(&handle, &mut bytes)
-        .map_err(|error| HostError(error.to_string()))?;
+    ext.save(&handle, &mut bytes).map_err(HostError::of)?;
     Ok(seal_state(&bytes))
 }
 

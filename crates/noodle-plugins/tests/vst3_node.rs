@@ -8,7 +8,7 @@ use std::f32::consts::TAU;
 use base64::Engine as _;
 use common::*;
 use noodle_engine::testing::Harness;
-use noodle_engine::{Config, Event, EventKind, NodeType, NoteId, Shape, Value};
+use noodle_engine::{Config, Event, EventKind, NodeType, Shape, Value};
 use noodle_plugins::{PluginFormat, STATE_KEY, capture_state, scan_file};
 
 // Port order: in, Gain, Invert, out, notes, notes2. (Boost is hidden.)
@@ -21,37 +21,6 @@ const RATE: f32 = 48_000.0;
 fn harness(config: &Config, connected: &[(usize, Shape)]) -> Harness {
     let catalog = vst3_catalog();
     Harness::new(vst3_node_type(&catalog), config, connected, RATE, 256).expect("harness")
-}
-
-fn fill_input(h: &mut Harness, frames: usize, value: impl Fn(usize) -> f32) {
-    let mut input = h.input(IN, frames);
-    for channel in 0..input.shape().channels {
-        for (i, s) in input.lane_mut(0, channel).iter_mut().enumerate() {
-            *s = value(i);
-        }
-    }
-}
-
-fn note_on(time: u32, id: u32, key: u8) -> Event {
-    Event {
-        time,
-        kind: EventKind::NoteOn {
-            note: NoteId(id),
-            channel: 0,
-            key,
-            velocity: 1.0,
-        },
-    }
-}
-
-fn note_off(time: u32, id: u32) -> Event {
-    Event {
-        time,
-        kind: EventKind::NoteOff {
-            note: NoteId(id),
-            velocity: 0.0,
-        },
-    }
 }
 
 /// The plugin's state as the node saves it: a header, the component's bytes

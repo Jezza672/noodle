@@ -458,12 +458,7 @@ impl Source {
         } else {
             want_abs
         };
-        let landed = if start == 0 {
-            self.decoder.seek(0)?
-        } else {
-            self.decoder.seek(start)?
-        };
-        let landed = landed.min(start);
+        let landed = self.decoder.seek(start)?.min(start);
         self.to_skip = start - landed;
         // Read up to the end of the clip, plus a little for the filter's tail.
         let end = self.offset + self.length;
@@ -527,12 +522,6 @@ impl Source {
             return Ok(false);
         }
         let partial = available < need;
-        if partial && self.to_read == 0 {
-            // The clip's end: one more chunk of silence pushes the tail out.
-            if available == 0 {
-                self.flushed = true;
-            }
-        }
         let resampler = self.resampler.as_mut().expect("checked above");
         let out_frames = resampler.output_frames_next();
         self.scratch.resize(out_frames * channels, 0.0);
@@ -564,6 +553,7 @@ impl Source {
         self.output
             .extend_from_slice(&self.scratch[skip * channels..written * channels]);
         if partial && self.to_read == 0 && available == 0 {
+            // The clip's end: the silence just fed pushed the tail out.
             self.flushed = true;
         }
         Ok(true)
@@ -616,13 +606,7 @@ mod tests {
     use std::time::Duration;
 
     use super::*;
-    use crate::write_wav;
-
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("noodle-io-tests");
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join(name)
-    }
+    use crate::{temp, write_wav};
 
     /// A stereo file whose left channel counts up and whose right counts down,
     /// so any misplaced frame shows.
