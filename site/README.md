@@ -1,10 +1,9 @@
-# Website
+# Website (what noodledaw.com serves now)
 
-The landing page for noodledaw.com: one static file, `index.html`, with no build step. Open it in a browser to preview it.
+The "coming soon" holding page: one static file, `index.html`, with no build step, no scripts and no links. Open it in a browser to preview it.
 
-- Light (paper) and dark themes. It follows the system setting, and the button in the nav overrides it and is remembered.
-- The textures are drawn by the script at the bottom of the page from the brand marks (see [docs/brand.md](../docs/brand.md) and `assets/brand/`). The three pictures in the feature cards are drawn illustrations, not screenshots; replace them with real screenshots once the app's look settles.
-- Fonts (Space Grotesk and Inter) load from Google Fonts. Self-host them if the site should work without that request.
+- The background is the wordmark repeated on a diagonal, drawn as an SVG pattern from the outlined wordmark. It follows the system light or dark setting.
+- Fonts (Space Grotesk and Inter) load from Google Fonts.
 - `favicon.svg` is the app icon tile (`assets/brand/logo/icon.svg`).
 
-Not set up yet: hosting. Serving `site/` from GitHub Pages (or any static host) is a repository setting plus a DNS record for noodledaw.com.
+The full landing page lives in [`site-next/`](../site-next/README.md). It is not served from here; it is what dev.noodledaw.com is meant to host until it replaces this page.
