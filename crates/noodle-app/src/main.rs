@@ -38,9 +38,7 @@ mod session;
 mod settings;
 mod snap;
 mod stems_dialog;
-// The framework's API is ahead of the routes that will use it.
 #[cfg(test)]
-#[allow(dead_code)]
 mod stories;
 mod tempo;
 mod tempo_source;

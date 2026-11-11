@@ -12,7 +12,6 @@
 //! The terms are the ones other DAWs use for what Noodle does; add a term
 //! whenever a user story or a review turns up a new name.
 
-use egui::Pos2;
 use noodle_core::library::Library;
 
 use crate::editor::search_entries as entries;
@@ -50,7 +49,6 @@ const fn command(term: &'static str, ids: &'static [&'static str]) -> Term {
     }
 }
 
-#[allow(dead_code)]
 const fn elsewhere(term: &'static str, place: &'static str) -> Term {
     Term {
         term,
@@ -223,11 +221,6 @@ pub fn json(rows: &[Row]) -> String {
         .collect();
     format!("[{}]\n", items.join(",\n"))
 }
-
-/// Where a search box would put a new node; unused by the check, which calls
-/// the same function the box does.
-#[allow(dead_code)]
-const _AT: Pos2 = Pos2::ZERO;
 
 #[cfg(test)]
 mod tests {

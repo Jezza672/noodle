@@ -208,6 +208,7 @@ impl<'h> Handle<'h> {
 
     /// Types a program into the focused Script text box. Scored as code:
     /// see `effort.rs`.
+    #[allow(dead_code, reason = "no route types a program yet")]
     pub fn type_code(&mut self, at: Pos2, code: &str) {
         testkit::type_code(self.h, at, code);
         self.watch(false);
@@ -378,15 +379,6 @@ impl Probe<'_> {
         self.h.get_by_label(label).rect().center()
     }
 
-    /// The centre of the one multi-line text box on screen (a Script node's
-    /// text in the properties).
-    pub fn text_box(&self) -> Pos2 {
-        self.h
-            .get_by_role(egui::accesskit::Role::MultilineTextInput)
-            .rect()
-            .center()
-    }
-
     /// The centre of the one single-line text box on screen (the name field
     /// of an open menu).
     pub fn line_box(&self) -> Pos2 {
@@ -456,11 +448,6 @@ impl Probe<'_> {
             .center()
     }
 
-    /// Where the playhead is.
-    pub fn playhead(&self) -> noodle_core::Tick {
-        self.h.state().session().playhead()
-    }
-
     /// Where the arrangement's ruler is at `seconds` into the song.
     pub fn ruler_at(&self, seconds: f64) -> Pos2 {
         self.h
@@ -495,13 +482,6 @@ impl Probe<'_> {
     /// Whether anything on screen has a label containing `word`.
     pub fn mentions(&self, word: &str) -> bool {
         self.h.query_all_by_label_contains(word).next().is_some()
-    }
-
-    pub fn labels_like(&self, word: &str) -> Vec<String> {
-        self.h
-            .query_all_by_label_contains(word)
-            .map(|n| format!("{:?}", n))
-            .collect()
     }
 
     /// Whether anything on screen is labelled exactly `label`.

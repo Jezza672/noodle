@@ -9,7 +9,7 @@
 
 use std::path::Path;
 
-use super::super::handle::{Handle, Probe};
+use super::super::handle::Probe;
 use super::super::{Keep, LateChange, Route, Tag};
 use super::patch::{Op, Ref, audible, check, kind, nodes_of, output, run, seeded, upstream};
 use crate::app::App;
@@ -175,6 +175,3 @@ fn mapping(p: &Project) -> String {
     lines.sort();
     lines.join("\n")
 }
-
-#[allow(dead_code)]
-fn _unused(_: &mut Handle, _: &mut Probe) {}

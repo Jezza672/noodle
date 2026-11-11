@@ -151,7 +151,7 @@ fn default_of(registry: &Registry, node: Option<&Node>, key: &str) -> Option<f32
         .inputs
         .iter()
         .find(|input| input.key == key)
-        .map(|input| input.default_value())
+        .map(noodle_engine::InputPort::default_value)
 }
 
 /// Presses a button: flips its state.

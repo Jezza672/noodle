@@ -77,6 +77,10 @@ pub struct Chord {
     pub key: Key,
     pub surface: Surface,
     /// Where the other way is, or why there is none.
+    #[allow(
+        dead_code,
+        reason = "documents each chord; the scorecard does not read it"
+    )]
     pub note: &'static str,
 }
 

@@ -85,8 +85,7 @@ fn kit(dir: &Path) -> App {
         let pad = graph
             .children(Some(rack))
             .find(|&(id, _)| crate::editor::group_title(graph, id) == pad)
-            .map(|(id, _)| id)
-            .unwrap_or_else(|| panic!("the rack has a pad called {pad}"));
+            .map_or_else(|| panic!("the rack has a pad called {pad}"), |(id, _)| id);
         graph
             .children(Some(pad))
             .find(|(_, n)| n.type_id == SAMPLER_ID)
@@ -164,8 +163,7 @@ fn node_of(p: &Project, type_id: &str) -> NodeId {
     p.graph()
         .nodes()
         .find(|(_, n)| n.type_id == type_id)
-        .map(|(id, _)| id)
-        .unwrap_or_else(|| panic!("no {type_id} node"))
+        .map_or_else(|| panic!("no {type_id} node"), |(id, _)| id)
 }
 
 /// The Drum Rack group: the top-level group.
@@ -271,8 +269,7 @@ fn swung_and_choked(p: &Project) -> Result<(), String> {
         graph
             .children(Some(rack))
             .find(|&(id, _)| crate::editor::group_title(graph, id) == name)
-            .map(|(id, _)| id)
-            .unwrap_or_else(|| panic!("no pad called {name}"))
+            .map_or_else(|| panic!("no pad called {name}"), |(id, _)| id)
     };
     let (closed, open) = (pad("Closed Hat"), pad("Open Hat"));
     for (from, to) in [(closed, open), (open, closed)] {

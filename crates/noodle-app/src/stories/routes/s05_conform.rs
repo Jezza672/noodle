@@ -17,10 +17,6 @@ use super::super::handle::{Handle, Probe};
 use super::super::{Keep, LateChange, Route, Tag};
 use super::audio_clip::{clicks_at, clip_of};
 
-const A_MINOR: Key = Key {
-    tonic: 9,
-    mode: Mode::Minor,
-};
 const F_MINOR: Key = Key {
     tonic: 5,
     mode: Mode::Minor,

@@ -21,7 +21,8 @@ use noodle_nodes::{DYNAMICS_ID, GAIN_ID};
 
 use super::super::handle::{Handle, Probe, peak};
 use super::super::{Keep, LateChange, Route, Tag};
-use super::{add_node, finished, reveal, virtual_session};
+use super::patch::wire;
+use super::{add_node, finished, virtual_session};
 use crate::app::App;
 use crate::session::Edit;
 
@@ -103,17 +104,6 @@ fn feeds_node(p: &Project, from: NodeId, to: NodeId) -> bool {
     p.graph()
         .connections()
         .any(|c| c.from.node == from && c.to.node == to)
-}
-
-fn wire(h: &mut Handle, from: (NodeId, &str), to: (NodeId, &str)) {
-    let a = h.socket(from.0, true, from.1);
-    let b = h.socket(to.0, false, to.1);
-    let (a, b) = if reveal(h, &[a, b]) == egui::Vec2::ZERO {
-        (a, b)
-    } else {
-        (h.socket(from.0, true, from.1), h.socket(to.0, false, to.1))
-    };
-    h.drag_playing(&[a, b]);
 }
 
 fn sources(p: &Project) -> (NodeId, NodeId, NodeId) {
@@ -355,7 +345,7 @@ fn post_fader(h: &mut Handle, _size: usize) {
             .graph()
             .connections()
             .find(|c| c.from.node == bus && c.to.node == parallel)
-            .map(|c| c.to.port.clone())
+            .map(|c| c.to.port)
             .expect("the send wire");
         (fader, parallel, send)
     };

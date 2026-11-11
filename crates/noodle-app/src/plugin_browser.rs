@@ -93,7 +93,10 @@ impl PluginBrowser {
             });
         }
         let found = matches(
-            session.plugins().iter().map(|p| p.descriptor()),
+            session
+                .plugins()
+                .iter()
+                .map(noodle_plugins::PluginNodeType::descriptor),
             &self.query,
         );
         ui.weak(format!(
