@@ -708,6 +708,8 @@ impl Palette {
     pub fn open(&mut self) {
         *self = Self {
             open: true,
+            // egui remembers the list's scroll between openings.
+            follow_selection: true,
             ..Self::default()
         };
     }
