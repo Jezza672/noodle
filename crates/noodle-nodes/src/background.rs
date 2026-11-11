@@ -33,8 +33,8 @@ pub struct RenderRequest {
     pub settings: Settings,
     pub frames: usize,
     /// Called on the render's registry after the built-in nodes and the
-    /// library are registered, to add node types the app has (plugins, in
-    /// M5). The registry is the render's own, on the render's thread.
+    /// library are registered, to add node types the app has (plugins). The
+    /// registry is the render's own, on the render's thread.
     pub extend_registry: Option<ExtendRegistry>,
 }
 

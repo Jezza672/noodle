@@ -1,4 +1,4 @@
-//! Clips: audio (and from M3, MIDI) placed on the timeline for a track input node to play.
+//! Clips: audio and MIDI placed on the timeline for a track input node to play.
 
 use std::fmt;
 

@@ -40,8 +40,7 @@ pub struct Project {
     track_order: Vec<NodeId>,
     /// Colours and folders for the tracks (see [`Organisation`]).
     organisation: Organisation,
-    /// Nodes and groups whose output plays from a cached render (see
-    /// "Caching" in docs/architecture/caching.md).
+    /// Nodes and groups whose output plays from a cached render.
     frozen: BTreeSet<NodeId>,
     /// The mix versions' names, in order (see [`versions`](crate::versions)).
     pub(crate) versions: Vec<String>,
@@ -855,7 +854,7 @@ impl Project {
     /// tempo does under it, until `change` alters it. (The timeline tempo is
     /// only a guess at the clip's own, for the user to correct; with
     /// conversion on, later tempo changes inside the section would stretch a
-    /// clip that used to play unwarped.)
+    /// clip that plays unwarped.)
     ///
     /// Sections that show the same clip share a warp, so an edit that reaches
     /// them all is one `SetWarp`. When this section shares its warp with
@@ -2180,7 +2179,7 @@ mod tests {
     fn a_link_survives_the_source_clip_forking_its_warp() {
         // The source is one of two sections that share a warp; editing it
         // forks the warp, and the follower must follow the section, not the
-        // warp it used to have.
+        // old shared warp.
         let (mut project, mut history, player, first, second, shared) = warped_pair();
         let (_, follower) = follower(&mut project, &mut history, player, first);
         let edit = project.warp_edit(first, swing(1.0625)).unwrap();
@@ -2327,7 +2326,7 @@ mod tests {
         assert!(kept_warp.tempo_conversion);
         assert_eq!(project.clips_using(warp).collect::<Vec<_>>(), [first]);
 
-        // Now it is the only user of its warp, so edits change it in place.
+        // It is the only user of its warp, so edits change it in place.
         let edit = project
             .warp_edit(second, |w| w.use_markers = false)
             .unwrap();

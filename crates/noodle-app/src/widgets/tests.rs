@@ -221,8 +221,7 @@ fn clicking_lets_you_type_a_value() {
     assert!(p.log.iter().all(|&(_, g)| g == Gesture::Idle));
 }
 
-/// Issue #415: typing straight after a click replaces the value, with no
-/// Ctrl+A first.
+/// Typing straight after a click replaces the value, with no Ctrl+A first.
 #[test]
 fn typing_after_a_click_replaces_the_value() {
     let mut h = Harness::new();

@@ -783,8 +783,8 @@ fn the_search_box_can_be_driven_with_arrows() {
     assert_eq!(graph.nodes().next().unwrap().1.type_id, "noodle.osc.sine");
 }
 
-/// Issue #418: a run saw "sequenc" arrive as "sequend". Characters arriving
-/// one per frame, straight after the box opens, all land in the box.
+/// Characters arriving one per frame, straight after the box opens, all land
+/// in the box (once "sequenc" arrived as "sequend").
 #[test]
 fn the_search_box_keeps_every_character_typed_quickly() {
     let mut h = rig();
@@ -1838,7 +1838,7 @@ fn deleting_a_group_removes_what_is_inside_and_undo_brings_it_back() {
 /// Tab still enters and leaves a group with another widget in the window.
 /// This does not prove the `tab: true` focus filter: kittest delivers Tab to
 /// the editor either way, so that line needs a manual Tab press in the real
-/// window (see docs/architecture/ui.md).
+/// window.
 #[test]
 fn tab_enters_and_leaves_a_group_with_another_widget_present() {
     let mut h = rig_with(true);
@@ -2059,7 +2059,6 @@ fn drag_node_to(h: &mut H, node: NodeId, modifiers: Modifiers, to: Pos2) {
     );
 }
 
-/// Issue #416.
 #[test]
 fn clicking_a_cable_selects_it_and_delete_removes_it_through_undo() {
     let mut h = rig();

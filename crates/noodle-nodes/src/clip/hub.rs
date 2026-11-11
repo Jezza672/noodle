@@ -39,14 +39,14 @@ pub(super) const POSITION_STEP: f64 = LOOKAHEAD / 8.0;
 /// How long before a file that failed to open is tried again, so one that
 /// turns up later (restored, or a drive mounted) starts playing.
 pub(super) const RETRY: Duration = Duration::from_secs(2);
-/// Things sent to the node and not yet returned. The return queue is bigger,
-/// so the node can always hand a retired one back.
 /// The settings of a track input's `monitor` parameter.
 #[allow(dead_code)]
 pub const MONITOR_OFF: u8 = 0;
 pub const MONITOR_AUTO: u8 = 1;
 pub const MONITOR_IN: u8 = 2;
 
+/// Things sent to the node and not yet returned. The return queue is bigger,
+/// so the node can always hand a retired one back.
 const MAX_OUTSTANDING: usize = 24;
 const QUEUE: usize = 32;
 const STREAM_CHUNKS: usize = 8;

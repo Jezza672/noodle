@@ -778,7 +778,7 @@ pub(crate) fn build(
         previous,
         &mut info,
     );
-    // Forget the cells of inputs that no longer exist or are now connected.
+    // Forget the cells of inputs that are gone or now connected.
     *cells = live_cells;
 
     info.audible = audible_wiring(&wiring, &nodes);

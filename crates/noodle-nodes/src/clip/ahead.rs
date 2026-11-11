@@ -5,9 +5,9 @@
 //! into a ring buffer, and the audio thread only copies out of it. The worker
 //! sleeps until it is rung: by the node when it has taken enough out of a ring
 //! to make room, or the playhead has moved on, and by the UI side when the
-//! schedule changes. This is the same arrangement the hub has for decoding: the worker opens what the
-//! node will need before the playhead gets there, hands it over through a
-//! queue, and takes it back to free it.
+//! schedule changes. This is the same arrangement the hub has for decoding:
+//! the worker opens what the node will need before the playhead gets there,
+//! hands it over through a queue, and takes it back to free it.
 //!
 //! A [`Lane`] is the audio-thread end of one stretched section: a ring of
 //! stereo frames and a small control block. The node tracks which frame of the

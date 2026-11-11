@@ -118,7 +118,6 @@ pub(crate) fn flatten_keeping<'a>(graph: &'a Graph, keep: &BTreeSet<NodeId>) -> 
 
 /// A boundary port that stays in the flat graph as a stage.
 struct Stage {
-    /// The stage node.
     node: Node,
     /// For a stage on a group input: where the group's input of that name
     /// comes from, since nothing is wired to the stage inside the group.
