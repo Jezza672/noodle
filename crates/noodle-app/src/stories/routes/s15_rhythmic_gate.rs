@@ -1,6 +1,6 @@
 //! S15: a tempo-synced rhythmic gate on a sustained pad.
 //!
-//! A Pattern Player (#354) loops a one-bar pattern of sixteenth steps, drawn
+//! A Pattern Player loops a one-bar pattern of sixteenth steps, drawn
 //! in its step grid, and its `gate` output opens a VCA on the pad. The
 //! pattern is a MIDI clip the player owns, so it is edited step by step and
 //! follows the project tempo. The triplet change is the grid's "To triplets"

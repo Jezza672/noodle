@@ -3,7 +3,7 @@
 //! Partial. Two oscillators are layered in a Mix and run through a filter,
 //! distortion and reverb. The macro is a MIDI Control knob feeding three Remap
 //! nodes, one per target, each with its own range. There is no macro control
-//! that maps one knob to several targets with a range and curve each (#353),
+//! that maps one knob to several targets with a range and curve each,
 //! so the user builds one by hand. Saving the patch as a preset and seeing
 //! the update in another project are not routed.
 

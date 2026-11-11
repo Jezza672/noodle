@@ -14,15 +14,10 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::NodeT;
 use noodle_io::{AudioConfig, VIRTUAL_OUTPUT};
 
-// ---------------------------------------------------------------------
-// The action log
-//
-// The usability scorecard measures a route by what a user would have to do.
-// While a `Recording` is alive, every helper below appends an `Action`. It
-// is off by default, so existing tests are unchanged. The log is per thread
-// (libtest runs each test on its own), so tests running side by side do not
-// mix their actions.
-// ---------------------------------------------------------------------
+// The action log: while a `Recording` is alive, every helper below appends an
+// `Action`, and the usability scorecard measures a route by what a user would
+// have to do. It is off by default. The log is per thread (libtest runs each
+// test on its own), so tests running side by side do not mix their actions.
 
 /// What one user action was.
 #[derive(Clone, Debug, PartialEq)]

@@ -5,8 +5,7 @@
 //! dialog that a route cannot drive, so the route ticks the group, unticks
 //! the mixdown and stops before "Export…". The stems all share one length, set
 //! by the dialog's Tail row (to silence up to a cap, or fixed), saved in the
-//! project. The route leaves the default (to silence), so its cost is the
-//! same as before the setting existed.
+//! project. The route leaves the default (to silence).
 
 use std::path::Path;
 

@@ -5,7 +5,7 @@
 //! Convert Layout folds the result down to stereo to check it. Objects are
 //! exported as stems by ticking their group in the export dialog (the
 //! pre-pan mono signal) beside the bed and the fold-down. ADM export is not
-//! planned (#359). The export dialog is a native file dialog away, so the
+//! planned. The export dialog is a native file dialog away, so the
 //! route stops before it. The route builds the bed in 5.1 and folds it down;
 //! the late changes move to 7.1.4 and move one object through the heights.
 

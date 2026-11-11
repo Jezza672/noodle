@@ -2,7 +2,7 @@
 //!
 //! Partial. The spectral nodes work in one fixed frame size, but Cross has a
 //! `bands` parameter that smooths the spectra into that many log-spaced
-//! bands (#355), which is the story's band count. A saw chord is the carrier and a noise burst
+//! bands, which is the story's band count. A saw chord is the carrier and a noise burst
 //! stands in for the vocal modulator: both go through Analyze, then Cross
 //! and Synthesize. Swapping the carrier or the modulator is one wire.
 

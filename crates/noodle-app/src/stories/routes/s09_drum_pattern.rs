@@ -1,8 +1,8 @@
 //! S09: program a drum pattern.
 //!
 //! Partial. The Drum Rack and the piano roll cover the pattern. Swing and each
-//! slot's choke group are controls in the rack's panel (#433): Swing sets a
-//! Swing node in front of the Note Split (#330), and the closed and open hat
+//! slot's choke group are controls in the rack's panel: Swing sets a
+//! Swing node in front of the Note Split, and the closed and open hat
 //! share a choke group in the template, so a closed hat cuts the open one off
 //! with no setting to make. Loading the samples into
 //! the rack's slots is not routed: a sample reaches a slot by dragging an
@@ -341,8 +341,6 @@ fn extended(p: &mut Probe, _size: usize) -> Result<(), String> {
     }
     Ok(())
 }
-
-// --- The Pattern Player route ---
 
 pub fn pattern_route() -> Route {
     Route {
