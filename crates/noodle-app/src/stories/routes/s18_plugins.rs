@@ -5,7 +5,7 @@
 //! plugins, so adding one, automating it and saving its state are not
 //! routed; only CLAP is hosted (no VST3 or AU), and swapping a plugin
 //! while keeping its automation, or opening a project with a plugin
-//! missing, are untested (#357).
+//! missing, are untested.
 
 use std::cell::Cell;
 

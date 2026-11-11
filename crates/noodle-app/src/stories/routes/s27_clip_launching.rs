@@ -2,13 +2,13 @@
 //!
 //! Partial. The Loop Pads library template is a Launch Quantise note-wire node
 //! and a looping Sampler for each of eight pads, with the pad's launch grid,
-//! mode, loop and level as controls in the group's panel (#432), so a pad pressed anywhere in the bar
+//! mode, loop and level as controls in the group's panel, so a pad pressed anywhere in the bar
 //! starts its loop on the next bar line, and pressing it again stops it on a
-//! later one. There is no clip grid or session view, on purpose (#364). The
+//! later one. There is no clip grid or session view, on purpose. The
 //! pad here is a Button into a Key; a controller's notes come in the same
 //! way. Loading the loop into a pad's Sampler is not routed (a sample reaches
 //! it by dragging an audio clip across, which no route reaches yet), so the
-//! fixture starts with it loaded. Ableton Link is not built (#365), and tap
+//! fixture starts with it loaded. Ableton Link is not built, and tap
 //! tempo and MIDI clock in are not routed, since the tempo source is session
 //! state that a route cannot read.
 

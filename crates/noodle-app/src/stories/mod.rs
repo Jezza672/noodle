@@ -1,6 +1,5 @@
 //! The usability scorecard's routes: scripted user journeys that reach a
 //! story's goal through the real UI, so their cost can be measured.
-//! Design: `docs/architecture/usability.md`. Stories: `docs/usability/stories.md`.
 //!
 //! A [`Route`] has a story ID, a tag, a fixture to start from, optionally a
 //! size, the steps and a done check. The steps get a [`Handle`], which can
@@ -10,9 +9,6 @@
 //! Every route is run as an ordinary test, so a UI change that breaks a
 //! route fails CI. With `NOODLE_SCORECARD_DIR` set, the run also writes the
 //! scorecard there (CI uploads it).
-//!
-//! **A PR that changes how a story is done updates its route in the same
-//! PR.**
 
 mod agent;
 mod effort;
@@ -133,11 +129,9 @@ fn window_with(mut app: App, render: bool) -> AppHarness {
     let mut builder = Harness::builder().with_size(Vec2::new(1280.0, 800.0));
     if render {
         // egui calls two clicks a double click if they come within 0.3 s by
-        // the frame clock. The harness advances it 0.25 s a pass and the app
-        // takes two passes a step, so the two steps of `double_click` were
-        // 0.5 s apart and no double click ever registered: not on a lane, a
-        // track name, nor the canvas. A short pass fixes that for an agent,
-        // whose double clicks must work as a person's do.
+        // the frame clock. With the default 0.25 s pass and two passes a step,
+        // the two steps of `double_click` would be 0.5 s apart; a short pass
+        // keeps an agent's double clicks working as a person's do.
         builder = builder.wgpu().with_step_dt(0.05);
     }
     let mut h = builder.build_ui_state(|ui, app: &mut App| app.show(ui), app);
@@ -489,8 +483,6 @@ mod tests {
         );
     }
 
-    // --- the scorers, on small routes of their own ---
-
     use egui::{Key, Modifiers, Pos2};
 
     use super::routes::{add_node, empty_project};
@@ -695,8 +687,6 @@ mod tests {
         // Two actions-worth of work against the route's.
         assert!(late.cost.unwrap() < 1.5);
     }
-
-    // --- feedback, surfaces and robustness ---
 
     #[test]
     fn a_route_that_listens_reports_what_it_took_to_hear() {

@@ -4204,7 +4204,6 @@ mod tests {
         assert!(session.templates().is_empty());
     }
 
-    /// A sine into an output, with the sine in a group.
     /// A sine through a chorus in a group, to the output. The chorus makes
     /// the group worth caching (see `DEFAULT_MIN_COST`).
     fn grouped_sine(session: &mut Session) -> (NodeId, NodeId) {

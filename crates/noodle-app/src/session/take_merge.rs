@@ -1,4 +1,4 @@
-//! Recording again over a take folder adds takes to it (#375).
+//! Recording again over a take folder adds takes to it.
 //!
 //! A take folder's takes are windows into the clip's one file, so a new
 //! recording can't be a window of the old file. Instead the old file and the

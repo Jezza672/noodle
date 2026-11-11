@@ -1,8 +1,8 @@
 //! S09: program a drum pattern.
 //!
 //! Partial. The Drum Rack and the piano roll cover the pattern. Swing and each
-//! pad's key are controls in the rack's panel (#433): Swing sets a Swing node
-//! in front of the pads (#330), and the closed and open hat pads are wired to
+//! pad's key are controls in the rack's panel: Swing sets a Swing node
+//! in front of the pads, and the closed and open hat pads are wired to
 //! choke each other in the template, so a closed hat cuts the open one off
 //! with no setting to make. Loading the samples into
 //! the rack's pads is not routed: a sample reaches a pad (Kick, Snare, ...) by
@@ -351,8 +351,6 @@ fn extended(p: &mut Probe, _size: usize) -> Result<(), String> {
     }
     Ok(())
 }
-
-// --- The Pattern Player route ---
 
 pub fn pattern_route() -> Route {
     Route {

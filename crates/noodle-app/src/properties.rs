@@ -965,10 +965,6 @@ fn config(
     }
 }
 
-/// The drop-down for a node's channel layout: one undo step per choice.
-/// An Output node's speaker routing: for each channel of the signal (named by
-/// the layout chosen here, which only decides how many rows there are), the
-/// device channel it plays on. The setting holds the numbers, in order.
 /// The Articulation Map's table: a row for the default and for each of the
 /// project's articulations, with how the instrument is asked for it.
 fn articulation_map_editor(
@@ -1139,6 +1135,9 @@ fn articulation_map_editor(
     );
 }
 
+/// An Output node's speaker routing: for each channel of the signal (named by
+/// the layout chosen here, which only decides how many rows there are), the
+/// device channel it plays on. The setting holds the numbers, in order.
 fn routing_editor(
     ui: &mut Ui,
     session: &Session,
@@ -1238,6 +1237,7 @@ fn routing_editor(
     }
 }
 
+/// The drop-down for a node's channel layout: one undo step per choice.
 fn layout_picker(
     ui: &mut Ui,
     id: NodeId,
@@ -2177,7 +2177,7 @@ mod tests {
     fn the_selector_switch_never_overlaps_its_range_text() {
         // The Switch choice is "Instant" / "Zero crossing". At some widths the
         // pair fits the row in total but the longer label does not fit its
-        // half, so it used to wrap and grow down onto the range text.
+        // half, so it could wrap and grow down onto the range text.
         for width in [200.0, 220.0, 240.0, 260.0, 280.0, 300.0] {
             let mut harness = harness([Node::new("noodle.util.selector")]);
             // The real app's padding decides whether the labels fit.

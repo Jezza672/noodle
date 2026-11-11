@@ -1,11 +1,11 @@
 //! S03: drive external hardware like an internal instrument.
 //!
 //! Partial. A MIDI part goes to the synth through a MIDI Out node, and the
-//! port is chosen in a drop-down on the node's own panel (#427; View > MIDI
-//! ports (#346) lists every MIDI node for changing them all in one place; the
+//! port is chosen in a drop-down on the node's own panel (View > MIDI
+//! ports lists every MIDI node for changing them all in one place; the
 //! test build lists two fake ports).
 //! Recording the synth's audio back in is not routed because a route cannot
-//! supply an audio input (#334); round-trip latency compensation for the
+//! supply an audio input; round-trip latency compensation for the
 //! recording is therefore not scored either. The route builds the sending
 //! half: the keys reach a MIDI Out node on the synth's port.
 

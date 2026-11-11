@@ -158,10 +158,9 @@ pub fn check(p: &mut Probe, ops: &[Op]) -> Result<(), String> {
     Ok(())
 }
 
-// --- Outcome checks. A done check should ask whether the goal is met, not
-// whether the route's own nodes are there, so a patch built another way (an
-// LFO set to Random for a Sample & Hold, a different effect for the
-// distortion) still scores.
+// Outcome checks ask whether the goal is met, not whether the route's own
+// nodes are there, so a patch built another way (an LFO set to Random for a
+// Sample & Hold, a different effect for the distortion) still scores.
 
 /// Every node with a chain of wires leading to `node`, not counting itself.
 pub fn upstream(p: &Project, node: NodeId) -> std::collections::HashSet<NodeId> {

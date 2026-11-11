@@ -6,7 +6,7 @@
 //! into the file and a CUE sheet beside it. Choosing the file is a native
 //! dialog that a route cannot drive, so the route sets the options and stops
 //! before "Export…". There is no album sequence with gaps and crossfades:
-//! that waits on the setlist design (#360, #366). DDP is not planned.
+//! that waits on the setlist design. DDP is not planned.
 
 use std::path::Path;
 

@@ -2192,8 +2192,6 @@ impl App {
         }
     }
 
-    /// Asks what to do with unsaved changes before an action that would
-    /// lose them.
     /// The command palette, and the box that names a template being saved.
     fn palette_and_templates(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         if self.palette.is_open() || self.template_name.is_some() {
@@ -2251,6 +2249,8 @@ impl App {
         }
     }
 
+    /// Asks what to do with unsaved changes before an action that would
+    /// lose them.
     fn confirm_dialog(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let Some(action) = self.confirming else {
             return;
@@ -2780,7 +2780,6 @@ impl App {
         }
     }
 
-    /// Asks which audio files to add, and adds them as clips at `target`.
     /// What is known about the audio file of clip `id`.
     fn clip_source(
         &mut self,
@@ -2922,6 +2921,7 @@ impl App {
         self.editor.select_only([node]);
     }
 
+    /// Asks which audio files to add, and adds them as clips at `target`.
     fn import_audio(&mut self, target: timeline::Target) {
         let picked =
             crate::picker::pick_files(("Audio", &["wav", "flac", "mp3", "ogg", "m4a", "aac"]));
@@ -4402,7 +4402,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Issue #420: Enter in the template dialog saves it, and Ctrl+A selects
+    /// Enter in the template dialog saves it, and Ctrl+A selects
     /// the name being typed.
     #[test]
     fn enter_confirms_the_template_dialog() {

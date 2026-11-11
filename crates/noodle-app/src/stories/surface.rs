@@ -13,8 +13,8 @@
 //! | `ModifierDrag` | A pointer gesture that needs a held modifier key: hidden. |
 //! | `Untagged` | The scorer cannot tell. Listed, so each one gets looked at. |
 //!
-//! **How it is tagged.** The prototype asked whether widgets could carry a tag
-//! without editing every call site. They cannot usefully: menu bodies are
+//! **How it is tagged.** Widgets cannot usefully carry a tag without editing
+//! every call site: menu bodies are
 //! only built while a menu is open, and the shortcuts are consumed in about
 //! thirty places. What the log already has is egui's accessibility tree at
 //! each end of each action, which says whether a labelled widget was there.

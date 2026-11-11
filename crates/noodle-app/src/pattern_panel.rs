@@ -12,8 +12,8 @@ use noodle_nodes::{CLOCK_DIVISIONS, DIVISION_TICKS, PATTERN_MAX_SLOTS};
 use crate::session::{Edit, Session};
 use crate::theme;
 
-/// A step grid's cell, in graph points.
-/// The widest a step's cell is drawn; narrower panels squeeze the grid to fit.
+/// The widest a step's cell is drawn, in graph points; narrower panels squeeze
+/// the grid to fit.
 const CELL: f32 = 18.0;
 /// The narrowest the grid is squeezed to.
 const CELL_MIN: f32 = 11.0;
@@ -413,7 +413,7 @@ mod tests {
         }
     }
 
-    /// Issue #417: 16 steps fit the sidebar's default width.
+    /// 16 steps fit the sidebar's default width.
     #[test]
     fn the_grid_squeezes_to_fit_and_never_grows_past_a_cell() {
         assert!(16.0 * cell_width(260.0, 16) + 30.0 <= 260.0);
