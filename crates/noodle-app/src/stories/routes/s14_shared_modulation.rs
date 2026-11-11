@@ -19,7 +19,6 @@ use noodle_core::Project;
 
 const SAW: Ref = Ref("osc.saw", 0);
 const NOISE: Ref = Ref("noise.white", 0);
-const OUT: Ref = Ref("io.output", 0);
 const FILTER: Ref = Ref("filter.svf", 0);
 const DRIVE: Ref = Ref("effect.distortion", 0);
 const VERB: Ref = Ref("effect.reverb", 0);

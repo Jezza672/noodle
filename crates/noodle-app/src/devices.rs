@@ -279,7 +279,7 @@ impl DevicePicker {
         );
         ui.end_row();
 
-        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         let mut threads = self.draft.threads;
         combo(ui, "Worker threads", threads_label(threads), |ui| {
             for count in 0..cores.max(2) {
@@ -349,7 +349,8 @@ impl DevicePicker {
             };
             name(&list.outputs, self.draft.output.as_deref()) || input
         });
-        (named || latency.is_some_and(|r| r.output_is_slow())).then_some(BLUETOOTH_NOTE)
+        (named || latency.is_some_and(noodle_io::LatencyReport::output_is_slow))
+            .then_some(BLUETOOTH_NOTE)
     }
 
     /// Switches host. The output has to be on the chosen host, so it goes
@@ -609,7 +610,7 @@ mod tests {
         Ok(match host {
             None | Some("alsa") => DeviceList {
                 outputs: vec![
-                    device("alsa:speakers", "Speakers", true, stereo.clone()),
+                    device("alsa:speakers", "Speakers", true, stereo),
                     device(
                         "alsa:usb",
                         "USB Interface",

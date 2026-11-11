@@ -4376,14 +4376,12 @@ mod tests {
 
     /// The entries in the cache folder.
     fn cached_entries(dir: &Path) -> usize {
-        std::fs::read_dir(dir)
-            .map(|files| {
-                files
-                    .flatten()
-                    .filter(|file| file.path().extension().is_none_or(|e| e != "partial"))
-                    .count()
-            })
-            .unwrap_or(0)
+        std::fs::read_dir(dir).map_or(0, |files| {
+            files
+                .flatten()
+                .filter(|file| file.path().extension().is_none_or(|e| e != "partial"))
+                .count()
+        })
     }
 
     #[test]
@@ -5002,7 +5000,7 @@ mod tests {
 
         // Cancelled, it leaves no file.
         let path = dir.path().join("cancelled.flac");
-        session.start_export(path.clone(), choice.clone()).unwrap();
+        session.start_export(path.clone(), choice).unwrap();
         session.cancel_export();
         until(&mut session, "the export stops", |s| {
             s.export_progress().is_none()

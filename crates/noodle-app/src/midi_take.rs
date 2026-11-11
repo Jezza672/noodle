@@ -688,7 +688,7 @@ mod tests {
             Quantise::Off,
         )
         .unwrap();
-        let mut notes = cut.notes.clone();
+        let mut notes = cut.notes;
         notes.sort_by_key(|n| n.start);
         assert_eq!(notes[0].start.0 + notes[0].length.0, notes[1].start.0);
     }

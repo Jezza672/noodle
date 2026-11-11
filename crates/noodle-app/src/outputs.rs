@@ -348,14 +348,11 @@ mod tests {
                 .all(|d| d.id != noodle_io::VIRTUAL_OUTPUT)
         );
         // It is in the audio settings' list, though.
-        assert!(
-            noodle_io::devices(None)
-                .map(|list| list
-                    .outputs
-                    .iter()
-                    .any(|d| d.id == noodle_io::VIRTUAL_OUTPUT))
-                .unwrap_or(true)
-        );
+        assert!(noodle_io::devices(None).map_or(true, |list| {
+            list.outputs
+                .iter()
+                .any(|d| d.id == noodle_io::VIRTUAL_OUTPUT)
+        }));
     }
 
     #[test]

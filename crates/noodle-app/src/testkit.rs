@@ -131,7 +131,7 @@ impl Drop for PlayingMode {
 
 /// Lets the UI settle after an action.
 fn settle<S>(h: &mut Harness<'_, S>) {
-    if PLAYING.with(|p| p.get()) {
+    if PLAYING.with(std::cell::Cell::get) {
         h.run_steps(3);
     } else if h.try_run().is_err() {
         // A background render (a freeze, an offline node) keeps the app
@@ -516,6 +516,7 @@ pub fn type_text<S>(h: &mut Harness<'_, S>, at: Pos2, text: &str) {
 
 /// Types the program `code` into the focused field (a Script node's text),
 /// logged as code rather than text so the scorecard can tell them apart.
+#[allow(dead_code, reason = "no route types a program yet")]
 pub fn type_code<S>(h: &mut Harness<'_, S>, at: Pos2, code: &str) {
     push(
         h,

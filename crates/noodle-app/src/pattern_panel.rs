@@ -136,18 +136,15 @@ pub fn note_at(midi: &MidiClip, region: &Region, key: u8, step: usize) -> Option
 /// Puts a note on `key` at `step`, half a step long so that neighbours leave
 /// a gap for a gate to close in, or takes it away if there is one.
 pub fn toggle(midi: &mut MidiClip, region: &Region, key: u8, step: usize) {
-    match note_at(midi, region, key, step) {
-        Some(index) => {
-            midi.notes.remove(index);
-        }
-        None => {
-            let start = region.begin_tick() + step as i64 * region.step_ticks;
-            let mut note = MidiNote::new(Tick(start), Tick((region.step_ticks / 2).max(1)), key);
-            note.velocity = 0.8;
-            midi.notes.push(note);
-            // The clip has to reach the note for it to play.
-            midi.length = Tick(midi.length.0.max(region.end_tick()));
-        }
+    if let Some(index) = note_at(midi, region, key, step) {
+        midi.notes.remove(index);
+    } else {
+        let start = region.begin_tick() + step as i64 * region.step_ticks;
+        let mut note = MidiNote::new(Tick(start), Tick((region.step_ticks / 2).max(1)), key);
+        note.velocity = 0.8;
+        midi.notes.push(note);
+        // The clip has to reach the note for it to play.
+        midi.length = Tick(midi.length.0.max(region.end_tick()));
     }
 }
 

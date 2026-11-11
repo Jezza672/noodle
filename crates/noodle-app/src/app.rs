@@ -877,7 +877,7 @@ impl App {
             return;
         }
         let typing = ctx.egui_wants_keyboard_input()
-            && ctx.memory(|m| m.focused()) != Some(crate::editor::canvas_id());
+            && ctx.memory(egui::Memory::focused) != Some(crate::editor::canvas_id());
         let dialog = self.settings.is_open()
             || self.export.is_open()
             || self.confirming.is_some()
@@ -930,7 +930,7 @@ impl App {
         // The editor canvas holds focus so it can receive Tab, and isn't a
         // text field.
         let typing = ctx.egui_wants_keyboard_input()
-            && ctx.memory(|m| m.focused()) != Some(crate::editor::canvas_id());
+            && ctx.memory(egui::Memory::focused) != Some(crate::editor::canvas_id());
         // A dialog has the user's attention; shortcuts would act behind it.
         // The editor's own keys are safe too, since they need the pointer
         // over the canvas and a modal's backdrop covers it. Keep it so.
@@ -2525,15 +2525,14 @@ impl App {
             Action::ToggleMixer => self.mixer_open = !self.mixer_open,
             Action::ToggleMetronome => {
                 let ids = || std::array::from_fn(|_| self.session.new_node_id());
-                match metronome::press(self.session.project(), ids) {
-                    Some(command) => self.session.edit([Edit::Apply(command)]),
-                    None => {
-                        let why = match metronome::binding(self.session.project()) {
-                            metronome::Binding::Broken(why) => why,
-                            _ => "The metronome can't be pressed".to_owned(),
-                        };
-                        self.session.notify(why);
-                    }
+                if let Some(command) = metronome::press(self.session.project(), ids) {
+                    self.session.edit([Edit::Apply(command)])
+                } else {
+                    let why = match metronome::binding(self.session.project()) {
+                        metronome::Binding::Broken(why) => why,
+                        _ => "The metronome can't be pressed".to_owned(),
+                    };
+                    self.session.notify(why);
                 }
             }
             Action::PressButton(button) => {

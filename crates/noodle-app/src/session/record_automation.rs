@@ -259,18 +259,17 @@ impl Recorder {
                 }));
                 points.sort_by_key(|p| p.tick);
             }
-            match existing {
-                Some((id, lane)) => commands.push(Command::SetLane {
+            if let Some((id, lane)) = existing {
+                commands.push(Command::SetLane {
                     id,
                     lane: AutomationLane::new(lane.target.clone(), points),
-                }),
-                None => {
-                    commands.push(Command::AddLane {
-                        id: fresh,
-                        lane: AutomationLane::new(target, points),
-                    });
-                    fresh.0 += 1;
-                }
+                })
+            } else {
+                commands.push(Command::AddLane {
+                    id: fresh,
+                    lane: AutomationLane::new(target, points),
+                });
+                fresh.0 += 1;
             }
         }
         self.nodes.clear();
@@ -380,7 +379,7 @@ mod tests {
     fn thinning_drops_points_on_the_line_and_keeps_corners() {
         let line: Vec<_> = (0..10).map(|i| (Tick(i * 10), i as f32 / 10.0)).collect();
         assert_eq!(thin(&line).len(), 2);
-        let mut corner = line.clone();
+        let mut corner = line;
         corner.extend((10..20).map(|i| (Tick(i * 10), 0.9 - (i - 10) as f32 / 10.0)));
         let kept = thin(&corner);
         assert!(kept.len() >= 3 && kept.len() <= 4, "{kept:?}");

@@ -86,8 +86,7 @@ fn node_of(p: &Project, type_id: &str) -> NodeId {
     p.graph()
         .nodes()
         .find(|(_, n)| n.type_id == type_id)
-        .map(|(id, _)| id)
-        .unwrap_or_else(|| panic!("no {type_id} node"))
+        .map_or_else(|| panic!("no {type_id} node"), |(id, _)| id)
 }
 
 /// The nodes of a type, in ID order.

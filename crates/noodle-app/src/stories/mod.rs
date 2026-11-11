@@ -46,7 +46,9 @@ pub enum Tag {
     Default,
     /// The fastest known way.
     Expert,
+    #[allow(dead_code, reason = "a tag no route uses yet")]
     Keyboard,
+    #[allow(dead_code, reason = "a tag no route uses yet")]
     Scripted,
 }
 
@@ -190,7 +192,7 @@ struct Played {
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     payload
         .downcast_ref::<&str>()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "a panic".into())
 }
@@ -511,7 +513,6 @@ mod tests {
             .ok_or(format!("{n} sines, wanted {at_least}"))
     }
 
-    fn nothing(_: &mut Handle, _: usize) {}
     fn fine(_: &mut Probe, _: usize) -> Result<(), String> {
         Ok(())
     }
@@ -779,10 +780,5 @@ mod tests {
     fn a_project_that_reads_back_the_same_passes_the_reopen_check() {
         let out = run(&route(by_hand, all_by_hand, Some(2), &[]), None);
         assert_eq!(out.score.robustness.reopen, Reopen::Same);
-    }
-
-    #[allow(dead_code)]
-    fn unused(_: Steps) {
-        let _ = nothing;
     }
 }

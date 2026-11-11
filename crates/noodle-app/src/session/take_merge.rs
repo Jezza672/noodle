@@ -67,22 +67,21 @@ impl Session {
         let audio = clip.as_audio()?;
         let base = self.path.as_deref()?;
         let dir = base.parent()?;
-        let (name, old_frames) = match combined.get(&audio.source) {
-            Some(done) => done.clone(),
-            None => {
-                let (out, relative) = next_take_path(base).ok()?;
-                let frames = combine(
-                    &dir.join(&audio.source),
-                    &dir.join(recording.relative),
-                    &out,
-                )
-                .inspect_err(|_| {
-                    let _ = std::fs::remove_file(&out);
-                })
-                .ok()?;
-                combined.insert(audio.source.clone(), (relative.clone(), frames));
-                (relative, frames)
-            }
+        let (name, old_frames) = if let Some(done) = combined.get(&audio.source) {
+            done.clone()
+        } else {
+            let (out, relative) = next_take_path(base).ok()?;
+            let frames = combine(
+                &dir.join(&audio.source),
+                &dir.join(recording.relative),
+                &out,
+            )
+            .inspect_err(|_| {
+                let _ = std::fs::remove_file(&out);
+            })
+            .ok()?;
+            combined.insert(audio.source.clone(), (relative.clone(), frames));
+            (relative, frames)
         };
         let mut changed: Clip = clip.clone();
         let noodle_core::ClipContent::Audio(joined) = &mut changed.content else {
