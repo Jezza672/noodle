@@ -4397,7 +4397,7 @@ mod tests {
         app.session
             .edit([Edit::Apply(Command::AddNode { id, node })]);
         app.devices = no_devices();
-        app.settings.open(crate::settings::Tab::Audio);
+        app.open_settings(crate::settings::Tab::Audio);
         let mut harness = harness(app);
         harness.run();
 
