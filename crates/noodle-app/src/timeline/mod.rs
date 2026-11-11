@@ -77,9 +77,7 @@ fn source_rates(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .map(|source| {
-            let rate = sources
-                .get(ctx, directory, &source)
-                .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate);
+            let rate = sources.rate(ctx, directory, &source);
             (source, rate)
         })
         .collect()
@@ -773,12 +771,9 @@ pub fn show(
         let extent = project
             .timeline_clips()
             .map(|(_, clip)| {
-                let rate = clip.as_audio().map_or(FALLBACK_RATE, |audio| {
-                    state
-                        .sources
-                        .get(ui.ctx(), directory.as_deref(), &audio.source)
-                        .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
-                });
+                let rate = state
+                    .sources
+                    .clip_rate(ui.ctx(), directory.as_deref(), clip);
                 map.seconds_at(clips::clip_end(map, clip, rate, warp_of(project, clip)))
             })
             .fold(0.0, f64::max) as f32
@@ -809,10 +804,7 @@ pub fn show(
         state.fade_handles.clear();
         state.drawn_text.clear();
         state.waveforms_drawn = 0;
-        #[cfg(test)]
-        {
-            state.pins_drawn = 0;
-        }
+        state.pins_drawn = 0;
     }
 
     // The lanes and headers scroll together in a vertical scroll area, below
@@ -897,7 +889,8 @@ pub fn show(
             let clips_before = state.selected.clone();
             let take = session.take_preview();
             // Every audio-armed track shows the same waveform: work it out once.
-            let take_wave: std::cell::RefCell<Option<(usize, Vec<noodle_io::Peak>)>> = Default::default();
+            let take_wave: std::cell::RefCell<Option<(usize, Vec<noodle_io::Peak>)>> =
+                Default::default();
             for (index, &track) in tracks.iter().enumerate() {
                 let top = lane_top(index);
                 let lane_height = rows.lane_height(index);
@@ -970,9 +963,12 @@ pub fn show(
                         }
                         state.selected.insert(id);
                         // A link moves, trims and slips as one.
-                        state.selected = project.with_linked(state.selected.iter().copied()).into_iter().collect();
-                        let slipping =
-                            clip.as_audio().is_some() && ui.input(|i| i.modifiers.shift && i.modifiers.alt);
+                        state.selected = project
+                            .with_linked(state.selected.iter().copied())
+                            .into_iter()
+                            .collect();
+                        let slipping = clip.as_audio().is_some()
+                            && ui.input(|i| i.modifiers.shift && i.modifiers.alt);
                         let mode = if slipping {
                             Mode::Slip
                         } else {
@@ -1064,7 +1060,8 @@ pub fn show(
                         drag.copied = true;
                     }
                     if response.dragged()
-                        && let (Some(drag), Some(pos)) = (&state.drag, response.interact_pointer_pos())
+                        && let (Some(drag), Some(pos)) =
+                            (&state.drag, response.interact_pointer_pos())
                     {
                         let free = ui.input(|i| i.modifiers.alt);
                         let lane = rows.track_at(pos.y - content.top() + scroll_y);
@@ -1072,7 +1069,8 @@ pub fn show(
                         // Dragged out of the timeline, an audio clip is carried to a
                         // Sampler or the graph, and stays where it was.
                         let pointer = ui.input(|i| i.pointer.latest_pos()).unwrap_or(pos);
-                        let carried = drag.mode == Mode::Move && audio.is_some() && !rect.contains(pointer);
+                        let carried =
+                            drag.mode == Mode::Move && audio.is_some() && !rect.contains(pointer);
                         let (x, target) = if carried {
                             let home = drag
                                 .originals
@@ -1118,184 +1116,7 @@ pub fn show(
                         state.selected = project.linked_with(id).into_iter().collect();
                     }
                     response.context_menu(|ui| {
-                        if let Some(audio) = audio {
-                            let mute = if audio.muted { "Unmute" } else { "Mute" };
-                            if ui.button(mute).clicked() {
-                                ui.close();
-                                edits.push(Edit::Apply(toggle_mute(id, clip)));
-                            }
-                            if audio.takes.is_some() {
-                                let open = state.takes.shown.contains(&id);
-                                if ui
-                                    .button(if open { "Hide takes" } else { "Show takes" })
-                                    .on_hover_text("Show the takes under the track to comp them: drag across a take to play that part of it, click one to audition it")
-                                    .clicked()
-                                {
-                                    ui.close();
-                                    if open {
-                                        state.takes.shown.remove(&id);
-                                    } else {
-                                        state.takes.shown.insert(id);
-                                    }
-                                }
-                            }
-                            if audio.takes.is_some()
-                                && ui
-                                    .button("Flatten takes")
-                                    .on_hover_text(
-                                        "Cut the comp at its joins into plain clips and drop the takes it doesn't play",
-                                    )
-                                    .clicked()
-                            {
-                                ui.close();
-                                edits.extend(comp::flatten(project, map, id, rate).map(Edit::Apply));
-                            }
-                            if ui
-                                .button("Split to stems")
-                                .on_hover_text(
-                                    "Make a track for the drums, bass, vocals and the rest, and mute this clip",
-                                )
-                                .clicked()
-                            {
-                                ui.close();
-                                edits.push(Edit::SplitToStems(id));
-                            }
-                            if ui
-                                .button("Pin transients")
-                                .on_hover_text(
-                                    "Put a warp marker on every hit of this clip and the clips linked to it (one for a hit the mics hear a few milliseconds apart), where it plays now. Quantise and the Slices mode work from them.",
-                                )
-                                .clicked()
-                            {
-                                ui.close();
-                                edits.push(Edit::PinTransients(id, 50));
-                            }
-                            // The form has a number to edit, which a click in
-                            // the menu must not close.
-                            egui::containers::menu::SubMenuButton::new("Quantise transients…")
-                                .config(egui::containers::menu::MenuConfig::new().close_behavior(
-                                    egui::PopupCloseBehavior::CloseOnClickOutside,
-                                ))
-                                .ui(ui, |ui| {
-                                    ui.label("Pins every hit, then moves them onto a grid");
-                                    if crate::clip_panel::quantise_hits_form(ui, id, &mut edits) {
-                                        ui.close();
-                                    }
-                                });
-                            if ui
-                                .button("Slice to Sampler")
-                                .on_hover_text(
-                                    "Cut this clip at its transients onto a new track that plays each slice from a key, starting at C2",
-                                )
-                                .clicked()
-                            {
-                                ui.close();
-                                edits.push(Edit::SliceToSampler(id));
-                            }
-                            // A MIDI clip picked with this one is what the
-                            // conversion replaces.
-                            let replace = state
-                                .selected
-                                .iter()
-                                .copied()
-                                .find(|c| project.clip(*c).is_some_and(|c| c.as_midi().is_some()));
-                            ui.menu_button("Convert to MIDI", |ui| {
-                                ui.label(if replace.is_some() {
-                                    "Replaces the selected MIDI clip"
-                                } else {
-                                    "Notes on a new track (select a MIDI clip too to replace it)"
-                                });
-                                for detect in crate::session::convert::Detect::ALL {
-                                    if ui
-                                        .button(detect.label())
-                                        .on_hover_text(
-                                            "Follows one voice or line. The notes are plain notes to edit; convert again to try another setting.",
-                                        )
-                                        .clicked()
-                                    {
-                                        ui.close();
-                                        edits.push(Edit::ConvertToMidi(id, detect, replace));
-                                    }
-                                }
-                            });
-                            ui.separator();
-                        }
-                        if let Some(midi) = clip.as_midi()
-                            && midi.takes.is_some()
-                        {
-                            let open = state.takes.shown.contains(&id);
-                            if ui
-                                .button(if open { "Hide takes" } else { "Show takes" })
-                                .clicked()
-                            {
-                                ui.close();
-                                if open {
-                                    state.takes.shown.remove(&id);
-                                } else {
-                                    state.takes.shown.insert(id);
-                                }
-                            }
-                            if ui
-                                .button("Flatten takes")
-                                .on_hover_text("Keep what the comp plays as a plain clip and drop the takes")
-                                .clicked()
-                            {
-                                ui.close();
-                                edits.extend(comp::flatten_midi(project, id).map(Edit::Apply));
-                            }
-                            ui.separator();
-                        }
-                        let players = crate::pattern_panel::players(project);
-                        if clip.as_midi().is_some() && !players.is_empty() {
-                            ui.menu_button("Copy to pattern", |ui| {
-                                for (n, &player) in players.iter().enumerate() {
-                                    if ui
-                                        .button(format!("Pattern Player {}", n + 1))
-                                        .on_hover_text("Add a copy of this clip as a slot of the player")
-                                        .clicked()
-                                    {
-                                        ui.close();
-                                        edits.extend(
-                                            crate::pattern_panel::copy_to(project, clip, player)
-                                                .map(Edit::Apply),
-                                        );
-                                    }
-                                }
-                            });
-                            ui.separator();
-                        }
-                        let chosen: Vec<ClipId> = state.selected.iter().copied().collect();
-                        let linked = project.group_of(id).map(|(_, members)| members);
-                        let whole_link = linked.as_ref().is_some_and(|m| *m == chosen);
-                        if chosen.len() >= 2
-                            && !whole_link
-                            && ui
-                                .button("Link")
-                                .on_hover_text(
-                                    "Move, trim, cut, warp and delete these clips together",
-                                )
-                                .clicked()
-                        {
-                            ui.close();
-                            edits.extend(project.link_command(&chosen).map(Edit::Apply));
-                        }
-                        if chosen.iter().any(|&c| project.group_of(c).is_some())
-                            && ui.button("Unlink").clicked()
-                        {
-                            ui.close();
-                            edits.extend(project.unlink_command(&chosen).map(Edit::Apply));
-                        }
-                        ui.separator();
-                        for (action, label) in [
-                            (ClipAction::Cut, "Cut"),
-                            (ClipAction::Copy, "Copy"),
-                            (ClipAction::Duplicate, "Duplicate"),
-                        ] {
-                            if ui.button(label).clicked() {
-                                ui.close();
-                                state.pending = Some(action);
-                            }
-                        }
+                        clip_menu(ui, state, project, id, clip, rate, &mut edits)
                     });
 
                     let painter = ui.painter_at(visible);
@@ -1309,7 +1130,9 @@ pub fn show(
                     let missing = audio.is_some() && source.is_none();
                     let label = match (audio, clip.as_midi()) {
                         (Some(audio), _) => {
-                            if let Some(peaks) = loaded.as_ref().and_then(|loaded| loaded.peaks.as_ref()) {
+                            if let Some(peaks) =
+                                loaded.as_ref().and_then(|loaded| loaded.peaks.as_ref())
+                            {
                                 let wave = waveform::Clip {
                                     id,
                                     peaks,
@@ -1416,7 +1239,15 @@ pub fn show(
                             if let Some(warp) = warp_of(project, clip)
                                 && !missing
                             {
-                                let pins = pins::draw(&painter, axis, map, clip, rate, warp, (full, visible));
+                                let pins = pins::draw(
+                                    &painter,
+                                    axis,
+                                    map,
+                                    clip,
+                                    rate,
+                                    warp,
+                                    (full, visible),
+                                );
                                 #[cfg(test)]
                                 {
                                     state.pins_drawn += pins;
@@ -1512,9 +1343,10 @@ pub fn show(
                 .clips()
                 .filter_map(|(id, clip)| {
                     let audio = clip.as_audio()?;
-                    let loaded = state
-                        .sources
-                        .get(ui.ctx(), directory.as_deref(), &audio.source)?;
+                    let loaded =
+                        state
+                            .sources
+                            .get(ui.ctx(), directory.as_deref(), &audio.source)?;
                     Some((id, (loaded.source.sample_rate, loaded.source.frames)))
                 })
                 .collect();
@@ -1542,12 +1374,23 @@ pub fn show(
                     content.y_range(),
                 );
                 if band.width() > 0.0 {
-                    ui.painter_at(content)
-                        .rect_filled(band, 0.0, colors::SELECTED.gamma_multiply(0.12));
+                    ui.painter_at(content).rect_filled(
+                        band,
+                        0.0,
+                        colors::SELECTED.gamma_multiply(0.12),
+                    );
                 }
             }
             let before_box = state.selected.clone();
-            select_by_box(ui, state, &background, content, &drawn, state.scroll_x, scroll_y);
+            select_by_box(
+                ui,
+                state,
+                &background,
+                content,
+                &drawn,
+                state.scroll_x,
+                scroll_y,
+            );
             // A clip picked takes its link with it.
             if state.selected != before_box {
                 state.selected = project
@@ -1577,7 +1420,8 @@ pub fn show(
                 },
             ));
 
-            if state.automation.selected().is_some() && state.automation.selected() != point_before {
+            if state.automation.selected().is_some() && state.automation.selected() != point_before
+            {
                 state.range = None;
                 state.selected.clear();
                 state.tempo.deselect();
@@ -1657,72 +1501,13 @@ pub fn show(
             if hovered && !ui.ctx().egui_wants_keyboard_input() {
                 let split_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::S));
                 let copy_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::D));
-                let rate_of = |state: &mut TimelineState, clip: &Clip| {
-                    clip.as_audio().map_or(FALLBACK_RATE, |audio| {
-                        state
-                            .sources
-                            .get(ui.ctx(), directory.as_deref(), &audio.source)
-                            .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
-                    })
-                };
                 if split_key && let Some(at) = playhead {
-                    // Cutting one linked clip cuts them all.
-                    let wanted: Vec<ClipId> = if state.selected.is_empty() {
-                        project.timeline_clips().map(|(id, _)| id).collect()
-                    } else {
-                        project.with_linked(state.selected.iter().copied())
-                    };
-                    let mut commands = Vec::new();
-                    let mut right_halves = BTreeSet::new();
-                    let mut next = project.next_clip_id();
-                    // Which right half came from which clip, to link them as
-                    // the clips they come from were.
-                    let mut halves: BTreeMap<ClipId, ClipId> = BTreeMap::new();
-                    for id in wanted {
-                        let Some(clip) = project.clip(id) else {
-                            continue;
-                        };
-                        let rate = rate_of(state, clip);
-                        if let Some((first, second)) =
-                            clips::split(map, clip, at, rate, warp_of(project, clip))
-                        {
-                            commands.push(Command::SetClip { id, clip: first });
-                            commands.push(Command::AddClip {
-                                id: next,
-                                clip: second,
-                            });
-                            right_halves.insert(next);
-                            halves.insert(id, next);
-                            next.0 += 1;
+                    let split = split_at(state, ui.ctx(), directory.as_deref(), project, at);
+                    match split {
+                        Some(command) => edits.push(Edit::Apply(command)),
+                        None => {
+                            notice = Some("Move the playhead inside a clip to cut it".to_string())
                         }
-                    }
-                    // The left halves stay in their link; the right halves
-                    // make one of their own, which shares the warp (a clip
-                    // cut in two has one warp until a half is edited alone).
-                    let mut group_id = project.next_clip_group_id();
-                    let mut made = BTreeSet::new();
-                    for &id in halves.keys() {
-                        let Some((old, members)) = project.group_of(id) else {
-                            continue;
-                        };
-                        if !made.insert(old) {
-                            continue;
-                        }
-                        let rights: BTreeSet<ClipId> =
-                            members.iter().filter_map(|m| halves.get(m).copied()).collect();
-                        if rights.len() >= 2 {
-                            commands.push(Command::SetClipGroup {
-                                id: group_id,
-                                group: Some(noodle_core::ClipGroup { members: rights }),
-                            });
-                            group_id.0 += 1;
-                        }
-                    }
-                    if commands.is_empty() {
-                        notice = Some("Move the playhead inside a clip to cut it".to_string());
-                    } else {
-                        state.selected = right_halves;
-                        edits.push(Edit::Apply(Command::Batch(commands)));
                     }
                 }
                 let (key_copy, key_cut, key_paste) = ui.input_mut(|i| {
@@ -1757,125 +1542,16 @@ pub fn show(
             if !ui.ctx().egui_wants_keyboard_input()
                 && let Some(action) = state.pending.take()
             {
-                let rate_of = |state: &mut TimelineState, clip: &Clip| {
-                    clip.as_audio().map_or(FALLBACK_RATE, |audio| {
-                        state
-                            .sources
-                            .get(ui.ctx(), directory.as_deref(), &audio.source)
-                            .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
-                    })
-                };
-                let ranged = state
-                    .range
-                    .filter(|_| state.selected.is_empty() && state.automation.selected().is_none());
-                let pasting_section = action == ClipAction::Paste
-                    && crate::clipboard::holds(crate::clipboard::SECTION_MIME);
-                if ranged.is_some() || pasting_section {
-                    let rates = source_rates(project, &mut state.sources, ui.ctx(), directory.as_deref());
-                    let rate = |clip: &Clip| {
-                        clip.as_audio()
-                            .and_then(|audio| rates.get(&audio.source).copied())
-                            .unwrap_or(FALLBACK_RATE)
-                    };
-                    match (action, ranged) {
-                        (ClipAction::Copy | ClipAction::Cut, Some(range)) => {
-                            let section = sections::copy(project, range, &rate);
-                            crate::clipboard::copy(
-                                crate::clipboard::SECTION_MIME,
-                                &section,
-                                "a section",
-                            );
-                            if action == ClipAction::Cut {
-                                edits.push(Edit::Apply(sections::clear(project, range, &rate)));
-                            }
-                        }
-                        (ClipAction::InsertTime, Some(range)) => {
-                            edits.extend(
-                                sections::insert_time(project, range.start, range.len(), &rate)
-                                    .map(Edit::Apply),
-                            );
-                        }
-                        (ClipAction::DeleteTime, Some(range)) => {
-                            edits.push(Edit::Apply(sections::delete_time(project, range, &rate)));
-                            state.range = None;
-                        }
-                        (ClipAction::Paste, _) => {
-                            if let Some(section) = crate::clipboard::paste::<sections::Section>(
-                                crate::clipboard::SECTION_MIME,
-                            ) {
-                                let at = playhead.unwrap_or(Tick::ZERO);
-                                let (command, _) = sections::paste_section(project, &section, at);
-                                if let Some(command) = command {
-                                    edits.push(Edit::Apply(command));
-                                    state.range = sections::Range::new(
-                                        at,
-                                        Tick(at.0 + section.length.0),
-                                    );
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                let handled = ranged.is_some() || pasting_section;
-                if !handled {
-                edits.extend(automation::act(
+                let playhead = playhead.unwrap_or(Tick::ZERO);
+                run_clip_action(
                     action,
-                    &mut state.automation,
+                    state,
+                    ui.ctx(),
+                    directory.as_deref(),
                     project,
-                    playhead.unwrap_or(Tick::ZERO),
-                ));
-                let chosen: Vec<(ClipId, Clip)> = state
-                    .selected
-                    .iter()
-                    .filter_map(|&id| Some((id, project.clip(id)?.clone())))
-                    .collect();
-                if matches!(action, ClipAction::Copy | ClipAction::Cut) && !chosen.is_empty() {
-                    let copied = Copied::of(project, chosen.iter().map(|(_, clip)| clip));
-                    crate::clipboard::copy(
-                        crate::clipboard::CLIP_MIME,
-                        &copied,
-                        &format!("{} clips", copied.clips.len()),
-                    );
-                    if action == ClipAction::Cut {
-                        let removals = chosen
-                            .iter()
-                            .map(|&(id, _)| Command::RemoveClip { id })
-                            .collect();
-                        state.selected.clear();
-                        edits.push(Edit::Apply(Command::Batch(removals)));
-                    }
-                }
-                if action == ClipAction::Paste
-                    && let Some(clips) = crate::clipboard::paste::<Copied>(crate::clipboard::CLIP_MIME)
-                {
-                    // On the selected track if the clips come from one, else where
-                    // they came from.
-                    let track = state.selected_track.or_else(|| {
-                        let mut tracks = chosen.iter().map(|(_, clip)| clip.node);
-                        tracks.next().filter(|first| tracks.all(|t| t == *first))
-                    });
-                    let (command, pasted) = paste(project, &clips, playhead.unwrap_or(Tick::ZERO), track);
-                    if let Some(command) = command {
-                        state.selected = pasted;
-                        edits.push(Edit::Apply(command));
-                    }
-                }
-                if action == ClipAction::Duplicate && !chosen.is_empty() {
-                    let last = chosen
-                        .iter()
-                        .map(|(_, c)| clips::clip_end(map, c, rate_of(state, c), warp_of(project, c)))
-                        .max()
-                        .unwrap_or_default();
-                    let clipboard = Copied::of(project, chosen.iter().map(|(_, clip)| clip));
-                    let (command, copies) = paste(project, &clipboard, last, None);
-                    // The earliest copy goes at `last`: just after the others.
-                    if let Some(command) = command {
-                        state.selected = copies;
-                        edits.push(Edit::Apply(command));
-                    }
-                }
-                }
+                    playhead,
+                    &mut edits,
+                );
             }
 
             // Ctrl/Cmd+Left and Right take the playhead to the edges of the selected
@@ -1892,12 +1568,10 @@ pub fn show(
                         Key::ArrowLeft => selected.map(|clip| clip.start).min(),
                         _ => selected
                             .map(|clip| {
-                                let rate = clip.as_audio().map_or(FALLBACK_RATE, |audio| {
+                                let rate =
                                     state
                                         .sources
-                                        .get(ui.ctx(), directory.as_deref(), &audio.source)
-                                        .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
-                                });
+                                        .clip_rate(ui.ctx(), directory.as_deref(), clip);
                                 clips::clip_end(map, clip, rate, warp_of(project, clip))
                             })
                             .max(),
@@ -1914,22 +1588,21 @@ pub fn show(
                 }
             }
 
-            let (header_edits, header_arm) =
-                draw_headers(
-                    ui,
-                    rect,
-                    content,
-                    Lanes {
-                        tracks: &tracks,
-                        all: &all_tracks,
-                        strips: &strips,
-                        colours: &colours,
-                    },
-                    &rows,
-                    session,
-                    state,
-                    scroll_y,
-                );
+            let (header_edits, header_arm) = draw_headers(
+                ui,
+                rect,
+                content,
+                Lanes {
+                    tracks: &tracks,
+                    all: &all_tracks,
+                    strips: &strips,
+                    colours: &colours,
+                },
+                &rows,
+                session,
+                state,
+                scroll_y,
+            );
             edits.extend(header_edits);
             arm.extend(header_arm);
         });
@@ -2637,6 +2310,386 @@ pub fn show(
         open_midi,
         open_audio,
         audition,
+    }
+}
+/// The menu on a right-clicked clip.
+fn clip_menu(
+    ui: &mut egui::Ui,
+    state: &mut TimelineState,
+    project: &Project,
+    id: ClipId,
+    clip: &Clip,
+    rate: u32,
+    edits: &mut Vec<Edit>,
+) {
+    let map = project.tempo_map();
+    let audio = clip.as_audio();
+    if let Some(audio) = audio {
+        let mute = if audio.muted { "Unmute" } else { "Mute" };
+        if ui.button(mute).clicked() {
+            ui.close();
+            edits.push(Edit::Apply(toggle_mute(id, clip)));
+        }
+        if audio.takes.is_some() {
+            let open = state.takes.shown.contains(&id);
+            if ui
+                .button(if open { "Hide takes" } else { "Show takes" })
+                .on_hover_text("Show the takes under the track to comp them: drag across a take to play that part of it, click one to audition it")
+                .clicked()
+            {
+                ui.close();
+                if open {
+                    state.takes.shown.remove(&id);
+                } else {
+                    state.takes.shown.insert(id);
+                }
+            }
+        }
+        if audio.takes.is_some()
+            && ui
+                .button("Flatten takes")
+                .on_hover_text(
+                    "Cut the comp at its joins into plain clips and drop the takes it doesn't play",
+                )
+                .clicked()
+        {
+            ui.close();
+            edits.extend(comp::flatten(project, map, id, rate).map(Edit::Apply));
+        }
+        if ui
+            .button("Split to stems")
+            .on_hover_text(
+                "Make a track for the drums, bass, vocals and the rest, and mute this clip",
+            )
+            .clicked()
+        {
+            ui.close();
+            edits.push(Edit::SplitToStems(id));
+        }
+        if ui
+            .button("Pin transients")
+            .on_hover_text(
+                "Put a warp marker on every hit of this clip and the clips linked to it (one for a hit the mics hear a few milliseconds apart), where it plays now. Quantise and the Slices mode work from them.",
+            )
+            .clicked()
+        {
+            ui.close();
+            edits.push(Edit::PinTransients(id, 50));
+        }
+        // The form has a number to edit, which a click in
+        // the menu must not close.
+        egui::containers::menu::SubMenuButton::new("Quantise transients…")
+            .config(
+                egui::containers::menu::MenuConfig::new()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+            )
+            .ui(ui, |ui| {
+                ui.label("Pins every hit, then moves them onto a grid");
+                if crate::clip_panel::quantise_hits_form(ui, id, edits) {
+                    ui.close();
+                }
+            });
+        if ui
+            .button("Slice to Sampler")
+            .on_hover_text(
+                "Cut this clip at its transients onto a new track that plays each slice from a key, starting at C2",
+            )
+            .clicked()
+        {
+            ui.close();
+            edits.push(Edit::SliceToSampler(id));
+        }
+        // A MIDI clip picked with this one is what the
+        // conversion replaces.
+        let replace = state
+            .selected
+            .iter()
+            .copied()
+            .find(|c| project.clip(*c).is_some_and(|c| c.as_midi().is_some()));
+        ui.menu_button("Convert to MIDI", |ui| {
+            ui.label(if replace.is_some() {
+                "Replaces the selected MIDI clip"
+            } else {
+                "Notes on a new track (select a MIDI clip too to replace it)"
+            });
+            for detect in crate::session::convert::Detect::ALL {
+                if ui
+                    .button(detect.label())
+                    .on_hover_text(
+                        "Follows one voice or line. The notes are plain notes to edit; convert again to try another setting.",
+                    )
+                    .clicked()
+                {
+                    ui.close();
+                    edits.push(Edit::ConvertToMidi(id, detect, replace));
+                }
+            }
+        });
+        ui.separator();
+    }
+    if let Some(midi) = clip.as_midi()
+        && midi.takes.is_some()
+    {
+        let open = state.takes.shown.contains(&id);
+        if ui
+            .button(if open { "Hide takes" } else { "Show takes" })
+            .clicked()
+        {
+            ui.close();
+            if open {
+                state.takes.shown.remove(&id);
+            } else {
+                state.takes.shown.insert(id);
+            }
+        }
+        if ui
+            .button("Flatten takes")
+            .on_hover_text("Keep what the comp plays as a plain clip and drop the takes")
+            .clicked()
+        {
+            ui.close();
+            edits.extend(comp::flatten_midi(project, id).map(Edit::Apply));
+        }
+        ui.separator();
+    }
+    let players = crate::pattern_panel::players(project);
+    if clip.as_midi().is_some() && !players.is_empty() {
+        ui.menu_button("Copy to pattern", |ui| {
+            for (n, &player) in players.iter().enumerate() {
+                if ui
+                    .button(format!("Pattern Player {}", n + 1))
+                    .on_hover_text("Add a copy of this clip as a slot of the player")
+                    .clicked()
+                {
+                    ui.close();
+                    edits.extend(
+                        crate::pattern_panel::copy_to(project, clip, player).map(Edit::Apply),
+                    );
+                }
+            }
+        });
+        ui.separator();
+    }
+    let chosen: Vec<ClipId> = state.selected.iter().copied().collect();
+    let linked = project.group_of(id).map(|(_, members)| members);
+    let whole_link = linked.as_ref().is_some_and(|m| *m == chosen);
+    if chosen.len() >= 2
+        && !whole_link
+        && ui
+            .button("Link")
+            .on_hover_text("Move, trim, cut, warp and delete these clips together")
+            .clicked()
+    {
+        ui.close();
+        edits.extend(project.link_command(&chosen).map(Edit::Apply));
+    }
+    if chosen.iter().any(|&c| project.group_of(c).is_some()) && ui.button("Unlink").clicked() {
+        ui.close();
+        edits.extend(project.unlink_command(&chosen).map(Edit::Apply));
+    }
+    ui.separator();
+    for (action, label) in [
+        (ClipAction::Cut, "Cut"),
+        (ClipAction::Copy, "Copy"),
+        (ClipAction::Duplicate, "Duplicate"),
+    ] {
+        if ui.button(label).clicked() {
+            ui.close();
+            state.pending = Some(action);
+        }
+    }
+}
+/// Cuts the selected clips (every clip, if none is selected) at `at`; the
+/// right halves become the selection. `None` if no clip spans `at`.
+fn split_at(
+    state: &mut TimelineState,
+    ctx: &egui::Context,
+    directory: Option<&std::path::Path>,
+    project: &Project,
+    at: Tick,
+) -> Option<Command> {
+    let map = project.tempo_map();
+    // Cutting one linked clip cuts them all.
+    let wanted: Vec<ClipId> = if state.selected.is_empty() {
+        project.timeline_clips().map(|(id, _)| id).collect()
+    } else {
+        project.with_linked(state.selected.iter().copied())
+    };
+    let mut commands = Vec::new();
+    let mut right_halves = BTreeSet::new();
+    let mut next = project.next_clip_id();
+    // Which right half came from which clip, to link them as
+    // the clips they come from were.
+    let mut halves: BTreeMap<ClipId, ClipId> = BTreeMap::new();
+    for id in wanted {
+        let Some(clip) = project.clip(id) else {
+            continue;
+        };
+        let rate = state.sources.clip_rate(ctx, directory, clip);
+        if let Some((first, second)) = clips::split(map, clip, at, rate, warp_of(project, clip)) {
+            commands.push(Command::SetClip { id, clip: first });
+            commands.push(Command::AddClip {
+                id: next,
+                clip: second,
+            });
+            right_halves.insert(next);
+            halves.insert(id, next);
+            next.0 += 1;
+        }
+    }
+    // The left halves stay in their link; the right halves
+    // make one of their own, which shares the warp (a clip
+    // cut in two has one warp until a half is edited alone).
+    let mut group_id = project.next_clip_group_id();
+    let mut made = BTreeSet::new();
+    for &id in halves.keys() {
+        let Some((old, members)) = project.group_of(id) else {
+            continue;
+        };
+        if !made.insert(old) {
+            continue;
+        }
+        let rights: BTreeSet<ClipId> = members
+            .iter()
+            .filter_map(|m| halves.get(m).copied())
+            .collect();
+        if rights.len() >= 2 {
+            commands.push(Command::SetClipGroup {
+                id: group_id,
+                group: Some(noodle_core::ClipGroup { members: rights }),
+            });
+            group_id.0 += 1;
+        }
+    }
+    if commands.is_empty() {
+        return None;
+    }
+    state.selected = right_halves;
+    Some(Command::Batch(commands))
+}
+
+/// Carries out a clipboard action on the selected section, clips or
+/// automation points, with the playhead at `playhead`.
+fn run_clip_action(
+    action: ClipAction,
+    state: &mut TimelineState,
+    ctx: &egui::Context,
+    directory: Option<&std::path::Path>,
+    project: &Project,
+    playhead: Tick,
+    edits: &mut Vec<Edit>,
+) {
+    let map = project.tempo_map();
+    let ranged = state
+        .range
+        .filter(|_| state.selected.is_empty() && state.automation.selected().is_none());
+    let pasting_section =
+        action == ClipAction::Paste && crate::clipboard::holds(crate::clipboard::SECTION_MIME);
+    if ranged.is_some() || pasting_section {
+        let rates = source_rates(project, &mut state.sources, ctx, directory);
+        let rate = |clip: &Clip| {
+            clip.as_audio()
+                .and_then(|audio| rates.get(&audio.source).copied())
+                .unwrap_or(FALLBACK_RATE)
+        };
+        match (action, ranged) {
+            (ClipAction::Copy | ClipAction::Cut, Some(range)) => {
+                let section = sections::copy(project, range, &rate);
+                crate::clipboard::copy(crate::clipboard::SECTION_MIME, &section, "a section");
+                if action == ClipAction::Cut {
+                    edits.push(Edit::Apply(sections::clear(project, range, &rate)));
+                }
+            }
+            (ClipAction::InsertTime, Some(range)) => {
+                edits.extend(
+                    sections::insert_time(project, range.start, range.len(), &rate)
+                        .map(Edit::Apply),
+                );
+            }
+            (ClipAction::DeleteTime, Some(range)) => {
+                edits.push(Edit::Apply(sections::delete_time(project, range, &rate)));
+                state.range = None;
+            }
+            (ClipAction::Paste, _) => {
+                if let Some(section) =
+                    crate::clipboard::paste::<sections::Section>(crate::clipboard::SECTION_MIME)
+                {
+                    let at = playhead;
+                    let (command, _) = sections::paste_section(project, &section, at);
+                    if let Some(command) = command {
+                        edits.push(Edit::Apply(command));
+                        state.range = sections::Range::new(at, Tick(at.0 + section.length.0));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let handled = ranged.is_some() || pasting_section;
+    if !handled {
+        edits.extend(automation::act(
+            action,
+            &mut state.automation,
+            project,
+            playhead,
+        ));
+        let chosen: Vec<(ClipId, Clip)> = state
+            .selected
+            .iter()
+            .filter_map(|&id| Some((id, project.clip(id)?.clone())))
+            .collect();
+        if matches!(action, ClipAction::Copy | ClipAction::Cut) && !chosen.is_empty() {
+            let copied = Copied::of(project, chosen.iter().map(|(_, clip)| clip));
+            crate::clipboard::copy(
+                crate::clipboard::CLIP_MIME,
+                &copied,
+                &format!("{} clips", copied.clips.len()),
+            );
+            if action == ClipAction::Cut {
+                let removals = chosen
+                    .iter()
+                    .map(|&(id, _)| Command::RemoveClip { id })
+                    .collect();
+                state.selected.clear();
+                edits.push(Edit::Apply(Command::Batch(removals)));
+            }
+        }
+        if action == ClipAction::Paste
+            && let Some(clips) = crate::clipboard::paste::<Copied>(crate::clipboard::CLIP_MIME)
+        {
+            // On the selected track if the clips come from one, else where
+            // they came from.
+            let track = state.selected_track.or_else(|| {
+                let mut tracks = chosen.iter().map(|(_, clip)| clip.node);
+                tracks.next().filter(|first| tracks.all(|t| t == *first))
+            });
+            let (command, pasted) = paste(project, &clips, playhead, track);
+            if let Some(command) = command {
+                state.selected = pasted;
+                edits.push(Edit::Apply(command));
+            }
+        }
+        if action == ClipAction::Duplicate && !chosen.is_empty() {
+            let last = chosen
+                .iter()
+                .map(|(_, c)| {
+                    clips::clip_end(
+                        map,
+                        c,
+                        state.sources.clip_rate(ctx, directory, c),
+                        warp_of(project, c),
+                    )
+                })
+                .max()
+                .unwrap_or_default();
+            let clipboard = Copied::of(project, chosen.iter().map(|(_, clip)| clip));
+            let (command, copies) = paste(project, &clipboard, last, None);
+            // The earliest copy goes at `last`: just after the others.
+            if let Some(command) = command {
+                state.selected = copies;
+                edits.push(Edit::Apply(command));
+            }
+        }
     }
 }
 

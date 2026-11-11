@@ -16,6 +16,7 @@ use std::sync::{Arc, Mutex};
 pub use noodle_io::Analysis;
 use noodle_io::{ANALYSIS_SECONDS, AudioFiles, Decoder, FileStamp, Peaks, PeaksBuilder};
 
+use super::FALLBACK_RATE;
 use super::clips::Source;
 
 /// How many waveforms are worked out at once, however many files a project
@@ -214,6 +215,25 @@ impl Sources {
             }),
         );
         Some(loaded)
+    }
+
+    /// The sample rate of the file `name`, or [`FALLBACK_RATE`] when it
+    /// can't be read.
+    pub fn rate(&mut self, ctx: &egui::Context, directory: Option<&Path>, name: &str) -> u32 {
+        self.get(ctx, directory, name)
+            .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
+    }
+
+    /// [`Self::rate`] for the file `clip` plays; [`FALLBACK_RATE`] for a MIDI clip.
+    pub fn clip_rate(
+        &mut self,
+        ctx: &egui::Context,
+        directory: Option<&Path>,
+        clip: &noodle_core::Clip,
+    ) -> u32 {
+        clip.as_audio().map_or(FALLBACK_RATE, |audio| {
+            self.rate(ctx, directory, &audio.source)
+        })
     }
 
     /// Takes in the waveforms the workers have finished.
