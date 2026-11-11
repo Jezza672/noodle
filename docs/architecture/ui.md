@@ -391,9 +391,11 @@ the right.
   typing a tempo (which drops the " bpm" suffix) moves nothing.
 - **Typefaces.** `theme::apply_fonts` loads the brand pair from
   `crates/noodle-app/assets/fonts/` (both SIL OFL, licences beside them): Inter for
-  running text, Space Grotesk Medium for headings and buttons. `NOODLE_FONT=grotesk`
-  uses Space Grotesk everywhere and `NOODLE_FONT=default` keeps egui's own font.
-  Sizes have not been tuned for the new faces yet.
+  running text, Space Grotesk Medium for headings and buttons. Both are scaled to
+  0.92 (`INTER_SCALE`, `GROTESK_SCALE`) because they set larger than egui's own face,
+  and the app's hard-coded sizes were written for that one; this keeps column widths,
+  fixed-width headers and row heights as they were. Don't tune individual sizes
+  for the new faces: change the scale. egui's own fonts stay as fallbacks for symbols.
 - **Drawn arrows and icons.** The bundled font has no glyph for the
   drop-down arrow or for a plus, and typed ones show as empty boxes, so arrows
   are painted (`paint_chevron`, also used by `widgets::Dropdown`) and the

@@ -35,41 +35,46 @@ pub const SCOPE_VIEW_HEIGHT: f32 = 160.0;
 pub const PROPERTIES_WIDTH: f32 = 260.0;
 
 /// The brand typefaces (see the brand guidelines): Inter for running text and
-/// Space Grotesk Medium for headings and buttons. Set `NOODLE_FONT=grotesk` to
-/// use Space Grotesk for everything, or `NOODLE_FONT=default` for egui's own.
+/// Space Grotesk Medium for headings and buttons.
+/// Both faces set larger than egui's own at the same point size (taller x-height,
+/// wider letters), and the app's sizes are written for the old face, so each is
+/// scaled down to keep column widths, row heights and clipping as they were.
+const INTER_SCALE: f32 = 0.92;
+const GROTESK_SCALE: f32 = 0.92;
+
 fn apply_fonts(ctx: &egui::Context) {
     use egui::{FontData, FontDefinitions, FontFamily, FontId, TextStyle};
     use std::sync::Arc;
 
-    let choice = std::env::var("NOODLE_FONT").unwrap_or_default();
-    if choice == "default" {
-        return;
-    }
     let mut fonts = FontDefinitions::default();
     fonts.font_data.insert(
         "inter".into(),
-        Arc::new(FontData::from_static(include_bytes!(
-            "../assets/fonts/Inter_400Regular.ttf"
-        ))),
+        Arc::new(
+            FontData::from_static(include_bytes!("../assets/fonts/Inter_400Regular.ttf")).tweak(
+                egui::FontTweak {
+                    scale: INTER_SCALE,
+                    ..Default::default()
+                },
+            ),
+        ),
     );
     fonts.font_data.insert(
         "space-grotesk".into(),
-        Arc::new(FontData::from_static(include_bytes!(
-            "../assets/fonts/SpaceGrotesk_500Medium.ttf"
-        ))),
+        Arc::new(
+            FontData::from_static(include_bytes!("../assets/fonts/SpaceGrotesk_500Medium.ttf"))
+                .tweak(egui::FontTweak {
+                    scale: GROTESK_SCALE,
+                    ..Default::default()
+                }),
+        ),
     );
-    let body = if choice == "grotesk" {
-        "space-grotesk"
-    } else {
-        "inter"
-    };
     // Keep egui's own fonts after ours as fallbacks for symbols and emoji.
     let fallbacks = fonts
         .families
         .get(&FontFamily::Proportional)
         .cloned()
         .unwrap_or_default();
-    let mut proportional = vec![body.to_string()];
+    let mut proportional = vec!["inter".to_string()];
     proportional.extend(fallbacks.clone());
     fonts
         .families
@@ -88,7 +93,7 @@ fn apply_fonts(ctx: &egui::Context) {
             .insert(TextStyle::Heading, FontId::new(19.0, display.clone()));
         style
             .text_styles
-            .insert(TextStyle::Button, FontId::new(13.5, display.clone()));
+            .insert(TextStyle::Button, FontId::new(14.0, display.clone()));
     });
 }
 
