@@ -303,10 +303,7 @@ pub fn show(
                     };
                     let range = (at(a), at(b));
                     let mut rate_of = |audio: &AudioClip| {
-                        state
-                            .sources
-                            .get(ui.ctx(), view.directory, &audio.source)
-                            .map_or(FALLBACK_RATE, |l| l.source.sample_rate)
+                        state.sources.rate(ui.ctx(), view.directory, &audio.source)
                     };
                     out.edits.extend(
                         comp::swipe(project, map, id, range, k, &mut rate_of).map(Edit::Apply),
