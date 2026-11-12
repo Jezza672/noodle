@@ -139,7 +139,6 @@ pub struct DrumAnalysis {
 
 impl DrumAnalysis {
     /// The window of the clip's file that hit `index` is cut from.
-    #[allow(dead_code)] // used by the dialog (step D)
     pub fn window(&self, index: usize) -> Option<SampleRef> {
         let hit = self.hits.get(index)?;
         let total = self.file_frames.max(1) as f64;
@@ -223,13 +222,11 @@ impl Session {
     }
 
     /// How far the analysis under way has got, from 0 to 1.
-    #[allow(dead_code)] // used by the dialog (step D)
     pub fn drum_progress(&self) -> Option<f32> {
         self.drum_rack.run.as_ref().map(|r| r.job.fraction())
     }
 
     /// Stops the analysis under way. Nothing is left of it.
-    #[allow(dead_code)] // used by the dialog (step D)
     pub fn cancel_drum_analysis(&mut self) {
         if let Some(run) = &self.drum_rack.run {
             run.job.cancel();
@@ -237,13 +234,11 @@ impl Session {
     }
 
     /// The finished analysis, until [`close_drum_analysis`](Self::close_drum_analysis).
-    #[allow(dead_code)] // used by the dialog (step D)
     pub fn drum_analysis(&self) -> Option<&DrumAnalysis> {
         self.drum_rack.result.as_ref()
     }
 
     /// Lets go of the analysis (the dialog was closed).
-    #[allow(dead_code)] // used by the dialog (step D)
     pub fn close_drum_analysis(&mut self) {
         self.drum_rack.result = None;
     }

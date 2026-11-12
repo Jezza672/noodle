@@ -1,6 +1,6 @@
-# Create drum rack from clip (design, proposed)
+# Create drum rack from clip (design, built)
 
-Status: steps A, B and C built (analysis, Sampler Fixed pick, and the session job plus `Edit::CreateDrumRack` in `session/drum_rack.rs`); step D (dialog, menu, route) is not. Asked for by Jeremy; his answers to the first
+Status: all four steps built (analysis, Sampler Fixed pick, the session job plus `Edit::CreateDrumRack` in `session/drum_rack.rs`, and the dialog in `drum_rack_dialog.rs` with the clip menu entry and an S09 route). What the first dialog leaves out is in `ROADMAP.md`. Asked for by Jeremy; his answers to the first
 round of questions are folded in (see Decisions). This builds on the Drum Rack of #457 (named `Drum Pad` groups, ADR 0009),
 the onset detector and Sample Set work of #489 (#356), the Selector (#388) and
 the stems work (M10, ADR 0006).

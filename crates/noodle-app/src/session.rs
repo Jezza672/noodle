@@ -168,14 +168,11 @@ pub enum Edit {
     /// Finds the drum hits of an audio clip on a background job (see
     /// [`Session::analyse_drum_clip`]). Not an edit: the result is held by the
     /// session.
-    #[allow(dead_code)] // the drum rack dialog constructs it (step D)
     AnalyseDrumClip(noodle_core::ClipId),
     /// Stops the drum analysis under way.
-    #[allow(dead_code)] // the drum rack dialog constructs it (step D)
     CancelDrumAnalysis,
     /// Makes a Drum Rack track from the held analysis of a clip (see
     /// [`Session::create_drum_rack`]). One undo step.
-    #[allow(dead_code)] // the drum rack dialog constructs it (step D)
     CreateDrumRack(noodle_core::ClipId, drum_rack::DrumRackPlan),
     /// Convert an audio clip to MIDI at a sensitivity, replacing the MIDI clip
     /// if one is given.

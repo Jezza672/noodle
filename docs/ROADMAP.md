@@ -88,6 +88,16 @@ deliberately deferred items.
   editors.
 - **`noodle profile --threads`** showing real-time workers on Mac and Windows;
   the macOS audio workgroup join is not done.
+- **Create drum rack from clip** (`docs/design/drum-rack-from-clip.md`): on a real
+  drum recording, right-click the clip, Create drum rack from clip, and listen to
+  the rack: the groups are sensible, the guessed pads are right, the picker
+  changes the hit, and the rack sounds like the track's kit. Never produce real
+  audio there without asking.
+- **Drum rack from clip, still to build:** audition of a group or pad in the
+  dialog, the spectrogram on a group card, Exclude a hit, per-group Split and
+  Merge with…, and a click path to place a group as well as the drag; then the
+  follow-ups in the design (velocity layers, the groove as MIDI, a small
+  classifier, separation).
 - **Recording with a real microphone**, to check the latency compensation, and
   that the Audio Settings round-trip estimate matches what you hear.
 - **Stem separation on the real HT-Demucs weights** (M10), and listening to the
