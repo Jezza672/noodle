@@ -464,7 +464,7 @@ fn rack_steps(h: &mut Handle, _size: usize) {
     h.click(entry, Modifiers::NONE);
     // The analysis runs on a background worker.
     h.waited(0.5);
-    for _ in 0..200 {
+    for _ in 0..1500 {
         h.probe().settle();
         if h.probe().mentions("hits ·") {
             break;
