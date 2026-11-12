@@ -244,13 +244,23 @@ raise the quality of the hit list later; it does not help bin or label hits.
   the same PR (`docs/architecture/usability.md`).
 - Listening check on the Mac (a Remote Control session) for the rack's sound.
 
-## Build order (each a PR)
+## Steps and dependencies
 
-1. `drum_bins.rs` with hits, features, bins, rank and labels, plus the tests.
-2. Sampler **Fixed** mode, and a `sample` input and `take` on the pad; golden renders are unaffected
-   (no example uses it), so no `DSP_GENERATION` bump.
-3. `Edit::CreateDrumRack`, the command and the session test.
-4. The dialog, the clip menu entry and the route.
+Four executor threads, each one branch and PR (fewer, larger PRs; Sonnet medium
+for each). A and B are independent and can start together; C needs both; D needs
+C. Each PR updates docs in the same PR (move the record from this file into
+`docs/features/`, and `docs/architecture/` where a rule changes).
+
+| Step | Scope | Needs |
+|---|---|---|
+| **A. Analysis module** | `noodle-io/src/drum_bins.rs`: hits (merged onset detectors), cuts with truncation flag, feature vector, leader clustering plus medoid pass with the threshold knob, member ranking, mixed-hit flag, rule labels with confidence; a cache keyed by clip window, file hash and detector version. Tests on synthetic kits built from the app's own nodes, each proved able to fail. | nothing |
+| **B. Sampler pick and pad input** | Sampler `rr_mode` **Fixed** and `rr_pick` parameter; Drum Pad template gets a `sample` input (wired over the Sampler's own sample, which still takes a dropped file) and a `take` input; keytrack stays off. Sampler unit test, an addition to `noodle-nodes/tests/realtime.rs`, template tests. No golden changes expected; if one moves, bump `DSP_GENERATION`. | nothing |
+| **C. Command and session** | `Session::analyse_drum_clip` as a cancellable `Job` with progress and the analysis held outside the project; `Edit::CreateDrumRack(clip, Vec<PadAssignment>)` building one new track from the Drum Rack template, extra pads for unlisted keys named by GM name, one shared Sample Set per used bin wired to its pads, all in one `Command::Batch` (one undo step). Session tests in the style of `picked_cuts_become_a_sampler_group_of_primitives_…`. | A, B |
+| **D. Dialog, menu and route** | `drum_rack_dialog.rs`: progress, bin cards (label, confidence, waveform, play, member picker, exclude, split and merge), the slider, pad grid (eight pads, Show all keys with GM names), drag and drop, audition through a copy of the project; the clip menu entry; the usability route (extend S09 or add one) through `testkit`; docs. Mac listening check owed, added to `ROADMAP.md`. | C |
+
+Follow-ups, not in these steps: velocity layers from level; the groove as a MIDI
+clip; the small own classifier (version 2); the separation analyser and mixed
+hit handling (version 3, which needs the licence checks first).
 
 ## Decisions (Jeremy, 2026-11-12)
 
