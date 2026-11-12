@@ -329,11 +329,18 @@ fn slot_label(slot: &Slot, i: usize) -> String {
 }
 
 fn slot_sampler(slot: &Slot) -> Spec {
-    spec("noodle.instrument.sampler")
+    let sampler = spec("noodle.instrument.sampler")
         .config("sample", Value::Text(sample_hash(&slot.sample)))
         .param("keytrack", 0.0)
         .param("mode", 0.0)
-        .param("gain", slot.db)
+        .param("gain", slot.db);
+    // The library template's pads (no sample yet) pick a copy of a wired set
+    // by `take`; a song's slot has one sample, so its mode is left alone.
+    if slot.sample.is_empty() {
+        sampler.param("rr_mode", 3.0)
+    } else {
+        sampler
+    }
 }
 
 /// The library template's rack: a Swing in front of a named Drum Pad for
@@ -389,7 +396,9 @@ fn pad_rack(p: &mut Patch, rack: &Rack) {
 
 /// A drum pad: a group named `name` that plays one drum. Its inputs are
 /// `notes`, `key` (the one it answers to), `level` (decibels), `tune` (cents),
-/// `pan` and `choke in` (notes that cut it off); its outputs are `out` and
+/// `pan`, `choke in` (notes that cut it off), `sample` (a sample or Sample Set wired
+/// over the Sampler's own, which a dropped file still fills when nothing is wired)
+/// and `take` (which round-robin slot of a set plays, from 1); its outputs are `out` and
 /// `choke out` (the notes it plays, to wire into other pads' `choke in`).
 /// Drop a sample on the pad and it plays it.
 ///
@@ -404,6 +413,8 @@ fn drum_pad(p: &mut Patch, name: &str, slot: &Slot, column: f32, row: f32) -> No
     let tune = p.input("tune", 3.0);
     let spread = p.input("pan", 4.0);
     let choke_in = p.input("choke in", 5.0);
+    let sample = p.input("sample", 6.0);
+    let take = p.input("take", 7.0);
     let filter = p.add(
         spec("noodle.event.note_split")
             .config("outputs", Value::Int(1))
@@ -426,6 +437,8 @@ fn drum_pad(p: &mut Patch, name: &str, slot: &Slot, column: f32, row: f32) -> No
     p.connect((gate, "out"), (sampler, "in"));
     p.connect(level, (sampler, "gain"));
     p.connect(tune, (sampler, "tune"));
+    p.connect(sample, (sampler, "sample"));
+    p.connect(take, (sampler, "rr_pick"));
     p.connect(spread, (pan, "pan"));
     p.connect((sampler, "out"), (pan, "in"));
     p.connect((pan, "out"), out);

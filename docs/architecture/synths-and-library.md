@@ -170,7 +170,7 @@ These are primitives; instruments and racks built from them are groups.
   of every instance still reporting.
   Given a **sample set** on its sample input (a Sample Set node,
   `noodle.instrument.sample_set`) it plays a multisample: nearest root, then
-  velocity layer (`vel_curve`), then take (`rr_mode`), from tables built with
+  velocity layer (`vel_curve`), then take (`rr_mode`: Cycle, Random, No repeat, or Fixed, which plays slot `rr_pick`, counted from 1 and clamped), from tables built with
   the node. `bend_range` (semitones) scales channel pitch bend. See
   [sample-routing.md](../features/sample-routing.md).
   Interpolation is four-point Catmull-Rom. The `sample` option is also a sample input (see
