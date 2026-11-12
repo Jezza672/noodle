@@ -14,7 +14,9 @@ use egui::{Modifiers, vec2};
 
 use super::super::handle::{Handle, Probe};
 use super::super::{Route, Tag};
-use super::patch::{Op, Ref, kind, output, param, run, seeded, upstream};
+use super::audio_clip::{add_phrase, has_audio_clip};
+use super::patch::{Op, Ref, kind, output, param, run, seed, upstream};
+use super::{finished, virtual_session};
 use crate::app::App;
 
 const SRC: Ref = Ref("osc.saw", 0);
@@ -22,15 +24,20 @@ const LIMIT: Ref = Ref("effect.dynamics", 0);
 const NORM: Ref = Ref("offline.normalize", 0);
 const OUT: Ref = Ref("io.output", 0);
 
+/// A source and the output, and a six-second clip on a track: the mixdown
+/// has a length, so the export dialog has something to export.
 fn fixture(dir: &Path) -> App {
-    seeded(
-        dir,
+    let mut session = virtual_session(dir);
+    seed(
+        &mut session,
         &[
             ("osc.saw", 60.0, 300.0, &[("frequency", 110.0)]),
             ("io.output", 1000.0, 300.0, &[]),
         ],
         &[],
-    )
+    );
+    add_phrase(&mut session, dir, 120.0);
+    finished(session, dir)
 }
 
 const CHAIN: &[Op] = &[
@@ -79,6 +86,7 @@ fn steps(h: &mut Handle, _size: usize) {
 /// that. A Dynamics node with a high ratio limits; Normalize normalises.
 fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
     let project = p.project();
+    has_audio_clip(project)?;
     let out = output(project)?;
     let chain = upstream(project, out);
     let limited = chain.iter().any(|&n| {

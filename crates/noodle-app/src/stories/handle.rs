@@ -473,6 +473,16 @@ impl Probe<'_> {
         self.h.state().session().freeze_pending()
     }
 
+    /// Whether the CPU meters are showing on the nodes.
+    pub fn cpu_meters_on(&self) -> bool {
+        self.h.state().editor().show_cpu()
+    }
+
+    /// Whether the Playback cache panel is open.
+    pub fn cache_panel_open(&self) -> bool {
+        self.h.state().cache_panel_open()
+    }
+
     /// Whether the export dialog is open, with the mixdown ticked, and the
     /// groups ticked.
     pub fn export_ticks(&self) -> (bool, bool, Vec<String>) {

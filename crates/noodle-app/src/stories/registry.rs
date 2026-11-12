@@ -202,8 +202,8 @@ pub const STORIES: [Story; 28] = [
     Story {
         id: "S30",
         title: "Keep a large project responsive",
-        status: Status::Partial,
-        missing: "The CPU view and the 60-track size are not routed.",
+        status: Status::Full,
+        missing: "",
     },
 ];
 
