@@ -439,3 +439,64 @@ fn player_done(p: &mut Probe, _size: usize) -> Result<(), String> {
     }
     Ok(())
 }
+
+/// Turns a drum clip into a rack: right-click the clip, Create drum rack from
+/// clip, wait for the analysis, drag the group onto a pad, Create.
+pub fn rack_from_clip_route() -> Route {
+    Route {
+        story: "S09",
+        tag: Tag::Default,
+        name: "drum rack from a recorded drum clip",
+        fixture: |dir| super::audio_clip::clicks_at(dir, 100.0),
+        size: None,
+        steps: rack_steps,
+        done: rack_done,
+        late: &[],
+    }
+}
+
+fn rack_steps(h: &mut Handle, _size: usize) {
+    h.step("analyse the clip");
+    let id = super::audio_clip::clip_of(h.probe().project());
+    let at = h.clip_rect(id).center();
+    h.right_click(at);
+    let entry = h.find_first("Create drum rack from clip…");
+    h.click(entry, Modifiers::NONE);
+    // The analysis runs on a background worker.
+    h.waited(0.5);
+    for _ in 0..200 {
+        h.probe().settle();
+        if h.probe().mentions("hits ·") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    h.step("drop the group on the kick pad");
+    let group = h.find_like("hits ·");
+    let pad = h.find_like("Bass Drum");
+    h.drag_between(Modifiers::NONE, group, pad);
+    h.probe().settle();
+    h.step("create the rack");
+    let create = h.find("Create");
+    h.click(create, Modifiers::NONE);
+    h.probe().settle();
+}
+
+fn rack_done(p: &mut Probe, _size: usize) -> Result<(), String> {
+    let graph = p.project().graph();
+    if !graph
+        .nodes()
+        .any(|(_, n)| n.type_id == noodle_nodes::SAMPLE_SET_ID)
+    {
+        return Err("no Sample Set holds the hits".into());
+    }
+    let named = graph.nodes().any(|(_, n)| {
+        matches!(n.config.get(noodle_core::group::PORT_NAME),
+            Some(noodle_core::Value::Text(t)) if t.ends_with("(drum rack)"))
+    });
+    if named {
+        Ok(())
+    } else {
+        Err("there is no drum rack track".into())
+    }
+}

@@ -2420,6 +2420,16 @@ fn clip_menu(
             ui.close();
             edits.push(Edit::SliceToSampler(id));
         }
+        if ui
+            .button("Create drum rack from clip…")
+            .on_hover_text(
+                "Find the drum hits of this clip, group the ones that sound alike, and drop the groups on the pads of a new Drum Rack",
+            )
+            .clicked()
+        {
+            ui.close();
+            edits.push(Edit::AnalyseDrumClip(id));
+        }
         // A MIDI clip picked with this one is what the
         // conversion replaces.
         let replace = state

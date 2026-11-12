@@ -13,6 +13,7 @@ mod clipboard;
 mod devices;
 mod dialog;
 mod display;
+mod drum_rack_dialog;
 mod editor;
 mod export_dialog;
 mod freezing;
