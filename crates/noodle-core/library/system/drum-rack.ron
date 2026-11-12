@@ -39,7 +39,7 @@
             ),
             7: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(6),
             ),
@@ -57,7 +57,7 @@
             ),
             10: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(6),
@@ -82,7 +82,7 @@
             ),
             14: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(13),
             ),
@@ -100,7 +100,7 @@
             ),
             17: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(13),
@@ -125,7 +125,7 @@
             ),
             21: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(20),
             ),
@@ -143,7 +143,7 @@
             ),
             24: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(20),
@@ -168,7 +168,7 @@
             ),
             28: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(27),
             ),
@@ -186,7 +186,7 @@
             ),
             31: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(27),
@@ -211,7 +211,7 @@
             ),
             35: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(34),
             ),
@@ -229,7 +229,7 @@
             ),
             38: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(34),
@@ -254,7 +254,7 @@
             ),
             42: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(41),
             ),
@@ -272,7 +272,7 @@
             ),
             45: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(41),
@@ -297,7 +297,7 @@
             ),
             49: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(48),
             ),
@@ -315,7 +315,7 @@
             ),
             52: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(48),
@@ -340,7 +340,7 @@
             ),
             56: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(55),
             ),
@@ -358,7 +358,7 @@
             ),
             59: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(55),
@@ -470,6 +470,14 @@
                 to: (node: 10, port: "in"),
             ),
             (
+                from: (node: 7, port: "p8"),
+                to: (node: 10, port: "rr_pick"),
+            ),
+            (
+                from: (node: 7, port: "p7"),
+                to: (node: 10, port: "sample"),
+            ),
+            (
                 from: (node: 7, port: "p4"),
                 to: (node: 10, port: "tune"),
             ),
@@ -536,6 +544,14 @@
             (
                 from: (node: 16, port: "out"),
                 to: (node: 17, port: "in"),
+            ),
+            (
+                from: (node: 14, port: "p8"),
+                to: (node: 17, port: "rr_pick"),
+            ),
+            (
+                from: (node: 14, port: "p7"),
+                to: (node: 17, port: "sample"),
             ),
             (
                 from: (node: 14, port: "p4"),
@@ -610,6 +626,14 @@
                 to: (node: 24, port: "in"),
             ),
             (
+                from: (node: 21, port: "p8"),
+                to: (node: 24, port: "rr_pick"),
+            ),
+            (
+                from: (node: 21, port: "p7"),
+                to: (node: 24, port: "sample"),
+            ),
+            (
                 from: (node: 21, port: "p4"),
                 to: (node: 24, port: "tune"),
             ),
@@ -682,6 +706,14 @@
                 to: (node: 31, port: "in"),
             ),
             (
+                from: (node: 28, port: "p8"),
+                to: (node: 31, port: "rr_pick"),
+            ),
+            (
+                from: (node: 28, port: "p7"),
+                to: (node: 31, port: "sample"),
+            ),
+            (
                 from: (node: 28, port: "p4"),
                 to: (node: 31, port: "tune"),
             ),
@@ -748,6 +780,14 @@
             (
                 from: (node: 37, port: "out"),
                 to: (node: 38, port: "in"),
+            ),
+            (
+                from: (node: 35, port: "p8"),
+                to: (node: 38, port: "rr_pick"),
+            ),
+            (
+                from: (node: 35, port: "p7"),
+                to: (node: 38, port: "sample"),
             ),
             (
                 from: (node: 35, port: "p4"),
@@ -818,6 +858,14 @@
                 to: (node: 45, port: "in"),
             ),
             (
+                from: (node: 42, port: "p8"),
+                to: (node: 45, port: "rr_pick"),
+            ),
+            (
+                from: (node: 42, port: "p7"),
+                to: (node: 45, port: "sample"),
+            ),
+            (
                 from: (node: 42, port: "p4"),
                 to: (node: 45, port: "tune"),
             ),
@@ -884,6 +932,14 @@
             (
                 from: (node: 51, port: "out"),
                 to: (node: 52, port: "in"),
+            ),
+            (
+                from: (node: 49, port: "p8"),
+                to: (node: 52, port: "rr_pick"),
+            ),
+            (
+                from: (node: 49, port: "p7"),
+                to: (node: 52, port: "sample"),
             ),
             (
                 from: (node: 49, port: "p4"),
@@ -954,6 +1010,14 @@
                 to: (node: 59, port: "in"),
             ),
             (
+                from: (node: 56, port: "p8"),
+                to: (node: 59, port: "rr_pick"),
+            ),
+            (
+                from: (node: 56, port: "p7"),
+                to: (node: 59, port: "sample"),
+            ),
+            (
                 from: (node: 56, port: "p4"),
                 to: (node: 59, port: "tune"),
             ),
@@ -978,18 +1042,39 @@
     GroupPreset((
         name: "General MIDI",
         slug: "drum-rack-general-midi",
-        topology: "20d49137186fc609",
+        topology: "661d6c182424e3e5",
         nodes: [
             (),
             (),
             (),
+            (),
+            (),
+            (),
             (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
             ),
+            (),
             (
-                params: {"high1": 38.0, "low1": 38.0},
-                config: {"outputs": 1},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
             ),
             (
                 params: {"pan": 0.0},
@@ -997,60 +1082,9 @@
             (
                 params: {"pan": 0.0},
             ),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (),
-            (
-                params: {"high1": 42.0, "low1": 42.0},
-                config: {"outputs": 1},
-            ),
-            (),
-            (),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (),
-            (),
             (),
             (
                 params: {"pan": 0.0},
-            ),
-            (),
-            (),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (),
-            (
-                params: {"high1": 36.0, "low1": 36.0},
-                config: {"outputs": 1},
-            ),
-            (),
-            (),
-            (),
-            (
-                params: {"pan": -0.0},
-            ),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (),
-            (
-                params: {"high1": 39.0, "low1": 39.0},
-                config: {"outputs": 1},
-            ),
-            (
-                params: {"pan": -0.0},
-            ),
-            (),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
             ),
             (),
             (
@@ -1058,81 +1092,27 @@
                 config: {"outputs": 1},
             ),
             (
-                params: {"high1": 46.0, "low1": 46.0},
-                config: {"outputs": 1},
-            ),
-            (),
-            (),
-            (
-                params: {"pan": 0.0},
-            ),
-            (),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (
-                params: {"high1": 49.0, "low1": 49.0},
-                config: {"outputs": 1},
-            ),
-            (),
-            (),
-            (
                 params: {"high1": 50.0, "low1": 50.0},
                 config: {"outputs": 1},
             ),
-            (),
-            (),
             (
-                params: {"pan": 0.0},
-            ),
-            (),
-            (),
-            (),
-            (),
-            (),
-            (
-                config: {"inputs": 8},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (),
-            (),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (),
-            (),
-            (),
-        ],
-    )),
-    GroupPreset((
-        name: "Wide Kit",
-        slug: "drum-rack-wide-kit",
-        topology: "20d49137186fc609",
-        nodes: [
-            (),
-            (),
-            (),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (
-                params: {"high1": 38.0, "low1": 38.0},
+                params: {"high1": 39.0, "low1": 39.0},
                 config: {"outputs": 1},
             ),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
             (
                 params: {"pan": 0.0},
             ),
             (
-                params: {"pan": 0.3},
-            ),
-            (
-                params: {"gain": -2.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
+                params: {"pan": -0.0},
             ),
             (),
             (
@@ -1142,22 +1122,15 @@
             (),
             (),
             (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (),
-            (),
-            (),
-            (
-                params: {"pan": 0.0},
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
             ),
             (),
             (),
             (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
             ),
-            (),
             (
                 params: {"high1": 36.0, "low1": 36.0},
                 config: {"outputs": 1},
@@ -1165,25 +1138,219 @@
             (),
             (),
             (),
+            (),
             (
-                params: {"pan": -0.5},
+                params: {"pan": -0.0},
+            ),
+            (),
+            (
+                params: {"high1": 46.0, "low1": 46.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (
+                config: {"inputs": 8},
             ),
             (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+            (
+                params: {"high1": 49.0, "low1": 49.0},
+                config: {"outputs": 1},
+            ),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Wide Kit",
+        slug: "drum-rack-wide-kit",
+        topology: "661d6c182424e3e5",
+        nodes: [
+            (),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
             ),
             (),
             (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (
+                params: {"pan": 0.1},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (
+                params: {"pan": 0.5},
+            ),
+            (),
+            (
+                params: {"pan": 0.4},
+            ),
+            (),
+            (
+                params: {"high1": 45.0, "low1": 45.0},
+                config: {"outputs": 1},
+            ),
+            (
+                params: {"high1": 50.0, "low1": 50.0},
+                config: {"outputs": 1},
+            ),
+            (
                 params: {"high1": 39.0, "low1": 39.0},
                 config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": 0.3},
+            ),
+            (),
+            (
+                params: {"pan": 0.0},
             ),
             (
                 params: {"pan": -0.4},
             ),
             (),
             (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"high1": 42.0, "low1": 42.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (
+                params: {"gain": -2.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
+            ),
+            (
+                params: {"high1": 36.0, "low1": 36.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.5},
+            ),
+            (),
+            (
+                params: {"high1": 46.0, "low1": 46.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (
+                config: {"inputs": 8},
+            ),
+            (
+                params: {"gain": -2.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+            (
+                params: {"high1": 49.0, "low1": 49.0},
+                config: {"outputs": 1},
+            ),
+            (
+                params: {"gain": -2.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Quiet Cymbals",
+        slug: "drum-rack-quiet-cymbals",
+        topology: "661d6c182424e3e5",
+        nodes: [
+            (),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+            (),
+            (
+                params: {"pan": 0.033333335},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (
+                params: {"pan": 0.16666666},
+            ),
+            (),
+            (
+                params: {"pan": 0.13333334},
             ),
             (),
             (
@@ -1191,81 +1358,27 @@
                 config: {"outputs": 1},
             ),
             (
-                params: {"high1": 46.0, "low1": 46.0},
+                params: {"high1": 50.0, "low1": 50.0},
                 config: {"outputs": 1},
             ),
+            (
+                params: {"high1": 39.0, "low1": 39.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (),
             (),
             (),
             (
                 params: {"pan": 0.1},
             ),
             (),
-            (
-                params: {"gain": -2.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (
-                params: {"high1": 49.0, "low1": 49.0},
-                config: {"outputs": 1},
-            ),
-            (),
-            (),
-            (
-                params: {"high1": 50.0, "low1": 50.0},
-                config: {"outputs": 1},
-            ),
-            (),
-            (),
-            (
-                params: {"pan": 0.5},
-            ),
-            (),
-            (),
-            (),
-            (),
-            (),
-            (
-                config: {"inputs": 8},
-            ),
-            (
-                params: {"pan": 0.4},
-            ),
-            (),
-            (),
-            (
-                params: {"gain": -2.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (),
-            (),
-            (),
-        ],
-    )),
-    GroupPreset((
-        name: "Quiet Cymbals",
-        slug: "drum-rack-quiet-cymbals",
-        topology: "20d49137186fc609",
-        nodes: [
-            (),
-            (),
-            (),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (
-                params: {"high1": 38.0, "low1": 38.0},
-                config: {"outputs": 1},
-            ),
             (
                 params: {"pan": 0.0},
             ),
             (
-                params: {"pan": 0.1},
-            ),
-            (
-                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
+                params: {"pan": -0.13333334},
             ),
             (),
             (
@@ -1275,22 +1388,15 @@
             (),
             (),
             (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (),
-            (),
-            (),
-            (
-                params: {"pan": 0.0},
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
             ),
             (),
             (),
             (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
             ),
-            (),
             (
                 params: {"high1": 36.0, "low1": 36.0},
                 config: {"outputs": 1},
@@ -1298,80 +1404,38 @@
             (),
             (),
             (),
+            (),
             (
                 params: {"pan": -0.16666666},
             ),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
             (),
-            (
-                params: {"high1": 39.0, "low1": 39.0},
-                config: {"outputs": 1},
-            ),
-            (
-                params: {"pan": -0.13333334},
-            ),
-            (),
-            (
-                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": ""},
-            ),
-            (),
-            (
-                params: {"high1": 45.0, "low1": 45.0},
-                config: {"outputs": 1},
-            ),
             (
                 params: {"high1": 46.0, "low1": 46.0},
                 config: {"outputs": 1},
             ),
             (),
-            (),
             (
-                params: {"pan": 0.033333335},
+                config: {"inputs": 8},
+            ),
+            (
+                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": ""},
             ),
             (),
+            (),
+            (),
             (
-                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": 0.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
             ),
             (
                 params: {"high1": 49.0, "low1": 49.0},
                 config: {"outputs": 1},
             ),
-            (),
-            (),
             (
-                params: {"high1": 50.0, "low1": 50.0},
-                config: {"outputs": 1},
-            ),
-            (),
-            (),
-            (
-                params: {"pan": 0.16666666},
-            ),
-            (),
-            (),
-            (),
-            (),
-            (),
-            (
-                config: {"inputs": 8},
-            ),
-            (
-                params: {"pan": 0.13333334},
-            ),
-            (),
-            (),
-            (
-                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": ""},
             ),
-            (),
-            (),
-            (),
         ],
     )),
 ]

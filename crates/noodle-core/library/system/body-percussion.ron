@@ -39,7 +39,7 @@
             ),
             7: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(6),
             ),
@@ -57,7 +57,7 @@
             ),
             10: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(6),
@@ -82,7 +82,7 @@
             ),
             14: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(13),
             ),
@@ -100,7 +100,7 @@
             ),
             17: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(13),
@@ -125,7 +125,7 @@
             ),
             21: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(20),
             ),
@@ -143,7 +143,7 @@
             ),
             24: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(20),
@@ -168,7 +168,7 @@
             ),
             28: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(27),
             ),
@@ -186,7 +186,7 @@
             ),
             31: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": "63a8af7c33a0adcd3b127f0f8ed6e4444aa221c3772b6b8d6b23e21b56648c67"},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(27),
@@ -211,7 +211,7 @@
             ),
             35: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(34),
             ),
@@ -229,7 +229,7 @@
             ),
             38: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": "72dc03fbd8c006825d129ad955808630628fc0601b67d6522ef06ddfd3e6a282"},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(34),
@@ -254,7 +254,7 @@
             ),
             42: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(41),
             ),
@@ -272,7 +272,7 @@
             ),
             45: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": "f9eabc8d898bc0356c576644ed322cdec0ab093aea71647911175c58ed18be56"},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(41),
@@ -297,7 +297,7 @@
             ),
             49: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(48),
             ),
@@ -315,7 +315,7 @@
             ),
             52: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(48),
@@ -340,7 +340,7 @@
             ),
             56: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in"},
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(55),
             ),
@@ -358,7 +358,7 @@
             ),
             59: (
                 type: "noodle.instrument.sampler",
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": "46b691499e779c95305fe8cbcd497206d7164ad139c34011df91f56783ded948"},
                 position: (x: 660.0, y: 0.0),
                 parent: Some(55),
@@ -470,6 +470,14 @@
                 to: (node: 10, port: "in"),
             ),
             (
+                from: (node: 7, port: "p8"),
+                to: (node: 10, port: "rr_pick"),
+            ),
+            (
+                from: (node: 7, port: "p7"),
+                to: (node: 10, port: "sample"),
+            ),
+            (
                 from: (node: 7, port: "p4"),
                 to: (node: 10, port: "tune"),
             ),
@@ -538,6 +546,14 @@
                 to: (node: 17, port: "in"),
             ),
             (
+                from: (node: 14, port: "p8"),
+                to: (node: 17, port: "rr_pick"),
+            ),
+            (
+                from: (node: 14, port: "p7"),
+                to: (node: 17, port: "sample"),
+            ),
+            (
                 from: (node: 14, port: "p4"),
                 to: (node: 17, port: "tune"),
             ),
@@ -604,6 +620,14 @@
             (
                 from: (node: 23, port: "out"),
                 to: (node: 24, port: "in"),
+            ),
+            (
+                from: (node: 21, port: "p8"),
+                to: (node: 24, port: "rr_pick"),
+            ),
+            (
+                from: (node: 21, port: "p7"),
+                to: (node: 24, port: "sample"),
             ),
             (
                 from: (node: 21, port: "p4"),
@@ -678,6 +702,14 @@
                 to: (node: 31, port: "in"),
             ),
             (
+                from: (node: 28, port: "p8"),
+                to: (node: 31, port: "rr_pick"),
+            ),
+            (
+                from: (node: 28, port: "p7"),
+                to: (node: 31, port: "sample"),
+            ),
+            (
                 from: (node: 28, port: "p4"),
                 to: (node: 31, port: "tune"),
             ),
@@ -750,6 +782,14 @@
                 to: (node: 38, port: "in"),
             ),
             (
+                from: (node: 35, port: "p8"),
+                to: (node: 38, port: "rr_pick"),
+            ),
+            (
+                from: (node: 35, port: "p7"),
+                to: (node: 38, port: "sample"),
+            ),
+            (
                 from: (node: 35, port: "p4"),
                 to: (node: 38, port: "tune"),
             ),
@@ -816,6 +856,14 @@
             (
                 from: (node: 44, port: "out"),
                 to: (node: 45, port: "in"),
+            ),
+            (
+                from: (node: 42, port: "p8"),
+                to: (node: 45, port: "rr_pick"),
+            ),
+            (
+                from: (node: 42, port: "p7"),
+                to: (node: 45, port: "sample"),
             ),
             (
                 from: (node: 42, port: "p4"),
@@ -886,6 +934,14 @@
                 to: (node: 52, port: "in"),
             ),
             (
+                from: (node: 49, port: "p8"),
+                to: (node: 52, port: "rr_pick"),
+            ),
+            (
+                from: (node: 49, port: "p7"),
+                to: (node: 52, port: "sample"),
+            ),
+            (
                 from: (node: 49, port: "p4"),
                 to: (node: 52, port: "tune"),
             ),
@@ -954,6 +1010,14 @@
                 to: (node: 59, port: "in"),
             ),
             (
+                from: (node: 56, port: "p8"),
+                to: (node: 59, port: "rr_pick"),
+            ),
+            (
+                from: (node: 56, port: "p7"),
+                to: (node: 59, port: "sample"),
+            ),
+            (
                 from: (node: 56, port: "p4"),
                 to: (node: 59, port: "tune"),
             ),
@@ -978,84 +1042,67 @@
     GroupPreset((
         name: "Natural",
         slug: "body-percussion-kit-natural",
-        topology: "9f6c045cb8d27d33",
+        topology: "5234f79002ae2211",
         nodes: [
             (),
             (),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (),
-            (
-                params: {"high1": 36.0, "low1": 36.0},
-                config: {"outputs": 1},
-            ),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "46b691499e779c95305fe8cbcd497206d7164ad139c34011df91f56783ded948"},
-            ),
             (),
             (),
             (
-                params: {"high1": 42.0, "low1": 42.0},
-                config: {"outputs": 1},
+                params: {"pan": -0.0},
             ),
             (),
             (),
             (),
             (),
-            (),
-            (),
-            (),
             (
-                params: {"pan": 0.0},
-            ),
-            (),
-            (),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": "72dc03fbd8c006825d129ad955808630628fc0601b67d6522ef06ddfd3e6a282"},
             ),
             (),
             (),
-            (
-                params: {"pan": -0.0},
-            ),
-            (),
-            (
-                params: {"pan": -0.0},
-            ),
             (),
             (),
             (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
+                params: {"pan": 0.0},
             ),
-            (),
-            (),
-            (),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "f9eabc8d898bc0356c576644ed322cdec0ab093aea71647911175c58ed18be56"},
+            ),
             (
                 params: {"high1": 39.0, "low1": 39.0},
                 config: {"outputs": 1},
             ),
             (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
             ),
             (),
             (
-                params: {"high1": 50.0, "low1": 50.0},
+                params: {"high1": 42.0, "low1": 42.0},
                 config: {"outputs": 1},
+            ),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "63a8af7c33a0adcd3b127f0f8ed6e4444aa221c3772b6b8d6b23e21b56648c67"},
+            ),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
+            ),
+            (),
+            (),
+            (
+                params: {"high1": 46.0, "low1": 46.0},
+                config: {"outputs": 1},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
             ),
             (
                 params: {"high1": 49.0, "low1": 49.0},
@@ -1063,34 +1110,41 @@
             ),
             (),
             (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
             ),
+            (),
+            (),
             (
                 params: {"high1": 45.0, "low1": 45.0},
                 config: {"outputs": 1},
             ),
             (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "f9eabc8d898bc0356c576644ed322cdec0ab093aea71647911175c58ed18be56"},
-            ),
-            (
-                params: {"high1": 46.0, "low1": 46.0},
+                params: {"high1": 36.0, "low1": 36.0},
                 config: {"outputs": 1},
             ),
             (),
             (
                 params: {"pan": 0.0},
             ),
+            (),
             (
                 config: {"inputs": 8},
             ),
             (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "63a8af7c33a0adcd3b127f0f8ed6e4444aa221c3772b6b8d6b23e21b56648c67"},
+                params: {"high1": 50.0, "low1": 50.0},
+                config: {"outputs": 1},
             ),
             (),
             (),
+            (),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
             (
                 params: {"pan": 0.0},
             ),
@@ -1100,8 +1154,18 @@
             (),
             (),
             (
-                params: {"high1": 38.0, "low1": 38.0},
-                config: {"outputs": 1},
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "46b691499e779c95305fe8cbcd497206d7164ad139c34011df91f56783ded948"},
+            ),
+            (),
+            (),
+            (
+                params: {"pan": -0.0},
             ),
             (),
             (),
@@ -1111,84 +1175,67 @@
     GroupPreset((
         name: "Wide",
         slug: "body-percussion-kit-wide",
-        topology: "9f6c045cb8d27d33",
+        topology: "5234f79002ae2211",
         nodes: [
             (),
             (),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
-            ),
-            (
-                params: {"pan": 0.1},
-            ),
             (),
-            (
-                params: {"high1": 36.0, "low1": 36.0},
-                config: {"outputs": 1},
-            ),
-            (
-                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "46b691499e779c95305fe8cbcd497206d7164ad139c34011df91f56783ded948"},
-            ),
-            (),
-            (),
-            (
-                params: {"high1": 42.0, "low1": 42.0},
-                config: {"outputs": 1},
-            ),
-            (),
-            (),
-            (),
-            (),
-            (),
-            (),
-            (),
-            (
-                params: {"pan": 0.0},
-            ),
-            (),
-            (),
-            (
-                params: {"pan": 0.5},
-            ),
-            (
-                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "72dc03fbd8c006825d129ad955808630628fc0601b67d6522ef06ddfd3e6a282"},
-            ),
-            (),
-            (),
-            (
-                params: {"pan": -0.5},
-            ),
             (),
             (
                 params: {"pan": -0.4},
             ),
             (),
             (),
+            (),
+            (),
             (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
+                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "72dc03fbd8c006825d129ad955808630628fc0601b67d6522ef06ddfd3e6a282"},
             ),
             (),
             (),
             (),
+            (),
+            (
+                params: {"pan": 0.1},
+            ),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "f9eabc8d898bc0356c576644ed322cdec0ab093aea71647911175c58ed18be56"},
+            ),
             (
                 params: {"high1": 39.0, "low1": 39.0},
                 config: {"outputs": 1},
             ),
             (
-                params: {"pan": 0.3},
-            ),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
             ),
             (),
             (
-                params: {"high1": 50.0, "low1": 50.0},
+                params: {"high1": 42.0, "low1": 42.0},
                 config: {"outputs": 1},
+            ),
+            (
+                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "63a8af7c33a0adcd3b127f0f8ed6e4444aa221c3772b6b8d6b23e21b56648c67"},
+            ),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
+            ),
+            (),
+            (),
+            (
+                params: {"high1": 46.0, "low1": 46.0},
+                config: {"outputs": 1},
+            ),
+            (
+                params: {"pan": 0.5},
+            ),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
             ),
             (
                 params: {"high1": 49.0, "low1": 49.0},
@@ -1196,34 +1243,41 @@
             ),
             (),
             (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
             ),
+            (),
+            (),
             (
                 params: {"high1": 45.0, "low1": 45.0},
                 config: {"outputs": 1},
             ),
             (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "f9eabc8d898bc0356c576644ed322cdec0ab093aea71647911175c58ed18be56"},
-            ),
-            (
-                params: {"high1": 46.0, "low1": 46.0},
+                params: {"high1": 36.0, "low1": 36.0},
                 config: {"outputs": 1},
             ),
             (),
             (
-                params: {"pan": 0.4},
+                params: {"pan": 0.3},
             ),
+            (),
             (
                 config: {"inputs": 8},
             ),
             (
-                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "63a8af7c33a0adcd3b127f0f8ed6e4444aa221c3772b6b8d6b23e21b56648c67"},
+                params: {"high1": 50.0, "low1": 50.0},
+                config: {"outputs": 1},
             ),
             (),
             (),
+            (),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+            ),
+            (
+                params: {"pan": 0.4},
+            ),
             (
                 params: {"pan": 0.0},
             ),
@@ -1233,8 +1287,18 @@
             (),
             (),
             (
-                params: {"high1": 38.0, "low1": 38.0},
-                config: {"outputs": 1},
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "46b691499e779c95305fe8cbcd497206d7164ad139c34011df91f56783ded948"},
+            ),
+            (),
+            (),
+            (
+                params: {"pan": -0.5},
             ),
             (),
             (),
@@ -1244,84 +1308,67 @@
     GroupPreset((
         name: "Close",
         slug: "body-percussion-kit-close",
-        topology: "9f6c045cb8d27d33",
+        topology: "5234f79002ae2211",
         nodes: [
             (),
             (),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (),
-            (
-                params: {"high1": 36.0, "low1": 36.0},
-                config: {"outputs": 1},
-            ),
-            (
-                params: {"gain": -3.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "46b691499e779c95305fe8cbcd497206d7164ad139c34011df91f56783ded948"},
-            ),
             (),
             (),
             (
-                params: {"high1": 42.0, "low1": 42.0},
-                config: {"outputs": 1},
+                params: {"pan": -0.0},
             ),
             (),
             (),
             (),
             (),
-            (),
-            (),
-            (),
             (
-                params: {"pan": 0.0},
-            ),
-            (),
-            (),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"gain": -3.0, "keytrack": 0.0, "mode": 0.0},
+                params: {"gain": -3.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
                 config: {"sample": "72dc03fbd8c006825d129ad955808630628fc0601b67d6522ef06ddfd3e6a282"},
             ),
             (),
             (),
-            (
-                params: {"pan": -0.0},
-            ),
-            (),
-            (
-                params: {"pan": -0.0},
-            ),
             (),
             (),
             (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
+                params: {"pan": 0.0},
             ),
-            (),
-            (),
-            (),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "f9eabc8d898bc0356c576644ed322cdec0ab093aea71647911175c58ed18be56"},
+            ),
             (
                 params: {"high1": 39.0, "low1": 39.0},
                 config: {"outputs": 1},
             ),
             (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
             ),
             (),
             (
-                params: {"high1": 50.0, "low1": 50.0},
+                params: {"high1": 42.0, "low1": 42.0},
                 config: {"outputs": 1},
+            ),
+            (
+                params: {"gain": -3.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "63a8af7c33a0adcd3b127f0f8ed6e4444aa221c3772b6b8d6b23e21b56648c67"},
+            ),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
+            ),
+            (),
+            (),
+            (
+                params: {"high1": 46.0, "low1": 46.0},
+                config: {"outputs": 1},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
             ),
             (
                 params: {"high1": 49.0, "low1": 49.0},
@@ -1329,34 +1376,41 @@
             ),
             (),
             (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
             ),
+            (),
+            (),
             (
                 params: {"high1": 45.0, "low1": 45.0},
                 config: {"outputs": 1},
             ),
             (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "f9eabc8d898bc0356c576644ed322cdec0ab093aea71647911175c58ed18be56"},
-            ),
-            (
-                params: {"high1": 46.0, "low1": 46.0},
+                params: {"high1": 36.0, "low1": 36.0},
                 config: {"outputs": 1},
             ),
             (),
             (
                 params: {"pan": 0.0},
             ),
+            (),
             (
                 config: {"inputs": 8},
             ),
             (
-                params: {"gain": -3.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "63a8af7c33a0adcd3b127f0f8ed6e4444aa221c3772b6b8d6b23e21b56648c67"},
+                params: {"high1": 50.0, "low1": 50.0},
+                config: {"outputs": 1},
             ),
             (),
             (),
+            (),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
             (
                 params: {"pan": 0.0},
             ),
@@ -1366,8 +1420,18 @@
             (),
             (),
             (
-                params: {"high1": 38.0, "low1": 38.0},
-                config: {"outputs": 1},
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"gain": -3.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0},
+                config: {"sample": "46b691499e779c95305fe8cbcd497206d7164ad139c34011df91f56783ded948"},
+            ),
+            (),
+            (),
+            (
+                params: {"pan": -0.0},
             ),
             (),
             (),

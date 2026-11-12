@@ -136,9 +136,9 @@
             178: (type: "noodle.event.note_split", params: {"high1": 42.0, "high2": 36.0, "low1": 42.0, "low2": 36.0}, config: {"outputs": 2}, position: (x: 440.0, y: 0.0), parent: Some(176)),
             179: (type: "noodle.util.mix", config: {"inputs": 2}, position: (x: 1320.0, y: 0.0), parent: Some(176)),
             180: (type: "noodle.group.output", config: {"ports": "1:out"}, position: (x: 1570.0, y: 0.0), parent: Some(176)),
-            184: (type: "noodle.instrument.sampler", params: {"gain": -22.0, "keytrack": 0.0, "mode": 0.0}, config: {"sample": "222df04049388749ab00967ffb8afd75bddc6c97698952911561d31f83b1e3c4"}, position: (x: 660.0, y: 0.0), parent: Some(176)),
+            184: (type: "noodle.instrument.sampler", params: {"gain": -22.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0}, config: {"sample": "222df04049388749ab00967ffb8afd75bddc6c97698952911561d31f83b1e3c4"}, position: (x: 660.0, y: 0.0), parent: Some(176)),
             185: (type: "noodle.util.pan", params: {"pan": 0.15}, position: (x: 880.0, y: 0.0), parent: Some(176)),
-            189: (type: "noodle.instrument.sampler", params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0}, config: {"sample": "9d922f92ef76dd1707a02631e4d89198df988b05031513e156992b12511adb55"}, position: (x: 660.0, y: 130.0), parent: Some(176)),
+            189: (type: "noodle.instrument.sampler", params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0, "rr_mode": 3.0}, config: {"sample": "9d922f92ef76dd1707a02631e4d89198df988b05031513e156992b12511adb55"}, position: (x: 660.0, y: 130.0), parent: Some(176)),
             190: (type: "noodle.util.pan", params: {"pan": 0.0}, position: (x: 880.0, y: 130.0), parent: Some(176)),
         },
         connections: [

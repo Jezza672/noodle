@@ -279,7 +279,7 @@ fn param_targets(
 fn group_hint(title: &str) -> Option<&'static str> {
     match title {
         "Drum Rack" => Some(
-            "Swing delays the off-beat notes. Drop a sample on a pad (Kick, Snare, ...) to load it. Each pad plays the key in its `key` control (36, 38, 42, 46, 39, 45, 50 and 49). To cut one drum off with another, open the rack and wire a pad's `choke out` to another pad's `choke in` (the closed and open hat already do this). To program a pattern: wire a track's MIDI into \
+            "Swing delays the off-beat notes. Drop a sample on a pad (Kick, Snare, ...) to load it. Each pad plays the key in its `key` control (36, 38, 42, 46, 39, 45, 50 and 49). To cut one drum off with another, open the rack and wire a pad's `choke out` to another pad's `choke in` (the closed and open hat already do this). A pad's `sample` input takes a sample or Sample Set wire, and `take` picks which copy of a set it plays. To program a pattern: wire a track's MIDI into \
              notes, right-click the track's lane and choose New MIDI clip, then open the \
              clip (double-click) for the piano roll.",
         ),
