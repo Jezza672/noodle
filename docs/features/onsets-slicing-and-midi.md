@@ -19,6 +19,30 @@ to MIDI). The three share one onset detector with one sensitivity scale.
   slice starts.
 - **Slice to Sampler** (clip menu): a new track with Sample, Slice and a Sampler
   (keytrack off) fed by the track's MIDI. One undo step.
+- **Convert to sample node and Convert to sampler (#356)**
+  (`session/to_sample.rs`; the gestures are in `clip_editor/`):
+  - *Region of a clip.* Shift+drag on the waveform (warped or not) picks a
+    region, drawn as a band, in seconds of the file. Right-click inside it,
+    Convert to sample node: `Edit::RegionToSample` adds a Sample node at the top
+    level, below everything, on the file's own audio with the selection as its
+    start and end (the `hash:start:end` form), so nothing is rendered.
+  - *Region of the arrangement.* With a range selected (Start selection here /
+    End selection here), right-click empty lane space or the ruler's Markers and
+    selection menu, Convert to sample node: `Edit::BounceToSample` renders the
+    mix over the range (`ClipRequest::group` is `None`: what the Output nodes
+    play, through `render_project_streaming_replacing`, with the effects' tail up
+    to ten seconds) to a file in the renders folder and, when the render is
+    done, adds a Sample node on it, one undo step. The project has to be saved.
+  - *Transients of a clip.* In the warped editor click a hit's handle to pick it
+    (Shift or Ctrl adds or takes out; a click elsewhere lets go). Right-click,
+    Convert to sampler: `Edit::CutsToSampler` makes a track whose group
+    `Sliced Sampler` is a Sample Set into a Sampler (keytrack off, one-shot),
+    fed by the track's MIDI. The group's inputs are `notes`, `tune`,
+    `bend range`, `release` and `gain`. Each stretch from one picked hit to the
+    next is an entry of the set, on keys from C2 (36), up to 92. One picked hit
+    is cut at the next detected hit, or the end of the lit part. One undo step.
+    Unlike Slice to Sampler, the cuts are the ones picked, so changing them is
+    picking again and converting again.
 - **Pitch tracking** (`noodle-io/src/pitch.rs`): `PitchTracker` (YIN on audio
   reduced to about 8 kHz, a frame every 10 ms, no allocation), `NoteSegmenter`
   (steady pitch becomes a note, a rise in level or a move of a semitone restarts

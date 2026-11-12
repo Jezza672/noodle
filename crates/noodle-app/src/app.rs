@@ -396,6 +396,11 @@ impl App {
     }
 
     #[cfg(test)]
+    pub fn clip_editor(&self) -> &ClipEditor {
+        &self.clip_editor
+    }
+
+    #[cfg(test)]
     pub fn piano_roll(&self) -> &PianoRoll {
         &self.piano_roll
     }

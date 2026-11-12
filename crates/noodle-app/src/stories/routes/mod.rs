@@ -73,6 +73,8 @@ pub fn all() -> Vec<Route> {
         s16_spectral_cross::route(),
         s17_resample::route(),
         s17_slice::route(),
+        s17_slice::convert_route(),
+        s17_slice::region_route(),
         s18_plugins::route(),
         s18_replace::route(),
         s19_drum_bus::route(),

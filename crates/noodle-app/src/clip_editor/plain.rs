@@ -147,6 +147,8 @@ pub(super) fn show(
             lit: (offset_secs, offset_secs + length_secs),
             looping: section.looping,
             gain: audio.gain,
+            pickable: matches!(subject, Subject::Clip(_)),
+            region: state.region,
             playheads: &playheads,
         },
     );
@@ -218,11 +220,31 @@ pub(super) fn show(
                     }
                 }
             }
+            Gesture::Region(from, to) => state.region = Some((from, to)),
             Gesture::Release => {
                 state.slip = None;
                 edits.push(Edit::EndDrag);
             }
         }
+    }
+    if response.clicked() && !ui.input(|i| i.modifiers.shift) {
+        state.region = None;
+    }
+    // Right-click inside the region to make a Sample node of it.
+    if response.secondary_clicked()
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        state.region_menu = state.region.is_some_and(|(a, b)| {
+            (axis.x(a.min(b) - zero)..=axis.x(a.max(b) - zero)).contains(&pos.x)
+        });
+    }
+    if let Subject::Clip(clip) = subject {
+        let region = state
+            .region
+            .filter(|&(a, b)| state.region_menu && (a - b).abs() >= super::MIN_REGION_SECONDS);
+        response.context_menu(|ui| {
+            super::convert_items(ui, clip, region, &Default::default(), &[], 0.0, &mut edits);
+        });
     }
     if state.slip.is_some() && subject.read(project, span).is_none() {
         state.slip = None;

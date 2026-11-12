@@ -337,6 +337,28 @@ impl<'h> Handle<'h> {
         self.probe().ruler_at(seconds)
     }
 
+    /// Where the clip editor drew the handle of the hit at `seconds` of the
+    /// file.
+    pub fn editor_handle(&mut self, clip: ClipId, seconds: f64) -> Pos2 {
+        self.probe().settle();
+        self.probe().editor_handle(clip, seconds).unwrap_or_else(|| {
+            panic!(
+                "no hit handle at {seconds} s in the clip editor (open: {:?}, drawn: {}, warped: {})",
+                self.h.state().clip_editor().subject(),
+                self.h.state().clip_editor().geometry().is_some(),
+                self.h.state().session().project().warp_of(clip).is_some(),
+            )
+        })
+    }
+
+    /// Where the clip editor drew the waveform at `seconds` of the file.
+    pub fn editor_wave(&mut self, clip: ClipId, seconds: f64) -> Pos2 {
+        self.probe().settle();
+        self.probe()
+            .editor_wave(clip, seconds)
+            .unwrap_or_else(|| panic!("{seconds} s is not on the clip editor's waveform"))
+    }
+
     /// Where the arrangement drew the clip.
     pub fn clip_rect(&mut self, id: ClipId) -> Rect {
         self.probe().clip_rect(id)
@@ -517,6 +539,25 @@ impl Probe<'_> {
     /// The lane, if it is on screen.
     pub fn try_take_lane(&self, id: ClipId, k: usize) -> Option<Rect> {
         self.h.state().timeline().take_lane(id, k)
+    }
+
+    /// Where the clip editor drew the handle of the hit at `seconds` of
+    /// `clip`'s file (the warped editor), if it is open and the hit is on
+    /// screen.
+    pub fn editor_handle(&self, clip: ClipId, seconds: f64) -> Option<Pos2> {
+        let g = self.h.state().clip_editor().geometry()?;
+        let (_, warp) = self.project().warp_of(clip)?;
+        let at = Pos2::new(g.x(warp.beat_at(seconds)), g.handles.center().y);
+        g.handles.contains(at).then_some(at)
+    }
+
+    /// Where the clip editor drew the waveform at `seconds` of `clip`'s file
+    /// (the warped editor), if it is on screen.
+    pub fn editor_wave(&self, clip: ClipId, seconds: f64) -> Option<Pos2> {
+        let g = self.h.state().clip_editor().geometry()?;
+        let (_, warp) = self.project().warp_of(clip)?;
+        let at = Pos2::new(g.x(warp.beat_at(seconds)), g.wave.center().y);
+        g.wave.contains(at).then_some(at)
     }
 
     /// Where the piano roll drew `key` at `tick`, if it is open and the

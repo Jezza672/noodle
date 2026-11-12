@@ -1378,3 +1378,191 @@ fn a_sample_shows_a_playhead_for_each_sounding_voice() {
     // A quarter and a half of four seconds.
     assert_eq!(h.state().editor.playheads(), [1.0, 2.0]);
 }
+
+/// The Sample nodes in the project, as the windows they play (start and end
+/// as fractions of the file).
+fn sample_windows(h: &H) -> Vec<(f32, f32)> {
+    h.state()
+        .session
+        .project()
+        .graph()
+        .nodes()
+        .filter(|(_, n)| n.type_id == noodle_nodes::SAMPLE_INPUT_ID)
+        .filter_map(|(_, n)| match n.config.get(noodle_nodes::SAMPLE_KEY) {
+            Some(noodle_core::Value::Text(text)) => {
+                let r = noodle_nodes::SampleRef::parse(text);
+                Some((r.start, r.end))
+            }
+            _ => None,
+        })
+        .collect()
+}
+
+fn right_click(h: &mut H, at: Pos2) {
+    crate::testkit::click_with(h, egui::PointerButton::Secondary, Modifiers::NONE, at);
+}
+
+#[test]
+fn shift_dragging_the_waveform_picks_a_region_to_convert_to_a_sample_node() {
+    let mut h = rig(true);
+    let g = geometry(&h);
+    let y = g.wave.center().y;
+    // Half a second to one and a half, at two beats a second.
+    drag_between(
+        &mut h,
+        Modifiers::SHIFT,
+        Pos2::new(g.x(1.0), y),
+        Pos2::new(g.x(3.0), y),
+    );
+    let (a, b) = h.state().editor.region().expect("a region");
+    assert!((a - 0.5).abs() < 0.02 && (b - 1.5).abs() < 0.02, "{a} {b}");
+    // Picking it is not an edit, and does not slide the audio.
+    assert_eq!(warp(&h).grid_offset, 0.0);
+    right_click(&mut h, Pos2::new(g.x(2.0), y));
+    h.get_by_label("Convert to sample node").click();
+    h.run();
+    let windows = sample_windows(&h);
+    assert_eq!(windows.len(), 1, "{windows:?}");
+    // The file is four seconds long.
+    assert!((windows[0].0 - 0.125).abs() < 0.01, "{windows:?}");
+    assert!((windows[0].1 - 0.375).abs() < 0.01, "{windows:?}");
+    h.state_mut().session.undo();
+    assert!(sample_windows(&h).is_empty());
+}
+
+#[test]
+fn the_region_menu_is_only_offered_inside_the_region_and_a_click_lets_go_of_it() {
+    let mut h = rig(true);
+    let g = geometry(&h);
+    let y = g.wave.center().y;
+    drag_between(
+        &mut h,
+        Modifiers::SHIFT,
+        Pos2::new(g.x(1.0), y),
+        Pos2::new(g.x(3.0), y),
+    );
+    right_click(&mut h, Pos2::new(g.x(6.0), y));
+    assert!(h.query_by_label("Convert to sample node").is_none());
+    press(&mut h, Pos2::new(g.x(6.0), y), Modifiers::NONE, Key::Escape);
+    h.run();
+    crate::testkit::click(&mut h, Pos2::new(g.x(6.0), y), Modifiers::NONE);
+    assert!(h.state().editor.region().is_none());
+}
+
+#[test]
+fn shift_dragging_an_unwarped_clip_picks_a_region_too() {
+    let mut h = rig(false);
+    let g = h.state().editor.plain_geometry().expect("drawn");
+    let y = g.wave.center().y;
+    let x = |seconds: f32| g.window + seconds * g.pps;
+    drag_between(
+        &mut h,
+        Modifiers::SHIFT,
+        Pos2::new(x(1.0), y),
+        Pos2::new(x(2.0), y),
+    );
+    let (a, b) = h.state().editor.region().expect("a region");
+    assert!((a - 1.0).abs() < 0.02 && (b - 2.0).abs() < 0.02, "{a} {b}");
+    right_click(&mut h, Pos2::new(x(1.5), y));
+    h.get_by_label("Convert to sample node").click();
+    h.run();
+    let windows = sample_windows(&h);
+    assert_eq!(windows.len(), 1, "{windows:?}");
+    assert!((windows[0].0 - 0.25).abs() < 0.01 && (windows[0].1 - 0.5).abs() < 0.01);
+}
+
+/// Where the handle of the hit at `seconds` is.
+fn handle(h: &H, seconds: f64) -> Pos2 {
+    let g = geometry(h);
+    let beat = warp(h).beat_at(seconds);
+    Pos2::new(g.x(beat), g.handles.center().y)
+}
+
+fn click_handle(h: &mut H, seconds: f64, modifiers: Modifiers) {
+    let at = handle(h, seconds);
+    crate::testkit::click(h, at, modifiers);
+}
+
+fn right_click_handle(h: &mut H, seconds: f64) {
+    let at = handle(h, seconds);
+    right_click(h, at);
+}
+
+#[test]
+fn picked_transients_convert_to_a_sampler_with_a_slice_between_each_pair() {
+    let mut h = rig(true);
+    // The hits at 0.5 s, 1 s and 2 s.
+    click_handle(&mut h, 0.5, Modifiers::NONE);
+    for seconds in [1.0, 2.0] {
+        click_handle(&mut h, seconds, Modifiers::SHIFT);
+    }
+    assert_eq!(h.state().editor.picked_transients().len(), 3);
+    right_click_handle(&mut h, 2.0);
+    h.get_by_label("Convert to sampler (2 slices)").click();
+    h.run();
+    let graph = h.state().session.project().graph();
+    let (_, set) = graph
+        .nodes()
+        .find(|(_, n)| n.type_id == noodle_nodes::SAMPLE_SET_ID)
+        .expect("a Sample Set");
+    let Some(noodle_core::Value::Text(text)) = set.config.get(noodle_nodes::SAMPLE_KEY) else {
+        panic!("the set has no entries")
+    };
+    let entries = noodle_nodes::parse_set(text);
+    assert_eq!(entries.len(), 2, "{text}");
+    let window = |i: usize| (entries[i].reference.start, entries[i].reference.end);
+    // The file is four seconds long.
+    assert!((window(0).0 - 0.125).abs() < 0.01 && (window(0).1 - 0.25).abs() < 0.01);
+    assert!((window(1).0 - 0.25).abs() < 0.01 && (window(1).1 - 0.5).abs() < 0.01);
+}
+
+#[test]
+fn clicking_a_handle_picks_just_that_transient_and_a_click_elsewhere_lets_go() {
+    let mut h = rig(true);
+    click_handle(&mut h, 0.5, Modifiers::NONE);
+    click_handle(&mut h, 1.0, Modifiers::NONE);
+    assert_eq!(h.state().editor.picked_transients().len(), 1);
+    // Shift takes one out again.
+    click_handle(&mut h, 1.0, Modifiers::SHIFT);
+    assert!(h.state().editor.picked_transients().is_empty());
+    click_handle(&mut h, 1.0, Modifiers::NONE);
+    let g = geometry(&h);
+    let away = Pos2::new(g.x(5.5), g.wave.center().y);
+    crate::testkit::click(&mut h, away, Modifiers::NONE);
+    assert!(h.state().editor.picked_transients().is_empty());
+}
+
+#[test]
+fn one_picked_transient_is_cut_at_the_next_hit() {
+    let mut h = rig(true);
+    click_handle(&mut h, 1.0, Modifiers::NONE);
+    right_click_handle(&mut h, 1.0);
+    h.get_by_label("Convert to sampler (1 slice)").click();
+    h.run();
+    let graph = h.state().session.project().graph();
+    let (_, set) = graph
+        .nodes()
+        .find(|(_, n)| n.type_id == noodle_nodes::SAMPLE_SET_ID)
+        .unwrap();
+    let Some(noodle_core::Value::Text(text)) = set.config.get(noodle_nodes::SAMPLE_KEY) else {
+        panic!()
+    };
+    let entries = noodle_nodes::parse_set(text);
+    assert_eq!(entries.len(), 1);
+    // From the hit at 1 s to the one at 1.5 s.
+    let r = &entries[0].reference;
+    assert!(
+        (r.start - 0.25).abs() < 0.01 && (r.end - 0.375).abs() < 0.01,
+        "{r:?}"
+    );
+}
+
+#[test]
+fn the_sampler_cuts_are_the_picked_hits_with_the_next_one_when_there_is_only_one() {
+    let onsets = [0.5, 1.0, 1.5];
+    let picked = |v: &[usize]| v.iter().copied().collect::<BTreeSet<usize>>();
+    assert_eq!(sampler_cuts(&picked(&[2, 0]), &onsets, 4.0), [0.5, 1.5]);
+    assert_eq!(sampler_cuts(&picked(&[1]), &onsets, 4.0), [1.0, 1.5]);
+    assert_eq!(sampler_cuts(&picked(&[2]), &onsets, 4.0), [1.5, 4.0]);
+    assert!(sampler_cuts(&picked(&[]), &onsets, 4.0).is_empty());
+}

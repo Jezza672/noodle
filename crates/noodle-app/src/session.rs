@@ -25,6 +25,7 @@ pub mod replace;
 pub mod sample_set;
 mod stems;
 mod take_merge;
+mod to_sample;
 mod transport_tempo;
 pub mod versions;
 pub use export::{ExportChoice, ExportSummary};
@@ -172,6 +173,16 @@ pub enum Edit {
     ),
     /// Slice an audio clip at its transients onto a new Sampler track.
     SliceToSampler(noodle_core::ClipId),
+    /// Make a Sample node of the part of a clip's file between two seconds
+    /// (see [`Session::region_to_sample_node`]).
+    RegionToSample(noodle_core::ClipId, f64, f64),
+    /// Make a Sampler track of the stretches between consecutive cuts, in
+    /// seconds of the clip's file (see [`Session::cuts_to_sampler`]).
+    CutsToSampler(noodle_core::ClipId, Vec<f64>),
+    /// Bounce the mix over a range of the arrangement to a file and make a
+    /// Sample node of it (see [`Session::bounce_to_sample`]). Not an edit
+    /// itself: the node arrives as one undo step when the render is done.
+    BounceToSample(Tick, Tick),
     /// Pin the transients of a clip and the clips linked to it, at a
     /// sensitivity in percent.
     PinTransients(noodle_core::ClipId, u8),
@@ -1727,6 +1738,18 @@ impl Session {
                 }
                 Edit::SliceToSampler(clip) => {
                     self.slice_to_sampler(clip);
+                    continue;
+                }
+                Edit::RegionToSample(clip, from, to) => {
+                    self.region_to_sample_node(clip, from, to);
+                    continue;
+                }
+                Edit::CutsToSampler(clip, cuts) => {
+                    self.cuts_to_sampler(clip, &cuts);
+                    continue;
+                }
+                Edit::BounceToSample(from, to) => {
+                    self.bounce_to_sample((from, to));
                     continue;
                 }
                 Edit::PinTransients(clip, percent) => {
