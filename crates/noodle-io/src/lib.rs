@@ -34,7 +34,8 @@ pub use devices::{
 };
 pub use drum_bins::{
     Binning, Cancelled as DrumCancelled, DEFAULT_MERGE, DETECTOR_VERSION, DrumBin, DrumKind, Hit,
-    HitCache, HitFeatures, HitKey, analyse_hits, bin_hits, make_bin, split_bin,
+    HitCache, HitFeatures, HitKey, MAX_LAYERS, analyse_hits, bin_hits, layer_split, make_bin,
+    split_bin,
 };
 pub use export::{
     ExportError, ExportFormat, ExportMetadata, ExportWriter, FLAC_MAX_CHANNELS, cue_sheet,

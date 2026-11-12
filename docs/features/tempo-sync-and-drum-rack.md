@@ -49,3 +49,37 @@ The Sampler's `rr_mode` has a fourth choice, **Fixed**, with an `rr_pick` parame
 ## Create drum rack from clip: the dialog (step D)
 
 Right-click an audio clip, **Create drum rack from clip…** (`Edit::AnalyseDrumClip`). `drum_rack_dialog.rs` shows a progress bar with Cancel while the analysis runs, then the **groups** (bins: a name from the guess, hit count, confidence, the medoid's waveform) on the left and the **pads** on the right: the eight pads of the Drum Rack template, or all 128 keys with **Show all keys**, each named by its General MIDI drum name (`pad_name`). Each group is dropped on the pad its guess names (the first of a kind wins; Unknown groups stay unplaced). Drag a group onto a pad to place or replace it (one group may go on several pads); a pad whose group has several hits has a ◀ n/N ▶ picker for which one it plays (hits that are mixed or cut short are marked), × empties the pad. The **Merge more / Split more** slider re-bins from the kept features and re-guesses the pads. **Create** sends `Edit::CreateDrumRack` with the groups in use and the pads (one undo step) and closes; Cancel or Escape changes nothing. The user's choices live in the dialog; the session holds only the analysis. The dialog's two lists have a fixed height: a list that sizes itself to its content made the modal's layout change every frame under the test harness. Route: S09 `drum rack from a recorded drum clip` (right-click, wait, drag the group onto the kick pad, Create). The dialog has more: each group card has a drag handle (⠿), **▶ Play**, **Place on…** (a menu of the visible pads, the click path to placing), **Split** (`noodle_io::split_bin` tightens the threshold from the slider until the group falls apart, else says the hits are too alike), **Merge with…** (folds another group in; its pads follow) and a **Hits** list; each hit has a drag handle, ▶ and **Move to…** (any other group, a new one of its own, or Other), and a hit can be dragged onto any group. The Other list has the same rows, so a hit left out can be put back. Each pad has ▶ for the hit it plays. **Undo** takes back the last move, split, merge or pad edit; the slider throws the manual edits away with the pads, as it did. Audition (`Session::audition_drum_hit`, `noodle_io::Preview`) plays the hit straight to the monitor device (the main output if none is chosen) through its own short stream, outside the engine and the graph, so the project is untouched; it is silent on the virtual output. (An earlier design played it through a copy of the project; Jeremy chose the bypass as the audition is never a permanent state.) `make_bin` and `split_bin` are the io helpers behind the edits. The drag sources are now small handles, not the whole card, because a button inside a drag source never gets the click. The S09 route places the group from its menu. A spectrogram on the card was dropped as not needed. Tests: `split_bin`, `make_bin` in `drum_bins.rs`; move, merge, split and undo of the dialog's state in `drum_rack_dialog.rs`.
+
+## Drum rack from clip: velocity layers, groove clip, mixed hits from templates
+
+- **Velocity layers.** A group with two or more hits has a **Velocity layers** choice
+  (1, 2 or 3) on its card. `noodle_io::layer_split` divides the members by `level_db`
+  into equal-count layers, softest first, never an empty one. `PlannedBin::layers`
+  carries each hit's layer to `Edit::CreateDrumRack`, which writes it to the Sample
+  Set's entries (`layer`), with the round-robin slot counted per layer, so the pad's
+  Sampler needs no change: the Sampler already splits a key's layers evenly across
+  velocity. A pad's pick is then "the n-th hit of each layer" (the picker and the pad's
+  audition use the hardest layer). The choice is part of the dialog's Undo, survives
+  moves and merges, and the slider resets it.
+- **Groove as a MIDI clip.** The dialog's **Also add the groove as a MIDI clip** box
+  (off by default) sets `DrumRackPlan::groove`. The same `Command::Batch` then adds a
+  MIDI clip on the new track at the source clip's start: one note per hit of a group on
+  a pad (the lowest key when the group is on several), at the hit's tick through the
+  clip's warp (`tick_of_frame`), a thirty-second note long. Velocity is the hit's level
+  against the loudest hit, 12 dB down being half, and for a layered group it is moved
+  into the band of velocities that plays the hit's own layer. Hits with no pad get no
+  note; a groove with no note is refused. One undo step takes the rack and the clip.
+- **Mixed hits from templates.** `bin_hits` now explains a hit as a sum of the other
+  groups' medoids: their band power spectra are fixed templates and a weighted
+  non-negative least squares (cyclic coordinate descent, bands weighted by the hit's own
+  level so a quiet hat over a loud kick counts) finds the gains. A hit is mixed when two
+  to three templates, each at least 2% of its power, fit it under an error of 0.35 and
+  within 0.6 of the best single template, and no single template already fits it
+  (error under 0.1). `Binning::parts` holds, for each such hit, the medoid hit of each
+  drum in it (so it still names the right groups after moves); the dialog shows
+  "(mixed: Kick + Closed hat)" on the hit's row and in a pad's picker. It replaces the
+  two-medoid band test; a mixed hit is still never the default pick. Tests: a kit with a
+  hat struck on a kick and on a snare (one onset each) is explained as those drums and
+  clean hits have no parts; each was proved able to fail (fit threshold tightened,
+  part share raised, every threshold loosened, layer order reversed, layers not
+  written, layer band not applied).

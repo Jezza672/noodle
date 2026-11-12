@@ -93,9 +93,10 @@ deliberately deferred items.
   the rack: the groups are sensible, the guessed pads are right, the picker
   changes the hit, and the rack sounds like the track's kit. Never produce real
   audio there without asking.
-- **Drum rack from clip, follow-ups** (`docs/design/drum-rack-from-clip.md`): velocity
-  layers, the groove as a MIDI clip, a small classifier of our own, separation for
-  mixed hits. Also listen to the dialog's new audition (it plays straight to the
+- **Drum rack from clip, follow-ups** (`docs/design/drum-rack-from-clip.md`): a small
+  classifier of our own, separation for mixed hits (the model-free template
+  matching is built). Also listen to velocity layers and the groove clip on the
+  Mac, and listen to the dialog's new audition (it plays straight to the
   monitor device) on the Mac: ask before making sound.
 - **Recording with a real microphone**, to check the latency compensation, and
   that the Audio Settings round-trip estimate matches what you hear.

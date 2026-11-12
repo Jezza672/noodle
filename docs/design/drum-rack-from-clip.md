@@ -261,9 +261,10 @@ C. Each PR updates docs in the same PR (move the record from this file into
 | **C. Command and session** (built) | `Session::analyse_drum_clip` as a cancellable `Job` with progress and the analysis held outside the project; `Edit::CreateDrumRack(clip, DrumRackPlan)` building one new track from the Drum Rack template, extra pads for unlisted keys named by GM name, one shared Sample Set per used bin wired to its pads, all in one `Command::Batch` (one undo step). Session tests in the style of `picked_cuts_become_a_sampler_group_of_primitives_…`. | A, B |
 | **D. Dialog, menu and route** | `drum_rack_dialog.rs`: progress, bin cards (label, confidence, waveform, play, member picker, exclude, split and merge), the slider, pad grid (eight pads, Show all keys with GM names), drag and drop, audition through a copy of the project; the clip menu entry; the usability route (extend S09 or add one) through `testkit`; docs. Mac listening check owed, added to `ROADMAP.md`. | C |
 
-Follow-ups, not in these steps: velocity layers from level; the groove as a MIDI
-clip; the small own classifier (version 2); the separation analyser and mixed
-hit handling (version 3, which needs the licence checks first).
+Follow-ups built since: velocity layers from level, the groove as a MIDI clip, and
+the template matching of mixed hits (see `docs/features/tempo-sync-and-drum-rack.md`).
+Not built: the small own classifier (version 2); the separation analyser (version 3,
+which needs the licence checks first).
 
 ## Decisions (Jeremy, 2026-11-12)
 

@@ -13,7 +13,10 @@ use std::collections::BTreeMap;
 
 use egui::{Id, Ui};
 use noodle_core::ClipId;
-use noodle_io::{Binning, DEFAULT_MERGE, DrumBin, DrumKind, bin_hits, make_bin, split_bin};
+use noodle_io::{
+    Binning, DEFAULT_MERGE, DrumBin, DrumKind, MAX_LAYERS, bin_hits, layer_split, make_bin,
+    split_bin,
+};
 
 use crate::session::drum_rack::{DrumAnalysis, DrumRackPlan, PadAssignment, PlannedBin, pad_name};
 use crate::session::{Edit, Session};
@@ -70,6 +73,7 @@ enum Action {
     MoveHit(usize, Target),
     Merge(usize, usize),
     Split(usize),
+    Layers(usize, u8),
     Play(usize),
     Undo,
 }
@@ -80,6 +84,8 @@ struct State {
     binning: Binning,
     pads: BTreeMap<u8, Placed>,
     show_all: bool,
+    /// Also add the groove as a MIDI clip.
+    groove: bool,
     /// The bins and pads before each manual edit (move, split, merge), newest
     /// last. The slider throws them away with the edits.
     undo: Vec<(Binning, BTreeMap<u8, Placed>)>,
@@ -93,6 +99,7 @@ impl State {
             binning: bin_hits(&analysis.hits, DEFAULT_MERGE),
             pads: BTreeMap::new(),
             show_all: false,
+            groove: false,
             undo: Vec::new(),
         };
         state.guess_pads();
@@ -129,7 +136,10 @@ impl State {
     /// Puts `bin` back together from `members`, which re-ranks them. A pad on
     /// it starts again from the best hit, since the slots moved.
     fn reset_bin(&mut self, analysis: &DrumAnalysis, bin: usize, members: Vec<usize>) {
-        self.binning.bins[bin] = make_bin(&analysis.hits, &self.binning.mixed, members);
+        let layers = self.binning.bins[bin].layers;
+        let mut remade = make_bin(&analysis.hits, &self.binning.mixed, members);
+        remade.layers = layers.min(remade.members.len().min(usize::from(MAX_LAYERS)) as u8);
+        self.binning.bins[bin] = remade;
         for p in self.pads.values_mut().filter(|p| p.bin == bin) {
             p.pick = 1;
         }
@@ -236,6 +246,63 @@ impl State {
         true
     }
 
+    /// The velocity layers of `bin`, softest first: its members split by level,
+    /// or all of them as one when it is not layered.
+    fn layers_of(&self, analysis: &DrumAnalysis, bin: usize) -> Vec<Vec<usize>> {
+        let b = &self.binning.bins[bin];
+        layer_split(&analysis.hits, &b.members, b.layers)
+    }
+
+    /// How many hits a pad can choose between on `bin`: the most any layer has.
+    fn slots(&self, analysis: &DrumAnalysis, bin: usize) -> usize {
+        self.layers_of(analysis, bin)
+            .iter()
+            .map(Vec::len)
+            .max()
+            .unwrap_or(1)
+    }
+
+    /// The hit a pad on `bin` plays when it picks `pick`: of the loudest layer,
+    /// which is what a hard note on the pad plays.
+    fn pad_hit(&self, analysis: &DrumAnalysis, bin: usize, pick: usize) -> usize {
+        let layers = self.layers_of(analysis, bin);
+        let top = layers.last().expect("a bin has hits");
+        top[pick.clamp(1, top.len()) - 1]
+    }
+
+    /// Offers `bin`'s hits as `layers` velocity layers (1 turns them off).
+    fn set_layers(&mut self, bin: usize, layers: u8) {
+        let most = self.binning.bins[bin]
+            .members
+            .len()
+            .min(usize::from(MAX_LAYERS)) as u8;
+        let layers = layers.clamp(1, most.max(1));
+        if self.binning.bins[bin].layers == layers {
+            return;
+        }
+        self.remember();
+        self.binning.bins[bin].layers = layers;
+        for p in self.pads.values_mut().filter(|p| p.bin == bin) {
+            p.pick = 1;
+        }
+    }
+
+    /// What names the drums a hit is made of, for a mixed hit: "Kick + Closed
+    /// hat". Empty when none of its parts is still a group.
+    fn parts_of(&self, hit: usize) -> String {
+        let mut names: Vec<String> = self
+            .binning
+            .parts
+            .get(hit)
+            .into_iter()
+            .flatten()
+            .filter_map(|&medoid| self.bin_of(medoid))
+            .map(|bin| self.bin_name(bin))
+            .collect();
+        names.dedup();
+        names.join(" + ")
+    }
+
     /// Drops each bin on the pad its guess names, the first bin of a kind
     /// winning the pad.
     fn guess_pads(&mut self) {
@@ -270,15 +337,29 @@ impl State {
     }
 
     /// What the dialog's choices make: the bins in use and the pads.
-    fn plan(&self) -> DrumRackPlan {
+    fn plan(&self, analysis_hits: &[noodle_io::Hit]) -> DrumRackPlan {
         let mut used: Vec<usize> = self.pads.values().map(|p| p.bin).collect();
         used.sort_unstable();
         used.dedup();
         let bins = used
             .iter()
-            .map(|&bin| PlannedBin {
-                name: self.bin_name(bin),
-                hits: self.binning.bins[bin].members.clone(),
+            .map(|&bin| {
+                let b = &self.binning.bins[bin];
+                // Each hit's layer, in the order of the members.
+                let layers = if b.layers > 1 {
+                    let split = layer_split(analysis_hits, &b.members, b.layers);
+                    b.members
+                        .iter()
+                        .map(|m| split.iter().position(|l| l.contains(m)).unwrap_or(0) as u8 + 1)
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                PlannedBin {
+                    name: self.bin_name(bin),
+                    hits: b.members.clone(),
+                    layers,
+                }
             })
             .collect();
         let pads = self
@@ -290,7 +371,11 @@ impl State {
                 pick: p.pick,
             })
             .collect();
-        DrumRackPlan { bins, pads }
+        DrumRackPlan {
+            bins,
+            pads,
+            groove: self.groove,
+        }
     }
 }
 
@@ -343,7 +428,7 @@ impl DrumRackDialog {
         }
         match answer {
             Some(true) => {
-                let plan = state.plan();
+                let plan = state.plan(&analysis.hits);
                 let clip = state.clip;
                 session.edit([Edit::CreateDrumRack(clip, plan)]);
                 session.close_drum_analysis();
@@ -400,6 +485,11 @@ fn body(
         pads(&mut cols[1], analysis, state, &mut actions);
     });
     ui.separator();
+    ui.checkbox(&mut state.groove, "Also add the groove as a MIDI clip")
+        .on_hover_text(
+            "Adds a MIDI clip beside the rack with a note for every hit that is on a pad, \
+             at its time, as loud as the hit was",
+        );
     ui.horizontal(|ui| {
         let create = ui
             .add_enabled(!state.pads.is_empty(), egui::Button::new("Create"))
@@ -434,6 +524,7 @@ fn body(
                     session.notify("Those hits sound too alike to split".into());
                 }
             }
+            Action::Layers(bin, n) => state.set_layers(bin, n),
             Action::Play(hit) => session.audition_drum_hit(hit),
             Action::Undo => state.undo(),
         }
@@ -529,6 +620,30 @@ fn bins(
                                 });
                             }
                         });
+                        if bin.members.len() > 1 {
+                            ui.horizontal(|ui| {
+                                ui.label("Velocity layers")
+                                    .on_hover_text("Offers soft and hard hits as layers, so how hard a note is played picks the hit");
+                                let most = bin.members.len().min(usize::from(MAX_LAYERS)) as u8;
+                                for n in 1..=most {
+                                    if ui
+                                        .selectable_label(bin.layers == n, n.to_string())
+                                        .clicked()
+                                    {
+                                        actions.push(Action::Layers(i, n));
+                                    }
+                                }
+                                if bin.layers > 1 {
+                                    let sizes: Vec<String> = state
+                                        .layers_of(analysis, i)
+                                        .iter()
+                                        .zip(layer_names(bin.layers))
+                                        .map(|(l, name)| format!("{} {name}", l.len()))
+                                        .collect();
+                                    ui.label(egui::RichText::new(sizes.join(" · ")).weak().small());
+                                }
+                            });
+                        }
                         egui::CollapsingHeader::new(format!("Hits ({})", bin.members.len()))
                             .id_salt(("drum bin hits", i))
                             .show(ui, |ui| {
@@ -565,17 +680,24 @@ fn hit_row(
     from: Option<usize>,
     actions: &mut Vec<Action>,
 ) {
-    let mut note = "";
-    if state.binning.mixed.get(hit).copied().unwrap_or(false) {
-        note = " (mixed)";
-    } else if analysis.hits[hit].truncated {
-        note = " (cut short)";
+    let mut note = hit_note(state, analysis, hit);
+    if let Some(bin) = from
+        && state.binning.bins[bin].layers > 1
+    {
+        let layers = state.layers_of(analysis, bin);
+        if let Some(at) = layers.iter().position(|l| l.contains(&hit)) {
+            note.push_str(&format!(" · {}", layer_names(layers.len() as u8)[at]));
+        }
     }
     ui.horizontal(|ui| {
         ui.dnd_drag_source(Id::new(("drum hit", hit)), HitDrag(hit), |ui| {
             ui.label("⠿").on_hover_text("Drag onto a group");
         });
-        ui.label(format!("Hit {}{note}", hit + 1));
+        ui.label(format!(
+            "Hit {} · {:.0} dB{note}",
+            hit + 1,
+            analysis.hits[hit].level_db
+        ));
         if ui
             .small_button("▶")
             .on_hover_text("Play this hit")
@@ -600,6 +722,30 @@ fn hit_row(
             }
         });
     });
+}
+
+/// What is odd about a hit, for its row: the drums a mixed hit is made of, or
+/// that it was cut short.
+fn hit_note(state: &State, analysis: &DrumAnalysis, hit: usize) -> String {
+    if state.binning.mixed.get(hit).copied().unwrap_or(false) {
+        match state.parts_of(hit) {
+            parts if parts.is_empty() => " (mixed)".to_owned(),
+            parts => format!(" (mixed: {parts})"),
+        }
+    } else if analysis.hits[hit].truncated {
+        " (cut short)".to_owned()
+    } else {
+        String::new()
+    }
+}
+
+/// What a velocity layer is called, softest first.
+fn layer_names(layers: u8) -> Vec<&'static str> {
+    match layers {
+        0 | 1 => vec!["hits"],
+        2 => vec!["soft", "hard"],
+        _ => vec!["soft", "medium", "hard"],
+    }
 }
 
 fn medoid_waveform(ui: &mut Ui, session: &Session, analysis: &DrumAnalysis, hit: usize) {
@@ -649,18 +795,18 @@ fn pads(ui: &mut Ui, analysis: &DrumAnalysis, state: &mut State, actions: &mut V
                                 }
                                 Some(p) => {
                                     ui.label(state.bin_name(p.bin));
-                                    let members = &state.binning.bins[p.bin].members;
+                                    let slots = state.slots(analysis, p.bin);
                                     if ui
                                         .small_button("▶")
                                         .on_hover_text("Plays the hit this pad plays")
                                         .clicked()
                                     {
-                                        let pick = p.pick.clamp(1, members.len());
-                                        actions.push(Action::Play(members[pick - 1]));
+                                        actions.push(Action::Play(
+                                            state.pad_hit(analysis, p.bin, p.pick),
+                                        ));
                                     }
-                                    if members.len() > 1
-                                        && let Some(pick) =
-                                            picker(ui, p.pick, members, analysis, &state.binning)
+                                    if slots > 1
+                                        && let Some(pick) = picker(ui, state, analysis, p, slots)
                                     {
                                         actions.push(Action::Pick(key, pick));
                                     }
@@ -682,31 +828,26 @@ fn pads(ui: &mut Ui, analysis: &DrumAnalysis, state: &mut State, actions: &mut V
         });
 }
 
-/// The row choosing which hit of a bin a pad plays: previous, which, next.
-/// Returns the new pick (from 1) when it was changed.
+/// The row choosing which hit of a bin a pad plays (of each layer, when it
+/// has them): previous, which, next. Returns the new pick (from 1) when it was
+/// changed.
 fn picker(
     ui: &mut Ui,
-    pick: usize,
-    members: &[usize],
+    state: &State,
     analysis: &DrumAnalysis,
-    binning: &Binning,
+    placed: Placed,
+    slots: usize,
 ) -> Option<usize> {
-    let n = members.len();
-    let pick = pick.clamp(1, n);
-    let hit = members[pick - 1];
-    let mut note = "";
-    if binning.mixed.get(hit).copied().unwrap_or(false) {
-        note = " (mixed)";
-    } else if analysis.hits[hit].truncated {
-        note = " (cut short)";
-    }
+    let pick = placed.pick.clamp(1, slots);
+    let hit = state.pad_hit(analysis, placed.bin, pick);
+    let note = hit_note(state, analysis, hit);
     let mut new = pick;
     if ui.small_button("◀").on_hover_text("Previous hit").clicked() {
-        new = if pick == 1 { n } else { pick - 1 };
+        new = if pick == 1 { slots } else { pick - 1 };
     }
-    ui.label(format!("{pick}/{n}{note}"));
+    ui.label(format!("{pick}/{slots}{note}"));
     if ui.small_button("▶").on_hover_text("Next hit").clicked() {
-        new = if pick == n { 1 } else { pick + 1 };
+        new = if pick == slots { 1 } else { pick + 1 };
     }
     (new != pick).then_some(new)
 }
@@ -729,7 +870,7 @@ mod tests {
             end: at + 5_000,
             truncated: false,
             mixed: false,
-            level_db: -10.0,
+            level_db: -10.0 - (at / 10_000) as f32,
             features: HitFeatures {
                 bands,
                 centroid: if low { 120.0 } else { 9_000.0 },
@@ -878,5 +1019,90 @@ mod tests {
         state.rebin(&analysis);
         assert!(state.undo.is_empty());
         assert_eq!(state.binning.bins.len(), 2);
+    }
+
+    #[test]
+    fn layers_split_a_group_by_level_and_reach_the_plan_and_undo_takes_them_back() {
+        let (analysis, mut state) = two_groups();
+        let kicks = state.bin_of(0).unwrap();
+        state.pads.insert(
+            36,
+            Placed {
+                bin: kicks,
+                pick: 2,
+            },
+        );
+        assert!(state.plan(&analysis.hits).bins[0].layers.is_empty());
+        state.set_layers(kicks, 2);
+        assert_eq!(state.binning.bins[kicks].layers, 2);
+        assert_eq!(state.pads[&36].pick, 1, "the slots moved");
+        // The kicks get quieter with each hit: 0 and 2 are the hard pair.
+        let layers = state.layers_of(&analysis, kicks);
+        assert_eq!(layers.len(), 2);
+        let mut soft = layers[0].clone();
+        soft.sort_unstable();
+        assert_eq!(soft, [4, 6]);
+        let plan = state.plan(&analysis.hits);
+        let planned = &plan.bins[0];
+        let layer_of = |hit: usize| {
+            let at = planned.hits.iter().position(|&h| h == hit).unwrap();
+            planned.layers[at]
+        };
+        assert_eq!(
+            [layer_of(0), layer_of(2), layer_of(4), layer_of(6)],
+            [2, 2, 1, 1]
+        );
+        // A pad plays a hit of the hardest layer, and has two slots to choose from.
+        assert_eq!(state.slots(&analysis, kicks), 2);
+        assert!([0, 2].contains(&state.pad_hit(&analysis, kicks, 1)));
+        // More layers than hits is not offered, and a group of one stays flat.
+        state.set_layers(kicks, 9);
+        assert_eq!(state.binning.bins[kicks].layers, 3);
+        // Moving a hit out keeps the layers (as many as still fit).
+        state.move_hit(&analysis, 6, Target::Other);
+        assert_eq!(state.binning.bins[kicks].layers, 3);
+        state.move_hit(&analysis, 4, Target::Other);
+        assert_eq!(state.binning.bins[kicks].layers, 2, "two hits, two layers");
+        for _ in 0..4 {
+            state.undo();
+        }
+        assert_eq!(state.binning.bins[kicks].layers, 1);
+        // The slider resets them with everything else.
+        state.set_layers(kicks, 2);
+        state.rebin(&analysis);
+        assert!(state.binning.bins.iter().all(|b| b.layers == 1));
+    }
+
+    #[test]
+    fn the_groove_choice_goes_into_the_plan_and_is_off_by_default() {
+        let (analysis, mut state) = two_groups();
+        assert!(!state.plan(&analysis.hits).groove);
+        state.groove = true;
+        assert!(state.plan(&analysis.hits).groove);
+    }
+
+    #[test]
+    fn a_mixed_hit_names_the_groups_it_is_made_of_while_they_exist() {
+        let (analysis, mut state) = two_groups();
+        let (kicks, hats) = (state.bin_of(0).unwrap(), state.bin_of(1).unwrap());
+        let (kick_medoid, hat_medoid) = (
+            state.binning.bins[kicks].medoid,
+            state.binning.bins[hats].medoid,
+        );
+        state.binning.mixed[3] = true;
+        state.binning.parts[3] = vec![kick_medoid, hat_medoid];
+        let both = format!("{} + {}", state.bin_name(kicks), state.bin_name(hats));
+        assert_eq!(state.parts_of(3), both);
+        assert!(hit_note(&state, &analysis, 3).contains(&both));
+        // A group that is gone is not named.
+        state.move_hit(&analysis, kick_medoid, Target::Other);
+        assert!(state.bin_of(kick_medoid).is_none());
+        assert_eq!(
+            state.parts_of(3),
+            state.bin_name(state.bin_of(hat_medoid).unwrap())
+        );
+        // Mixed with no known parts says only that.
+        state.binning.parts[3].clear();
+        assert_eq!(hit_note(&state, &analysis, 3), " (mixed)");
     }
 }
