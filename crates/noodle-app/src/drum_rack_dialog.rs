@@ -164,14 +164,16 @@ impl State {
         if from.map(Target::Bin).unwrap_or(Target::Other) == to {
             return;
         }
+        if matches!(to, Target::Bin(bin) if bin >= self.binning.bins.len()) {
+            return;
+        }
         self.remember();
         match to {
-            Target::Bin(bin) if bin < self.binning.bins.len() => {
+            Target::Bin(bin) => {
                 let mut members = self.binning.bins[bin].members.clone();
                 members.push(hit);
                 self.reset_bin(analysis, bin, members);
             }
-            Target::Bin(_) => return,
             Target::NewBin => {
                 let bin = make_bin(&analysis.hits, &self.binning.mixed, vec![hit]);
                 self.binning.bins.push(bin);
@@ -387,7 +389,7 @@ fn body(
         }
         let undo = ui
             .add_enabled(!state.undo.is_empty(), egui::Button::new("Undo"))
-            .on_hover_text("Takes back the last move, merge or split of the groups");
+            .on_hover_text("Takes back the last edit of the groups or pads");
         if undo.clicked() {
             actions.push(Action::Undo);
         }
@@ -412,12 +414,15 @@ fn body(
     for action in actions {
         match action {
             Action::Place(key, bin) => {
+                state.remember();
                 state.pads.insert(key, Placed { bin, pick: 1 });
             }
             Action::Clear(key) => {
+                state.remember();
                 state.pads.remove(&key);
             }
             Action::Pick(key, pick) => {
+                state.remember();
                 if let Some(p) = state.pads.get_mut(&key) {
                     p.pick = pick;
                 }
@@ -842,6 +847,26 @@ mod tests {
         let kicks = state.bin_of(0).unwrap();
         let steps = state.undo.len();
         assert!(!state.split_bin(&analysis, kicks));
+        assert_eq!(state.undo.len(), steps);
+    }
+
+    #[test]
+    fn undo_takes_back_pad_edits_and_a_bad_target_leaves_no_step() {
+        let (analysis, mut state) = two_groups();
+        let kicks = state.bin_of(0).unwrap();
+        let hats = state.bin_of(1).unwrap();
+        state.merge_bins(&analysis, hats, kicks);
+        let merged_pads = state.pads.clone();
+        state.remember();
+        state.pads.insert(49, Placed { bin: 0, pick: 1 });
+        // Undo takes back the pad first, then the merge.
+        state.undo();
+        assert_eq!(state.pads, merged_pads);
+        assert_eq!(state.binning.bins.len(), 1);
+        state.undo();
+        assert_eq!(state.binning.bins.len(), 2);
+        let steps = state.undo.len();
+        state.move_hit(&analysis, 1, Target::Bin(9));
         assert_eq!(state.undo.len(), steps);
     }
 
