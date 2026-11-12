@@ -329,12 +329,18 @@ fn slot_label(slot: &Slot, i: usize) -> String {
 }
 
 fn slot_sampler(slot: &Slot) -> Spec {
-    spec("noodle.instrument.sampler")
+    let sampler = spec("noodle.instrument.sampler")
         .config("sample", Value::Text(sample_hash(&slot.sample)))
         .param("keytrack", 0.0)
-        .param("rr_mode", 3.0)
         .param("mode", 0.0)
-        .param("gain", slot.db)
+        .param("gain", slot.db);
+    // The library template's pads (no sample yet) pick a copy of a wired set
+    // by `take`; a song's slot has one sample, so its mode is left alone.
+    if slot.sample.is_empty() {
+        sampler.param("rr_mode", 3.0)
+    } else {
+        sampler
+    }
 }
 
 /// The library template's rack: a Swing in front of a named Drum Pad for
