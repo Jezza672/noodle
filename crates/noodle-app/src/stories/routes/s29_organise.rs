@@ -13,26 +13,20 @@
 use std::path::Path;
 
 use egui::{Key, Modifiers, Pos2};
-use noodle_core::{Project, group};
+use noodle_core::Project;
 
 use super::super::handle::{Handle, Probe};
 use super::super::{LateChange, Route, Tag};
-use super::{finished, virtual_session};
+use super::{add_tracks, finished, has_tracks, virtual_session};
 use crate::app::App;
-use crate::session::Edit;
 
 const TEMPLATE: &str = "Band";
+/// The story's session: 150 tracks.
+const TRACKS: usize = 150;
 
 fn fixture(dir: &Path) -> App {
     let mut session = virtual_session(dir);
-    for _ in 0..3 {
-        let ids: Vec<_> = (0..16).map(|_| session.new_node_id()).collect();
-        let mut ids = ids.into_iter();
-        let (_, create) = group::create_track(None, noodle_core::Position::default(), || {
-            ids.next().expect("a track needs few ids")
-        });
-        session.edit([Edit::Apply(create)]);
-    }
+    add_tracks(&mut session, TRACKS, 0.0, 0.0);
     let mut app = finished(session, dir);
     app.session_mut()
         .set_templates_dir(Some(dir.join("templates")));
@@ -85,6 +79,7 @@ fn steps(h: &mut Handle, _size: usize) {
 }
 
 fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
+    has_tracks(p.project(), TRACKS)?;
     let org = p.project().organisation();
     if org.colours.is_empty() {
         return Err("no track has a colour".into());
@@ -119,11 +114,14 @@ fn from_template(h: &mut Handle, _size: usize) {
 
 fn started(p: &mut Probe, _size: usize) -> Result<(), String> {
     let project: &Project = p.project();
+    has_tracks(project, TRACKS)?;
     let tracks = crate::timeline::tracks(project).len();
-    if tracks == 3 {
+    if tracks == TRACKS {
         Ok(())
     } else {
-        Err(format!("the new project has {tracks} tracks, wanted 3"))
+        Err(format!(
+            "the new project has {tracks} tracks, wanted {TRACKS}"
+        ))
     }
 }
 

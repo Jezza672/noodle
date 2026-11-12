@@ -384,6 +384,12 @@ impl App {
         (self.export.is_open(), mixdown, groups)
     }
 
+    /// Whether the Playback cache panel is open, for the usability routes.
+    #[cfg(test)]
+    pub fn cache_panel_open(&self) -> bool {
+        self.cache_panel.is_open()
+    }
+
     #[cfg(test)]
     pub fn session(&self) -> &Session {
         &self.session

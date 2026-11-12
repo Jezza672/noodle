@@ -16,11 +16,13 @@ use noodle_core::{NodeId, Position, Project};
 
 use super::super::handle::{Handle, Probe};
 use super::super::{Route, Tag};
+use super::audio_clip::{add_phrase, has_audio_clip};
 use super::{finished, virtual_session};
 use crate::app::App;
 use crate::session::Edit;
 
-/// A Drum Rack group on its own: the thing a stem is made of.
+/// A Drum Rack group and a clip: the thing a stem is made of, and a song
+/// long enough to render it.
 fn rack(dir: &Path) -> App {
     let mut session = virtual_session(dir);
     let template = session
@@ -40,6 +42,8 @@ fn rack(dir: &Path) -> App {
             .1
             .instantiate(&template.0, None, Position { x: 300.0, y: 300.0 }, &mut ids);
     session.edit([Edit::Apply(add)]);
+    // The song has a length: a clip on a track, so there is something to export.
+    add_phrase(&mut session, dir, 120.0);
     finished(session, dir)
 }
 
@@ -76,6 +80,7 @@ fn done(p: &mut Probe, _size: usize) -> Result<(), String> {
             .filter(|(_, n)| n.parent.is_none() && n.type_id == noodle_core::group::GROUP)
             .count()
     };
+    has_audio_clip(p.project())?;
     if groups(p.project()) == 0 {
         return Err("the project has no group to export".into());
     }
