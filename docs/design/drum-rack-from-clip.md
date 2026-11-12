@@ -133,16 +133,19 @@ chosen), like the take lanes, so the idiom is the same to the user.
 
 ## The dialog's parts
 
-- **Bin card:** label guess and confidence, member count, the medoid's waveform
-  and a small spectrogram, **Play**, and the member picker (previous/next, or a
-  grid of the members with truncated and mixed ones marked). **Exclude** removes
-  a hit from the bin (a wrong one); **Split** and **Merge with…** move a bin
-  against the slider.
+- **Bin card:** label guess and confidence, member count, the medoid's waveform,
+  **Play**, **Place on…** (click path; the drag is a handle, since a drag source
+  swallows button clicks), and a **Hits** list. Each hit has ▶ and **Move to…**
+  (any other group, a new one, or Other) and can be dragged to a group; this
+  replaces Exclude (a wrong hit moves to the group it belongs in). **Split** and
+  **Merge with…** move a group against the slider; **Undo** takes back the last
+  of these, and the slider resets them. No spectrogram (not needed).
 - **Pad grid:** drop target for bins, drop on an occupied pad replaces, a pad
   shows its bin's name and a mini waveform, double-click empties it. Auditioning
   a pad plays its chosen hit.
-- Audition plays through a copy of the project fed to the engine, as take
-  audition does, so the project is untouched.
+- Audition plays the hit straight to the monitor device through its own short
+  stream (`noodle_io::Preview`), outside the engine and the graph; this is not
+  a permanent state, so bypassing the graph is fine (Jeremy, 2026-11-12).
 
 ## Hits that are more than one drum
 

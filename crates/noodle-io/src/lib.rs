@@ -34,7 +34,7 @@ pub use devices::{
 };
 pub use drum_bins::{
     Binning, Cancelled as DrumCancelled, DEFAULT_MERGE, DETECTOR_VERSION, DrumBin, DrumKind, Hit,
-    HitCache, HitFeatures, HitKey, analyse_hits, bin_hits,
+    HitCache, HitFeatures, HitKey, analyse_hits, bin_hits, make_bin, split_bin,
 };
 pub use export::{
     ExportError, ExportFormat, ExportMetadata, ExportWriter, FLAC_MAX_CHANNELS, cue_sheet,
@@ -62,7 +62,7 @@ pub use onsets::{
 };
 pub use output::{
     DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, InputLatency, LatencyReport,
-    OpenedOutput, OutputStatus, Playback, SLOW_OUTPUT, Stream, VirtualCapture, is_fatal,
+    OpenedOutput, OutputStatus, Playback, Preview, SLOW_OUTPUT, Stream, VirtualCapture, is_fatal,
     looks_like_bluetooth, play, play_with_outputs, play_with_outputs_stopped,
 };
 pub use peaks::{BLOCK_FRAMES, Peak, Peaks, PeaksBuilder};

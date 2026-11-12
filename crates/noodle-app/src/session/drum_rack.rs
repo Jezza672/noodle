@@ -138,6 +138,19 @@ pub struct DrumAnalysis {
 }
 
 impl DrumAnalysis {
+    /// An analysis of `hits` that was not made from a clip, for tests of what
+    /// the dialog does with one.
+    #[cfg(test)]
+    pub(crate) fn synthetic(clip: ClipId, hits: Vec<Hit>) -> Self {
+        Self {
+            clip,
+            hash: "synthetic".into(),
+            hits: hits.into(),
+            origin: 0,
+            file_frames: 1_000_000,
+        }
+    }
+
     /// The window of the clip's file that hit `index` is cut from.
     pub fn window(&self, index: usize) -> Option<SampleRef> {
         let hit = self.hits.get(index)?;
@@ -165,6 +178,8 @@ pub(super) struct DrumRack {
     run: Option<Run>,
     result: Option<DrumAnalysis>,
     cache: Arc<HitCache>,
+    /// The hit being auditioned, playing straight to the device.
+    preview: Option<noodle_io::Preview>,
 }
 
 impl Session {
@@ -240,7 +255,48 @@ impl Session {
 
     /// Lets go of the analysis (the dialog was closed).
     pub fn close_drum_analysis(&mut self) {
+        self.drum_rack.preview = None;
         self.drum_rack.result = None;
+    }
+
+    /// Plays hit `index` of the held analysis once, straight to the monitor's
+    /// output device (the main output when none is chosen). It bypasses the
+    /// graph and the project entirely: it is only for trying a hit, and a new
+    /// audition replaces the one playing. Silent on the virtual output.
+    pub fn audition_drum_hit(&mut self, index: usize) {
+        let Some(window) = self.drum_rack.result.as_ref().and_then(|a| a.window(index)) else {
+            return;
+        };
+        let Some(sample) = self.samples().get(&window.hash) else {
+            return;
+        };
+        let device = match self.monitor_device() {
+            "" => self.audio_config.output.clone(),
+            chosen => Some(chosen.to_owned()),
+        };
+        if device.as_deref() == Some(noodle_io::VIRTUAL_OUTPUT) {
+            return;
+        }
+        let frames = sample.frames() as f32;
+        let (a, b) = (
+            (window.start * frames) as usize,
+            ((window.end * frames) as usize).min(sample.frames()),
+        );
+        if a >= b {
+            return;
+        }
+        // Stop the one playing first, so two never overlap.
+        self.drum_rack.preview = None;
+        match noodle_io::Preview::play(
+            self.audio_config.host.as_deref(),
+            device.as_deref(),
+            &sample.left[a..b],
+            &sample.right[a..b],
+            sample.sample_rate,
+        ) {
+            Ok(preview) => self.drum_rack.preview = Some(preview),
+            Err(error) => self.message = Some(format!("Can't play that hit: {error}")),
+        }
     }
 
     /// Takes in a finished analysis.
