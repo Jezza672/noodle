@@ -3803,7 +3803,11 @@ mod tests {
         let dir = tempfile::tempdir().unwrap();
         let prefs = dir.path().join("prefs.ron");
         crate::prefs::init(prefs.clone());
-        let mut harness = harness(empty());
+        // An empty cache folder of its own: the default one is shared with
+        // every other test and with the user's real renders.
+        let mut session = Session::new(crate::session::Nodes::all());
+        session.use_cache_dir(dir.path().join("cache"));
+        let mut harness = harness(App::new(session));
         harness.run();
         harness.get_by_label("View").click();
         harness.run();
