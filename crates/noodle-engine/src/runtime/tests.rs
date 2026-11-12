@@ -1305,6 +1305,55 @@ fn a_live_tempo_leaves_the_playhead_on_the_project_map() {
 }
 
 #[test]
+fn a_live_tempo_carries_the_beat_clock_on_from_where_it_was() {
+    // Nodes see the beat once a block of 4 frames: 7.68 ticks a block at
+    // 120 bpm and 1000 Hz, and half that at 60.
+    let mut rig = probe_rig(TICK);
+    rig.controller.transport().play();
+    let before = rig.render(40);
+    assert!((before[36] - before[32] - 7.68).abs() < 1e-3, "{before:?}");
+    rig.controller.set_live_tempo(Some(60.0));
+    let after = rig.render(40);
+    // No jump at the change, and half the speed from then on.
+    assert!(
+        (after[0] - before[36] - 7.68).abs() < 1e-3,
+        "{before:?} {after:?}"
+    );
+    assert!((after[36] - after[32] - 3.84).abs() < 1e-3, "{after:?}");
+    // A second tap carries on from the live beat, not the timeline's.
+    rig.controller.set_live_tempo(Some(90.0));
+    let again = rig.render(40);
+    assert!(
+        (again[0] - after[36] - 3.84).abs() < 1e-3,
+        "{after:?} {again:?}"
+    );
+    // Clearing it goes back to the timeline's beat.
+    rig.controller.set_live_tempo(None);
+    let back = rig.render(40);
+    assert!((back[36] - back[32] - 7.68).abs() < 1e-3, "{back:?}");
+}
+
+#[test]
+fn a_seek_puts_the_live_beat_clock_back_on_the_timeline() {
+    let mut rig = probe_rig(TICK);
+    rig.controller.set_live_tempo(Some(60.0));
+    let transport = rig.controller.transport();
+    transport.stop();
+    transport.seek(ticks(960));
+    let out = rig.render(20);
+    assert!((out[19] - 960.0).abs() < 1e-6, "{out:?}");
+}
+
+#[test]
+fn a_live_tempo_is_what_nodes_hear_as_the_tempo() {
+    let mut rig = probe_rig(BPM);
+    assert_eq!(rig.render(4)[0], 120.0);
+    rig.controller.set_live_tempo(Some(60.0));
+    assert_eq!(rig.render(20)[19], 60.0);
+    assert_eq!(*rig.controller.timeline_map(), TempoMap::default());
+}
+
+#[test]
 fn the_tempo_map_the_controller_reports_is_the_last_one_set() {
     let mut rig = probe_rig(BPM);
     assert_eq!(*rig.controller.tempo_map(), TempoMap::default());

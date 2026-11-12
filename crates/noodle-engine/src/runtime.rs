@@ -124,9 +124,10 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         control,
         table: Box::new(Tempos::new(
             &TempoMap::default(),
-            &TempoMap::default(),
+            None,
             settings.sample_rate,
         )),
+        live: None,
         tempo_in,
         tempo_returns,
         seen_seek: 0,
@@ -275,8 +276,8 @@ impl Controller {
             None => self.project_tempo.clone(),
         };
         self.tempo_pending = Some(Box::new(Tempos::new(
-            &self.tempo_map,
             &self.project_tempo,
+            self.live_bpm,
             self.settings.sample_rate,
         )));
         self.send_tempo();
@@ -496,21 +497,32 @@ impl Controller {
 
 /// What the audio thread converts time with. The timeline (the playhead,
 /// seeks, loops and where clips sit) always follows the project's tempo map,
-/// so what is under the playhead is what plays. `live` is the tempo the
-/// transport reports to nodes: the project's map too, or one tapped or
-/// clocked tempo.
+/// so what is under the playhead is what plays. `live` is the tapped or
+/// clocked tempo, if there is one: the beat clock the transport reports to
+/// nodes runs at it (see [`LiveClock`]).
 struct Tempos {
-    live: TempoTable,
     timeline: TempoTable,
+    live: Option<f64>,
 }
 
 impl Tempos {
-    fn new(live: &TempoMap, timeline: &TempoMap, sample_rate: f32) -> Self {
+    fn new(timeline: &TempoMap, live: Option<f64>, sample_rate: f32) -> Self {
         Self {
-            live: TempoTable::new(live, sample_rate),
             timeline: TempoTable::new(timeline, sample_rate),
+            live,
         }
     }
+}
+
+/// The beat clock under a live tempo: it runs at the live tempo from the
+/// place it was anchored, so it carries on from the beat it was on when the
+/// tempo changes, and is put back on the timeline's beat at a seek or a loop.
+#[derive(Clone, Copy)]
+struct LiveClock {
+    sample: u64,
+    tick: f64,
+    ticks_per_sample: f64,
+    bpm: f64,
 }
 
 /// Renders the current plan. Everything here is real-time safe.
@@ -537,6 +549,8 @@ pub struct Processor {
     position: u64,
     control: Arc<TransportControl>,
     table: Box<Tempos>,
+    /// The beat clock while a live tempo is set.
+    live: Option<LiveClock>,
     tempo_in: Consumer<Box<Tempos>>,
     tempo_returns: Producer<Box<Tempos>>,
     /// The last seek counted.
@@ -672,9 +686,9 @@ impl Processor {
             } else {
                 self.control.tap().clear();
             }
+            let tick = self.beat_tick();
             match &mut self.plan {
                 Some(plan) => {
-                    let tick = self.table.live.tick_at(self.position);
                     let ctx = Context {
                         sample_rate,
                         frames,
@@ -683,9 +697,11 @@ impl Processor {
                             position: self.position,
                             loop_range: looping,
                             tick,
-                            bpm: self.table.live.bpm_at(tick),
-                            signature: self.table.live.signature_at(tick),
-                            signature_start: self.table.live.signature_start_at(tick),
+                            bpm: self
+                                .live
+                                .map_or_else(|| self.table.timeline.bpm_at(tick), |live| live.bpm),
+                            signature: self.table.timeline.signature_at(tick),
+                            signature_start: self.table.timeline.signature_start_at(tick),
                             count_in: self.control.counting_in(),
                             version: self.control.version() as u32,
                         },
@@ -701,6 +717,7 @@ impl Processor {
                     && self.position == end
                 {
                     self.position = start;
+                    self.reanchor();
                 }
             }
         }
@@ -722,6 +739,7 @@ impl Processor {
     pub fn start_at(&mut self, tick: noodle_core::Tick) {
         self.install_new_plans();
         self.position = self.table.timeline.sample_at_tick(tick);
+        self.reanchor();
         self.reset_nodes();
         self.control.publish(self.position);
     }
@@ -790,6 +808,7 @@ impl Processor {
                 return true;
             }
             self.position = self.table.timeline.sample_at_tick(tick);
+            self.reanchor();
             self.pending_seek = None;
             self.reset_nodes();
         }
@@ -800,22 +819,59 @@ impl Processor {
             // The playhead keeps its tick, so its sample position moves. A
             // change to the live tempo alone leaves the timeline, and so the
             // position, be.
-            let position = if next.timeline == self.table.timeline {
+            let same_timeline = next.timeline == self.table.timeline;
+            let position = if same_timeline {
                 self.position
             } else {
                 let tick = self.table.timeline.tick_at(self.position);
                 next.timeline.sample_at(tick)
             };
+            // The beat the clock is on now, so a new live tempo carries on
+            // from it.
+            let beat = self.beat_tick();
             let Ok(new) = self.tempo_in.pop() else {
                 break;
             };
+            let live = new.live;
             let old = mem::replace(&mut self.table, new);
             let pushed = self.tempo_returns.push(old);
             debug_assert!(pushed.is_ok(), "checked for room above");
             self.position = position;
+            let tick = if same_timeline {
+                beat
+            } else {
+                self.table.timeline.tick_at(position)
+            };
+            let rate = f64::from(self.settings.sample_rate);
+            self.live = live.map(|bpm| LiveClock {
+                sample: position,
+                tick,
+                ticks_per_sample: bpm * noodle_core::TICKS_PER_QUARTER as f64 / 60.0 / rate,
+                bpm,
+            });
         }
         // A table is still waiting only if the return queue is full.
         !self.tempo_in.is_empty()
+    }
+
+    /// The beat at the next frame: the timeline's, or the live clock's.
+    fn beat_tick(&self) -> f64 {
+        match self.live {
+            Some(live) => {
+                live.tick + (self.position as f64 - live.sample as f64) * live.ticks_per_sample
+            }
+            None => self.table.timeline.tick_at(self.position),
+        }
+    }
+
+    /// Puts the live clock, if there is one, back on the timeline's beat at
+    /// the current position, after a seek or a loop.
+    fn reanchor(&mut self) {
+        let tick = self.table.timeline.tick_at(self.position);
+        if let Some(live) = &mut self.live {
+            live.sample = self.position;
+            live.tick = tick;
+        }
     }
 
     fn reset_nodes(&mut self) {
