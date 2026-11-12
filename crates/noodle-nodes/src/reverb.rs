@@ -121,22 +121,19 @@ impl NodeType for Reverb {
             lines: LINES.map(|n| Ring::new(line_len(n))),
             damp: [0.0; 8],
             predelay: [Ring::new(predelay), Ring::new(predelay)],
-            allpass: [
-                [
-                    Ring::new(((ALLPASS[0][0] * scale) as usize + 2).next_power_of_two()),
-                    Ring::new(((ALLPASS[1][0] * scale) as usize + 2).next_power_of_two()),
-                ],
-                [
-                    Ring::new(((ALLPASS[0][1] * scale) as usize + 2).next_power_of_two()),
-                    Ring::new(((ALLPASS[1][1] * scale) as usize + 2).next_power_of_two()),
-                ],
-            ],
+            allpass: allpass_rings(scale),
             phase: 0.0,
             left: vec![0.0; setup.max_frames].into_boxed_slice(),
             right: vec![0.0; setup.max_frames].into_boxed_slice(),
             quiet: 0,
         }))
     }
+}
+
+/// The allpass rings, indexed `[stage][side]` like [`ALLPASS`], each long
+/// enough for its delay at this rate.
+fn allpass_rings(scale: f32) -> [[Ring; 2]; 2] {
+    ALLPASS.map(|stage| stage.map(|n| Ring::new(((n * scale) as usize + 2).next_power_of_two())))
 }
 
 /// A ring buffer addressed by how long ago a sample was written.
@@ -365,6 +362,26 @@ mod tests {
 
     fn harness(shape: Shape) -> Harness {
         Harness::new(&Reverb, &Config::new(), &[(IN, shape)], RATE, 4_800).unwrap()
+    }
+
+    /// Each allpass ring holds its whole delay, so the read never wraps onto
+    /// a newer sample (#479).
+    #[test]
+    fn every_allpass_ring_is_longer_than_its_delay() {
+        for rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            let scale = rate / 48_000.0;
+            let rings = allpass_rings(scale);
+            for (stage, sides) in ALLPASS.iter().enumerate() {
+                for (side, &n) in sides.iter().enumerate() {
+                    let delay = n * scale;
+                    let len = rings[stage][side].data.len();
+                    assert!(
+                        (delay.ceil() as usize) < len,
+                        "allpass [{stage}][{side}] at {rate} Hz: delay {delay} in a ring of {len}"
+                    );
+                }
+            }
+        }
     }
 
     fn impulse(h: &mut Harness, blocks: usize) -> Vec<(Vec<f32>, Vec<f32>)> {
