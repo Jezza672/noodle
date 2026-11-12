@@ -2220,9 +2220,10 @@ impl App {
         let modal = egui::Modal::new(egui::Id::new("template name")).show(ctx, |ui| {
             ui.label("Name the project template");
             let field = ui.add(egui::TextEdit::singleline(name).hint_text("Template name"));
-            // Read Enter before asking for the focus back: asking again
-            // would cancel the focus loss Enter causes.
-            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            // The dialog is modal and has one field, so Enter anywhere in it
+            // confirms, whether or not the field still has the focus. Take
+            // the key so nothing behind the dialog sees it.
+            let enter = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
             if !field.has_focus() && !enter {
                 field.request_focus();
             }
@@ -4413,6 +4414,21 @@ mod tests {
         harness.event(egui::Event::Text("Band".into()));
         harness.run();
         assert_eq!(harness.state().template_name.as_deref(), Some("Band"));
+        harness.key_press(Key::Enter);
+        harness.run();
+        assert_eq!(harness.state().template_name, None);
+    }
+
+    /// Enter confirms the template dialog even when the name field has
+    /// lost the focus, say to the Save button's neighbour.
+    #[test]
+    fn enter_confirms_the_template_dialog_without_the_field_focused() {
+        let mut app = empty();
+        app.template_name = Some("Band".into());
+        let mut harness = harness(app);
+        harness.run();
+        harness.key_press(Key::Tab);
+        harness.run();
         harness.key_press(Key::Enter);
         harness.run();
         assert_eq!(harness.state().template_name, None);
