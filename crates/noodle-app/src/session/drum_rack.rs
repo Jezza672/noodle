@@ -173,7 +173,7 @@ fn velocity_in_layer(velocity: f32, index: usize, layers: usize) -> f32 {
         return velocity;
     }
     let band: Vec<u32> = (1..=127u32)
-        .filter(|midi| ((*midi as usize - 1) * layers / 127).min(layers - 1) == index)
+        .filter(|midi| noodle_nodes::velocity_layer(*midi as f32 / 127.0, layers) == index)
         .collect();
     let (Some(&lo), Some(&hi)) = (band.first(), band.last()) else {
         return velocity;
