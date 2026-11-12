@@ -646,6 +646,60 @@ fn explained_by_two(f: &HitFeatures, medoids: &[&HitFeatures], limit: f32) -> bo
     best_two < 0.7 * one_bands && best_two < limit
 }
 
+/// Makes a bin of `members`: finds its medoid, ranks the members best default
+/// first (not mixed, not truncated, not too quiet, then closest to the medoid)
+/// and guesses what it is. `mixed` is [`Binning::mixed`]. `members` must not be
+/// empty.
+pub fn make_bin(hits: &[Hit], mixed: &[bool], mut members: Vec<usize>) -> DrumBin {
+    let medoid = medoid_of(hits, &members);
+    members.sort_by(|&x, &y| {
+        let key = |i: usize| (mixed[i], hits[i].truncated, hits[i].too_quiet());
+        key(x).cmp(&key(y)).then(
+            distance(&hits[x].features, &hits[medoid].features)
+                .total_cmp(&distance(&hits[y].features, &hits[medoid].features)),
+        )
+    });
+    let (kind, confidence) = guess(&hits[medoid].features);
+    DrumBin {
+        members,
+        medoid,
+        kind,
+        confidence,
+    }
+}
+
+/// Splits the bin of `members` in two or more by tightening the threshold from
+/// `merge` until it falls apart. `None` when the hits are too alike to
+/// separate (even at the tightest threshold they are one group).
+pub fn split_bin(
+    hits: &[Hit],
+    mixed: &[bool],
+    members: &[usize],
+    merge: f32,
+) -> Option<Vec<DrumBin>> {
+    let subset: Vec<Hit> = members.iter().map(|&m| hits[m].clone()).collect();
+    let mut at = merge;
+    while at > 0.0 {
+        at = (at - 0.05).max(0.0);
+        let parts = bin_hits(&subset, at);
+        let total: usize = parts.bins.len() + usize::from(!parts.other.is_empty());
+        if total >= 2 {
+            let lift =
+                |local: &[usize]| -> Vec<usize> { local.iter().map(|&i| members[i]).collect() };
+            let mut bins: Vec<DrumBin> = parts
+                .bins
+                .iter()
+                .map(|b| make_bin(hits, mixed, lift(&b.members)))
+                .collect();
+            if !parts.other.is_empty() {
+                bins.push(make_bin(hits, mixed, lift(&parts.other)));
+            }
+            return Some(bins);
+        }
+    }
+    None
+}
+
 /// Groups hits into bins. `merge` (0 to 1, [`DEFAULT_MERGE`]) is how readily
 /// different sounds are put together.
 ///
@@ -723,7 +777,7 @@ pub fn bin_hits(hits: &[Hit], merge: f32) -> Binning {
     let mut bins: Vec<DrumBin> = Vec::new();
     let mut other: Vec<usize> = Vec::new();
     for b in 0..medoids.len() {
-        let mut members: Vec<usize> = (0..hits.len())
+        let members: Vec<usize> = (0..hits.len())
             .filter(|&i| membership[i] == Some(b))
             .collect();
         // Identical hits can tie, leaving a bin empty or without its medoid.
@@ -735,21 +789,7 @@ pub fn bin_hits(hits: &[Hit], merge: f32) -> Binning {
             other.push(first);
             continue;
         }
-        let medoid = medoid_of(hits, &members);
-        members.sort_by(|&x, &y| {
-            let key = |i: usize| (mixed[i], hits[i].truncated, hits[i].too_quiet());
-            key(x).cmp(&key(y)).then(
-                distance(&hits[x].features, &hits[medoid].features)
-                    .total_cmp(&distance(&hits[y].features, &hits[medoid].features)),
-            )
-        });
-        let (kind, confidence) = guess(&hits[medoid].features);
-        bins.push(DrumBin {
-            members,
-            medoid,
-            kind,
-            confidence,
-        });
+        bins.push(make_bin(hits, &mixed, members));
     }
     other.extend((0..hits.len()).filter(|&i| membership[i].is_none()));
     other.sort_unstable();
@@ -1118,6 +1158,45 @@ mod tests {
         });
         assert_eq!(result, Err(Cancelled));
         assert_eq!(calls, 20);
+    }
+
+    #[test]
+    fn a_bin_of_two_drums_splits_and_one_of_one_does_not() {
+        let (x, names) = pattern();
+        let hits = run(&x);
+        let mixed: Vec<bool> = hits.iter().map(|h| h.mixed).collect();
+        // The most-merged binning is one bin of everything.
+        let one = bin_hits(&hits, 1.0);
+        let all: Vec<usize> = (0..hits.len()).collect();
+        let loose = one.bins.iter().find(|b| b.members.len() > 4);
+        let members = loose.map_or(all, |b| b.members.clone());
+        let parts = split_bin(&hits, &mixed, &members, 1.0).expect("it falls apart");
+        assert!(parts.len() >= 2);
+        let mut seen: Vec<usize> = parts.iter().flat_map(|p| p.members.clone()).collect();
+        seen.sort_unstable();
+        let mut want = members.clone();
+        want.sort_unstable();
+        assert_eq!(seen, want, "no hit lost or doubled");
+        for part in &parts {
+            let first = names[part.members[0]];
+            assert!(part.members.iter().all(|&m| names[m] == first));
+        }
+        // The kicks alone are too alike to split.
+        let kicks: Vec<usize> = (0..hits.len()).filter(|&i| names[i] == "kick").collect();
+        assert!(kicks.len() >= 2);
+        assert!(split_bin(&hits, &mixed, &kicks, DEFAULT_MERGE).is_none());
+    }
+
+    #[test]
+    fn make_bin_ranks_the_clean_hit_first() {
+        let (x, _) = pattern();
+        let hits = run(&x);
+        let mut mixed: Vec<bool> = hits.iter().map(|h| h.mixed).collect();
+        let bin = &bin_hits(&hits, DEFAULT_MERGE).bins[0];
+        mixed[bin.members[0]] = true;
+        let again = make_bin(&hits, &mixed, bin.members.clone());
+        assert_eq!(*again.members.last().unwrap(), bin.members[0]);
+        assert_ne!(again.members[0], bin.members[0]);
     }
 
     #[test]

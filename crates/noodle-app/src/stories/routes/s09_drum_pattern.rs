@@ -441,7 +441,8 @@ fn player_done(p: &mut Probe, _size: usize) -> Result<(), String> {
 }
 
 /// Turns a drum clip into a rack: right-click the clip, Create drum rack from
-/// clip, wait for the analysis, drag the group onto a pad, Create.
+/// clip, wait for the analysis, place the group on a pad from its Place on…
+/// menu (dragging its handle does the same), Create.
 pub fn rack_from_clip_route() -> Route {
     Route {
         story: "S09",
@@ -471,10 +472,12 @@ fn rack_steps(h: &mut Handle, _size: usize) {
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
-    h.step("drop the group on the kick pad");
-    let group = h.find_like("hits ·");
-    let pad = h.find_like("Bass Drum");
-    h.drag_between(Modifiers::NONE, group, pad);
+    h.step("place the group on the kick pad from its menu");
+    let place = h.find_first("Place on…");
+    h.click(place, Modifiers::NONE);
+    h.probe().settle();
+    let pad = h.find_like("Place on Bass Drum");
+    h.click(pad, Modifiers::NONE);
     h.probe().settle();
     h.step("create the rack");
     let create = h.find("Create");

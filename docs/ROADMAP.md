@@ -93,11 +93,10 @@ deliberately deferred items.
   the rack: the groups are sensible, the guessed pads are right, the picker
   changes the hit, and the rack sounds like the track's kit. Never produce real
   audio there without asking.
-- **Drum rack from clip, still to build:** audition of a group or pad in the
-  dialog, the spectrogram on a group card, Exclude a hit, per-group Split and
-  Merge with…, and a click path to place a group as well as the drag; then the
-  follow-ups in the design (velocity layers, the groove as MIDI, a small
-  classifier, separation).
+- **Drum rack from clip, follow-ups** (`docs/design/drum-rack-from-clip.md`): velocity
+  layers, the groove as a MIDI clip, a small classifier of our own, separation for
+  mixed hits. Also listen to the dialog's new audition (it plays straight to the
+  monitor device) on the Mac: ask before making sound.
 - **Recording with a real microphone**, to check the latency compensation, and
   that the Audio Settings round-trip estimate matches what you hear.
 - **Stem separation on the real HT-Demucs weights** (M10), and listening to the
