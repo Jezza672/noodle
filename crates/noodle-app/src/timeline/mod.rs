@@ -2119,6 +2119,9 @@ pub fn show(
                     select_range(state, range);
                 }
             }
+            if let Some(range) = state.range {
+                convert_range_button(ui, range, &mut edits);
+            }
             if state.range.is_some() && ui.button("Clear selection").clicked() {
                 ui.close();
                 state.range = None;
@@ -2274,6 +2277,9 @@ pub fn show(
                 edits.push(Edit::Apply(command));
             }
         }
+        if let Some(range) = state.range {
+            convert_range_button(ui, range, &mut edits);
+        }
         if ui.button("Import audio…").clicked() {
             ui.close();
             let on_lane = state.menu_at.filter(|p| content.contains(*p));
@@ -2312,6 +2318,21 @@ pub fn show(
         audition,
     }
 }
+/// Convert to sample node, for the range selected: bounce the mix over it
+/// and make a Sample node of the result.
+fn convert_range_button(ui: &mut egui::Ui, range: sections::Range, edits: &mut Vec<Edit>) {
+    if ui
+        .button("Convert to sample node")
+        .on_hover_text(
+            "Bounce what plays over the selection (every track, as mixed) to a file in the renders folder, and make a Sample node of it",
+        )
+        .clicked()
+    {
+        ui.close();
+        edits.push(Edit::BounceToSample(range.start, range.end));
+    }
+}
+
 /// The menu on a right-clicked clip.
 fn clip_menu(
     ui: &mut egui::Ui,

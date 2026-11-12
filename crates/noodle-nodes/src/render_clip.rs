@@ -15,7 +15,8 @@ use std::sync::{Arc, Mutex};
 
 use noodle_core::{Endpoint, NodeId, Tick};
 use noodle_engine::{
-    Diagnostic, Job, Progress, Registry, StreamError, Tap, TempoTable, render_taps,
+    Diagnostic, Job, Progress, Registry, StreamError, Tap, TempoTable,
+    render_project_streaming_replacing, render_taps,
 };
 use noodle_io::{ExportError, ExportFormat, ExportWriter};
 
@@ -33,6 +34,8 @@ pub const CLIP_SILENCE: f32 = 1.0e-4;
 /// How long the fade out is, in frames, when the tail is still sounding at
 /// the cap and has to be cut.
 const CAP_FADE: usize = 2048;
+/// How many frames of the mix are rendered at a time.
+const MIX_CHUNK_FRAMES: usize = 4096;
 
 /// What to render, and where to write it.
 #[derive(Clone)]
@@ -40,8 +43,9 @@ pub struct ClipRequest {
     /// The project and its settings. As in an export, `render.frames` is the
     /// length playback's renders of offline and frozen nodes are keyed by.
     pub render: RenderRequest,
-    /// The group to render: a track or a bus.
-    pub group: NodeId,
+    /// The group to render: a track or a bus. `None` renders the mix, what
+    /// the Output nodes play.
+    pub group: Option<NodeId>,
     /// What the group is called, for messages.
     pub name: String,
     /// The first frame of the clip, counted from the start of the timeline.
@@ -175,11 +179,6 @@ pub fn render_clip(
         None => (noodle_engine::Replacements::new(), Vec::new()),
     };
 
-    let graph = render.project.graph();
-    let port = graph
-        .control_port(request.group)
-        .filter(|_| !graph.group_ports(request.group).outputs.is_empty())
-        .ok_or_else(|| ExportJobError::NoOutput(request.name.clone()))?;
     let writer = ExportWriter::create(&request.path, ExportFormat::WavFloat, channels, rate, None)
         .map_err(ExportJobError::File)?;
     let writing = Arc::new(Mutex::new(Writing {
@@ -191,26 +190,48 @@ pub fn render_clip(
         tail: Vec::new(),
         error: None,
     }));
-    let tap_writing = Arc::clone(&writing);
-    let mut interleaved = Vec::new();
-    let tap = Tap {
-        endpoint: Endpoint::new(port.stage(), "out"),
-        sink: Box::new(move |signal| {
-            interleave(&signal, channels, &mut interleaved);
-            tap_writing.lock().expect("clip lock").push(&interleaved);
-        }),
-    };
-    let mut diagnostics = render_taps::<ExportError>(
-        &render.project,
-        &registry,
-        settings,
-        Tick(0),
-        None,
-        total,
-        progress,
-        &replacements,
-        vec![tap],
-    )
+    let mut diagnostics = match request.group {
+        Some(group) => {
+            let graph = render.project.graph();
+            let port = graph
+                .control_port(group)
+                .filter(|_| !graph.group_ports(group).outputs.is_empty())
+                .ok_or_else(|| ExportJobError::NoOutput(request.name.clone()))?;
+            let tap_writing = Arc::clone(&writing);
+            let mut interleaved = Vec::new();
+            let tap = Tap {
+                endpoint: Endpoint::new(port.stage(), "out"),
+                sink: Box::new(move |signal| {
+                    interleave(&signal, channels, &mut interleaved);
+                    tap_writing.lock().expect("clip lock").push(&interleaved);
+                }),
+            };
+            render_taps::<ExportError>(
+                &render.project,
+                &registry,
+                settings,
+                Tick(0),
+                None,
+                total,
+                progress,
+                &replacements,
+                vec![tap],
+            )
+        }
+        None => render_project_streaming_replacing::<ExportError>(
+            &render.project,
+            &registry,
+            settings,
+            total,
+            MIX_CHUNK_FRAMES,
+            progress,
+            &replacements,
+            |chunk| {
+                writing.lock().expect("clip lock").push(chunk);
+                Ok(())
+            },
+        ),
+    }
     .map_err(|error| match error {
         StreamError::Cancelled => ExportJobError::Cancelled,
         StreamError::Sink(error) => ExportJobError::File(error),

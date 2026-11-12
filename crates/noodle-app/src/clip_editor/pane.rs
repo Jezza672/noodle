@@ -70,6 +70,10 @@ enum Grab {
         press_x: f32,
     },
     Edge(Edge),
+    /// A region picked with Shift held, from this second of the file.
+    Region {
+        from: f64,
+    },
 }
 
 /// Zoom, scroll and the drag in progress.
@@ -144,6 +148,11 @@ pub(crate) struct Spec<'a> {
     /// The loop's ends, in seconds of the file, if it is on.
     pub looping: Option<(f64, f64)>,
     pub gain: f32,
+    /// Whether Shift+drag picks a region (a clip's audio can be converted;
+    /// a Sampler's sample is not).
+    pub pickable: bool,
+    /// The region picked, in seconds of the file.
+    pub region: Option<(f64, f64)>,
     /// The playheads, in seconds of the file: a clip has at most one, a
     /// Sampler one for each sounding voice.
     pub playheads: &'a [f64],
@@ -158,6 +167,9 @@ pub(crate) enum Gesture {
     Slip(f32),
     /// An edge was dragged to this second of the file.
     Edge(Edge, f64),
+    /// A region is being picked, from and to these seconds of the file. Not
+    /// an edit: it has no `Begin` and no `Release`.
+    Region(f64, f64),
     /// The drag ended.
     Release,
 }
@@ -284,6 +296,22 @@ pub(crate) fn show(ui: &mut Ui, view: &mut View, body: Rect, spec: &Spec) -> Out
             edge.colour(),
         );
     }
+    if let Some((a, b)) = spec.region {
+        let band = Rect::from_x_y_ranges(
+            axis.x(a.min(b) - spec.zero).max(wave.left())
+                ..=axis.x(a.max(b) - spec.zero).min(wave.right()),
+            wave.y_range(),
+        );
+        if band.width() > 0.0 {
+            painter.rect_filled(band, 0.0, colors::SELECTED.gamma_multiply(0.16));
+            painter.rect_stroke(
+                band,
+                0.0,
+                Stroke::new(1.0, colors::SELECTED.gamma_multiply(0.7)),
+                egui::StrokeKind::Inside,
+            );
+        }
+    }
     for &at in spec.playheads {
         let x = axis.x(at - spec.zero);
         if (wave.left()..=wave.right()).contains(&x) {
@@ -312,11 +340,17 @@ pub(crate) fn show(ui: &mut Ui, view: &mut View, body: Rect, spec: &Spec) -> Out
     if response.drag_started()
         && let Some(press) = ui.input(|i| i.pointer.press_origin())
     {
+        let picking = spec.pickable && ui.input(|i| i.modifiers.shift);
         view.grab = Some(match nearest(press.x) {
             Some(edge) => Grab::Edge(edge),
+            None if picking => Grab::Region {
+                from: file_seconds(press.x).clamp(0.0, file_secs),
+            },
             None => Grab::Slip { press_x: press.x },
         });
-        gestures.push(Gesture::Begin);
+        if !matches!(view.grab, Some(Grab::Region { .. })) {
+            gestures.push(Gesture::Begin);
+        }
     }
     if response.dragged()
         && let (Some(grab), Some(pos)) = (view.grab, response.interact_pointer_pos())
@@ -324,9 +358,15 @@ pub(crate) fn show(ui: &mut Ui, view: &mut View, body: Rect, spec: &Spec) -> Out
         gestures.push(match grab {
             Grab::Slip { press_x } => Gesture::Slip((pos.x - press_x) / axis.pps),
             Grab::Edge(edge) => Gesture::Edge(edge, file_seconds(pos.x).clamp(0.0, file_secs)),
+            Grab::Region { from } => {
+                Gesture::Region(from, file_seconds(pos.x).clamp(0.0, file_secs))
+            }
         });
     }
-    if response.drag_stopped() && view.grab.take().is_some() {
+    if response.drag_stopped()
+        && let Some(grab) = view.grab.take()
+        && !matches!(grab, Grab::Region { .. })
+    {
         gestures.push(Gesture::Release);
     }
     if spec.peaks.is_none() {

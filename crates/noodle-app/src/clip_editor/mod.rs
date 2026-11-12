@@ -11,6 +11,9 @@
 //! to the pick), by a box dragged in the flags' row, or all at once with
 //! Ctrl+A, and a picked group moves and is deleted together. Dragging the
 //! waveform (or the ruler) slides the clip's beat lines against its audio.
+//! Shift+drag on the waveform picks a region, and a click on a transient's
+//! handle picks it (Shift or Ctrl adds); right-click offers Convert to sample
+//! node for the region and Convert to sampler for the picked transients.
 //!
 //! Every change is an [`Edit`] made with [`Project::warp_edit`], so a warp that
 //! other sections share is forked for this one. Dragging a flag or the brace
@@ -48,9 +51,8 @@ enum Control {
     Loop,
     Help,
 }
-const HINT_PLAIN: &str =
-    "Drag the waveform to slide the audio under the clip · Warp gives it beats to pin";
-const HINT: &str = "Double-click to add a marker · drag a flag to move it (Shift picks several) · drag the waveform to line the beats up · Delete removes · Alt: no snap";
+const HINT_PLAIN: &str = "Drag the waveform to slide the audio under the clip · Shift+drag picks a region to convert to a sample node · Warp gives it beats to pin";
+const HINT: &str = "Double-click to add a marker · drag a flag to move it (Shift picks several) · drag the waveform to line the beats up · Shift+drag picks a region · click a hit's handle to pick it, then right-click to convert to a sampler · Delete removes · Alt: no snap";
 const RULER: f32 = 18.0;
 const FLAGS: f32 = 22.0;
 const BRACE: f32 = 14.0;
@@ -64,6 +66,8 @@ const GRAB: f32 = 7.0;
 const GRAB_HANDLE: f32 = 5.0;
 /// How close, in points, a transient has to be to pull a new marker onto it.
 const SNAP_TO_TRANSIENT: f32 = 10.0;
+/// A region shorter than this, in seconds, is a press that went nowhere.
+const MIN_REGION_SECONDS: f64 = 0.001;
 const MIN_PPB: f32 = 4.0;
 const MAX_PPB: f32 = 250_000.0;
 /// The height the panel opens at.
@@ -98,6 +102,11 @@ enum Gesture {
     Marquee {
         from: f32,
     },
+    /// A region picked on the waveform with Shift held, from `from` (seconds
+    /// of the file) to where the pointer is.
+    Region {
+        from: f64,
+    },
 }
 
 struct Drag {
@@ -127,9 +136,17 @@ pub struct ClipEditor {
     selected: BTreeSet<usize>,
     /// The box being dragged out in the flags' row, in screen x.
     marquee: Option<(f32, f32)>,
+    /// The region picked with Shift+drag on the waveform, from and to in
+    /// seconds of the file. Right-click it to make a Sample node of it.
+    region: Option<(f64, f64)>,
+    /// The transients picked, by their place among the open clip's own.
+    /// Right-click to make a Sampler of the stretches between them.
+    transients: BTreeSet<usize>,
     drag: Option<Drag>,
     /// Where the editor was last right-clicked, in beats.
     menu_at: Option<f64>,
+    /// Whether that right-click was inside the region.
+    region_menu: bool,
     /// The part of the file that plays when a drag of an unwarped waveform
     /// began.
     slip: Option<(noodle_core::AudioClip, Option<(f64, f64)>)>,
@@ -181,6 +198,8 @@ impl ClipEditor {
             self.subject = Some(subject);
             self.selected.clear();
             self.marquee = None;
+            self.region = None;
+            self.transients.clear();
             self.drag = None;
             self.slip = None;
             self.view.drop_grab();
@@ -194,6 +213,8 @@ impl ClipEditor {
         self.slip = None;
         self.view.drop_grab();
         self.marquee = None;
+        self.region = None;
+        self.transients.clear();
         self.selected.clear();
     }
 
@@ -245,6 +266,18 @@ impl ClipEditor {
     #[cfg(test)]
     pub fn selected(&self) -> Vec<usize> {
         self.selected.iter().copied().collect()
+    }
+
+    /// The region picked, in seconds of the file.
+    #[cfg(test)]
+    pub fn region(&self) -> Option<(f64, f64)> {
+        self.region
+    }
+
+    /// The transients picked, by their place among the clip's own.
+    #[cfg(test)]
+    pub fn picked_transients(&self) -> Vec<usize> {
+        self.transients.iter().copied().collect()
     }
 
     #[cfg(test)]
@@ -607,9 +640,34 @@ pub fn show(
     draw_waveform(&painter, wave, axis, warp, loaded, samples, rate, file_secs);
     draw_window(&painter, wave, axis, warp, audio.offset, audio.length, rate);
     draw_ruler(&painter, ruler, wave, axis, warp.grid_offset);
-    draw_handles(&painter, handles, wave, axis, warp, &cands);
+    draw_handles(
+        &painter,
+        handles,
+        wave,
+        axis,
+        warp,
+        &cands,
+        &state.transients,
+    );
     draw_loop(&painter, brace, wave, axis, warp);
     draw_flags(&painter, flags, wave, axis, warp, &state.selected);
+    if let Some((a, b)) = state.region {
+        let (x0, x1) = (
+            axis.x(warp.beat_at(a.min(b))),
+            axis.x(warp.beat_at(a.max(b))),
+        );
+        let band =
+            Rect::from_x_y_ranges(x0.max(wave.left())..=x1.min(wave.right()), wave.y_range());
+        if band.width() > 0.0 {
+            painter.rect_filled(band, 0.0, colors::SELECTED.gamma_multiply(0.16));
+            painter.rect_stroke(
+                band,
+                0.0,
+                Stroke::new(1.0, colors::SELECTED.gamma_multiply(0.7)),
+                StrokeKind::Inside,
+            );
+        }
+    }
     if let Some((a, b)) = state.marquee {
         let band = Rect::from_x_y_ranges(a.min(b)..=a.max(b), flags.top()..=wave.bottom());
         painter.rect_filled(band, 0.0, colors::SELECTED.gamma_multiply(0.12));
@@ -651,10 +709,19 @@ pub fn show(
 
     // Flags that have gone (after an undo) can't stay picked.
     state.selected.retain(|&i| i < warp.markers.len());
+    state.transients.retain(|&i| i < own.len());
 
     // Gestures.
     let response = ui.interact(area, ui.id().with("clip editor"), Sense::click_and_drag());
-    let (alt, additive) = ui.input(|i| (i.modifiers.alt, i.modifiers.shift || i.modifiers.command));
+    let (alt, additive, shift) = ui.input(|i| {
+        (
+            i.modifiers.alt,
+            i.modifiers.shift || i.modifiers.command,
+            i.modifiers.shift,
+        )
+    });
+    // Where a screen x is in the file, for the region.
+    let file_at = |x: f32| warp.seconds_at_beat(axis.beat(x)).clamp(0.0, file_secs);
     // Alt, or the snap setting at Off, lets a marker go anywhere. Otherwise it
     // snaps to the setting's grid, in beats.
     let free = alt || session.snap() <= 1;
@@ -668,6 +735,7 @@ pub fn show(
             Some(Gesture::Loop { .. }) => CursorIcon::Grab,
             Some(Gesture::Transient(_)) => CursorIcon::PointingHand,
             Some(Gesture::Clip { .. } | Gesture::Grid { .. }) => CursorIcon::ResizeHorizontal,
+            Some(Gesture::Region { .. }) => CursorIcon::Crosshair,
             Some(Gesture::Marquee { .. }) | None => CursorIcon::Default,
         });
     }
@@ -680,6 +748,11 @@ pub fn show(
             Gesture::Loop { .. } => {
                 let start = loop_beats(warp).map_or(0.0, |(start, _)| start);
                 Gesture::Loop { grab: at - start }
+            }
+            Gesture::Clip { .. } if shift && matches!(subject, Subject::Clip(_)) => {
+                Gesture::Region {
+                    from: file_at(press.x),
+                }
             }
             Gesture::Clip { .. } => Gesture::Clip { from: at },
             Gesture::Grid { .. } => Gesture::Grid { from: at },
@@ -703,6 +776,9 @@ pub fn show(
         if let Gesture::Marquee { from } = gesture {
             state.marquee = Some((from, from));
         }
+        if let Gesture::Region { from } = gesture {
+            state.region = Some((from, from));
+        }
         state.drag = Some(Drag {
             gesture,
             original: warp.clone(),
@@ -715,7 +791,9 @@ pub fn show(
         // The grid slides under a drag of the clip or the ruler, so the
         // pointer is read against the grid the drag began with.
         let beat = axis.at_shift(drag.original.grid_offset).beat(pos.x);
-        if let Gesture::Marquee { from } = drag.gesture {
+        if let Gesture::Region { from } = drag.gesture {
+            state.region = Some((from, file_at(pos.x)));
+        } else if let Gesture::Marquee { from } = drag.gesture {
             state.marquee = Some((from, pos.x));
             let (lo, hi) = (from.min(pos.x), from.max(pos.x));
             let inside: BTreeSet<usize> = (0..warp.markers.len())
@@ -742,9 +820,21 @@ pub fn show(
     }
     if response.drag_stopped() {
         let marquee = state.marquee.take().is_some();
+        let region = matches!(
+            state.drag.as_ref().map(|d| d.gesture),
+            Some(Gesture::Region { .. })
+        );
         state.drag = None;
+        if region
+            && state
+                .region
+                .is_some_and(|(a, b)| (a - b).abs() < MIN_REGION_SECONDS)
+        {
+            // A press that went nowhere is not a region.
+            state.region = None;
+        }
         // A box is not an edit: there is no step to close.
-        if !marquee {
+        if !marquee && !region {
             out.edits.push(Edit::EndDrag);
         }
     }
@@ -753,6 +843,22 @@ pub fn show(
     if response.clicked()
         && let Some(pos) = response.interact_pointer_pos()
     {
+        // A click picks the transient whose handle it is (Shift or Ctrl
+        // adds); anywhere else lets go of them, and of the region.
+        match hit(pos) {
+            Some(Gesture::Transient(t)) if cands.lane[t] == 0 => {
+                if !additive {
+                    state.transients = BTreeSet::from([t]);
+                } else if !state.transients.remove(&t) {
+                    state.transients.insert(t);
+                }
+            }
+            _ if additive => {}
+            _ => state.transients.clear(),
+        }
+        if !shift {
+            state.region = None;
+        }
         let target = match hit(pos) {
             Some(Gesture::Marker(i)) => Some(i),
             Some(Gesture::Transient(t)) => warp.marker_at(onsets[t]),
@@ -812,10 +918,37 @@ pub fn show(
         {
             state.selected = BTreeSet::from([i]);
         }
+        if let Some(Gesture::Transient(t)) = hit(pos)
+            && cands.lane[t] == 0
+            && !state.transients.contains(&t)
+        {
+            state.transients = BTreeSet::from([t]);
+        }
+        // Whether the right-click is inside the region, which the menu offers
+        // to convert.
+        state.region_menu = state.region.is_some_and(|(a, b)| {
+            let (x0, x1) = (
+                axis.x(warp.beat_at(a.min(b))),
+                axis.x(warp.beat_at(a.max(b))),
+            );
+            (x0..=x1).contains(&pos.x)
+        });
     }
     let menu_x = state.menu_at.map(|beat| axis.x(beat));
     let on_marker = menu_x.and_then(|x| marker_at_x(x, axis, warp));
+    let lit_end = (audio.offset + audio.length) as f64 / rate;
     response.context_menu(|ui| {
+        if let Subject::Clip(clip) = subject {
+            convert_items(
+                ui,
+                clip,
+                state.region.filter(|_| state.region_menu),
+                &state.transients,
+                own,
+                lit_end,
+                &mut out.edits,
+            );
+        }
         if let Some(i) = on_marker {
             let picked: Vec<usize> = if state.selected.contains(&i) {
                 state.selected.iter().copied().collect()
@@ -1114,7 +1247,7 @@ fn drag_step(drag: &Drag, beat: f64, snapped: f64, free: bool) -> Option<ClipWar
         Gesture::Grid { from } => {
             warp.grid_offset = clamp_offset(drag.original.grid_offset + (beat - from));
         }
-        Gesture::Transient(_) | Gesture::Marquee { .. } => return None,
+        Gesture::Transient(_) | Gesture::Marquee { .. } | Gesture::Region { .. } => return None,
         Gesture::LoopStart | Gesture::LoopEnd | Gesture::Loop { .. } => {
             warp.loop_region?;
             let (from, to) = loop_beats(&warp)?;
@@ -1299,6 +1432,7 @@ fn draw_handles(
     axis: Axis,
     warp: &ClipWarp,
     cands: &Candidates,
+    picked: &BTreeSet<usize>,
 ) {
     painter.rect_filled(handles, 0.0, colors::HEADER.gamma_multiply(0.5));
     let band = handles.height() / cands.lanes() as f32;
@@ -1320,6 +1454,10 @@ fn draw_handles(
             ),
         );
         let pinned = warp.marker_at(onset).is_some();
+        let chosen = lane == 0 && picked.contains(&i);
+        if chosen {
+            painter.vline(x, wave.y_range(), Stroke::new(2.0, colors::SELECTED));
+        }
         let (top, bottom) = (
             handles.top() + band * lane as f32,
             handles.top() + band * (lane + 1) as f32,
@@ -1330,14 +1468,19 @@ fn draw_handles(
             Pos2::new(x - 4.0, top + 2.0),
             Pos2::new(x + 4.0, top + 2.0),
         ];
-        let colour = match (own, pinned) {
+        let colour = match (own, pinned || chosen) {
             (_, true) if own.is_none() => theme::ACCENT,
             (Some(c), _) => c,
             (None, _) => Color32::WHITE.gamma_multiply(0.55),
         };
+        let colour = if chosen { colors::SELECTED } else { colour };
         painter.add(egui::Shape::convex_polygon(
             triangle,
-            if pinned { colour } else { Color32::TRANSPARENT },
+            if pinned || chosen {
+                colour
+            } else {
+                Color32::TRANSPARENT
+            },
             Stroke::new(1.0, colour),
         ));
     }
@@ -1497,6 +1640,78 @@ fn fold_into_loop(warp: &ClipWarp, beat: f64) -> f64 {
     } else {
         beat
     }
+}
+
+/// The right-click menu's conversions: a Sample node from the region, and a
+/// Sampler from the transients picked. `cuts` are worked out here, so the
+/// session only has to cut between them.
+pub(super) fn convert_items(
+    ui: &mut egui::Ui,
+    clip: ClipId,
+    region: Option<(f64, f64)>,
+    picked: &BTreeSet<usize>,
+    onsets: &[f64],
+    lit_end: f64,
+    edits: &mut Vec<Edit>,
+) {
+    let mut any = false;
+    if let Some((a, b)) = region
+        && ui
+            .button("Convert to sample node")
+            .on_hover_text(
+                "A Sample node on this audio, starting and ending where the selection does",
+            )
+            .clicked()
+    {
+        edits.push(Edit::RegionToSample(clip, a.min(b), a.max(b)));
+        ui.close();
+    }
+    any |= region.is_some();
+    let cuts = sampler_cuts(picked, onsets, lit_end);
+    if cuts.len() >= 2 {
+        let slices = cuts.len() - 1;
+        if ui
+            .button(format!(
+                "Convert to sampler ({slices} slice{})",
+                if slices == 1 { "" } else { "s" }
+            ))
+            .on_hover_text(
+                "A Sampler on a new track with each stretch from one picked transient to the next on its own key, from C2",
+            )
+            .clicked()
+        {
+            edits.push(Edit::CutsToSampler(clip, cuts));
+            ui.close();
+        }
+        any = true;
+    }
+    if any {
+        ui.separator();
+    }
+}
+
+/// Where a Sampler is cut for the transients `picked` among `onsets`: at each
+/// of them, and, if only one is picked, at the next transient after it (or
+/// the end of the lit part, `lit_end`), so there is a stretch to play.
+fn sampler_cuts(picked: &BTreeSet<usize>, onsets: &[f64], lit_end: f64) -> Vec<f64> {
+    let mut cuts: Vec<f64> = picked
+        .iter()
+        .filter_map(|&i| onsets.get(i).copied())
+        .collect();
+    cuts.sort_by(f64::total_cmp);
+    cuts.dedup();
+    if let [only] = cuts[..] {
+        let next = onsets
+            .iter()
+            .copied()
+            .filter(|&t| t > only + MIN_REGION_SECONDS)
+            .min_by(f64::total_cmp)
+            .unwrap_or(lit_end);
+        if next > only {
+            cuts.push(next);
+        }
+    }
+    cuts
 }
 
 #[cfg(test)]

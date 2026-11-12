@@ -128,13 +128,15 @@ fn window_with(mut app: App, render: bool) -> AppHarness {
     }
     // While audio plays the app keeps repainting, so settle a few frames
     // rather than `run` until it stops.
-    let mut builder = Harness::builder().with_size(Vec2::new(1280.0, 800.0));
+    // egui calls two clicks a double click if they come within 0.3 s by the
+    // frame clock. With the default 0.25 s pass and two passes a step, the
+    // two steps of `double_click` would be 0.5 s apart; a short pass keeps an
+    // agent's double clicks working as a person's do.
+    let mut builder = Harness::builder()
+        .with_size(Vec2::new(1280.0, 800.0))
+        .with_step_dt(0.05);
     if render {
-        // egui calls two clicks a double click if they come within 0.3 s by
-        // the frame clock. With the default 0.25 s pass and two passes a step,
-        // the two steps of `double_click` would be 0.5 s apart; a short pass
-        // keeps an agent's double clicks working as a person's do.
-        builder = builder.wgpu().with_step_dt(0.05);
+        builder = builder.wgpu();
     }
     let mut h = builder.build_ui_state(|ui, app: &mut App| app.show(ui), app);
     h.run_steps(3);

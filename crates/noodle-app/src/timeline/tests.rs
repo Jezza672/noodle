@@ -1826,6 +1826,26 @@ fn the_lane_menu_makes_a_midi_clip_where_it_was_clicked() {
 }
 
 #[test]
+fn a_selected_range_offers_convert_to_sample_node_and_a_bare_lane_does_not() {
+    let (mut h, _) = rig();
+    let pos = Pos2::new(150.0 + 130.0, 22.0 + 64.0 + 30.0);
+    click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, pos);
+    assert!(h.query_by_label("Convert to sample node").is_none());
+    h.key_press(Key::Escape);
+    h.run();
+    h.state_mut().timeline.range = super::sections::Range::new(Tick(0), Tick(3840));
+    click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, pos);
+    h.get_by_label("Convert to sample node").click();
+    h.run();
+    // The mix is bounced in the background, as the request was made.
+    assert!(
+        h.state().session.render_progress().is_some(),
+        "{:?}",
+        h.state().session.message()
+    );
+}
+
+#[test]
 fn s_cuts_the_selected_clip_at_the_playhead_in_one_undo_step() {
     let (mut h, id) = rig();
     h.state_mut().playhead = Some(Tick(1_920));
