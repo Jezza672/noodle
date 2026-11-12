@@ -183,6 +183,36 @@ data that is openly licensed exists: [E-GMD](https://research.google/pubs/improv
 so training our own LarsNet-style model on permissive data is possible but is a
 project of its own.
 
+**Licence findings (#500, read 2026-11-12).** `huggingface.co`, `zenodo.org`,
+`arxiv.org` and `mvsep.com` were still unreachable from the cloud session, so
+what follows comes from the GitHub READMEs and the PyPI page, which are
+readable, and from search results. **No model was run on real drum tracks**
+(the weights are on Hugging Face, Google Drive and GitHub Releases, none of
+which the session can fetch); quality is from the papers and community
+reports, not our own ears. Two things in the table above are corrected: the
+LARS repository page states no code licence at all (only the weights'), and
+the MDX23C checkpoint's terms are worse than "unsettled".
+
+| Model | Weights licence (evidence) | Training data | Size | Opt-in download? |
+|---|---|---|---|---|
+| **LarsNet** ([polimi-ispl/larsnet](https://github.com/polimi-ispl/larsnet)) | **CC BY-NC 4.0**, stated by the authors on the README. Code licence not stated on the page (check for a LICENSE file before reusing any code; we would only run the weights through our own ONNX loader). | StemGMD, **CC BY 4.0** (Zenodo, per its record and the paper). Built from the Groove MIDI Dataset. | about 562 MB zip, 5 stems (kick, snare, toms, hi-hat, cymbals); PyTorch, so an ONNX export is ours to make and check | **Yes**, the clearest case: licence is explicit, non-commercial only, which Jeremy accepts for an opt-in download. Attribution (BY) goes in the download dialog. The weights are on Google Drive, so we would host an ONNX export ourselves (derived work, same CC BY-NC 4.0, attributed) or point at the author's link. Ask the authors before re-hosting. |
+| **drumsep** ([inagoy](https://github.com/inagoy/drumsep)) | **Not stated.** Repo is MIT; the README says nothing of the weights or the data. The "MIT" on the ONNX conversion is its uploader's claim, which cannot relicense someone else's weights. | Not described (a 2022 thesis, Hybrid Demucs fine-tune) | not stated; weights only through a Colab notebook and install scripts | **No**, until the author answers. An unlicensed weight file is all-rights-reserved by default. |
+| **MDX23C DrumSep** (aufr33 and jarredou) | **No licence from the authors.** The original GitHub release is gone; mirrors disagree (one tagged MIT by its uploader, an OpenVINO conversion CC BY-NC-SA 4.0). The [`mdxnet-infer`](https://pypi.org/project/mdxnet-infer/) page advises treating them as non-commercial only. | Not documented | not stated | **No.** Provenance is lost, and we could not name a licence in the download dialog. The 5-stem checkpoint is no longer available at all; only the 6-stem (kick, snare, toms, hi-hat, ride, crash) survives. |
+| **Timbrica** (Faridzar) | Could not be read (Hugging Face). Uploader's own notes only. | Claims synthetic data | not read | **Unverified.** Revisit only if the card is readable and states a licence. |
+
+The pick is LarsNet, from the licence and the parts alone. Its open training
+data (StemGMD, CC BY 4.0) also means a permissive retrain is possible later,
+which would lift the non-commercial limit: the data is the hard part and it
+is already free. **Still owed, with the network open:** run LarsNet on three or
+four real drum tracks (a dry kit, a loud rock kit with ringing cymbals, an
+electronic kit, a room-miked live take), listen for bleed and the cymbal
+smear, and read the paper's per-stem SI-SDR. Note LarsNet trains on
+StemGMD's synthetic kits (Groove MIDI Dataset played through sample libraries), so
+quality on real acoustic kits is its main risk. For runtime, it is a set of
+small per-stem U-Nets (not one large network) over a spectrogram, so an ONNX export through
+`noodle-stems`' `ort` path is plausible and offline per-clip use is not
+real-time sensitive; this is from the paper's description and is unchecked.
+
 **One-shot classification (what drum is this sample).**
 [DLDC](https://github.com/alecames/DLDC) (GPLv3, kick/snare/hat/tom/cymbal),
 a [wav2vec2 classifier](https://huggingface.co/yojul/wav2vec2-base-one-shot-hip-hop-drums-clf)
@@ -214,7 +244,7 @@ raise the quality of the hit list later; it does not help bin or label hits.
    separated one by default: separator output has artefacts a clean original
    does not. The user can choose to take the part's audio for a mixed hit
    when no clean one exists. Pick the model then, after checking licences,
-   against actual drum tracks; today the cleanest choice for quality is
+   against actual drum tracks; the pick from the licence review above is
    LarsNet, whose weights bar commercial use, so it can only be an opt-in
    download of the user's own choosing, never shipped.
 4. **A model-free step before version 3:** use the bins' medoids as fixed
