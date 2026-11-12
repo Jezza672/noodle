@@ -722,12 +722,17 @@ pub fn bin_hits(hits: &[Hit], merge: f32) -> Binning {
     // mixed hits that fit nothing.
     let mut bins: Vec<DrumBin> = Vec::new();
     let mut other: Vec<usize> = Vec::new();
-    for (b, &m) in medoids.iter().enumerate() {
+    for b in 0..medoids.len() {
         let mut members: Vec<usize> = (0..hits.len())
             .filter(|&i| membership[i] == Some(b))
             .collect();
-        if members.len() == 1 && (hits[m].too_quiet() || hits[m].truncated || mixed[m]) {
-            other.push(m);
+        // Identical hits can tie, leaving a bin empty or without its medoid.
+        let Some(&first) = members.first() else {
+            continue;
+        };
+        if members.len() == 1 && (hits[first].too_quiet() || hits[first].truncated || mixed[first])
+        {
+            other.push(first);
             continue;
         }
         let medoid = medoid_of(hits, &members);
