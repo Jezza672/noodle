@@ -1,7 +1,7 @@
 # Create drum rack from clip (design, proposed)
 
-Status: proposed, nothing built. Asked for by Jeremy; open questions are at the
-end. This builds on the Drum Rack of #457 (named `Drum Pad` groups, ADR 0009),
+Status: proposed, nothing built. Asked for by Jeremy; his answers to the first
+round of questions are folded in (see Decisions). This builds on the Drum Rack of #457 (named `Drum Pad` groups, ADR 0009),
 the onset detector and Sample Set work of #489 (#356), the Selector (#388) and
 the stems work (M10, ADR 0006).
 
@@ -88,31 +88,37 @@ The rack is a group of primitives with exposed controls and no new synth node.
   used key. A pad for an unlisted key is the same `Drum Pad` group, named by
   its GM name, with its `key` input set. Pads the user left empty are not
   added. The swing and choke wires of the template stay (the hats still choke).
-- **Samples in a pad.** Inside each pad, a **Sample Set** node feeds the
-  Sampler: one entry per member of the bin, all on the pad's key as root (so the
-  note is not repitched), each its own round-robin slot. Entries are
-  `hash:start:end` windows of the one source file (the form `Convert to sampler`
-  already uses), so **nothing is rendered or copied**. A bin dropped on two pads
-  gives two Sample Sets with the same entries (the entries are hashes and
-  numbers, so the duplication is cheap). Nothing links them afterwards; see the
-  questions.
+- **Bins are shared nodes.** Each bin that is used becomes one **Sample Set**
+  node at the rack's top level, named for the bin (`Kick`, `Snare 2`). Its
+  entries are the bin's members, one round-robin slot each, all on one nominal
+  root. They are `hash:start:end` windows of the one source file (the form
+  `Convert to sampler` already uses), so **nothing is rendered or copied**.
+  Editing a bin later (adding or dropping a hit, replacing the file) is editing
+  one node, whichever pads read it.
+- **Pads read a bin by wire.** A pad gets a `sample` input (a sample wire through
+  a group boundary already works) feeding its Sampler, which overrides the
+  Sampler's own sample, so dropping a file on the pad still works when nothing is
+  wired. A bin on two pads is one Sample Set wired to two pads (sample wires
+  fan out). The pad's Sampler has keytrack off, which the Sampler honours for
+  sets too (`semitones` is zero when keytrack is off), so the pad plays the
+  hit at its recorded pitch whatever key it sits on, and `tune` still works.
+
 - **Which copy plays** is a Sampler parameter, so it can be changed, automated
   or wired: a new `rr_mode` choice **Fixed** and an `rr_pick` parameter
   (1 to N, the slot, clamped), exposed on the pad as a `take` input. The same
   Sampler's existing **Cycle** and **Random / No repeat** modes then give a
-  humanised kit for free, from real hits of the same drum. This is a config-vs-
+  humanised kit for free, from real hits of the same drum. **Velocity layers**
+(soft and hard hits of one drum as layers of the Sample Set, which the set
+already supports) are a follow-up, if the bins make them easy to offer; version 1
+bins by sound, not level. This is a config-vs-
   parameter match: the choice changes no ports, so it is a parameter.
   The alternative is a **Selector** (kind samples, `which`) over N Sample nodes:
   no Sampler change, but a bin of 40 hats is 40 nodes in the pad, and the
   graph is what the user reads. Recommended: Fixed mode.
-- **The MIDI.** Offered as a checkbox, on by default: a MIDI clip on the new
-  track with a note for each hit, on its bin's key, at the hit's position, with
-  velocity from its level relative to the bin's loudest; the source clip is
-  muted (`AudioClip::muted`, as Split to stems does). The user then has the
-  groove as a pattern on a rack of its own sounds. This reuses audio to MIDI's
-  placement of notes on the tempo map; see questions.
-
-Not built here, and why: no live link between the rack and the source clip (re-
+Not built here, and why: **no MIDI**. Mapping every hit of the track to a note
+would mean every transient needs a pad, and the feature does not require it; a
+follow-up could offer the groove as a MIDI clip for the hits whose bin has a pad.
+No live link between the rack and the source clip (re-
 analysis is making another rack, as picking cuts again is converting again for
 Convert to sampler); no new node types.
 
@@ -228,7 +234,7 @@ raise the quality of the hit list later; it does not help bin or label hits.
 - **Labels:** each of the synthetic kit's drums gets its label; an odd sound is
   "Unknown".
 - **The command:** `session` test, one undo step, the pads, the keys, the Sample
-  Set entries and the MIDI notes, in the style of
+  Sets, their entries and the wires, in the style of
   `picked_cuts_become_a_sampler_group_of_primitives_…`.
 - **Sampler Fixed mode:** unit test in `sampler.rs`; added to
   `noodle-nodes/tests/realtime.rs`, since it is read on the audio thread (a table
@@ -241,20 +247,20 @@ raise the quality of the hit list later; it does not help bin or label hits.
 ## Build order (each a PR)
 
 1. `drum_bins.rs` with hits, features, bins, rank and labels, plus the tests.
-2. Sampler **Fixed** mode and `take` on the pad; golden renders are unaffected
+2. Sampler **Fixed** mode, and a `sample` input and `take` on the pad; golden renders are unaffected
    (no example uses it), so no `DSP_GENERATION` bump.
 3. `Edit::CreateDrumRack`, the command and the session test.
 4. The dialog, the clip menu entry and the route.
 
-## Open questions
+## Decisions (Jeremy, 2026-11-12)
 
-1. Should Create also make the MIDI clip and mute the source? (Recommended yes,
-   as a checkbox.)
-2. Is a rack per bin-per-pad (duplicated Sample Sets) acceptable, or should a
-   bin be one shared node that several pads read, edited once?
-3. Velocity: should soft and hard hits of one drum become velocity layers of a
-   pad (the Sample Set already has layers) instead of one bin?
-4. Input: drum-only tracks first, with full mixes going through Split to stems
-   first, or should the dialog offer to do that itself?
-5. Licences: is an optional download of non-commercial weights, never shipped,
-   acceptable for version 3, or only permissively licensed weights?
+1. **No MIDI clip at first.** Mapping every transient to a note is hard and the
+   feature does not need it. A follow-up.
+2. **A bin is a shared node**, wired to every pad that uses it.
+3. **Velocity layers** are welcome if easy, otherwise a follow-up.
+4. **Drum-only tracks.** A full mix goes through Split to stems first, by hand.
+5. **Optional non-commercial weights are acceptable** as an opt-in download,
+   never shipped, for the separation step.
+
+No open questions remain for version 1; the model and licence checks for
+version 3 are done when it is started.
