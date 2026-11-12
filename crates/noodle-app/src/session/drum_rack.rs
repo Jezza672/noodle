@@ -376,6 +376,8 @@ impl Session {
         );
         add.clone().apply(&mut scratch).map_err(|e| e.to_string())?;
         commands.push(add);
+        // The mixer grows before any copy is wired into it.
+        let after_rack = commands.len();
         let graph = scratch.graph();
 
         // The template's pads, with the key each answers to.
@@ -429,16 +431,19 @@ impl Session {
             };
             chosen.push((pad.key, pad_of));
         }
+        if mix_inputs > 8 {
+            commands.insert(
+                after_rack,
+                Command::SetConfig {
+                    node: mix,
+                    key: "inputs".into(),
+                    value: Some(Value::Int(mix_inputs as i64)),
+                },
+            );
+        }
         // Pads nobody asked for are not added.
         for pad in &spare {
             commands.push(Command::RemoveNode { id: pad.group });
-        }
-        if mix_inputs > 8 {
-            commands.push(Command::SetConfig {
-                node: mix,
-                key: "inputs".into(),
-                value: Some(Value::Int(mix_inputs as i64)),
-            });
         }
         // Each pad answers to its key and is named for it.
         for (key, pad) in &chosen {
@@ -746,7 +751,8 @@ mod tests {
         assert_eq!(slots, [4, 4]);
         for (_, set) in &sets {
             let e = entries(set);
-            assert!(e.iter().all(|e| e.reference.hash == e.reference.hash));
+            let hash = &session.drum_analysis().unwrap().hash;
+            assert!(e.iter().all(|e| &e.reference.hash == hash));
             let rrs: Vec<u8> = e.iter().map(|e| e.rr).collect();
             assert_eq!(rrs, [1, 2, 3, 4]);
         }
