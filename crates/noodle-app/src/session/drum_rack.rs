@@ -17,7 +17,10 @@
 use std::sync::Arc;
 
 use noodle_core::group::{GROUP_OUTPUT, PORT_NAME, port_key};
-use noodle_core::{ClipId, Command, Config, Endpoint, NodeId, Position, Project, Value};
+use noodle_core::{
+    Clip, ClipContent, ClipId, Command, Config, Endpoint, MidiClip, MidiNote, NodeId, Position,
+    Project, TICKS_PER_QUARTER, Tick, Value,
+};
 use noodle_engine::{Job, JobPanicked};
 use noodle_io::{DrumCancelled as Cancelled, Hit, HitCache, HitKey, analyse_hits};
 use noodle_nodes::{NOTE_SPLIT_ID, SAMPLE_KEY, SAMPLE_SET_ID, SampleRef, SetEntry};
@@ -101,8 +104,37 @@ pub fn pad_name(key: u8) -> String {
 pub struct PlannedBin {
     /// The Sample Set's name (`Kick`, `Snare 2`).
     pub name: String,
-    /// Indices into the analysis' hits, one round-robin slot each, in order.
+    /// Indices into the analysis' hits, in order: within a velocity layer each
+    /// is one round-robin slot.
     pub hits: Vec<usize>,
+    /// The velocity layer of each hit (from 1, the softest), parallel to
+    /// `hits`; empty when the bin is not layered. Each layer's round-robin slots
+    /// count from 1 in the order of `hits`.
+    pub layers: Vec<u8>,
+}
+
+impl PlannedBin {
+    /// The layer of the hit at position `at` of `hits`.
+    fn layer_of(&self, at: usize) -> u8 {
+        self.layers.get(at).copied().unwrap_or(1).max(1)
+    }
+
+    /// How many layers there are.
+    fn layer_count(&self) -> usize {
+        (0..self.hits.len())
+            .map(|i| usize::from(self.layer_of(i)))
+            .max()
+            .unwrap_or(1)
+    }
+
+    /// The most slots any layer has: what a pad's pick can reach.
+    fn slots(&self) -> usize {
+        let mut counts = std::collections::BTreeMap::new();
+        for i in 0..self.hits.len().min(MAX_SLOTS * 3) {
+            *counts.entry(self.layer_of(i)).or_insert(0usize) += 1;
+        }
+        counts.values().copied().max().unwrap_or(1)
+    }
 }
 
 /// A bin dropped on a key.
@@ -122,6 +154,31 @@ pub struct PadAssignment {
 pub struct DrumRackPlan {
     pub bins: Vec<PlannedBin>,
     pub pads: Vec<PadAssignment>,
+    /// Also add a MIDI clip beside the rack that plays the clip's groove (see
+    /// [`groove_notes`]).
+    pub groove: bool,
+}
+
+/// The velocity a hit plays at: its level against the loudest of the groove,
+/// on a gentle scale (each 12 dB down halves it), from 0.05 to 1.
+fn level_velocity(level_db: f32, loudest_db: f32) -> f32 {
+    10f32.powf((level_db - loudest_db) / 40.0).clamp(0.05, 1.0)
+}
+
+/// `velocity` moved into the band of velocities that play layer `index` (from
+/// 0, softest) of `layers`, which the Sampler splits evenly (see
+/// `SampleTables::layer`), so a note plays the layer its hit was put in.
+fn velocity_in_layer(velocity: f32, index: usize, layers: usize) -> f32 {
+    if layers <= 1 {
+        return velocity;
+    }
+    let band: Vec<u32> = (1..=127u32)
+        .filter(|midi| noodle_nodes::velocity_layer(*midi as f32 / 127.0, layers) == index)
+        .collect();
+    let (Some(&lo), Some(&hi)) = (band.first(), band.last()) else {
+        return velocity;
+    };
+    (velocity * 127.0).clamp(lo as f32, hi as f32) / 127.0
 }
 
 /// The hits found in a clip, held until the dialog closes.
@@ -365,19 +422,23 @@ impl Session {
         keys.sort_by_key(|p| p.key);
         let keys: Vec<_> = keys.into_iter().take(MAX_PADS).collect();
         let entries_of = |bin: &PlannedBin| -> Result<Vec<SetEntry>, String> {
-            bin.hits
-                .iter()
-                .take(MAX_SLOTS)
-                .enumerate()
-                .map(|(slot, &hit)| {
-                    Ok(SetEntry {
-                        reference: analysis.window(hit).ok_or("A hit of the bin is gone")?,
-                        root: Some(ROOT),
-                        layer: 1,
-                        rr: slot as u8 + 1,
-                    })
-                })
-                .collect()
+            let mut taken: std::collections::BTreeMap<u8, usize> = Default::default();
+            let mut entries = Vec::new();
+            for (at, &hit) in bin.hits.iter().enumerate() {
+                let layer = bin.layer_of(at);
+                let slot = taken.entry(layer).or_insert(0);
+                if *slot >= MAX_SLOTS {
+                    continue;
+                }
+                *slot += 1;
+                entries.push(SetEntry {
+                    reference: analysis.window(hit).ok_or("A hit of the bin is gone")?,
+                    root: Some(ROOT),
+                    layer,
+                    rr: *slot as u8,
+                });
+            }
+            Ok(entries)
         };
 
         let source = self.project.clip(clip).ok_or("That clip is gone")?;
@@ -533,7 +594,7 @@ impl Session {
             };
             node.parent = Some(rack);
             commands.push(Command::AddNode { id, node });
-            sets.insert(bin, (id, entries.len()));
+            sets.insert(bin, (id, planned.slots().min(MAX_SLOTS)));
         }
         for assignment in &keys {
             let (set, slots) = sets[&assignment.bin];
@@ -560,8 +621,114 @@ impl Session {
             Endpoint::new(rack, "out"),
             Endpoint::new(track_output, port_key(1)),
         ));
+        if plan.groove {
+            let notes = self.groove_notes(analysis, plan, &keys);
+            if notes.is_empty() {
+                return Err("No hit of the clip is on a pad, so there is no groove to add".into());
+            }
+            let map = self.project.tempo_map();
+            let warp = self.project.warp_of(clip).map(|(_, w)| w);
+            let rate = self
+                .samples()
+                .get(&analysis.hash)
+                .map_or(48_000, |s| s.sample_rate);
+            let end = crate::timeline::clips::clip_end(map, source, rate, warp);
+            let length = Tick(
+                (end.0 - source.start.0).max(
+                    notes
+                        .iter()
+                        .map(|n| n.start.0 + n.length.0)
+                        .max()
+                        .unwrap_or(0),
+                ),
+            );
+            let mut groove = MidiClip::new(length);
+            groove.notes = notes;
+            commands.push(Command::AddClip {
+                id: self.project.next_clip_id(),
+                clip: Clip {
+                    node: input,
+                    start: source.start,
+                    content: ClipContent::Midi(groove),
+                },
+            });
+        }
         let pads = chosen.len();
         Ok((Command::Batch(commands), pads))
+    }
+}
+
+/// How long a groove note is: a thirty-second note, the pads play one-shots.
+const GROOVE_NOTE: i64 = TICKS_PER_QUARTER / 8;
+
+impl Session {
+    /// The notes that play the clip's groove on the rack: one per hit that is
+    /// in a bin on a pad, at the hit's place on the timeline (through the
+    /// clip's warp), on that bin's pad (the lowest key when it is on several),
+    /// with a velocity from the hit's level against the loudest, moved into
+    /// the hit's velocity layer when the bin has layers. Hits of no bin, or of
+    /// a bin on no pad, get none.
+    fn groove_notes(
+        &self,
+        analysis: &DrumAnalysis,
+        plan: &DrumRackPlan,
+        keys: &[&PadAssignment],
+    ) -> Vec<MidiNote> {
+        let Some(source) = self.project.clip(analysis.clip) else {
+            return Vec::new();
+        };
+        let Some(rate) = self.samples().get(&analysis.hash).map(|s| s.sample_rate) else {
+            return Vec::new();
+        };
+        let map = self.project.tempo_map();
+        let warp = self.project.warp_of(analysis.clip).map(|(_, w)| w);
+        // Each bin's pad: keys are sorted, so the first is the lowest.
+        let mut pad_of: std::collections::BTreeMap<usize, u8> = Default::default();
+        for pad in keys {
+            pad_of.entry(pad.bin).or_insert(pad.key);
+        }
+        /// A hit, its pad's key, and its layer index and the bin's layer count.
+        type Placed = (usize, u8, Option<(usize, usize)>);
+        let mut placed: Vec<Placed> = Vec::new();
+        for (&bin, &key) in &pad_of {
+            let planned = &plan.bins[bin];
+            let layers = planned.layer_count();
+            for (at, &hit) in planned.hits.iter().enumerate() {
+                let layer = (layers > 1).then(|| (usize::from(planned.layer_of(at)) - 1, layers));
+                placed.push((hit, key, layer));
+            }
+        }
+        let loudest = placed
+            .iter()
+            .filter_map(|&(hit, _, _)| analysis.hits.get(hit))
+            .map(|h| h.level_db)
+            .fold(f32::MIN, f32::max);
+        let mut notes: Vec<MidiNote> = placed
+            .iter()
+            .filter_map(|&(hit, key, layer)| {
+                let found = analysis.hits.get(hit)?;
+                let tick = crate::timeline::clips::tick_of_frame(
+                    map,
+                    source,
+                    analysis.origin + found.onset,
+                    rate,
+                    warp,
+                )?;
+                let mut velocity = level_velocity(found.level_db, loudest);
+                if let Some((index, layers)) = layer {
+                    velocity = velocity_in_layer(velocity, index, layers);
+                }
+                let mut note = MidiNote::new(
+                    Tick((tick.0 - source.start.0).max(0)),
+                    Tick(GROOVE_NOTE),
+                    key,
+                );
+                note.velocity = velocity;
+                Some(note)
+            })
+            .collect();
+        notes.sort_by_key(|n| (n.start, n.key));
+        notes
     }
 }
 
@@ -731,6 +898,7 @@ mod tests {
             .map(|(i, b)| PlannedBin {
                 name: format!("Bin {}", i + 1),
                 hits: b.members.clone(),
+                layers: Vec::new(),
             })
             .collect();
         assert_eq!(bins.len(), 2, "a kick bin and a hat bin");
@@ -748,6 +916,7 @@ mod tests {
                 },
             ],
             bins,
+            groove: false,
         }
     }
 
@@ -907,12 +1076,14 @@ mod tests {
             bins: vec![PlannedBin {
                 name: "Kick".into(),
                 hits: vec![0],
+                layers: Vec::new(),
             }],
             pads: vec![PadAssignment {
                 key: 36,
                 bin: 0,
                 pick: 1,
             }],
+            groove: false,
         };
         session.edit([Edit::CreateDrumRack(clip, plan.clone())]);
         assert_eq!(session.message(), Some("Analyse the clip first"));
@@ -926,6 +1097,184 @@ mod tests {
         )]);
         assert_eq!(session.message(), Some("Drop a bin on a pad first"));
         assert!(of_type(&session, SAMPLE_SET_ID).is_empty());
+    }
+
+    fn midi_clips(session: &Session) -> Vec<(ClipId, Clip)> {
+        session
+            .project()
+            .clips()
+            .filter(|(_, c)| c.as_midi().is_some())
+            .map(|(id, c)| (id, c.clone()))
+            .collect()
+    }
+
+    #[test]
+    fn a_layered_bin_writes_a_layer_to_each_entry_and_counts_slots_per_layer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, clip) = rig(dir.path());
+        analysed(&mut session, clip);
+        let mut plan = plan_of(&session);
+        // The first bin: its four hits as a soft pair and a hard pair.
+        plan.bins[0].layers = vec![1, 1, 2, 2];
+        // A pick past a layer's slots is clamped by the Sampler; the plan's
+        // largest layer is two, so the pad's pick is at most two.
+        plan.pads[0].pick = 4;
+        session.edit([Edit::CreateDrumRack(clip, plan.clone())]);
+        let entries_of = |name: &str| {
+            let sets = of_type(&session, SAMPLE_SET_ID);
+            let (_, node) = sets
+                .iter()
+                .find(|(_, n)| n.config.get(PORT_NAME) == Some(&Value::Text(name.into())))
+                .expect("the set");
+            match node.config.get(SAMPLE_KEY) {
+                Some(Value::Text(t)) => noodle_nodes::parse_set(t),
+                _ => panic!("no entries"),
+            }
+        };
+        let layered: Vec<(u8, u8)> = entries_of("Bin 1")
+            .iter()
+            .map(|e| (e.layer, e.rr))
+            .collect();
+        assert_eq!(layered, [(1, 1), (1, 2), (2, 1), (2, 2)]);
+        let flat: Vec<(u8, u8)> = entries_of("Bin 2")
+            .iter()
+            .map(|e| (e.layer, e.rr))
+            .collect();
+        assert_eq!(flat, [(1, 1), (1, 2), (1, 3), (1, 4)]);
+        let pick = of_type(&session, SAMPLER_ID)
+            .iter()
+            .filter_map(|(_, n)| n.params.get("rr_pick").copied())
+            .fold(0.0f32, f32::max);
+        assert!(
+            pick <= 2.0,
+            "the pick is clamped to a layer's slots: {pick}"
+        );
+        // The sampler really plays the layers: its table has two for the key.
+        let tables = noodle_nodes::SetTables::build(&entries_of("Bin 1"));
+        assert_eq!(tables.layer_count(), 2);
+        assert_ne!(
+            tables.layer(ROOT, 0.1).unwrap().entries[0],
+            tables.layer(ROOT, 1.0).unwrap().entries[0]
+        );
+    }
+
+    #[test]
+    fn velocity_is_the_level_against_the_loudest_and_stays_in_its_layer() {
+        assert_eq!(level_velocity(-10.0, -10.0), 1.0);
+        assert!(
+            (level_velocity(-22.0, -10.0) - 0.5).abs() < 0.01,
+            "12 dB is half"
+        );
+        assert_eq!(level_velocity(-90.0, -10.0), 0.05, "never silent");
+        // The Sampler splits 1..=127 at 64 for two layers, and 1..=42, 43..=85, 86..=127 for three.
+        assert_eq!((velocity_in_layer(1.0, 0, 2) * 127.0).round(), 64.0);
+        assert_eq!((velocity_in_layer(0.05, 1, 2) * 127.0).round(), 65.0);
+        assert_eq!((velocity_in_layer(0.5, 1, 3) * 127.0).round(), 64.0);
+        assert_eq!(
+            velocity_in_layer(0.7, 0, 1),
+            0.7,
+            "one layer leaves it alone"
+        );
+        for layers in 2..=3usize {
+            for index in 0..layers {
+                for v in [0.05f32, 0.3, 0.6, 1.0] {
+                    let midi = (velocity_in_layer(v, index, layers) * 127.0).round() as usize;
+                    assert_eq!(((midi - 1) * layers / 127).min(layers - 1), index);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn the_groove_is_a_midi_clip_of_the_hits_on_pads_in_the_same_undo_step() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, clip) = rig(dir.path());
+        analysed(&mut session, clip);
+        let mut plan = plan_of(&session);
+        plan.bins[0].layers = vec![1, 1, 2, 2];
+        // Only the kicks (bin 0) are on a pad: hats get no note.
+        plan.pads.truncate(1);
+        let hits_of_kicks = plan.bins[0].hits.clone();
+        plan.groove = true;
+        let before = midi_clips(&session).len();
+        session.edit([Edit::CreateDrumRack(clip, plan.clone())]);
+        let clips = midi_clips(&session);
+        assert_eq!(clips.len(), before + 1, "{:?}", session.message());
+        let (_, groove) = &clips[0];
+        let notes = &groove.as_midi().unwrap().notes;
+        assert_eq!(
+            notes.len(),
+            hits_of_kicks.len(),
+            "one note per hit on a pad"
+        );
+        assert!(notes.iter().all(|n| n.key == 36));
+        // At the hit's time: 120 bpm is two beats a second, and 960 ticks a beat.
+        let analysis = session.drum_analysis().unwrap();
+        let mut want: Vec<f64> = hits_of_kicks
+            .iter()
+            .map(|&h| analysis.hits[h].onset as f64 / f64::from(RATE) * 2.0 * 960.0)
+            .collect();
+        want.sort_by(f64::total_cmp);
+        let mut at: Vec<i64> = notes.iter().map(|n| n.start.0).collect();
+        at.sort_unstable();
+        for (got, want) in at.iter().zip(&want) {
+            assert!((*got as f64 - want).abs() < 30.0, "{got} vs {want}");
+        }
+        // The kicks are level, so they play as loud as the layer allows: the
+        // soft pair is in the soft layer's velocities and the hard pair is not.
+        let mut by_time: Vec<&MidiNote> = notes.iter().collect();
+        by_time.sort_by_key(|n| n.start);
+        let soft: Vec<f32> = plan.bins[0]
+            .hits
+            .iter()
+            .zip(&plan.bins[0].layers)
+            .filter(|(_, l)| **l == 1)
+            .map(|(h, _)| analysis.hits[*h].onset)
+            .map(|onset| {
+                let tick = onset as f64 / f64::from(RATE) * 2.0 * 960.0;
+                by_time
+                    .iter()
+                    .min_by(|a, b| {
+                        (a.start.0 as f64 - tick)
+                            .abs()
+                            .total_cmp(&(b.start.0 as f64 - tick).abs())
+                    })
+                    .unwrap()
+                    .velocity
+            })
+            .collect();
+        assert!(soft.iter().all(|&v| v <= 64.0 / 127.0 + 1e-6), "{soft:?}");
+        // One undo takes the rack and the groove away together.
+        session.undo();
+        assert_eq!(midi_clips(&session).len(), before);
+        assert!(of_type(&session, SAMPLE_SET_ID).is_empty());
+    }
+
+    #[test]
+    fn a_groove_with_no_hit_on_a_pad_is_refused_and_off_makes_no_clip() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, clip) = rig(dir.path());
+        analysed(&mut session, clip);
+        let plan = plan_of(&session);
+        let before = midi_clips(&session).len();
+        session.edit([Edit::CreateDrumRack(clip, plan.clone())]);
+        assert_eq!(midi_clips(&session).len(), before, "off by default");
+        // A bin that has no hits cannot be played, so nothing is on a pad.
+        let empty = DrumRackPlan {
+            bins: vec![PlannedBin {
+                name: "None".into(),
+                hits: vec![99],
+                layers: Vec::new(),
+            }],
+            pads: vec![PadAssignment {
+                key: 36,
+                bin: 0,
+                pick: 1,
+            }],
+            groove: true,
+        };
+        session.edit([Edit::CreateDrumRack(clip, empty)]);
+        assert_eq!(midi_clips(&session).len(), before);
     }
 
     #[test]

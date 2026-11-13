@@ -423,10 +423,16 @@ impl SetTables {
             .roots
             .get(usize::from(root))
             .filter(|_| root != NO_ROOT)?;
-        let n = zone.layers.len();
-        let midi = (velocity.clamp(0.0, 1.0) * 127.0).round().clamp(1.0, 127.0) as usize;
-        zone.layers.get(((midi - 1) * n / 127).min(n - 1))
+        zone.layers.get(velocity_layer(velocity, zone.layers.len()))
     }
+}
+
+/// The layer (from 0, softest) that `velocity` (0 to 1) plays among `layers`,
+/// which split MIDI velocities 1 to 127 evenly. The one place that rule lives.
+pub fn velocity_layer(velocity: f32, layers: usize) -> usize {
+    let n = layers.max(1);
+    let midi = (velocity.clamp(0.0, 1.0) * 127.0).round().clamp(1.0, 127.0) as usize;
+    ((midi - 1) * n / 127).min(n - 1)
 }
 
 /// Holds a list of recordings, each with its key, velocity layer and
