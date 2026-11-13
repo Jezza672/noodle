@@ -10,6 +10,21 @@ items below that make Noodle usable in place of another DAW, checks that need a
 person and hardware, and a few
 deliberately deferred items.
 
+## Sample packs
+
+**What it is.** A browsable, downloadable library of sounds, with sources the user adds (ADR 0012). Samples are stored by content hash as FLAC, one immutable object each. Pack definitions live in git and publish from main to R2. A source is a URL plus optional credentials, or a folder on disk. Chunks, in order:
+
+1. **Design** (this ADR, the roadmap and the glossary).
+2. **`noodle-download`:** the shared downloader (consent, streaming, SHA-256, content-keyed cache), with the stem separator moved onto it.
+3. **`noodle-packs`:** pack definitions, manifests, licence and credit fields, validation.
+4. **`noodle-publish`:** build the static site, `noodle-cli packs build`, and the CI workflow that publishes from main to R2. The first real publish needs R2 credentials as repo secrets.
+5. **Sounds panel:** the content browser, audition, drag to a Sampler or pad, drag to the timeline (copied into the project with its credit), search and licence filters.
+6. **Sources:** the settings page (URL, credentials, remove, storage use, Clean up), self-hosted sources, and folders added in place from the browser.
+7. **Make shareable pack:** the wizard and its usability stories and routes (find a sample, add a source, make a pack).
+8. **Clips use the hash store**, so a dragged clip needs no copy.
+
+Later: Nodes, Groups and Presets as tabs of the same browser.
+
 ## Playback cache
 
 **What it is.** Replaying a Pass with nothing changed does no DSP: playback streams cached audio and mixes it, but does not recompute it. Editing one part of the graph re-renders only that part. Every cacheable cluster becomes an automatic target. An entry is the audio of one cluster for one start, rendered from a fresh state at that start (ADR 0010). The existing per-user disk store, `CachedPlayer`, replacements and freeze chain carry it; the new work is the partition, the tier analysis, start-scoped keys, growing entries and the policy.
@@ -122,6 +137,13 @@ deliberately deferred items.
   only if the evaluation shows a clear gain on most songs and clips. Not started.
   Out of scope: streaming separation, models other than HT-Demucs, note-level
   warping.
+- **Bring-your-own separation model:** let users load a model file of their own
+  for the drum rack. Needs a stable, fairly universal interface definition (parts,
+  STFT front end, chunking), so it waits until the three built-in models show what
+  that has to cover. The MDX23C DrumSep is not supported (no licence, gone upstream).
+- **Model controls for Split to stems:** the same enable/disable, download and
+  storage controls in the Models settings tab, and a model choice in the stems
+  dialog, as the drum rack gets. Not part of the drum rack batch.
 - **M11 follow-ups:** more spectral nodes (pitch shift and time stretch on
   frames, spectral compressor, convolution reverb from an impulse response,
   noise-profile denoiser) and a choice of frame size (a config on Analyze that

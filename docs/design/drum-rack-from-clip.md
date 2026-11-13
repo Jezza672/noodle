@@ -312,8 +312,43 @@ which needs the licence checks first).
 5. **Optional non-commercial weights are acceptable** as an opt-in download,
    never shipped, for the separation step.
 
+6. **Three models, in this order:** LarsNet, Timbrica, drumsep (the UI order
+   for now; revisit later). The MDX23C DrumSep is **not supported**: it is no
+   longer available and has no licence.
+7. **First-use popup** offering the downloads, **one toggle per model**.
+8. **Settings, Models tab:** each model can be enabled or disabled, has a
+   download (and remove) button, and shows where it is stored, its size, licence
+   and source, and the non-commercial warning where it applies.
+9. **The drum rack dialog has a model drop-down** listing only the enabled
+   (and downloaded) models.
+10. **Not now:** letting users supply their own model (needs a stable, fairly
+    universal interface definition) and the same model controls for Split to
+    stems. Both are on `ROADMAP.md`.
+
+## Separation models as built into the app (version 3 plan)
+
+- **A model manifest** per model: id, name, parts (the named outputs and their
+  order), licence and whether it is non-commercial, source URL, SHA-256, size,
+  sample rate and chunking (segment length, STFT size and hop). The separator
+  trait is generalised from `Separator` to N named parts; the analyser maps part
+  names onto kick, snare, toms, hi-hat and cymbals, and a model that lacks a part
+  (drumsep has no hi-hat, Timbrica's hat and cymbals are only a remainder) says
+  so in the manifest.
+- **Downloads** use the shared download crate (#509: consent, SHA-256, content
+  cache). Nothing is bundled in the repository or the release; each download
+  shows the licence and credits the authors.
+- **Enabled state** is app settings, not project data. The first-use popup shows
+  until each model has been answered once; the Models tab changes it later.
+- **Open: where the ONNX files come from.** drumsep has an ONNX conversion
+  (MIT) and Timbrica ships ONNX (CC BY-NC-SA); **LarsNet ships only as a
+  PyTorch zip on Google Drive**, which the app cannot run. So LarsNet needs our
+  own ONNX conversion, hosted by us as a separate download (never in the repo or
+  binary), labelled CC BY-NC 4.0 with the authors credited. This does not fit
+  "the app only downloads from the authors' links" and needs Jeremy's yes.
+
 No open questions remain for version 1; the model and licence checks for
-version 3 are done when it is started.
+version 3 are done (#500), apart from the listening test on real kits and the
+LarsNet hosting question above.
 
 ## Step C as built
 
