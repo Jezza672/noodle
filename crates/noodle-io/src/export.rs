@@ -14,6 +14,8 @@ use flacenc::config::Encoder;
 use flacenc::error::Verify;
 use flacenc::source::{Context, Fill, FrameBuf};
 
+use crate::wav::partial_path;
+
 /// What an exported file says about itself: written into the file (WAV
 /// `LIST/INFO`, FLAC Vorbis comments) and into a CUE sheet.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -373,9 +375,7 @@ impl ExportWriter {
                 "FLAC holds at most {FLAC_MAX_CHANNELS} channels, not {channels}; use WAV"
             )));
         }
-        let mut partial = path.as_os_str().to_owned();
-        partial.push(".partial");
-        let partial = PathBuf::from(partial);
+        let partial = partial_path(path);
         let inner = match format {
             ExportFormat::WavFloat | ExportFormat::Wav24 | ExportFormat::Wav16 => {
                 let spec = hound::WavSpec {

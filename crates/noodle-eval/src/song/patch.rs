@@ -114,12 +114,12 @@ impl<'a> Patch<'a> {
 
     /// A group input named `name`; wire from the returned port. The inputs
     /// of a group are ports of one group input node.
-    pub fn input(&mut self, name: &str, _row: f32) -> Port {
+    pub fn input(&mut self, name: &str) -> Port {
         self.boundary(Side::Input, name)
     }
 
     /// A group output named `name`; wire into the returned port.
-    pub fn output(&mut self, name: &str, _column: f32, _row: f32) -> Port {
+    pub fn output(&mut self, name: &str) -> Port {
         self.boundary(Side::Output, name)
     }
 
@@ -142,6 +142,12 @@ impl<'a> Patch<'a> {
         let index = parse_port_key(&key).expect("a port key") as usize;
         (node, PORT_KEYS[index])
     }
+}
+
+/// A key made at run time, leaked because port and parameter keys are
+/// `&'static str`. The songs build a handful.
+pub fn static_key(key: String) -> &'static str {
+    Box::leak(key.into_boxed_str())
 }
 
 /// Port keys on a boundary node, so a [`Port`] can name them.

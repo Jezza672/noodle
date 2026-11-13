@@ -4,6 +4,8 @@
 
 use std::path::PathBuf;
 
+use noodle_engine::testing::Harness;
+use noodle_engine::{Event, EventKind, NoteId};
 use noodle_plugins::{Catalog, PluginNodeType, ScanCommand, scan_file};
 
 /// The test plugin built from `examples/test_plugin.rs`. `cargo test` builds
@@ -122,5 +124,37 @@ pub fn process_calls(library: &std::path::Path) -> u64 {
             .get(b"noodle_test_process_calls")
             .expect("the counter");
         calls()
+    }
+}
+
+pub fn note_on(time: u32, id: u32, key: u8) -> Event {
+    Event {
+        time,
+        kind: EventKind::NoteOn {
+            note: NoteId(id),
+            channel: 0,
+            key,
+            velocity: 1.0,
+        },
+    }
+}
+
+pub fn note_off(time: u32, id: u32) -> Event {
+    Event {
+        time,
+        kind: EventKind::NoteOff {
+            note: NoteId(id),
+            velocity: 0.0,
+        },
+    }
+}
+
+/// Fills every channel of input port 0 with `value(frame)`.
+pub fn fill_input(h: &mut Harness, frames: usize, value: impl Fn(usize) -> f32) {
+    let mut input = h.input(0, frames);
+    for channel in 0..input.shape().channels {
+        for (i, s) in input.lane_mut(0, channel).iter_mut().enumerate() {
+            *s = value(i);
+        }
     }
 }

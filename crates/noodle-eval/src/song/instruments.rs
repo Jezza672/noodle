@@ -53,12 +53,8 @@ fn playable(p: &mut Patch, name: &str, mut tone: Tone, trim: f32) -> NodeId {
     let poly = tone.voices > 1;
     let voices = tone.voices;
     let group = p.enter(name, 0.0, 0.0);
-    let notes = p.input("notes", 0.0);
-    let controls: Vec<Port> = CONTROLS
-        .iter()
-        .enumerate()
-        .map(|(i, name)| p.input(name, 1.0 + i as f32))
-        .collect();
+    let notes = p.input("notes");
+    let controls: Vec<Port> = CONTROLS.iter().map(|name| p.input(name)).collect();
     let source = if poly {
         p.add(
             spec(VOICES_ID).config("voices", Value::Int(i64::from(voices))),
@@ -82,7 +78,7 @@ fn playable(p: &mut Patch, name: &str, mut tone: Tone, trim: f32) -> NodeId {
     for (name, port) in CONTROLS.iter().zip(controls) {
         p.connect(port, (synth, name));
     }
-    let out = p.output("out", 6.0, 0.0);
+    let out = p.output("out");
     if poly {
         p.connect((synth, "active"), (source, "busy"));
         let sum = p.add(spec(VOICE_MIX_ID), 5.0, 0.0);
@@ -261,12 +257,12 @@ fn warm_pad(cutoff: f32, attack: f32, release: f32) -> Tone {
 /// `gain` (decibels) and `cutoff` (hertz); the output is `out`.
 fn sampled(p: &mut Patch, name: &str, set: &str, release: f32, cutoff: f32, gain: f32) -> NodeId {
     let group = p.enter(name, 0.0, 0.0);
-    let notes = p.input("notes", 0.0);
-    let tune = p.input("tune", 1.0);
-    let bend_range = p.input("bend range", 2.0);
-    let fade = p.input("release", 3.0);
-    let level = p.input("gain", 4.0);
-    let tone = p.input("cutoff", 5.0);
+    let notes = p.input("notes");
+    let tune = p.input("tune");
+    let bend_range = p.input("bend range");
+    let fade = p.input("release");
+    let level = p.input("gain");
+    let tone = p.input("cutoff");
     let set = p.add(
         spec("noodle.instrument.sample_set").config("sample", Value::Text(set.into())),
         1.0,
@@ -290,7 +286,7 @@ fn sampled(p: &mut Patch, name: &str, set: &str, release: f32, cutoff: f32, gain
     let filter = p.add(spec("noodle.filter.svf").param("cutoff", cutoff), 3.0, 0.0);
     p.connect((sampler, "out"), (filter, "in"));
     p.connect(tone, (filter, "cutoff"));
-    let out = p.output("out", 4.0, 0.0);
+    let out = p.output("out");
     p.connect((filter, "low"), out);
     p.leave(group);
     group
