@@ -137,6 +137,13 @@ Later: Nodes, Groups and Presets as tabs of the same browser.
   only if the evaluation shows a clear gain on most songs and clips. Not started.
   Out of scope: streaming separation, models other than HT-Demucs, note-level
   warping.
+- **Bring-your-own separation model:** let users load a model file of their own
+  for the drum rack. Needs a stable, fairly universal interface definition (parts,
+  STFT front end, chunking), so it waits until the three built-in models show what
+  that has to cover. The MDX23C DrumSep is not supported (no licence, gone upstream).
+- **Model controls for Split to stems:** the same enable/disable, download and
+  storage controls in the Models settings tab, and a model choice in the stems
+  dialog, as the drum rack gets. Not part of the drum rack batch.
 - **M11 follow-ups:** more spectral nodes (pitch shift and time stretch on
   frames, spectral compressor, convolution reverb from an impulse response,
   noise-profile denoiser) and a choice of frame size (a config on Analyze that
