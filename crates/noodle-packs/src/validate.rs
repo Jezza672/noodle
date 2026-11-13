@@ -1,5 +1,5 @@
 use std::collections::HashMap;
-use std::path::{Component, Path};
+use std::path::Path;
 
 use crate::{
     FORMAT_VERSION, Licence, PackDef, Problem, ProblemKind, SPDX_IDS, is_hash, is_pack_id,
@@ -56,9 +56,12 @@ pub fn validate(pack: &PackDef) -> Vec<Problem> {
             push(Some(i), ProblemKind::MissingCredit);
         }
         if let Some(file) = &s.file {
-            let p = Path::new(file);
-            let safe =
-                !file.is_empty() && p.components().all(|c| matches!(c, Component::Normal(_)));
+            // Judged on the string, not the host's `Path`, because the format
+            // is cross-platform: `/` is the only separator, and `\` or `:`
+            // could climb out of the directory on Windows.
+            let safe = file
+                .split('/')
+                .all(|seg| !matches!(seg, "" | "." | "..") && !seg.contains(['\\', ':']));
             if !safe {
                 push(Some(i), ProblemKind::UnsafePath { file: file.clone() });
             }

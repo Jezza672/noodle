@@ -276,7 +276,17 @@ fn rule_files_exist_when_given_a_directory() {
 #[test]
 fn rule_files_stay_inside_the_pack() {
     let dir = tempfile::tempdir().unwrap();
-    for bad in ["../kick.flac", "/etc/passwd", "", "a/../b.flac"] {
+    for bad in [
+        "../kick.flac",
+        "/etc/passwd",
+        "",
+        "a/../b.flac",
+        "..\\x.flac",
+        "C:\\x.flac",
+        "C:x.flac",
+        "a//b.flac",
+        "./a.flac",
+    ] {
         let mut p = pack();
         p.samples[0].file = Some(bad.into());
         let expected = [Problem {
