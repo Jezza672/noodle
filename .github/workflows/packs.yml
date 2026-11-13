@@ -62,6 +62,23 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install ALSA
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      # Objects are immutable: the build leaves any object already in
+      # site/objects alone and takes its size from that file. So start from
+      # what the bucket serves, and an object is never re-encoded, replaced or
+      # given a manifest size that differs from the served bytes.
+      - name: Fetch the live objects
+        if: env.HAS_R2 == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          mkdir -p site/objects
+          aws s3 sync "s3://$BUCKET/objects" site/objects --endpoint-url "$ENDPOINT"
       - name: Build the site
         id: build
         run: |
@@ -85,8 +102,10 @@ jobs:
           ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
           BUCKET: ${{ secrets.R2_BUCKET }}
         run: |
-          # Objects first: they are immutable and never deleted, so an object
-          # that is already there (same name, same size) is skipped. Then the
+          # Objects first: they are immutable and never deleted. Every object
+          # already in the bucket was downloaded above and left as it was, so
+          # `sync --size-only` uploads only names the bucket does not have.
+          # Then the
           # manifests, and `index.json` last, so a reader never sees a pack
           # whose objects are not up yet.
           aws s3 sync site/objects "s3://$BUCKET/objects" --endpoint-url "$ENDPOINT" \

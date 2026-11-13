@@ -73,5 +73,8 @@ catches a flipped byte and a missing object.
   `R2_BUCKET`. The upload step is skipped unless all four are set, so the
   workflow publishes nothing until they are added. The key needs write access to
   that one bucket and nothing else.
-- **Not done:** the build re-encodes every object on each publish, which is fine
-  while packs are small; later it can fetch the live `objects/` listing first.
+- **Objects are never replaced.** The job first syncs the bucket's `objects/` down
+  into `site/objects`, so `build` skips them and takes `bytes` from the served
+  file; a new encoder version cannot change the bytes behind an existing name.
+  The cost is downloading every object on each publish (R2 has no egress
+  charge); when that gets slow, fetch only the names the manifests list.
