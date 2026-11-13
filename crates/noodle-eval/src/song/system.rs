@@ -9,7 +9,7 @@
 //! as the values of every node inside.
 
 use super::kit::{self, Drum, Env, Filter, Instrument, Osc, Rack, Slot, Tone, Wave, env};
-use super::patch::{Patch, spec};
+use super::patch::{Patch, spec, static_key};
 use noodle_core::library::{GroupPreset, GroupTemplate, Item};
 use noodle_core::{Command, History, NodeId, Project, Value};
 use noodle_engine::Registry;
@@ -425,9 +425,9 @@ pub(super) fn effect_family(
 /// (semitones); its outputs are `notes` and `gate`.
 fn step_sequencer(p: &mut Patch, division: f32, length: f32, transpose: f32) -> NodeId {
     let group = p.enter("Step Sequencer", 0.0, 0.0);
-    let rate = p.input("rate", 0.0);
-    let steps = p.input("length", 1.0);
-    let shift = p.input("transpose", 2.0);
+    let rate = p.input("rate");
+    let steps = p.input("length");
+    let shift = p.input("transpose");
     let clock = p.add(
         spec("noodle.generator.clock").param("rate", division),
         1.0,
@@ -445,9 +445,9 @@ fn step_sequencer(p: &mut Patch, division: f32, length: f32, transpose: f32) -> 
     p.connect((clock, "out"), (player, "advance"));
     p.connect(steps, (player, "length"));
     p.connect(shift, (player, "transpose"));
-    let notes = p.output("notes", 3.0, 0.0);
+    let notes = p.output("notes");
     p.connect((player, "notes"), notes);
-    let gate = p.output("gate", 3.0, 1.0);
+    let gate = p.output("gate");
     p.connect((player, "gate"), gate);
     p.leave(group);
     group
@@ -459,9 +459,9 @@ fn step_sequencer(p: &mut Patch, division: f32, length: f32, transpose: f32) -> 
 /// is `out`.
 fn step_gate(p: &mut Patch, step: f32, depth: f32) -> NodeId {
     let group = p.enter("Step Gate", 0.0, 0.0);
-    let audio = p.input("in", 0.0);
-    let division = p.input("step", 1.0);
-    let amount = p.input("depth", 2.0);
+    let audio = p.input("in");
+    let division = p.input("step");
+    let amount = p.input("depth");
     let player = p.add(
         spec("noodle.events.pattern")
             .param("mode", 0.0)
@@ -485,7 +485,7 @@ fn step_gate(p: &mut Patch, step: f32, depth: f32) -> NodeId {
     let vca = p.add(spec("noodle.util.vca"), 3.0, 0.0);
     p.connect(audio, (vca, "in"));
     p.connect((level, "out"), (vca, "level"));
-    let out = p.output("out", 4.0, 0.0);
+    let out = p.output("out");
     p.connect((vca, "out"), out);
     p.leave(group);
     group
@@ -498,9 +498,9 @@ fn step_gate(p: &mut Patch, step: f32, depth: f32) -> NodeId {
 /// `notes` and `gate`.
 fn pattern_pads(p: &mut Patch, play: f32, rate: f32) -> NodeId {
     let group = p.enter("Pattern Pads", 0.0, 0.0);
-    let trigger = p.input("trigger", 0.0);
-    let slot = p.input("slot", 1.0);
-    let shift = p.input("transpose", 2.0);
+    let trigger = p.input("trigger");
+    let slot = p.input("slot");
+    let shift = p.input("transpose");
     let player = p.add(
         spec("noodle.events.pattern")
             .param("mode", 0.0)
@@ -513,9 +513,9 @@ fn pattern_pads(p: &mut Patch, play: f32, rate: f32) -> NodeId {
     p.connect(trigger, (player, "trigger"));
     p.connect(slot, (player, "slot"));
     p.connect(shift, (player, "transpose"));
-    let notes = p.output("notes", 2.0, 0.0);
+    let notes = p.output("notes");
     p.connect((player, "notes"), notes);
-    let gate = p.output("gate", 2.0, 1.0);
+    let gate = p.output("gate");
     p.connect((player, "gate"), gate);
     p.leave(group);
     group
@@ -527,10 +527,10 @@ fn pattern_pads(p: &mut Patch, play: f32, rate: f32) -> NodeId {
 /// (decibels); its output is `out`.
 fn tempo_echo(p: &mut Patch, division: f32, feedback: f32, wet: f32) -> NodeId {
     let group = p.enter("Tempo Echo", 0.0, 0.0);
-    let audio = p.input("in", 0.0);
-    let choice = p.input("division", 1.0);
-    let repeats = p.input("feedback", 2.0);
-    let level = p.input("wet", 3.0);
+    let audio = p.input("in");
+    let choice = p.input("division");
+    let repeats = p.input("feedback");
+    let level = p.input("wet");
     let tempo = p.add(
         spec("noodle.mod.tempo").param("division", division),
         1.0,
@@ -578,7 +578,7 @@ fn tempo_echo(p: &mut Patch, division: f32, feedback: f32, wet: f32) -> NodeId {
     p.connect(audio, (blend, "in1"));
     p.connect((delay, "out"), (blend, "in2"));
     p.connect(level, (blend, "gain2"));
-    let out = p.output("out", 5.0, 0.0);
+    let out = p.output("out");
     p.connect((blend, "out"), out);
     p.leave(group);
     group
@@ -590,10 +590,10 @@ fn tempo_echo(p: &mut Patch, division: f32, feedback: f32, wet: f32) -> NodeId {
 /// `out`.
 fn tempo_tremolo(p: &mut Patch, division: f32, depth: f32, shape: f32) -> NodeId {
     let group = p.enter("Tempo Tremolo", 0.0, 0.0);
-    let audio = p.input("in", 0.0);
-    let choice = p.input("division", 1.0);
-    let amount = p.input("depth", 2.0);
-    let wave = p.input("shape", 3.0);
+    let audio = p.input("in");
+    let choice = p.input("division");
+    let amount = p.input("depth");
+    let wave = p.input("shape");
     let tempo = p.add(
         spec("noodle.mod.tempo").param("division", division),
         1.0,
@@ -631,7 +631,7 @@ fn tempo_tremolo(p: &mut Patch, division: f32, depth: f32, shape: f32) -> NodeId
     let vca = p.add(spec("noodle.util.vca"), 4.0, 0.0);
     p.connect(audio, (vca, "in"));
     p.connect((gain, "out"), (vca, "level"));
-    let out = p.output("out", 5.0, 0.0);
+    let out = p.output("out");
     p.connect((vca, "out"), out);
     p.leave(group);
     group
@@ -644,12 +644,12 @@ fn tempo_tremolo(p: &mut Patch, division: f32, depth: f32, shape: f32) -> NodeId
 /// (seconds), `gain` (dB) and `cutoff` (hertz); its output is `out`.
 fn multisample_instrument(p: &mut Patch, release: f32, bend: f32) -> NodeId {
     let group = p.enter("Multisample Instrument", 0.0, 0.0);
-    let notes = p.input("notes", 0.0);
-    let tune = p.input("tune", 1.0);
-    let bend_range = p.input("bend range", 2.0);
-    let fade = p.input("release", 3.0);
-    let level = p.input("gain", 4.0);
-    let cutoff = p.input("cutoff", 5.0);
+    let notes = p.input("notes");
+    let tune = p.input("tune");
+    let bend_range = p.input("bend range");
+    let fade = p.input("release");
+    let level = p.input("gain");
+    let cutoff = p.input("cutoff");
     let set = p.add(spec("noodle.instrument.sample_set"), 1.0, 2.0);
     let sampler = p.add(
         spec("noodle.instrument.sampler")
@@ -672,7 +672,7 @@ fn multisample_instrument(p: &mut Patch, release: f32, bend: f32) -> NodeId {
     );
     p.connect((sampler, "out"), (filter, "in"));
     p.connect(cutoff, (filter, "cutoff"));
-    let out = p.output("out", 4.0, 0.0);
+    let out = p.output("out");
     p.connect((filter, "low"), out);
     p.leave(group);
     group
@@ -686,13 +686,13 @@ fn multisample_instrument(p: &mut Patch, release: f32, bend: f32) -> NodeId {
 /// The loops are loaded after adding it.
 fn loop_pads(p: &mut Patch, grid: f32, mode: f32) -> NodeId {
     let group = p.enter("Loop Pads", 0.0, 0.0);
-    let notes = p.input("notes", 0.0);
+    let notes = p.input("notes");
     let mut split = spec("noodle.event.note_split").config("outputs", Value::Int(8));
     for n in 1..=8u32 {
         let key = 35.0 + n as f32;
         split = split
-            .param(Box::leak(format!("low{n}").into_boxed_str()), key)
-            .param(Box::leak(format!("high{n}").into_boxed_str()), key);
+            .param(static_key(format!("low{n}")), key)
+            .param(static_key(format!("high{n}")), key);
     }
     let split = p.add(split, 1.0, 0.0);
     p.connect(notes, (split, "in"));
@@ -701,14 +701,14 @@ fn loop_pads(p: &mut Patch, grid: f32, mode: f32) -> NodeId {
         6.0,
         0.0,
     );
-    let out = p.output("out", 7.0, 0.0);
+    let out = p.output("out");
     p.connect((mix, "out"), out);
     for n in 1..=8u32 {
         let row = n as f32 - 1.0;
-        let level = p.input(&format!("Pad {n} level"), 3.0 + row);
-        let looping = p.input(&format!("Pad {n} loop"), 3.0 + row);
-        let grid_in = p.input(&format!("Pad {n} grid"), 3.0 + row);
-        let mode_in = p.input(&format!("Pad {n} mode"), 3.0 + row);
+        let level = p.input(&format!("Pad {n} level"));
+        let looping = p.input(&format!("Pad {n} loop"));
+        let grid_in = p.input(&format!("Pad {n} grid"));
+        let mode_in = p.input(&format!("Pad {n} mode"));
         let quantise = p.add(
             spec("noodle.event.launch_quantise")
                 .param("grid", grid)
@@ -725,8 +725,8 @@ fn loop_pads(p: &mut Patch, grid: f32, mode: f32) -> NodeId {
             4.0,
             row,
         );
-        let out_key: &'static str = Box::leak(format!("out{n}").into_boxed_str());
-        let in_key: &'static str = Box::leak(format!("in{n}").into_boxed_str());
+        let out_key = static_key(format!("out{n}"));
+        let in_key = static_key(format!("in{n}"));
         p.connect((split, out_key), (quantise, "in"));
         p.connect(grid_in, (quantise, "grid"));
         p.connect(mode_in, (quantise, "mode"));

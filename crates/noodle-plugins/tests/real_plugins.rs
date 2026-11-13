@@ -107,18 +107,6 @@ fn find<'a>(catalog: &'a Catalog, id: &str) -> Option<&'a PluginNodeType> {
     catalog.iter().find(|t| t.descriptor().id == id)
 }
 
-fn note_on(time: u32, id: u32, key: u8) -> noodle_engine::Event {
-    noodle_engine::Event {
-        time,
-        kind: noodle_engine::EventKind::NoteOn {
-            note: noodle_engine::NoteId(id),
-            channel: 0,
-            key,
-            velocity: 1.0,
-        },
-    }
-}
-
 #[test]
 fn installed_synths_make_sound_from_a_note() {
     let files = scanned();

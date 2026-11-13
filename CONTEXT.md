@@ -337,3 +337,15 @@ The audio of one Cache target for one Pass start, or for the range of starts it 
 **Hot start**:
 A Pass start the cache keeps entries for in preference to others.
 
+## Sample packs
+
+**Source**:
+Where packs come from: the project's own bucket, a URL someone else hosts (with optional credentials), or a folder on the user's disk read in place.
+_Avoid_: Library (that means saved nodes, groups and presets), repository
+
+**Pack**:
+A named set of samples with a manifest of hashes, authors, licences and tags. Defined in a RON file in git, published as a static site.
+
+**Sounds**:
+The panel that browses the samples of all sources. It is a content browser that nodes, groups and presets can join later.
+_Avoid_: Sample library

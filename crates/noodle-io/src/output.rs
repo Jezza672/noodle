@@ -634,8 +634,7 @@ impl Drop for Playback {
 }
 
 /// What feeds the input: a device's stream, or the virtual input's thread.
-/// Held for being dropped, which stops it.
-#[allow(dead_code)]
+/// Dropping it stops it.
 enum InputStream {
     Device(cpal::Stream),
     Virtual(VirtualInput),
@@ -735,8 +734,8 @@ fn open_virtual_input(
 }
 
 /// What runs the engine: a device's stream, or the virtual output's timer.
-/// Held for being dropped, which stops it.
-#[allow(dead_code)]
+/// Dropping it stops it.
+#[allow(dead_code, reason = "the stream is held for its Drop")]
 enum MainStream {
     Device(cpal::Stream),
     Virtual(VirtualClock),

@@ -23,9 +23,10 @@ use std::thread::JoinHandle;
 use std::time::Duration;
 
 use cpal::{FromSample, Sample};
-use hound::{SampleFormat, WavSpec, WavWriter};
+use hound::WavWriter;
 use rtrb::{Consumer, Producer, RingBuffer};
 
+use crate::wav::float_spec;
 use crate::{Peak, PeaksBuilder, WavError};
 
 /// How much the ring holds, in seconds. The writer drains it every few
@@ -227,14 +228,8 @@ impl Recorder {
         if self.active.is_some() {
             return Err(RecordError::Busy);
         }
-        let spec = WavSpec {
-            channels: u16::try_from(self.channels).map_err(|_| WavError::Unsupported)?,
-            sample_rate: self.sample_rate,
-            bits_per_sample: 32,
-            sample_format: SampleFormat::Float,
-        };
         // Create the file here, so a bad path fails the call.
-        let writer = WavWriter::create(path, spec)?;
+        let writer = WavWriter::create(path, float_spec(self.channels, self.sample_rate)?)?;
         let Some(mut consumer) = self.idle.take() else {
             return Err(RecordError::Busy);
         };
@@ -376,15 +371,9 @@ fn write_out(
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::read_wav;
+    use crate::{read_wav, temp};
 
     const RATE: f32 = 1000.0;
-
-    fn temp(name: &str) -> PathBuf {
-        let dir = std::env::temp_dir().join("noodle-io-tests");
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join(name)
-    }
 
     /// Waits for `condition`, which depends on the writer thread.
     fn eventually(condition: impl Fn() -> bool) {

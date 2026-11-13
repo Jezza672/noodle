@@ -265,13 +265,7 @@ pub fn decode_file(path: &Path) -> Result<Audio, DecodeError> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::write_wav;
-
-    fn temp(name: &str) -> std::path::PathBuf {
-        let dir = std::env::temp_dir().join("noodle-io-tests");
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join(name)
-    }
+    use crate::{temp, write_wav};
 
     #[test]
     fn decodes_a_float_wav_exactly() {
