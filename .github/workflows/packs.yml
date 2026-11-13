@@ -1,0 +1,101 @@
+# Sample packs (ADR 0012, docs/architecture/packs.md): check pack definitions on
+# PRs, and on merge to main build the site and upload it to the R2 bucket.
+#
+# The upload needs four repo secrets: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
+# R2_SECRET_ACCESS_KEY and R2_BUCKET. Without them the publish job builds and
+# verifies the site and then skips the upload, so adding this workflow
+# publishes nothing.
+name: Packs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packs/**"
+      - "crates/noodle-publish/**"
+      - ".github/workflows/packs.yml"
+  pull_request:
+    paths:
+      - "packs/**"
+      - "crates/noodle-publish/**"
+      - ".github/workflows/packs.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: Check packs
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ALSA
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Validate
+        run: |
+          if compgen -G "packs/*/pack.ron" > /dev/null; then
+            cargo run -p noodle-cli -- packs validate packs
+          else
+            echo "No packs yet."
+          fi
+
+  publish:
+    name: Publish packs
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # One publish at a time, and never cancelled half way through an upload.
+    concurrency:
+      group: packs-publish
+      cancel-in-progress: false
+    env:
+      HAS_R2: ${{ secrets.R2_BUCKET != '' && secrets.R2_ACCOUNT_ID != '' && secrets.R2_ACCESS_KEY_ID != '' && secrets.R2_SECRET_ACCESS_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ALSA
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Build the site
+        id: build
+        run: |
+          if ! compgen -G "packs/*/pack.ron" > /dev/null; then
+            echo "No packs yet."
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cargo run -p noodle-cli -- packs build packs --out site
+          cargo run -p noodle-cli -- packs verify site
+          echo "any=true" >> "$GITHUB_OUTPUT"
+      - name: Upload to R2
+        if: steps.build.outputs.any == 'true' && env.HAS_R2 == 'true'
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: auto
+          # R2 does not take the checksum headers newer AWS CLIs add.
+          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
+          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
+          ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
+          BUCKET: ${{ secrets.R2_BUCKET }}
+        run: |
+          # Objects first: they are immutable and never deleted, so an object
+          # that is already there (same name, same size) is skipped. Then the
+          # manifests, and `index.json` last, so a reader never sees a pack
+          # whose objects are not up yet.
+          aws s3 sync site/objects "s3://$BUCKET/objects" --endpoint-url "$ENDPOINT" \
+            --size-only --cache-control "public, max-age=31536000, immutable" \
+            --content-type audio/flac
+          aws s3 cp site/packs "s3://$BUCKET/packs" --recursive --endpoint-url "$ENDPOINT" \
+            --cache-control "no-cache" --content-type application/json
+          aws s3 cp site/index.json "s3://$BUCKET/index.json" --endpoint-url "$ENDPOINT" \
+            --cache-control "no-cache" --content-type application/json
+      - name: Skipped the upload
+        if: steps.build.outputs.any == 'true' && env.HAS_R2 != 'true'
+        run: echo "R2 secrets are not set, so the site was built and verified but not uploaded."

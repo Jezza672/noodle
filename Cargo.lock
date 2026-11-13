@@ -2627,6 +2627,7 @@ dependencies = [
  "noodle-io",
  "noodle-nodes",
  "noodle-plugins",
+ "noodle-publish",
 ]
 
 [[package]]
@@ -2740,6 +2741,18 @@ dependencies = [
  "tempfile",
  "vst3",
  "windows-sys 0.59.0",
+]
+
+[[package]]
+name = "noodle-publish"
+version = "0.1.0"
+dependencies = [
+ "flacenc",
+ "noodle-io",
+ "noodle-nodes",
+ "noodle-packs",
+ "tempfile",
+ "thiserror 2.0.21",
 ]
 
 [[package]]

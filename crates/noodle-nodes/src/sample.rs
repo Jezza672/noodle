@@ -50,7 +50,7 @@ impl Sample {
     }
 
     /// The file form: interleaved stereo, or mono if both channels match.
-    fn to_audio(&self) -> Audio {
+    pub fn to_audio(&self) -> Audio {
         if self.is_mono() {
             return Audio {
                 samples: self.left.to_vec(),

@@ -90,12 +90,44 @@ enum Command {
     /// and parameters. New or changed plugin files are scanned (in a child
     /// process) and the results cached.
     Plugins,
+    /// Build and check sample packs for publishing (ADR 0012).
+    Packs {
+        #[command(subcommand)]
+        command: PacksCommand,
+    },
     /// List the audio hosts, and the devices on one, with their IDs for
     /// `play`.
     Devices {
         /// The host to list (default: the platform's default host).
         #[arg(long)]
         host: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PacksCommand {
+    /// Check the packs under a directory (`<dir>/<pack>/pack.ron` and the
+    /// audio they name): the definitions, that each file exists, and that
+    /// its audio hashes to what the pack says. Writes nothing.
+    Validate {
+        /// The directory of packs.
+        dir: PathBuf,
+    },
+    /// Build the static site a source serves: FLAC objects named by hash,
+    /// a manifest per pack and `index.json`. Objects already in --out are
+    /// left alone, so building into a copy of the live site writes only
+    /// what is new.
+    Build {
+        /// The directory of packs.
+        dir: PathBuf,
+        /// Where to write the site.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Check a built site: every object decodes and hashes to its name.
+    Verify {
+        /// The site directory (`packs build --out`).
+        site: PathBuf,
     },
 }
 
@@ -143,6 +175,28 @@ impl DeviceArgs {
             threads: 0,
         }
     }
+}
+
+fn packs(command: PacksCommand) -> Result<(), String> {
+    match command {
+        PacksCommand::Validate { dir } => {
+            let packs = noodle_publish::check(&dir).map_err(|e| e.to_string())?;
+            let samples: usize = packs.iter().map(|p| p.def.samples.len()).sum();
+            println!("{} packs, {samples} samples: ok", packs.len());
+        }
+        PacksCommand::Build { dir, out } => {
+            let r = noodle_publish::build(&dir, &out).map_err(|e| e.to_string())?;
+            println!(
+                "{} packs, {} samples: {} objects written, {} already there",
+                r.packs, r.samples, r.written, r.skipped
+            );
+        }
+        PacksCommand::Verify { site } => {
+            let n = noodle_publish::verify(&site).map_err(|e| e.to_string())?;
+            println!("{n} samples: ok");
+        }
+    }
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -240,6 +294,7 @@ fn run(command: Command) -> Result<(), String> {
             report(&rendered.diagnostics);
             Ok(())
         }
+        Command::Packs { command } => packs(command),
         Command::Plugins => {
             list_plugins();
             Ok(())

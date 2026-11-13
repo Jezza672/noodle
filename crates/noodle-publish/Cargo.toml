@@ -1,0 +1,16 @@
+[package]
+name = "noodle-publish"
+description = "Builds the static site a sample-pack source serves: FLAC objects named by hash, manifests and index.json."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+flacenc = "0.5.1"
+noodle-io.workspace = true
+noodle-nodes.workspace = true
+noodle-packs.workspace = true
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3.27.0"
