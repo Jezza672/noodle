@@ -37,8 +37,9 @@ use crate::sampler_stretch::{Msg, NodeLinks, Service, Stretched, render, tempo_k
 /// the nearest key that has any recording (ties to the lower), then the
 /// velocity layer (`vel_curve` bends the velocity first; a key's layers split
 /// the range evenly), then a take among that layer's round-robin slots
-/// (`rr_mode`: cycle, random, or random without repeating; random uses the
-/// node's seed, so renders repeat). The note is repitched from that
+/// (`rr_mode`: cycle, random, random without repeating, or fixed, which
+/// always plays slot `rr_pick`, counted from 1 and clamped to the slots there
+/// are; random uses the node's seed, so renders repeat). The note is repitched from that
 /// recording's own root, so `root` is not used. Everything is looked up in
 /// tables built with the node, so a note-on allocates nothing. A set plays
 /// as Repitch, without the gain envelope or a warp.
@@ -202,9 +203,15 @@ struct SamplerPorts {
     #[param(
         "rr_mode",
         "Round-robin",
-        ParamInfo::choice(["Cycle", "Random", "No repeat"])
+        ParamInfo::choice(["Cycle", "Random", "No repeat", "Fixed"])
     )]
     rr_mode: (),
+    #[param(
+        "rr_pick",
+        "Take",
+        ParamInfo::new(1.0, 1024.0, 1.0).smoothing(0.0)
+    )]
+    rr_pick: (),
     #[param(
         "sample_choice",
         "Sample choice",
@@ -579,6 +586,7 @@ impl SetPlay {
         let zone = self.tables.layer(key, bent)?;
         let (n, slot) = (zone.entries.len(), zone.slot);
         let take = match s.rr_mode {
+            3 => (s.rr_pick as usize).saturating_sub(1).min(n - 1),
             0 => {
                 let i = self.counters[slot] as usize % n;
                 self.counters[slot] = self.counters[slot].wrapping_add(1);
@@ -716,6 +724,7 @@ struct Settings {
     bend_range: f32,
     vel_curve: f32,
     rr_mode: u8,
+    rr_pick: u32,
 }
 
 impl Settings {
@@ -738,7 +747,8 @@ impl Settings {
             gain: db_to_gain(get(SamplerPorts::GAIN)),
             bend_range: get(SamplerPorts::BEND_RANGE).clamp(0.0, 48.0),
             vel_curve: get(SamplerPorts::VEL_CURVE).clamp(-1.0, 1.0),
-            rr_mode: get(SamplerPorts::RR_MODE).round().clamp(0.0, 2.0) as u8,
+            rr_mode: get(SamplerPorts::RR_MODE).round().clamp(0.0, 3.0) as u8,
+            rr_pick: get(SamplerPorts::RR_PICK).round().clamp(1.0, 1024.0) as u32,
         }
     }
 }
@@ -1790,6 +1800,27 @@ mod tests {
         let got: Vec<f32> = (0..6).map(|i| played(&mut h, 60, 1.0, i + 1)).collect();
         for (g, w) in got.iter().zip([0.1, 0.2, 0.3, 0.1, 0.2, 0.3]) {
             assert!((g - w).abs() < 1e-4, "{got:?}");
+        }
+    }
+
+    #[test]
+    fn fixed_round_robin_always_plays_the_picked_slot_and_clamps() {
+        let (store, config) = set_of(&[(0.1, 60, 1, 1), (0.2, 60, 1, 2), (0.3, 60, 1, 3)]);
+        let mut h = harness(&store, &config);
+        h.set(SamplerPorts::RR_MODE, 3.0);
+        for (pick, want) in [
+            (1.0, 0.1),
+            (2.0, 0.2),
+            (3.0, 0.3),
+            (3.0, 0.3),
+            (9.0, 0.3),
+            (0.0, 0.1),
+        ] {
+            h.set(SamplerPorts::RR_PICK, pick);
+            for i in 0..2 {
+                let got = played(&mut h, 60, 1.0, i + 1);
+                assert!((got - want).abs() < 1e-4, "pick {pick}: {got}");
+            }
         }
     }
 

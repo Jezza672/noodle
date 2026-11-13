@@ -3694,6 +3694,22 @@ fn the_drum_rack_has_a_named_pad_for_each_drum_and_a_sample_dropped_on_it_reache
 }
 
 #[test]
+fn a_drum_pad_takes_a_sample_and_a_take_and_plays_the_picked_slot() {
+    let (session, rack) = session_with_rack();
+    let graph = session.project().graph();
+    let pad = pad_named(&session, rack, "Kick");
+    let sampler = super::pad_sampler(graph, pad).unwrap();
+    for port in ["sample", "rr_pick"] {
+        let source = graph
+            .source(&noodle_core::Endpoint::new(sampler, port))
+            .unwrap_or_else(|| panic!("the pad's {port} is wired from a group input"));
+        assert_eq!(graph.node(source.node).unwrap().parent, Some(pad));
+    }
+    let node = graph.node(sampler).unwrap();
+    assert_eq!(node.params.get("rr_mode").copied(), Some(3.0), "Fixed");
+}
+
+#[test]
 fn any_node_can_be_renamed_and_the_name_goes_back_to_the_default_when_cleared() {
     let (mut session, rack) = session_with_rack();
     let pad = pad_named(&session, rack, "Kick");

@@ -1,6 +1,6 @@
-# Create drum rack from clip (design, proposed)
+# Create drum rack from clip (design, built)
 
-Status: proposed, nothing built. Asked for by Jeremy; his answers to the first
+Status: all four steps built (analysis, Sampler Fixed pick, the session job plus `Edit::CreateDrumRack` in `session/drum_rack.rs`, and the dialog in `drum_rack_dialog.rs` with the clip menu entry and an S09 route). What the first dialog leaves out is in `ROADMAP.md`. Asked for by Jeremy; his answers to the first
 round of questions are folded in (see Decisions). This builds on the Drum Rack of #457 (named `Drum Pad` groups, ADR 0009),
 the onset detector and Sample Set work of #489 (#356), the Selector (#388) and
 the stems work (M10, ADR 0006).
@@ -133,16 +133,19 @@ chosen), like the take lanes, so the idiom is the same to the user.
 
 ## The dialog's parts
 
-- **Bin card:** label guess and confidence, member count, the medoid's waveform
-  and a small spectrogram, **Play**, and the member picker (previous/next, or a
-  grid of the members with truncated and mixed ones marked). **Exclude** removes
-  a hit from the bin (a wrong one); **Split** and **Merge with…** move a bin
-  against the slider.
+- **Bin card:** label guess and confidence, member count, the medoid's waveform,
+  **Play**, **Place on…** (click path; the drag is a handle, since a drag source
+  swallows button clicks), and a **Hits** list. Each hit has ▶ and **Move to…**
+  (any other group, a new one, or Other) and can be dragged to a group; this
+  replaces Exclude (a wrong hit moves to the group it belongs in). **Split** and
+  **Merge with…** move a group against the slider; **Undo** takes back the last
+  of these, and the slider resets them. No spectrogram (not needed).
 - **Pad grid:** drop target for bins, drop on an occupied pad replaces, a pad
   shows its bin's name and a mini waveform, double-click empties it. Auditioning
   a pad plays its chosen hit.
-- Audition plays through a copy of the project fed to the engine, as take
-  audition does, so the project is untouched.
+- Audition plays the hit straight to the monitor device through its own short
+  stream (`noodle_io::Preview`), outside the engine and the graph; this is not
+  a permanent state, so bypassing the graph is fine (Jeremy, 2026-11-12).
 
 ## Hits that are more than one drum
 
@@ -285,12 +288,13 @@ C. Each PR updates docs in the same PR (move the record from this file into
 |---|---|---|
 | **A. Analysis module** | `noodle-io/src/drum_bins.rs`: hits (merged onset detectors), cuts with truncation flag, feature vector, leader clustering plus medoid pass with the threshold knob, member ranking, mixed-hit flag, rule labels with confidence; a cache keyed by clip window, file hash and detector version. Tests on synthetic kits built from the app's own nodes, each proved able to fail. | nothing |
 | **B. Sampler pick and pad input** | Sampler `rr_mode` **Fixed** and `rr_pick` parameter; Drum Pad template gets a `sample` input (wired over the Sampler's own sample, which still takes a dropped file) and a `take` input; keytrack stays off. Sampler unit test, an addition to `noodle-nodes/tests/realtime.rs`, template tests. No golden changes expected; if one moves, bump `DSP_GENERATION`. | nothing |
-| **C. Command and session** | `Session::analyse_drum_clip` as a cancellable `Job` with progress and the analysis held outside the project; `Edit::CreateDrumRack(clip, Vec<PadAssignment>)` building one new track from the Drum Rack template, extra pads for unlisted keys named by GM name, one shared Sample Set per used bin wired to its pads, all in one `Command::Batch` (one undo step). Session tests in the style of `picked_cuts_become_a_sampler_group_of_primitives_…`. | A, B |
+| **C. Command and session** (built) | `Session::analyse_drum_clip` as a cancellable `Job` with progress and the analysis held outside the project; `Edit::CreateDrumRack(clip, DrumRackPlan)` building one new track from the Drum Rack template, extra pads for unlisted keys named by GM name, one shared Sample Set per used bin wired to its pads, all in one `Command::Batch` (one undo step). Session tests in the style of `picked_cuts_become_a_sampler_group_of_primitives_…`. | A, B |
 | **D. Dialog, menu and route** | `drum_rack_dialog.rs`: progress, bin cards (label, confidence, waveform, play, member picker, exclude, split and merge), the slider, pad grid (eight pads, Show all keys with GM names), drag and drop, audition through a copy of the project; the clip menu entry; the usability route (extend S09 or add one) through `testkit`; docs. Mac listening check owed, added to `ROADMAP.md`. | C |
 
-Follow-ups, not in these steps: velocity layers from level; the groove as a MIDI
-clip; the small own classifier (version 2); the separation analyser and mixed
-hit handling (version 3, which needs the licence checks first).
+Follow-ups built since: velocity layers from level, the groove as a MIDI clip, and
+the template matching of mixed hits (see `docs/features/tempo-sync-and-drum-rack.md`).
+Not built: the small own classifier (version 2); the separation analyser (version 3,
+which needs the licence checks first).
 
 ## Decisions (Jeremy, 2026-11-12)
 
@@ -304,3 +308,15 @@ hit handling (version 3, which needs the licence checks first).
 
 No open questions remain for version 1; the model and licence checks for
 version 3 are done when it is started.
+
+## Step C as built
+
+`Session::analyse_drum_clip` runs `analyse_hits` on a `Job` (cached by `HitCache`);
+the result is a `DrumAnalysis` held by the session (`drum_analysis`, `close_drum_analysis`),
+with `window(hit)` giving each hit as a window of the clip's file. `Edit::CreateDrumRack(clip, DrumRackPlan)`
+takes the bins used (hit indices, in slot order) and the `PadAssignment`s (key, bin, pick) and builds
+one `Command::Batch`: the Drum Rack template on a new track, pads the plan doesn't use removed, each
+used key on a template pad of that key, else a spare template pad retargeted (its Note Split and name),
+else a copy of a pad (the mixer grows). Pads for non-template keys are named by General MIDI name
+(`gm_drum_name`). One Sample Set per bin at the rack's top level, wired to the `sample` of each pad
+that plays it; `rr_pick` of the pad's Sampler is the pick.

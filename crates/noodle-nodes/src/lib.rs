@@ -181,6 +181,7 @@ pub use sample_set::{
     LayerZone, NameInfo, Rescan, Row, SAMPLE_SET_ID, SET_FOLDER_KEY, SET_MIDDLE_C_KEY,
     SET_NAMES_KEY, SampleSet, SetEntry, SetTables, folder_of, is_set, middle_c_of, parse_name,
     parse_set, rescan, rows_from_files, rows_of, rows_to_config, sample_hashes, set_to_text,
+    velocity_layer,
 };
 pub use sampler::{GAIN_ENV_KEY, GAIN_ENV_SCALE, SAMPLE_KEY, SAMPLER_ID, Sampler, WARP_KEY};
 pub use scope::{SCOPE_ID, Scope};

@@ -566,6 +566,30 @@ pub struct DrumBin {
     pub kind: DrumKind,
     /// 0 to 1.
     pub confidence: f32,
+    /// How many velocity layers the bin's hits are offered as, 1 to
+    /// [`MAX_LAYERS`] (see [`layer_split`]). One until the user asks for more.
+    pub layers: u8,
+}
+
+/// The most velocity layers a group is split into.
+pub const MAX_LAYERS: u8 = 3;
+
+/// Splits `members` (best first) into `layers` velocity layers by `level_db`,
+/// softest first, each with as many hits as the others (to one). Within a
+/// layer the order of `members` is kept, so each layer's first hit is its best.
+/// Never more layers than hits, so no layer is empty.
+pub fn layer_split(hits: &[Hit], members: &[usize], layers: u8) -> Vec<Vec<usize>> {
+    let n = usize::from(layers.clamp(1, MAX_LAYERS)).min(members.len().max(1));
+    let mut by_level: Vec<usize> = members.to_vec();
+    by_level.sort_by(|&a, &b| hits[a].level_db.total_cmp(&hits[b].level_db));
+    let mut out: Vec<Vec<usize>> = vec![Vec::new(); n];
+    for (rank, hit) in by_level.iter().enumerate() {
+        out[rank * n / by_level.len()].push(*hit);
+    }
+    for layer in &mut out {
+        layer.sort_by_key(|h| members.iter().position(|m| m == h));
+    }
+    out
 }
 
 /// The result of binning.
@@ -579,6 +603,11 @@ pub struct Binning {
     /// For each hit, whether another drum sounds with it: flagged when found
     /// ([`Hit::mixed`]) or when the sum of two bins' medoids explains it.
     pub mixed: Vec<bool>,
+    /// For each hit that the bins' medoids explain as a sum (a kick plus a
+    /// hat), the medoid hit of each drum in it, so a name can be found for it
+    /// whatever has been moved since. Empty for a hit that is one drum, and for
+    /// one flagged mixed only because another onset is near.
+    pub parts: Vec<Vec<usize>>,
 }
 
 fn medoid_of(hits: &[Hit], members: &[usize]) -> usize {
@@ -601,49 +630,159 @@ fn power_of(bands: &[f32; BANDS]) -> [f32; BANDS] {
     bands.map(|b| 10f32.powf(b / 10.0))
 }
 
-/// True when the sum of two other bins' medoids (the second at 0, -6 or -12 dB)
-/// explains `f` better than any one of them: a hat over a kick.
-fn explained_by_two(f: &HitFeatures, medoids: &[&HitFeatures], limit: f32) -> bool {
-    let band_distance = |p: &[f32; BANDS]| -> f32 {
-        let top = p.iter().copied().fold(0.0f32, f32::max).max(1e-20);
-        let mut sum = 0.0;
-        for (b, &pb) in p.iter().enumerate() {
-            sum += ((db(pb / top) - f.bands[b]).max(-60.0) / 12.0).powi(2);
-        }
-        (sum / BANDS as f32).sqrt()
-    };
-    let one = medoids
+/// The relative error, per band, at which a template fit is judged: the bands
+/// are weighted by the hit's own level (plus a floor), so a quiet hat over the
+/// top of a loud kick counts as much as the kick's body.
+const WEIGHT_FLOOR: f32 = 1e-3;
+/// A sum of templates explains a hit when its weighted error is under this.
+const FIT_ERROR: f32 = 0.35;
+/// ... and under this fraction of the best single template's error.
+const FIT_GAIN: f32 = 0.6;
+/// A template counts as a part of the hit when it supplies at least this share
+/// of the hit's power (-17 dB).
+const PART_SHARE: f32 = 0.02;
+/// One template this near (weighted error) is the hit's drum: no parts.
+const SINGLE_OK: f32 = 0.1;
+/// The most templates tried at once (more would be a fit to anything).
+const MAX_PARTS: usize = 3;
+
+/// Weighted non-negative least squares by cyclic coordinate descent: the
+/// weights `w >= 0` of `columns` that best make `target` (rows are scaled by
+/// `scale`). Returns the weights and the root-mean-square error of the fit.
+fn nnls(columns: &[[f32; BANDS]], target: &[f32; BANDS], scale: &[f32; BANDS]) -> (Vec<f32>, f32) {
+    let a: Vec<[f32; BANDS]> = columns
         .iter()
-        .map(|m| distance(f, m))
-        .fold(f32::MAX, f32::min);
-    if one < limit * 0.5 {
-        return false;
-    }
-    let mut best_two = f32::MAX;
-    for (i, a) in medoids.iter().enumerate() {
-        for b in medoids.iter().skip(i + 1) {
-            let (pa, pb) = (power_of(&a.bands), power_of(&b.bands));
-            for gain in [1.0f32, 0.25, 0.06] {
-                for flip in [false, true] {
-                    let mut sum = [0.0f32; BANDS];
-                    for k in 0..BANDS {
-                        sum[k] = if flip {
-                            pa[k] * gain + pb[k]
-                        } else {
-                            pa[k] + pb[k] * gain
-                        };
-                    }
-                    best_two = best_two.min(band_distance(&sum));
+        .map(|c| std::array::from_fn(|k| c[k] * scale[k]))
+        .collect();
+    let y: [f32; BANDS] = std::array::from_fn(|k| target[k] * scale[k]);
+    let norms: Vec<f32> = a
+        .iter()
+        .map(|c| c.iter().map(|v| v * v).sum::<f32>().max(1e-20))
+        .collect();
+    let mut w = vec![0.0f32; a.len()];
+    let mut residual = y;
+    for _ in 0..200 {
+        let mut moved = 0.0f32;
+        for j in 0..a.len() {
+            let dot: f32 = (0..BANDS).map(|k| a[j][k] * residual[k]).sum();
+            let next = (w[j] + dot / norms[j]).max(0.0);
+            let change = next - w[j];
+            if change != 0.0 {
+                for k in 0..BANDS {
+                    residual[k] -= a[j][k] * change;
                 }
+                w[j] = next;
+                moved = moved.max(change.abs());
             }
         }
+        if moved < 1e-6 {
+            break;
+        }
     }
-    // Compare band shape alone against the single medoids' band shape.
-    let one_bands = medoids
-        .iter()
-        .map(|m| band_distance(&power_of(&m.bands)))
+    let error = (residual.iter().map(|r| r * r).sum::<f32>() / BANDS as f32).sqrt();
+    (w, error)
+}
+
+/// Explains hit `f` as a sum of known hits: the bins' medoids are fixed
+/// templates (their band power spectra, each scaled by a free non-negative
+/// gain), and the combination that best makes the hit's own spectrum is found
+/// by non-negative least squares. `Some(parts)` (indices into `medoids`, at
+/// least two) when a sum of them fits clearly better than any one, and the hit
+/// is not already one drum's (one template makes it well): a kick with a hat
+/// over it.
+fn explain_by_templates(f: &HitFeatures, medoids: &[&HitFeatures]) -> Option<Vec<usize>> {
+    if medoids.len() < 2 {
+        return None;
+    }
+    let target = power_of(&f.bands);
+    let scale: [f32; BANDS] = std::array::from_fn(|k| 1.0 / (target[k] + WEIGHT_FLOOR));
+    let columns: Vec<[f32; BANDS]> = medoids.iter().map(|m| power_of(&m.bands)).collect();
+    // The best one template can do.
+    let single = (0..columns.len())
+        .map(|j| nnls(&columns[j..=j], &target, &scale).1)
         .fold(f32::MAX, f32::min);
-    best_two < 0.7 * one_bands && best_two < limit
+    // A hit one template already makes well is one drum.
+    if single < SINGLE_OK {
+        return None;
+    }
+    let (weights, _) = nnls(&columns, &target, &scale);
+    let total: f32 = target.iter().sum::<f32>().max(1e-20);
+    let mut parts: Vec<(usize, f32)> = weights
+        .iter()
+        .enumerate()
+        .map(|(j, w)| (j, w * columns[j].iter().sum::<f32>() / total))
+        .filter(|&(_, share)| share >= PART_SHARE)
+        .collect();
+    parts.sort_by(|a, b| b.1.total_cmp(&a.1));
+    parts.truncate(MAX_PARTS);
+    if parts.len() < 2 {
+        return None;
+    }
+    // Fit again with only the parts that count, so the verdict is of what is shown.
+    let chosen: Vec<[f32; BANDS]> = parts.iter().map(|&(j, _)| columns[j]).collect();
+    let (_, error) = nnls(&chosen, &target, &scale);
+    if error < FIT_ERROR && error < FIT_GAIN * single {
+        let mut ids: Vec<usize> = parts.iter().map(|&(j, _)| j).collect();
+        ids.sort_unstable();
+        Some(ids)
+    } else {
+        None
+    }
+}
+
+/// Makes a bin of `members`: finds its medoid, ranks the members best default
+/// first (not mixed, not truncated, not too quiet, then closest to the medoid)
+/// and guesses what it is. `mixed` is [`Binning::mixed`]. `members` must not be
+/// empty.
+pub fn make_bin(hits: &[Hit], mixed: &[bool], mut members: Vec<usize>) -> DrumBin {
+    let medoid = medoid_of(hits, &members);
+    members.sort_by(|&x, &y| {
+        let key = |i: usize| (mixed[i], hits[i].truncated, hits[i].too_quiet());
+        key(x).cmp(&key(y)).then(
+            distance(&hits[x].features, &hits[medoid].features)
+                .total_cmp(&distance(&hits[y].features, &hits[medoid].features)),
+        )
+    });
+    let (kind, confidence) = guess(&hits[medoid].features);
+    DrumBin {
+        members,
+        medoid,
+        kind,
+        confidence,
+        layers: 1,
+    }
+}
+
+/// Splits the bin of `members` in two or more by tightening the threshold from
+/// `merge` until it falls apart. `None` when the hits are too alike to
+/// separate (even at the tightest threshold they are one group).
+pub fn split_bin(
+    hits: &[Hit],
+    mixed: &[bool],
+    members: &[usize],
+    merge: f32,
+) -> Option<Vec<DrumBin>> {
+    let subset: Vec<Hit> = members.iter().map(|&m| hits[m].clone()).collect();
+    let mut at = merge;
+    while at > 0.0 {
+        at = (at - 0.05).max(0.0);
+        let parts = bin_hits(&subset, at);
+        let total: usize = parts.bins.len() + usize::from(!parts.other.is_empty());
+        if total >= 2 {
+            let lift =
+                |local: &[usize]| -> Vec<usize> { local.iter().map(|&i| members[i]).collect() };
+            let mut bins: Vec<DrumBin> = parts
+                .bins
+                .iter()
+                .map(|b| make_bin(hits, mixed, lift(&b.members)))
+                .collect();
+            if !parts.other.is_empty() {
+                bins.push(make_bin(hits, mixed, lift(&parts.other)));
+            }
+            return Some(bins);
+        }
+    }
+    None
 }
 
 /// Groups hits into bins. `merge` (0 to 1, [`DEFAULT_MERGE`]) is how readily
@@ -703,18 +842,15 @@ pub fn bin_hits(hits: &[Hit], merge: f32) -> Binning {
         })
         .collect();
     let membership = assign(&medoids);
-    // 3. A hit a sum of two other bins' medoids explains is mixed.
+    // 3. A hit a sum of the bins' medoids explains is mixed, and made of them.
     let mut mixed: Vec<bool> = hits.iter().map(|h| h.mixed).collect();
+    let mut parts: Vec<Vec<usize>> = vec![Vec::new(); hits.len()];
     for (i, hit) in hits.iter().enumerate() {
-        if mixed[i] {
-            continue;
-        }
-        let others: Vec<&HitFeatures> = medoids
-            .iter()
-            .filter(|&&m| m != i)
-            .map(|&m| &hits[m].features)
-            .collect();
-        if others.len() >= 2 && explained_by_two(&hit.features, &others, limit) {
+        // A hit is never explained by itself: leave its own bin out.
+        let others: Vec<usize> = medoids.iter().copied().filter(|&m| m != i).collect();
+        let templates: Vec<&HitFeatures> = others.iter().map(|&m| &hits[m].features).collect();
+        if let Some(found) = explain_by_templates(&hit.features, &templates) {
+            parts[i] = found.into_iter().map(|j| others[j]).collect();
             mixed[i] = true;
         }
     }
@@ -723,7 +859,7 @@ pub fn bin_hits(hits: &[Hit], merge: f32) -> Binning {
     let mut bins: Vec<DrumBin> = Vec::new();
     let mut other: Vec<usize> = Vec::new();
     for b in 0..medoids.len() {
-        let mut members: Vec<usize> = (0..hits.len())
+        let members: Vec<usize> = (0..hits.len())
             .filter(|&i| membership[i] == Some(b))
             .collect();
         // Identical hits can tie, leaving a bin empty or without its medoid.
@@ -735,26 +871,17 @@ pub fn bin_hits(hits: &[Hit], merge: f32) -> Binning {
             other.push(first);
             continue;
         }
-        let medoid = medoid_of(hits, &members);
-        members.sort_by(|&x, &y| {
-            let key = |i: usize| (mixed[i], hits[i].truncated, hits[i].too_quiet());
-            key(x).cmp(&key(y)).then(
-                distance(&hits[x].features, &hits[medoid].features)
-                    .total_cmp(&distance(&hits[y].features, &hits[medoid].features)),
-            )
-        });
-        let (kind, confidence) = guess(&hits[medoid].features);
-        bins.push(DrumBin {
-            members,
-            medoid,
-            kind,
-            confidence,
-        });
+        bins.push(make_bin(hits, &mixed, members));
     }
     other.extend((0..hits.len()).filter(|&i| membership[i].is_none()));
     other.sort_unstable();
     bins.sort_by_key(|b| b.members.iter().min().copied());
-    Binning { bins, other, mixed }
+    Binning {
+        bins,
+        other,
+        mixed,
+        parts,
+    }
 }
 
 /// What a cached analysis is of: the source file (its hash), the window of it
@@ -1077,6 +1204,123 @@ mod tests {
         assert!(binning.mixed.iter().filter(|&&m| m).count() <= 3);
     }
 
+    /// A kit with kicks, snares and hats alone, and a hat struck at the very
+    /// moment of a kick (one onset), and of a snare.
+    fn kit_with_stacked_hits() -> (Vec<Hit>, usize, usize) {
+        let (k, h, s) = (kick(), hat(60.0, 0.1), snare());
+        let x = track(
+            8.0,
+            &[
+                (&k, 0.5, 1.0),
+                (&h, 1.0, 0.8),
+                (&s, 1.5, 1.0),
+                (&k, 2.0, 1.0),
+                (&h, 2.5, 0.8),
+                (&s, 3.0, 1.0),
+                (&k, 3.5, 1.0),
+                (&k, 4.5, 1.0), // a hat on the kick
+                (&h, 4.5, 4.0),
+                (&h, 5.0, 0.8),
+                (&s, 5.5, 1.0), // a hat on the snare
+                (&h, 5.5, 3.0),
+                (&k, 6.5, 1.0),
+                (&s, 7.0, 1.0),
+            ],
+        );
+        let hits = run(&x);
+        let at = |s: f32| {
+            hits.iter()
+                .position(|h| h.onset.abs_diff(seconds(s) as u64) < seconds(0.02) as u64)
+                .expect("a hit there")
+        };
+        let (a, b) = (at(4.5), at(5.5));
+        (hits, a, b)
+    }
+
+    /// The drum of a hit: the bin that holds it, by its medoid's guess.
+    fn kind_of_hit(binning: &Binning, hit: usize) -> DrumKind {
+        binning
+            .bins
+            .iter()
+            .find(|b| b.members.contains(&hit))
+            .expect("the hit is in a bin")
+            .kind
+    }
+
+    #[test]
+    fn a_stacked_hit_is_explained_as_the_drums_that_make_it() {
+        let (hits, on_kick, on_snare) = kit_with_stacked_hits();
+        let binning = bin_hits(&hits, DEFAULT_MERGE);
+        let medoid_kind = |m: usize| kind_of_hit(&binning, m);
+        for (hit, want) in [
+            (on_kick, [DrumKind::ClosedHat, DrumKind::Kick]),
+            (on_snare, [DrumKind::ClosedHat, DrumKind::Snare]),
+        ] {
+            assert!(binning.mixed[hit], "hit {hit} {:?}", hits[hit].features);
+            let mut got: Vec<DrumKind> =
+                binning.parts[hit].iter().map(|&m| medoid_kind(m)).collect();
+            got.sort_by_key(|k| k.name());
+            let mut want = want.to_vec();
+            want.sort_by_key(|k| k.name());
+            assert_eq!(got, want, "hit {hit}: {:?}", binning.parts[hit]);
+        }
+        // Hits that are one drum are not taken apart.
+        let clean = (0..hits.len())
+            .filter(|&i| i != on_kick && i != on_snare)
+            .filter(|&i| !hits[i].mixed);
+        for i in clean {
+            assert!(
+                binning.parts[i].is_empty(),
+                "hit {i} split into {:?}",
+                binning.parts[i]
+            );
+        }
+        // Mixed, so never the default pick of its group.
+        for bin in &binning.bins {
+            assert!(!binning.mixed[bin.members[0]], "{bin:?}");
+        }
+    }
+
+    #[test]
+    fn a_hit_with_only_one_drum_in_it_has_no_parts_even_with_a_noisy_kit() {
+        let (x, _) = pattern();
+        let hits = run(&x);
+        let binning = bin_hits(&hits, DEFAULT_MERGE);
+        assert!(binning.parts.iter().all(Vec::is_empty));
+        // And one drum alone has no templates to explain anything with.
+        let k = kick();
+        let one = bin_hits(&run(&track(1.0, &[(&k, 0.3, 1.0)])), DEFAULT_MERGE);
+        assert!(one.parts.iter().all(Vec::is_empty));
+    }
+
+    #[test]
+    fn velocity_layers_split_a_group_by_level_softest_first() {
+        let (x, _) = pattern();
+        let hits = run(&x);
+        let members: Vec<usize> = (0..hits.len()).collect();
+        for n in 1..=MAX_LAYERS {
+            let layers = layer_split(&hits, &members, n);
+            assert_eq!(layers.len(), usize::from(n));
+            let mut seen: Vec<usize> = layers.iter().flatten().copied().collect();
+            seen.sort_unstable();
+            assert_eq!(seen, members, "no hit lost or doubled");
+            let top = |l: &Vec<usize>| l.iter().map(|&h| hits[h].level_db).fold(f32::MIN, f32::max);
+            let low = |l: &Vec<usize>| l.iter().map(|&h| hits[h].level_db).fold(f32::MAX, f32::min);
+            for pair in layers.windows(2) {
+                assert!(top(&pair[0]) <= low(&pair[1]), "softest layer first");
+            }
+        }
+        // The order inside a layer is the order of the members (best first).
+        let reversed: Vec<usize> = members.iter().rev().copied().collect();
+        for layer in layer_split(&hits, &reversed, 2) {
+            assert!(layer.windows(2).all(|w| w[0] > w[1]), "{layer:?}");
+        }
+        // Never an empty layer: two hits make at most two layers.
+        let few = layer_split(&hits, &members[..2], 3);
+        assert_eq!(few.len(), 2);
+        assert!(few.iter().all(|l| !l.is_empty()));
+    }
+
     #[test]
     fn a_hit_cut_by_the_next_one_is_truncated() {
         let o = hat(7.0, 0.8);
@@ -1118,6 +1362,45 @@ mod tests {
         });
         assert_eq!(result, Err(Cancelled));
         assert_eq!(calls, 20);
+    }
+
+    #[test]
+    fn a_bin_of_two_drums_splits_and_one_of_one_does_not() {
+        let (x, names) = pattern();
+        let hits = run(&x);
+        let mixed: Vec<bool> = hits.iter().map(|h| h.mixed).collect();
+        // The most-merged binning is one bin of everything.
+        let one = bin_hits(&hits, 1.0);
+        let all: Vec<usize> = (0..hits.len()).collect();
+        let loose = one.bins.iter().find(|b| b.members.len() > 4);
+        let members = loose.map_or(all, |b| b.members.clone());
+        let parts = split_bin(&hits, &mixed, &members, 1.0).expect("it falls apart");
+        assert!(parts.len() >= 2);
+        let mut seen: Vec<usize> = parts.iter().flat_map(|p| p.members.clone()).collect();
+        seen.sort_unstable();
+        let mut want = members.clone();
+        want.sort_unstable();
+        assert_eq!(seen, want, "no hit lost or doubled");
+        for part in &parts {
+            let first = names[part.members[0]];
+            assert!(part.members.iter().all(|&m| names[m] == first));
+        }
+        // The kicks alone are too alike to split.
+        let kicks: Vec<usize> = (0..hits.len()).filter(|&i| names[i] == "kick").collect();
+        assert!(kicks.len() >= 2);
+        assert!(split_bin(&hits, &mixed, &kicks, DEFAULT_MERGE).is_none());
+    }
+
+    #[test]
+    fn make_bin_ranks_the_clean_hit_first() {
+        let (x, _) = pattern();
+        let hits = run(&x);
+        let mut mixed: Vec<bool> = hits.iter().map(|h| h.mixed).collect();
+        let bin = &bin_hits(&hits, DEFAULT_MERGE).bins[0];
+        mixed[bin.members[0]] = true;
+        let again = make_bin(&hits, &mixed, bin.members.clone());
+        assert_eq!(*again.members.last().unwrap(), bin.members[0]);
+        assert_ne!(again.members[0], bin.members[0]);
     }
 
     #[test]

@@ -294,10 +294,13 @@ for it (`Controller::set_live_tempo`): tap tempo or an external MIDI clock, chos
 in the transport bar. The timeline (the playhead, seeks, loops, and where clips
 sit) always runs on the project's map, so the playhead moves at the map's speed
 and what is under it is what plays; the waveforms are drawn by the same map. The
-live tempo (with the project's time signatures) is only what the transport tells
-nodes (`Transport::bpm` and `tick`: Tempo, Clock, the metronome, MIDI out). The
-engine gets a `Tempos` pair (live and timeline `TempoTable`s) the way it does for
-an edit; a change to the live one alone does not move the position. With a single
+live tempo is only what the transport tells nodes (`Transport::bpm` and `tick`:
+Tempo, Clock, the metronome, MIDI out): a beat clock (`LiveClock` in
+`runtime.rs`) that runs at the live tempo from where it was anchored. It carries
+on from the beat it was on when the tempo changes, and goes back onto the
+timeline's beat at a seek or a loop. The engine gets a `Tempos` (timeline
+`TempoTable` plus the live bpm) the way it does for an edit; a change to the live
+tempo alone does not move the position. With a single
 tempo in the map, a tap sets that tempo in the map instead (an undo step) and no
 live tempo is made. It is session state: no command, no undo step, no
 cache invalidation. "Write to map" makes it a `SetTempoMap`. MIDI timing

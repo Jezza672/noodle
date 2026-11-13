@@ -1685,7 +1685,8 @@ fn a_sampler_playing_a_sample_set_never_allocates_through_layers_takes_and_bend(
         for (name, value) in [
             ("bend_range", 2.0 + round as f32),
             ("vel_curve", round as f32 / 8.0 - 1.0),
-            ("rr_mode", (round % 3) as f32),
+            ("rr_mode", (round % 4) as f32),
+            ("rr_pick", 1.0 + (round % 5) as f32),
         ] {
             s.controller.set_param(sampler, name, value);
         }

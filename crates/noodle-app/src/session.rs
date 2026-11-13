@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 pub mod automate;
 pub mod convert;
+pub mod drum_rack;
 mod export;
 pub mod learn_midi;
 mod library;
@@ -164,6 +165,15 @@ pub enum Edit {
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
+    /// Finds the drum hits of an audio clip on a background job (see
+    /// [`Session::analyse_drum_clip`]). Not an edit: the result is held by the
+    /// session.
+    AnalyseDrumClip(noodle_core::ClipId),
+    /// Stops the drum analysis under way.
+    CancelDrumAnalysis,
+    /// Makes a Drum Rack track from the held analysis of a clip (see
+    /// [`Session::create_drum_rack`]). One undo step.
+    CreateDrumRack(noodle_core::ClipId, drum_rack::DrumRackPlan),
     /// Convert an audio clip to MIDI at a sensitivity, replacing the MIDI clip
     /// if one is given.
     ConvertToMidi(
@@ -497,6 +507,8 @@ pub struct Session {
     export_summary: Option<ExportSummary>,
     /// Split to stems: the separator and the split under way, if any.
     stems: stems::Stems,
+    /// Create drum rack from clip: the analysis under way, and its result.
+    drum_rack: drum_rack::DrumRack,
     /// A rescan of a Sample Set's folder, waiting for the user to look at it.
     rescan: std::cell::RefCell<Option<sample_set::PendingRescan>>,
 }
@@ -791,6 +803,7 @@ impl Session {
             rendering: None,
             export_summary: None,
             stems: stems::Stems::new(),
+            drum_rack: Default::default(),
             rescan: Default::default(),
             clip_problems: Vec::new(),
             freezing: Freezing::new(),
@@ -1732,6 +1745,18 @@ impl Session {
                     self.split_to_stems(clip);
                     continue;
                 }
+                Edit::AnalyseDrumClip(clip) => {
+                    self.analyse_drum_clip(clip);
+                    continue;
+                }
+                Edit::CancelDrumAnalysis => {
+                    self.cancel_drum_analysis();
+                    continue;
+                }
+                Edit::CreateDrumRack(clip, plan) => {
+                    self.create_drum_rack(clip, &plan);
+                    continue;
+                }
                 Edit::ConvertToMidi(clip, detect, replace) => {
                     self.convert_to_midi(clip, detect, replace);
                     continue;
@@ -2648,6 +2673,7 @@ impl Session {
         self.poll_export();
         self.poll_render();
         self.poll_split();
+        self.poll_drum_analysis();
         self.poll_plugin_scan();
         self.poll_plugin_editors();
         self.poll_param_learn();

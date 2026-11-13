@@ -117,6 +117,7 @@ pub struct App {
     outputs_open: bool,
     plugin_browser: PluginBrowser,
     cache_panel: CachePanel,
+    drum_rack_dialog: crate::drum_rack_dialog::DrumRackDialog,
     outputs: OutputsView,
     /// Whether the MIDI ports view is showing.
     midi_ports_open: bool,
@@ -341,6 +342,7 @@ impl App {
             outputs_open: false,
             plugin_browser: PluginBrowser::default(),
             cache_panel: CachePanel::default(),
+            drum_rack_dialog: Default::default(),
             outputs: OutputsView::default(),
             midi_ports_open: false,
             midi_ports: MidiPortsView::default(),
@@ -825,6 +827,7 @@ impl App {
         self.palette_and_templates(ui.ctx(), &mut actions);
         crate::stems_dialog::show(ui.ctx(), &mut self.session);
         crate::sample_set_dialog::show(ui.ctx(), &mut self.session);
+        self.drum_rack_dialog.show(ui.ctx(), &mut self.session);
         if self.export.has_choice() {
             actions.push(Action::StartExport);
         }
