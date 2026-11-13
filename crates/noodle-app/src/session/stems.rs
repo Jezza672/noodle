@@ -1074,9 +1074,8 @@ mod tests {
         wait(&mut session);
         assert_eq!(session.message(), Some("Split cancelled"));
         assert_eq!(*session.project(), before);
-        let left = std::fs::read_dir(dir.path().join("stems"))
-            .map(|d| d.count())
-            .unwrap_or(0);
+        let left =
+            std::fs::read_dir(dir.path().join("stems")).map_or(0, std::iter::Iterator::count);
         assert_eq!(left, 0);
     }
 

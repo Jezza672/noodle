@@ -4,7 +4,7 @@
 //! look for the feature and checks that the feature is not there. The check
 //! is a tripwire. The day a menu offers the feature, the route fails and
 //! says so, and the PR that adds the feature writes the real route and moves
-//! the story's status in the registry (see `docs/architecture/usability.md`).
+//! the story's status in the registry.
 
 use std::cell::RefCell;
 

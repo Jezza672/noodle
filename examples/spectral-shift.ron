@@ -6,7 +6,7 @@
 // samples); the engine delays the dry saw mixed in beside it by the same
 // amount, so the two stay aligned.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.input.button", params: {"state": 1.0}, position: (x: 0.0, y: 0.0)),

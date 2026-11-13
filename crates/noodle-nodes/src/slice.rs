@@ -154,7 +154,7 @@ pub fn slice_set(samples: &SampleStore, config: &Config, input: &str) -> Option<
     let cuts = cuts(samples, &reference, config);
     let entries: Vec<SetEntry> = cuts
         .windows(2)
-        .take(MAX_SLICES.min(128 - usize::from(first)))
+        .take(MAX_SLICES - usize::from(first))
         .enumerate()
         .map(|(i, w)| SetEntry {
             reference: SampleRef {

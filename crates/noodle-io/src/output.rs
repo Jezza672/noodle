@@ -952,8 +952,8 @@ impl Playback {
             .stop()
     }
 
-    /// The recording so far as peaks, for drawing it while it runs. See
-    /// [`Recorder::live_peaks`].
+    /// The recording so far as peaks, for drawing it while it runs
+    /// ([`Recorder::live_peaks`]).
     pub fn live_peaks(&self, columns: usize) -> Option<(u64, Vec<crate::Peak>)> {
         self.recorder.as_ref().map(|r| r.live_peaks(columns))
     }
@@ -1702,6 +1702,102 @@ where
     )
 }
 
+/// A short sound played straight to an output device, outside the engine and
+/// the project's graph: for trying a sample before it is used. Dropping it
+/// stops it.
+pub struct Preview {
+    _stream: cpal::Stream,
+    done: Arc<AtomicBool>,
+}
+
+impl Preview {
+    /// Plays `left` and `right` (at `rate`) on the device `id` of `host`, or the
+    /// host's default output. The sound is converted to the device's rate and
+    /// channel count (left and right on its first two channels).
+    pub fn play(
+        host: Option<&str>,
+        id: Option<&str>,
+        left: &[f32],
+        right: &[f32],
+        rate: u32,
+    ) -> Result<Self, AudioError> {
+        let host = open_host(host_for(host, id, Direction::Output)?)?;
+        let device = find_device(&host, id, Direction::Output)?;
+        let ranges: Vec<_> = device.supported_output_configs()?.collect();
+        let default = device.default_output_config()?;
+        let Chosen { config, format } =
+            match choose_config(&ranges, default, Some(rate), None, None) {
+                Err(AudioError::UnsupportedSampleRate(_)) => {
+                    choose_config(&ranges, default, None, None, None)?
+                }
+                chosen => chosen?,
+            };
+        let channels = usize::from(config.channels);
+        let ratio = f64::from(config.sample_rate) / f64::from(rate.max(1));
+        let frames = ((left.len().min(right.len()) as f64) * ratio) as usize;
+        let at = |channel: &[f32], frame: usize| -> f32 {
+            let position = frame as f64 / ratio;
+            let i = position as usize;
+            let t = (position - i as f64) as f32;
+            let a = channel.get(i).copied().unwrap_or(0.0);
+            let b = channel.get(i + 1).copied().unwrap_or(0.0);
+            a + (b - a) * t
+        };
+        let mut samples = vec![0.0f32; frames * channels];
+        for frame in 0..frames {
+            let (l, r) = (at(left, frame), at(right, frame));
+            let row = &mut samples[frame * channels..(frame + 1) * channels];
+            if channels == 1 {
+                row[0] = 0.5 * (l + r);
+            } else {
+                row[0] = l;
+                row[1] = r;
+            }
+        }
+        let done = Arc::new(AtomicBool::new(frames == 0));
+        let stream = open_format(
+            &device,
+            config,
+            format,
+            PreviewFill {
+                samples,
+                position: 0,
+                done: Arc::clone(&done),
+            },
+            |_| {},
+        )?;
+        stream.play()?;
+        Ok(Self {
+            _stream: stream,
+            done,
+        })
+    }
+
+    /// Whether the whole sound has been handed to the device.
+    pub fn finished(&self) -> bool {
+        self.done.load(Ordering::Relaxed)
+    }
+}
+
+struct PreviewFill {
+    samples: Vec<f32>,
+    position: usize,
+    done: Arc<AtomicBool>,
+}
+
+impl Fill for PreviewFill {
+    fn fill<T: Sample + FromSample<f32>>(&mut self, output: &mut [T]) {
+        for out in output.iter_mut() {
+            let v = self.samples.get(self.position).copied().unwrap_or(0.0);
+            *out = T::from_sample(v);
+            self.position += 1;
+        }
+        if self.position >= self.samples.len() {
+            self.done.store(true, Ordering::Relaxed);
+        }
+    }
+}
+
 fn open<T: SizedSample + FromSample<f32>>(
     device: &cpal::Device,
     config: StreamConfig,
@@ -1750,7 +1846,7 @@ mod tests {
         DeviceWriter::new(processor)
     }
 
-    /// input → gain 1 → output, fed by a stereo input path.
+    /// input → output, fed by a stereo input path.
     fn passthrough() -> (DeviceWriter, Capture) {
         let mut project = Project::new();
         let input = project.new_node_id();

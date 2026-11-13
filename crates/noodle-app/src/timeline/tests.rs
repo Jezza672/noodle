@@ -1784,8 +1784,7 @@ fn double_clicking_a_midi_clip_opens_it_and_audio_clips_do_not() {
     assert_eq!(h.state().opened, [id]);
 }
 
-/// Issue #419: a double-click on empty lane space starts a MIDI clip, as the
-/// menu does.
+/// A double-click on empty lane space starts a MIDI clip, as the menu does.
 #[test]
 fn double_clicking_an_empty_lane_makes_a_midi_clip_and_opens_it() {
     let (mut h, _) = rig();
@@ -1824,6 +1823,26 @@ fn the_lane_menu_makes_a_midi_clip_where_it_was_clicked() {
     assert_eq!(made.as_midi().unwrap().length, Tick(3840));
     assert_eq!(h.state().opened, [id]);
     assert!(h.state().timeline.selected().contains(&id));
+}
+
+#[test]
+fn a_selected_range_offers_convert_to_sample_node_and_a_bare_lane_does_not() {
+    let (mut h, _) = rig();
+    let pos = Pos2::new(150.0 + 130.0, 22.0 + 64.0 + 30.0);
+    click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, pos);
+    assert!(h.query_by_label("Convert to sample node").is_none());
+    h.key_press(Key::Escape);
+    h.run();
+    h.state_mut().timeline.range = super::sections::Range::new(Tick(0), Tick(3840));
+    click_with(&mut h, PointerButton::Secondary, Modifiers::NONE, pos);
+    h.get_by_label("Convert to sample node").click();
+    h.run();
+    // The mix is bounced in the background, as the request was made.
+    assert!(
+        h.state().session.render_progress().is_some(),
+        "{:?}",
+        h.state().session.message()
+    );
 }
 
 #[test]
@@ -2384,7 +2403,17 @@ fn the_ruler_menu_adds_a_tempo_change_at_the_bar() {
 fn a_time_signature_change_shows_as_a_ruler_marker_that_can_be_removed() {
     let (mut h, _) = rig();
     right_click_ruler(&mut h, 150.0 + 2.0 * 240.0 + 20.0);
-    h.get_by_label("Time signature 3/4").click();
+    h.get_by_label("Insert time signature change at bar 3")
+        .click();
+    h.run();
+    // Nothing changes until it is entered; the field starts with the
+    // signature already there, selected, so typing replaces it.
+    assert_eq!(signatures(&h), vec![(0, "4/4".to_string())]);
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .find(|n| n.value().as_deref() == Some("4/4"))
+        .expect("the signature field")
+        .type_text("3/4");
+    h.key_press(Key::Enter);
     h.run();
     assert_eq!(
         signatures(&h),
@@ -2811,7 +2840,7 @@ fn dropping_a_track_between_a_folders_tracks_puts_it_in_the_folder() {
 
 #[test]
 fn double_clicking_right_on_the_lane_edge_shrinks_the_track() {
-    // Issue #422: on the edge itself, either side of it, and just inside.
+    // On the edge itself, either side of it, and just inside.
     for dy in [-3.0, -0.5, 0.5, 2.0] {
         let (mut h, _) = rig();
         let (_, input, _) = add_real_track(&mut h);
@@ -2848,4 +2877,125 @@ fn a_lane_can_be_shrunk_to_just_its_name_and_grown_back() {
     h.run();
     assert!(!h.state().timeline.name_only(input));
     assert!(h.query_by_label("RA").is_some());
+}
+
+#[test]
+fn double_clicking_a_marker_opens_its_properties_and_renames_it() {
+    let (mut h, _) = rig();
+    let session = &mut h.state_mut().session;
+    session.edit([Edit::Apply(Command::SetMarkers(vec![
+        noodle_core::Marker {
+            at: Tick(3840),
+            name: "Verse".into(),
+            key: None,
+        },
+    ]))]);
+    h.run();
+    double_click(&mut h, Pos2::new(150.0 + 240.0 + 8.0, 6.0));
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .find(|n| n.value().as_deref() == Some("Verse"))
+        .expect("the name field")
+        .click();
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run();
+    h.get_all_by_role(egui::accesskit::Role::TextInput)
+        .find(|n| n.value().as_deref() == Some("Verse"))
+        .expect("the name field")
+        .type_text("Chorus");
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+    let names: Vec<_> = h
+        .state()
+        .session
+        .project()
+        .markers()
+        .iter()
+        .map(|m| m.name.clone())
+        .collect();
+    assert_eq!(names, vec!["Chorus".to_string()]);
+}
+
+#[test]
+fn typed_time_signatures_read_n_over_d() {
+    use super::parse_signature;
+    assert_eq!(
+        parse_signature(" 7 / 8 ").map(|s| s.to_string()),
+        Some("7/8".into())
+    );
+    assert!(parse_signature("seven").is_none());
+}
+
+#[test]
+fn escape_while_typing_a_time_signature_changes_nothing() {
+    let (mut h, _) = rig();
+    right_click_ruler(&mut h, 150.0 + 2.0 * 240.0 + 20.0);
+    h.get_by_label("Insert time signature change at bar 3")
+        .click();
+    h.run();
+    h.key_press(Key::Escape);
+    h.run();
+    assert_eq!(signatures(&h), vec![(0, "4/4".to_string())]);
+    assert!(h.state().timeline.signature_edit.is_none());
+    h.state_mut().session.undo();
+    assert_eq!(signatures(&h), vec![(0, "4/4".to_string())]);
+}
+
+/// Types `text` into the one single-line field showing `was`.
+fn retype(h: &mut H, was: &str, text: &str) {
+    fn field<'a>(h: &'a H, was: &str) -> egui_kittest::Node<'a> {
+        h.get_all_by_role(egui::accesskit::Role::TextInput)
+            .find(|n| n.value().as_deref() == Some(was))
+            .expect("the field")
+    }
+    field(h, was).click();
+    h.run();
+    h.key_press_modifiers(Modifiers::COMMAND, Key::A);
+    h.run();
+    field(h, was).type_text(text);
+    h.run();
+    h.key_press(Key::Enter);
+    h.run();
+}
+
+#[test]
+fn clicking_a_signature_label_or_a_marker_name_edits_it_in_place() {
+    let (mut h, _) = rig();
+    let session = &mut h.state_mut().session;
+    session.edit([Edit::Apply(Command::SetMarkers(vec![
+        noodle_core::Marker {
+            at: Tick(3840),
+            name: "Verse".into(),
+            key: None,
+        },
+    ]))]);
+    let map = session.project().tempo_map();
+    let map = crate::tempo::with_signature_at(
+        map,
+        2,
+        noodle_core::TimeSignature {
+            numerator: 3,
+            denominator: 4,
+        },
+    )
+    .unwrap();
+    session.edit([Edit::Apply(Command::SetTempoMap(map))]);
+    h.run();
+    // The marker's flag: a click types its name there, no popup.
+    click(&mut h, Pos2::new(150.0 + 240.0 + 8.0, 6.0), Modifiers::NONE);
+    retype(&mut h, "Verse", "Chorus");
+    assert_eq!(h.state().session.project().markers()[0].name, "Chorus");
+    assert!(h.state().timeline.marker_popup.is_none());
+    // The signature label at bar 3: a click types over it.
+    click(
+        &mut h,
+        Pos2::new(150.0 + 2.0 * 240.0 + 10.0, 22.0),
+        Modifiers::NONE,
+    );
+    retype(&mut h, "3/4", "6/8");
+    assert_eq!(
+        signatures(&h),
+        vec![(0, "4/4".to_string()), (2, "6/8".to_string())]
+    );
 }

@@ -10,6 +10,7 @@ use noodle_engine::{
     Shape, Telemetry, Unit,
 };
 
+use crate::level::db_to_gain;
 use crate::sample::{Sample, SampleRef, SampleStore};
 use crate::sample_set::{
     CHOICE_CUT, CHOICE_SEPARATOR, SetEntry, SetTables, is_choice, is_set, parse_set,
@@ -36,8 +37,9 @@ use crate::sampler_stretch::{Msg, NodeLinks, Service, Stretched, render, tempo_k
 /// the nearest key that has any recording (ties to the lower), then the
 /// velocity layer (`vel_curve` bends the velocity first; a key's layers split
 /// the range evenly), then a take among that layer's round-robin slots
-/// (`rr_mode`: cycle, random, or random without repeating; random uses the
-/// node's seed, so renders repeat). The note is repitched from that
+/// (`rr_mode`: cycle, random, random without repeating, or fixed, which
+/// always plays slot `rr_pick`, counted from 1 and clamped to the slots there
+/// are; random uses the node's seed, so renders repeat). The note is repitched from that
 /// recording's own root, so `root` is not used. Everything is looked up in
 /// tables built with the node, so a note-on allocates nothing. A set plays
 /// as Repitch, without the gain envelope or a warp.
@@ -201,9 +203,15 @@ struct SamplerPorts {
     #[param(
         "rr_mode",
         "Round-robin",
-        ParamInfo::choice(["Cycle", "Random", "No repeat"])
+        ParamInfo::choice(["Cycle", "Random", "No repeat", "Fixed"])
     )]
     rr_mode: (),
+    #[param(
+        "rr_pick",
+        "Take",
+        ParamInfo::new(1.0, 1024.0, 1.0).smoothing(0.0)
+    )]
+    rr_pick: (),
     #[param(
         "sample_choice",
         "Sample choice",
@@ -271,7 +279,7 @@ impl NodeType for Sampler {
 
     fn cache_inputs(
         &self,
-        _node: noodle_core::NodeId,
+        _node: NodeId,
         config: &Config,
         _env: &noodle_engine::CacheEnv<'_>,
         _key: &mut noodle_core::KeyBuilder,
@@ -378,6 +386,15 @@ struct Voice {
     old_piece: usize,
 }
 
+impl Voice {
+    /// Lets go of the note, fading out by `fade_step` a frame.
+    fn release(&mut self, fade_step: f32) {
+        self.held = false;
+        self.releasing = true;
+        self.fade_step = fade_step;
+    }
+}
+
 /// The gain envelope as a table of linear gains across the sample.
 struct Envelope {
     table: Option<Box<[f32]>>,
@@ -407,7 +424,7 @@ impl Envelope {
         let table = (0..=ENVELOPE_STEPS)
             .map(|i| {
                 let tick = i as f64 / ENVELOPE_STEPS as f64 * GAIN_ENV_SCALE;
-                10f32.powf(db_at(tick) / 20.0)
+                db_to_gain(db_at(tick))
             })
             .collect();
         Self { table: Some(table) }
@@ -547,7 +564,7 @@ impl SetPlay {
         Self {
             roots: entries
                 .iter()
-                .map(|e| f32::from(e.root.unwrap_or(60)))
+                .map(|e| e.root.map_or(DEFAULT_ROOT, f32::from))
                 .collect(),
             samples,
             tables,
@@ -555,9 +572,7 @@ impl SetPlay {
             last: vec![u32::MAX; layers].into_boxed_slice(),
         }
     }
-}
 
-impl SetPlay {
     /// The recording a note plays: the sample, the key it sounds at its own
     /// pitch, and the entry.
     fn pick(
@@ -571,6 +586,7 @@ impl SetPlay {
         let zone = self.tables.layer(key, bent)?;
         let (n, slot) = (zone.entries.len(), zone.slot);
         let take = match s.rr_mode {
+            3 => (s.rr_pick as usize).saturating_sub(1).min(n - 1),
             0 => {
                 let i = self.counters[slot] as usize % n;
                 self.counters[slot] = self.counters[slot].wrapping_add(1);
@@ -708,6 +724,7 @@ struct Settings {
     bend_range: f32,
     vel_curve: f32,
     rr_mode: u8,
+    rr_pick: u32,
 }
 
 impl Settings {
@@ -727,10 +744,11 @@ impl Settings {
             loop_start: get(SamplerPorts::LOOP_START).clamp(0.0, 1.0),
             loop_end: get(SamplerPorts::LOOP_END).clamp(0.0, 1.0),
             release: get(SamplerPorts::RELEASE).max(0.001),
-            gain: 10f32.powf(get(SamplerPorts::GAIN) / 20.0),
+            gain: db_to_gain(get(SamplerPorts::GAIN)),
             bend_range: get(SamplerPorts::BEND_RANGE).clamp(0.0, 48.0),
             vel_curve: get(SamplerPorts::VEL_CURVE).clamp(-1.0, 1.0),
-            rr_mode: get(SamplerPorts::RR_MODE).round().clamp(0.0, 2.0) as u8,
+            rr_mode: get(SamplerPorts::RR_MODE).round().clamp(0.0, 3.0) as u8,
+            rr_pick: get(SamplerPorts::RR_PICK).round().clamp(1.0, 1024.0) as u32,
         }
     }
 }
@@ -775,14 +793,15 @@ impl SamplerNode {
         } + f64::from(s.tune) / 100.0;
         let step =
             f64::from(sample.sample_rate) / f64::from(self.sample_rate) * (semitones / 12.0).exp2();
-        let loop_range = (s.looping && !s.one_shot).then(|| {
-            let a = f64::from(s.loop_start) * frames;
-            let b = f64::from(s.loop_end) * frames;
-            // A loop must lie in the region and be a few samples long.
-            let (a, b) = (a.max(start), b.min(end));
-            (a, b)
-        });
-        let loop_range = loop_range.filter(|&(a, b)| b - a >= 2.0);
+        // A loop must lie in the region and be a few samples long.
+        let loop_range = (s.looping && !s.one_shot)
+            .then(|| {
+                (
+                    (f64::from(s.loop_start) * frames).max(start),
+                    (f64::from(s.loop_end) * frames).min(end),
+                )
+            })
+            .filter(|&(a, b)| b - a >= 2.0);
         // Positions are in the sample or in its stretched copy.
         let (start, end) = (from_source(domain, start), from_source(domain, end));
         let loop_range = loop_range.map(|(a, b)| (from_source(domain, a), from_source(domain, b)));
@@ -835,9 +854,7 @@ impl SamplerNode {
             .iter_mut()
             .filter(|v| v.active && v.note == id.0)
         {
-            v.held = false;
-            v.releasing = true;
-            v.fade_step = v.fade_step.max(step);
+            v.release(v.fade_step.max(step));
         }
     }
 
@@ -846,8 +863,7 @@ impl SamplerNode {
             if v.note == id.0 {
                 v.held = false;
                 if !v.one_shot {
-                    v.releasing = true;
-                    v.fade_step = 1.0 / (s.release * self.sample_rate).max(1.0);
+                    v.release(1.0 / (s.release * self.sample_rate).max(1.0));
                 }
             }
         }
@@ -937,9 +953,7 @@ impl SamplerNode {
                 .iter_mut()
                 .filter(|v| v.active && v.held && v.choice != index)
             {
-                v.held = false;
-                v.releasing = true;
-                v.fade_step = step;
+                v.release(step);
             }
         }
     }
@@ -1689,8 +1703,6 @@ mod tests {
         assert_eq!(play(&mut used), play(&mut fresh));
     }
 
-    // --- sample sets and bend ---
-
     use crate::sample_set::{SetEntry, set_to_text};
 
     /// A store with one constant sample per value (each 200 frames long) and
@@ -1792,6 +1804,27 @@ mod tests {
     }
 
     #[test]
+    fn fixed_round_robin_always_plays_the_picked_slot_and_clamps() {
+        let (store, config) = set_of(&[(0.1, 60, 1, 1), (0.2, 60, 1, 2), (0.3, 60, 1, 3)]);
+        let mut h = harness(&store, &config);
+        h.set(SamplerPorts::RR_MODE, 3.0);
+        for (pick, want) in [
+            (1.0, 0.1),
+            (2.0, 0.2),
+            (3.0, 0.3),
+            (3.0, 0.3),
+            (9.0, 0.3),
+            (0.0, 0.1),
+        ] {
+            h.set(SamplerPorts::RR_PICK, pick);
+            for i in 0..2 {
+                let got = played(&mut h, 60, 1.0, i + 1);
+                assert!((got - want).abs() < 1e-4, "pick {pick}: {got}");
+            }
+        }
+    }
+
+    #[test]
     fn random_round_robin_repeats_between_renders_and_can_avoid_repeats() {
         let run = |mode: f32| {
             let (store, config) = set_of(&[(0.1, 60, 1, 1), (0.2, 60, 1, 2), (0.3, 60, 1, 3)]);
@@ -1864,7 +1897,6 @@ mod tests {
         let want = 10.0 * (2.0f32 / 12.0).exp2() * 0.001;
         assert!((left(&h)[10] - want).abs() < 2e-4, "{}", left(&h)[10]);
     }
-    // --- samples picked while audio runs ---
 
     /// A store with a constant sample per value, and a config that lists
     /// them as candidates to pick from.

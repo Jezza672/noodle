@@ -1,6 +1,6 @@
 //! S28: run backing tracks on stage.
 //!
-//! Blocked. There is no setlist of songs with their own tempo, click, cues and outputs (#366).
+//! Blocked. There is no setlist of songs with their own tempo, click, cues and outputs.
 //!
 //! A tripwire (see `tripwire.rs`): the route looks in the menus for a setlist
 //! and, while there is none, fails as blocked: the goal is not reached, so the

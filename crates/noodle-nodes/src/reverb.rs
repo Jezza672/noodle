@@ -74,13 +74,13 @@ const LINES: [f32; 8] = [
 /// The allpass delays at 48 kHz, for the left and right input.
 const ALLPASS: [[f32; 2]; 2] = [[142.0, 107.0], [379.0, 277.0]];
 const ALLPASS_GAIN: f32 = 0.6;
-/// Depth of the length wobble, in samples at 48 kHz, and its speed in hertz.
 /// Below this (about -120 dB) the input or the tail counts as silent.
 const INAUDIBLE: f32 = 1e-6;
 /// How many silent samples in a row, with the tail gone, before the node
 /// stops processing. More than the longest pre-delay, so nothing is still in
 /// flight.
 const IDLE_AFTER: usize = 48_000;
+/// Depth of the length wobble, in samples at 48 kHz, and its speed in hertz.
 const WOBBLE: f32 = 6.0;
 const WOBBLE_RATE: f32 = 0.31;
 /// What the input is scaled by going in and the wet by coming out, so a
@@ -121,22 +121,19 @@ impl NodeType for Reverb {
             lines: LINES.map(|n| Ring::new(line_len(n))),
             damp: [0.0; 8],
             predelay: [Ring::new(predelay), Ring::new(predelay)],
-            allpass: [
-                [
-                    Ring::new(((ALLPASS[0][0] * scale) as usize + 2).next_power_of_two()),
-                    Ring::new(((ALLPASS[1][0] * scale) as usize + 2).next_power_of_two()),
-                ],
-                [
-                    Ring::new(((ALLPASS[0][1] * scale) as usize + 2).next_power_of_two()),
-                    Ring::new(((ALLPASS[1][1] * scale) as usize + 2).next_power_of_two()),
-                ],
-            ],
+            allpass: allpass_rings(scale),
             phase: 0.0,
             left: vec![0.0; setup.max_frames].into_boxed_slice(),
             right: vec![0.0; setup.max_frames].into_boxed_slice(),
             quiet: 0,
         }))
     }
+}
+
+/// The allpass rings, indexed `[stage][side]` like [`ALLPASS`], each long
+/// enough for its delay at this rate.
+fn allpass_rings(scale: f32) -> [[Ring; 2]; 2] {
+    ALLPASS.map(|stage| stage.map(|n| Ring::new(((n * scale) as usize + 2).next_power_of_two())))
 }
 
 /// A ring buffer addressed by how long ago a sample was written.
@@ -356,6 +353,7 @@ impl Node for ReverbNode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::level::rms;
     use noodle_engine::testing::Harness;
 
     const RATE: f32 = 48_000.0;
@@ -364,6 +362,26 @@ mod tests {
 
     fn harness(shape: Shape) -> Harness {
         Harness::new(&Reverb, &Config::new(), &[(IN, shape)], RATE, 4_800).unwrap()
+    }
+
+    /// Each allpass ring holds its whole delay, so the read never wraps onto
+    /// a newer sample (#479).
+    #[test]
+    fn every_allpass_ring_is_longer_than_its_delay() {
+        for rate in [44_100.0, 48_000.0, 96_000.0, 192_000.0] {
+            let scale = rate / 48_000.0;
+            let rings = allpass_rings(scale);
+            for (stage, sides) in ALLPASS.iter().enumerate() {
+                for (side, &n) in sides.iter().enumerate() {
+                    let delay = n * scale;
+                    let len = rings[stage][side].data.len();
+                    assert!(
+                        (delay.ceil() as usize) < len,
+                        "allpass [{stage}][{side}] at {rate} Hz: delay {delay} in a ring of {len}"
+                    );
+                }
+            }
+        }
     }
 
     fn impulse(h: &mut Harness, blocks: usize) -> Vec<(Vec<f32>, Vec<f32>)> {
@@ -401,8 +419,7 @@ mod tests {
             (l, r)
         };
         let (whole, cut) = (play(4_800), play(96));
-        // Equal but for rounding in the phase; cutting the wobble by block
-        // used to differ by about 1e-2.
+        // Equal but for rounding in the phase.
         for (a, b) in [(&whole.0, &cut.0), (&whole.1, &cut.1)] {
             let worst = a
                 .iter()
@@ -412,10 +429,6 @@ mod tests {
             assert!(worst < 1e-4, "differs by {worst}");
         }
         assert!(rms(&whole.0) > 0.01, "the reverb sounds");
-    }
-
-    fn rms(x: &[f32]) -> f32 {
-        (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
     }
 
     #[test]

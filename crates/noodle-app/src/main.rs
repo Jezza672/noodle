@@ -12,6 +12,8 @@ mod clip_panel;
 mod clipboard;
 mod devices;
 mod dialog;
+mod display;
+mod drum_rack_dialog;
 mod editor;
 mod export_dialog;
 mod freezing;
@@ -34,11 +36,10 @@ mod sample_drop;
 mod sample_set_dialog;
 mod sample_view;
 mod session;
+mod settings;
 mod snap;
 mod stems_dialog;
-// The framework's API is ahead of the routes that will use it.
 #[cfg(test)]
-#[allow(dead_code)]
 mod stories;
 mod tempo;
 mod tempo_source;
@@ -47,6 +48,7 @@ mod testkit;
 mod theme;
 mod timeline;
 mod toolbar;
+mod transport_widgets;
 mod widgets;
 
 use std::process::ExitCode;
@@ -89,14 +91,10 @@ fn main() -> ExitCode {
     session.set_templates_dir(prefs::templates_dir());
     if let Some(path) = prefs::default_path() {
         let prefs = prefs::init(path);
-        session.set_audio_config(prefs.audio);
+        session.set_audio_config(prefs.audio.clone());
         session.set_sandbox_plugins(prefs.sandbox_plugins);
         session.set_monitor_device(&prefs.monitor_device);
-        session.set_auto_cache(prefs.auto_cache);
-        session.set_count_in_bars(prefs.count_in_bars);
-        session.set_record_midi(prefs.midi_record);
-        session.set_pre_roll_bars(prefs.pre_roll_bars);
-        session.set_automation_mode(prefs.automation_mode);
+        session.apply_user_settings(&prefs);
     }
     // The engine runs from the start, as in Ableton, so live MIDI plays
     // before anything else is done. The toolbar turns it off.

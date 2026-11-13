@@ -136,10 +136,6 @@ static INFO: NodeInfo = NodeInfo {
     category: "Events",
 };
 
-// ---------------------------------------------------------------------
-// The patterns, handed from the project to the audio thread.
-// ---------------------------------------------------------------------
-
 /// One note of a pattern, in ticks from the start of its clip.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PatternNote {
@@ -262,11 +258,11 @@ impl PatternShared {
     }
 }
 
-// ---------------------------------------------------------------------
-// The node type.
-// ---------------------------------------------------------------------
-
 impl NodeType for PatternPlayer {
+    fn pulses_on_beat(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }
@@ -299,10 +295,6 @@ impl NodeType for PatternPlayer {
         Ok(Instance::realtime(PatternNode::new(shared, salt)))
     }
 }
-
-// ---------------------------------------------------------------------
-// The node.
-// ---------------------------------------------------------------------
 
 /// The most notes sounding at once.
 const MAX_SOUNDING: usize = 64;
@@ -552,7 +544,7 @@ impl PatternNode {
             let c0 = base + from as f64 * pps;
             let c1 = base + to as f64 * pps;
             let looping = p.mode == LOOP;
-            if let Some(slot) = set.slots.get(p.slot.min(set.slots.len().saturating_sub(1))) {
+            if let Some(slot) = chosen_slot(set, p) {
                 let (k0, k1) = if looping {
                     (
                         (c0 / p.len).floor() as i64,
@@ -605,7 +597,7 @@ impl PatternNode {
     ) {
         let w = self.step_index % p.steps.max(1);
         self.step_index = (w + 1) % p.steps.max(1);
-        let Some(slot) = set.slots.get(p.slot.min(set.slots.len().saturating_sub(1))) else {
+        let Some(slot) = chosen_slot(set, p) else {
             return;
         };
         let lo = p.ws + w as f64 * p.step;
@@ -653,7 +645,7 @@ impl PatternNode {
         self.origin = f64::NAN;
     }
 
-    fn play_audition(&mut self, out: &mut EventsOut<'_>, frames: usize) {
+    fn play_audition(&mut self, out: &mut EventsOut<'_>) {
         for word in 0..2 {
             let wanted = self.shared.audition[word].load(Ordering::Relaxed);
             let mut changed = wanted ^ self.audition_held[word];
@@ -680,7 +672,6 @@ impl PatternNode {
                 }
             }
         }
-        let _ = frames;
     }
 }
 
@@ -726,10 +717,7 @@ impl Node for PatternNode {
         let pps = tps * p.rate;
 
         // A change of what is played ends the notes of the old one.
-        let slot_len = set
-            .slots
-            .get(p.slot.min(set.slots.len().saturating_sub(1)))
-            .map_or(0, |s| s.length);
+        let slot_len = chosen_slot(&set, &p).map_or(0, |s| s.length);
         let signature = (p.mode, p.slot, p.ws as i64, p.len as i64, slot_len);
         let mut changed = self.signature != signature;
         // Transport sync follows the timeline: a stop or a jump leaves the
@@ -745,7 +733,7 @@ impl Node for PatternNode {
         }
         if changed {
             self.all_off(out, frames, 0);
-            if p.mode != signature_mode(self.signature) {
+            if p.mode != self.signature.0 {
                 self.active = false;
                 self.latched = false;
             }
@@ -882,7 +870,7 @@ impl Node for PatternNode {
         }
         fill(gate, level, at, frames, self.count, self.last_velocity);
 
-        self.play_audition(out, frames);
+        self.play_audition(out);
         self.now += frames as u64;
     }
 
@@ -911,8 +899,9 @@ impl Node for PatternNode {
     }
 }
 
-fn signature_mode(signature: (u8, usize, i64, i64, i64)) -> u8 {
-    signature.0
+/// The slot `p.slot` picks; the last one if it is past the end.
+fn chosen_slot<'a>(set: &'a PatternSet, p: &Params) -> Option<&'a PatternSlot> {
+    set.slots.get(p.slot.min(set.slots.len().saturating_sub(1)))
 }
 
 fn fill(gate: &mut [f32], level: &mut [f32], from: usize, to: usize, count: u32, velocity: f32) {

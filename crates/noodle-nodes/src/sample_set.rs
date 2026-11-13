@@ -117,9 +117,6 @@ pub fn sample_hashes(text: &str) -> Vec<String> {
     }
 }
 
-// ---------------------------------------------------------------------------
-// Reading file names
-
 /// What a file name says about its recording.
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct NameInfo {
@@ -191,7 +188,6 @@ pub fn parse_name(stem: &str, middle_c: i64) -> NameInfo {
         {
             info.note = Some(note);
         } else if bare.is_none()
-            && !token.is_empty()
             && token.chars().all(|c| c.is_ascii_digit())
             && let Ok(n) = token.parse::<u32>()
             && n <= 127
@@ -259,9 +255,6 @@ pub fn rows_from_files(files: &[(String, String)], middle_c: i64) -> Vec<Row> {
 fn file_stem(name: &str) -> &str {
     name.rsplit_once('.').map_or(name, |(stem, _)| stem)
 }
-
-// ---------------------------------------------------------------------------
-// Rescan
 
 /// What a rescan of a folder would change in a set.
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -336,9 +329,6 @@ pub fn rescan(old: &[Row], found: &[(String, String)], middle_c: i64) -> Rescan 
         .collect();
     out
 }
-
-// ---------------------------------------------------------------------------
-// Playing a set
 
 /// One velocity layer of one key: the entries that take turns.
 #[derive(Clone, Debug)]
@@ -433,14 +423,17 @@ impl SetTables {
             .roots
             .get(usize::from(root))
             .filter(|_| root != NO_ROOT)?;
-        let n = zone.layers.len();
-        let midi = (velocity.clamp(0.0, 1.0) * 127.0).round().clamp(1.0, 127.0) as usize;
-        zone.layers.get(((midi - 1) * n / 127).min(n - 1))
+        zone.layers.get(velocity_layer(velocity, zone.layers.len()))
     }
 }
 
-// ---------------------------------------------------------------------------
-// The node
+/// The layer (from 0, softest) that `velocity` (0 to 1) plays among `layers`,
+/// which split MIDI velocities 1 to 127 evenly. The one place that rule lives.
+pub fn velocity_layer(velocity: f32, layers: usize) -> usize {
+    let n = layers.max(1);
+    let midi = (velocity.clamp(0.0, 1.0) * 127.0).round().clamp(1.0, 127.0) as usize;
+    ((midi - 1) * n / 127).min(n - 1)
+}
 
 /// Holds a list of recordings, each with its key, velocity layer and
 /// round-robin slot, and puts the whole set on its `sample` output. Wire it to
@@ -608,16 +601,15 @@ mod tests {
 
     #[test]
     fn layers_are_ranked_per_note_softest_first() {
-        let files: Vec<(String, String)> = [
-            ("C4_ff.wav", "a"),
-            ("C4_pp.wav", "b"),
-            ("D4_mf.wav", "c"),
-            ("C4_pp_rr2.wav", "d"),
-        ]
-        .iter()
-        .map(|(n, h)| ((*n).to_owned(), (*h).to_owned()))
-        .collect();
-        let rows = rows_from_files(&files, 4);
+        let rows = rows_from_files(
+            &files(&[
+                ("C4_ff.wav", "a"),
+                ("C4_pp.wav", "b"),
+                ("D4_mf.wav", "c"),
+                ("C4_pp_rr2.wav", "d"),
+            ]),
+            4,
+        );
         let by = |name: &str| rows.iter().find(|r| r.name == name).unwrap().entry.clone();
         assert_eq!(by("C4_pp.wav").layer, 1);
         assert_eq!(by("C4_ff.wav").layer, 2);

@@ -10,7 +10,7 @@
             ),
             2: (
                 type: "noodle.group.input",
-                config: {"ports": "1:notes\n2:Swing\n3:Stomp level\n4:Stomp tune\n5:Stomp pan\n6:Stomp choke\n7:Chest Slap level\n8:Chest Slap tune\n9:Chest Slap pan\n10:Chest Slap choke\n11:Clap level\n12:Clap tune\n13:Clap pan\n14:Clap choke\n15:Finger Snap level\n16:Finger Snap tune\n17:Finger Snap pan\n18:Finger Snap choke\n19:Snap level\n20:Snap tune\n21:Snap pan\n22:Snap choke\n23:Belly level\n24:Belly tune\n25:Belly pan\n26:Belly choke\n27:Chest Thump level\n28:Chest Thump tune\n29:Chest Thump pan\n30:Chest Thump choke\n31:Cheek Pop level\n32:Cheek Pop tune\n33:Cheek Pop pan\n34:Cheek Pop choke"},
+                config: {"ports": "1:notes\n2:Swing\n3:Stomp key\n4:Stomp level\n5:Stomp tune\n6:Stomp pan\n7:Chest Slap key\n8:Chest Slap level\n9:Chest Slap tune\n10:Chest Slap pan\n11:Clap key\n12:Clap level\n13:Clap tune\n14:Clap pan\n15:Finger Snap key\n16:Finger Snap level\n17:Finger Snap tune\n18:Finger Snap pan\n19:Snap key\n20:Snap level\n21:Snap tune\n22:Snap pan\n23:Belly key\n24:Belly level\n25:Belly tune\n26:Belly pan\n27:Chest Thump key\n28:Chest Thump level\n29:Chest Thump tune\n30:Chest Thump pan\n31:Cheek Pop key\n32:Cheek Pop level\n33:Cheek Pop tune\n34:Cheek Pop pan"},
                 position: (x: 0.0, y: 0.0),
                 parent: Some(1),
             ),
@@ -20,127 +20,360 @@
                 parent: Some(1),
             ),
             4: (
-                type: "noodle.event.note_split",
-                params: {"choke1": 0.0, "choke2": 0.0, "choke3": 0.0, "choke4": 1.0, "choke5": 1.0, "choke6": 0.0, "choke7": 0.0, "choke8": 0.0, "high1": 36.0, "high2": 38.0, "high3": 39.0, "high4": 42.0, "high5": 46.0, "high6": 45.0, "high7": 50.0, "high8": 49.0, "low1": 36.0, "low2": 38.0, "low3": 39.0, "low4": 42.0, "low5": 46.0, "low6": 45.0, "low7": 50.0, "low8": 49.0},
-                config: {"outputs": 8},
-                position: (x: 440.0, y: 0.0),
-                parent: Some(1),
-            ),
-            5: (
                 type: "noodle.util.mix",
                 config: {"inputs": 8},
                 position: (x: 1320.0, y: 0.0),
                 parent: Some(1),
             ),
-            6: (
+            5: (
                 type: "noodle.group.output",
                 config: {"ports": "1:out"},
                 position: (x: 1570.0, y: 0.0),
                 parent: Some(1),
             ),
+            6: (
+                type: "noodle.group",
+                config: {"name": "Stomp"},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
             7: (
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(6),
+            ),
+            8: (
+                type: "noodle.event.note_split",
+                params: {"high1": 36.0, "low1": 36.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(6),
+            ),
+            9: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(6),
+            ),
+            10: (
                 type: "noodle.instrument.sampler",
                 params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
                 position: (x: 660.0, y: 0.0),
-                parent: Some(1),
+                parent: Some(6),
             ),
-            8: (
+            11: (
                 type: "noodle.util.pan",
                 params: {"pan": 0.0},
                 position: (x: 880.0, y: 0.0),
-                parent: Some(1),
+                parent: Some(6),
             ),
-            9: (
-                type: "noodle.instrument.sampler",
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+            12: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(6),
+            ),
+            13: (
+                type: "noodle.group",
+                config: {"name": "Chest Slap"},
                 position: (x: 660.0, y: 130.0),
                 parent: Some(1),
             ),
-            10: (
-                type: "noodle.util.pan",
-                params: {"pan": 0.0},
-                position: (x: 880.0, y: 130.0),
-                parent: Some(1),
-            ),
-            11: (
-                type: "noodle.instrument.sampler",
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
-                position: (x: 660.0, y: 260.0),
-                parent: Some(1),
-            ),
-            12: (
-                type: "noodle.util.pan",
-                params: {"pan": 0.0},
-                position: (x: 880.0, y: 260.0),
-                parent: Some(1),
-            ),
-            13: (
-                type: "noodle.instrument.sampler",
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "63a8af7c33a0adcd3b127f0f8ed6e4444aa221c3772b6b8d6b23e21b56648c67"},
-                position: (x: 660.0, y: 390.0),
-                parent: Some(1),
-            ),
             14: (
-                type: "noodle.util.pan",
-                params: {"pan": -0.0},
-                position: (x: 880.0, y: 390.0),
-                parent: Some(1),
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(13),
             ),
             15: (
-                type: "noodle.instrument.sampler",
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "72dc03fbd8c006825d129ad955808630628fc0601b67d6522ef06ddfd3e6a282"},
-                position: (x: 660.0, y: 520.0),
-                parent: Some(1),
+                type: "noodle.event.note_split",
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(13),
             ),
             16: (
-                type: "noodle.util.pan",
-                params: {"pan": 0.0},
-                position: (x: 880.0, y: 520.0),
-                parent: Some(1),
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(13),
             ),
             17: (
                 type: "noodle.instrument.sampler",
                 params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "f9eabc8d898bc0356c576644ed322cdec0ab093aea71647911175c58ed18be56"},
-                position: (x: 660.0, y: 650.0),
-                parent: Some(1),
+                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(13),
             ),
             18: (
                 type: "noodle.util.pan",
-                params: {"pan": -0.0},
-                position: (x: 880.0, y: 650.0),
-                parent: Some(1),
+                params: {"pan": 0.0},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(13),
             ),
             19: (
-                type: "noodle.instrument.sampler",
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
-                position: (x: 660.0, y: 780.0),
-                parent: Some(1),
+                type: "noodle.group.output",
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(13),
             ),
             20: (
-                type: "noodle.util.pan",
-                params: {"pan": 0.0},
-                position: (x: 880.0, y: 780.0),
+                type: "noodle.group",
+                config: {"name": "Clap"},
+                position: (x: 660.0, y: 260.0),
                 parent: Some(1),
             ),
             21: (
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(20),
+            ),
+            22: (
+                type: "noodle.event.note_split",
+                params: {"high1": 39.0, "low1": 39.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(20),
+            ),
+            23: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(20),
+            ),
+            24: (
                 type: "noodle.instrument.sampler",
                 params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "46b691499e779c95305fe8cbcd497206d7164ad139c34011df91f56783ded948"},
+                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(20),
+            ),
+            25: (
+                type: "noodle.util.pan",
+                params: {"pan": 0.0},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(20),
+            ),
+            26: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(20),
+            ),
+            27: (
+                type: "noodle.group",
+                config: {"name": "Finger Snap"},
+                position: (x: 660.0, y: 390.0),
+                parent: Some(1),
+            ),
+            28: (
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(27),
+            ),
+            29: (
+                type: "noodle.event.note_split",
+                params: {"high1": 42.0, "low1": 42.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(27),
+            ),
+            30: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(27),
+            ),
+            31: (
+                type: "noodle.instrument.sampler",
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "63a8af7c33a0adcd3b127f0f8ed6e4444aa221c3772b6b8d6b23e21b56648c67"},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(27),
+            ),
+            32: (
+                type: "noodle.util.pan",
+                params: {"pan": -0.0},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(27),
+            ),
+            33: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(27),
+            ),
+            34: (
+                type: "noodle.group",
+                config: {"name": "Snap"},
+                position: (x: 660.0, y: 520.0),
+                parent: Some(1),
+            ),
+            35: (
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(34),
+            ),
+            36: (
+                type: "noodle.event.note_split",
+                params: {"high1": 46.0, "low1": 46.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(34),
+            ),
+            37: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(34),
+            ),
+            38: (
+                type: "noodle.instrument.sampler",
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "72dc03fbd8c006825d129ad955808630628fc0601b67d6522ef06ddfd3e6a282"},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(34),
+            ),
+            39: (
+                type: "noodle.util.pan",
+                params: {"pan": 0.0},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(34),
+            ),
+            40: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(34),
+            ),
+            41: (
+                type: "noodle.group",
+                config: {"name": "Belly"},
+                position: (x: 660.0, y: 650.0),
+                parent: Some(1),
+            ),
+            42: (
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(41),
+            ),
+            43: (
+                type: "noodle.event.note_split",
+                params: {"high1": 45.0, "low1": 45.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(41),
+            ),
+            44: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(41),
+            ),
+            45: (
+                type: "noodle.instrument.sampler",
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "f9eabc8d898bc0356c576644ed322cdec0ab093aea71647911175c58ed18be56"},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(41),
+            ),
+            46: (
+                type: "noodle.util.pan",
+                params: {"pan": -0.0},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(41),
+            ),
+            47: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(41),
+            ),
+            48: (
+                type: "noodle.group",
+                config: {"name": "Chest Thump"},
+                position: (x: 660.0, y: 780.0),
+                parent: Some(1),
+            ),
+            49: (
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(48),
+            ),
+            50: (
+                type: "noodle.event.note_split",
+                params: {"high1": 50.0, "low1": 50.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(48),
+            ),
+            51: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(48),
+            ),
+            52: (
+                type: "noodle.instrument.sampler",
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(48),
+            ),
+            53: (
+                type: "noodle.util.pan",
+                params: {"pan": 0.0},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(48),
+            ),
+            54: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(48),
+            ),
+            55: (
+                type: "noodle.group",
+                config: {"name": "Cheek Pop"},
                 position: (x: 660.0, y: 910.0),
                 parent: Some(1),
             ),
-            22: (
+            56: (
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:key\n3:level\n4:tune\n5:pan\n6:choke in\n7:sample\n8:take"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(55),
+            ),
+            57: (
+                type: "noodle.event.note_split",
+                params: {"high1": 49.0, "low1": 49.0},
+                config: {"outputs": 1},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(55),
+            ),
+            58: (
+                type: "noodle.event.choke_gate",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(55),
+            ),
+            59: (
+                type: "noodle.instrument.sampler",
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "46b691499e779c95305fe8cbcd497206d7164ad139c34011df91f56783ded948"},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(55),
+            ),
+            60: (
                 type: "noodle.util.pan",
                 params: {"pan": 0.0},
-                position: (x: 880.0, y: 910.0),
-                parent: Some(1),
+                position: (x: 880.0, y: 0.0),
+                parent: Some(55),
+            ),
+            61: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out\n2:choke out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(55),
             ),
         },
         connections: [
@@ -153,187 +386,175 @@
                 to: (node: 3, port: "in"),
             ),
             (
-                from: (node: 2, port: "p6"),
-                to: (node: 4, port: "choke1"),
+                from: (node: 6, port: "out"),
+                to: (node: 4, port: "in1"),
             ),
             (
-                from: (node: 2, port: "p10"),
-                to: (node: 4, port: "choke2"),
-            ),
-            (
-                from: (node: 2, port: "p14"),
-                to: (node: 4, port: "choke3"),
-            ),
-            (
-                from: (node: 2, port: "p18"),
-                to: (node: 4, port: "choke4"),
-            ),
-            (
-                from: (node: 2, port: "p22"),
-                to: (node: 4, port: "choke5"),
-            ),
-            (
-                from: (node: 2, port: "p26"),
-                to: (node: 4, port: "choke6"),
-            ),
-            (
-                from: (node: 2, port: "p30"),
-                to: (node: 4, port: "choke7"),
-            ),
-            (
-                from: (node: 2, port: "p34"),
-                to: (node: 4, port: "choke8"),
-            ),
-            (
-                from: (node: 3, port: "out"),
-                to: (node: 4, port: "in"),
-            ),
-            (
-                from: (node: 8, port: "out"),
-                to: (node: 5, port: "in1"),
-            ),
-            (
-                from: (node: 10, port: "out"),
-                to: (node: 5, port: "in2"),
-            ),
-            (
-                from: (node: 12, port: "out"),
-                to: (node: 5, port: "in3"),
-            ),
-            (
-                from: (node: 14, port: "out"),
-                to: (node: 5, port: "in4"),
-            ),
-            (
-                from: (node: 16, port: "out"),
-                to: (node: 5, port: "in5"),
-            ),
-            (
-                from: (node: 18, port: "out"),
-                to: (node: 5, port: "in6"),
+                from: (node: 13, port: "out"),
+                to: (node: 4, port: "in2"),
             ),
             (
                 from: (node: 20, port: "out"),
-                to: (node: 5, port: "in7"),
+                to: (node: 4, port: "in3"),
             ),
             (
-                from: (node: 22, port: "out"),
-                to: (node: 5, port: "in8"),
+                from: (node: 27, port: "out"),
+                to: (node: 4, port: "in4"),
             ),
             (
-                from: (node: 5, port: "out"),
-                to: (node: 6, port: "p1"),
+                from: (node: 34, port: "out"),
+                to: (node: 4, port: "in5"),
+            ),
+            (
+                from: (node: 41, port: "out"),
+                to: (node: 4, port: "in6"),
+            ),
+            (
+                from: (node: 48, port: "out"),
+                to: (node: 4, port: "in7"),
+            ),
+            (
+                from: (node: 55, port: "out"),
+                to: (node: 4, port: "in8"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "p1"),
             ),
             (
                 from: (node: 2, port: "p3"),
-                to: (node: 7, port: "gain"),
-            ),
-            (
-                from: (node: 4, port: "out1"),
-                to: (node: 7, port: "in"),
+                to: (node: 6, port: "key"),
             ),
             (
                 from: (node: 2, port: "p4"),
-                to: (node: 7, port: "tune"),
+                to: (node: 6, port: "level"),
             ),
             (
-                from: (node: 7, port: "out"),
-                to: (node: 8, port: "in"),
+                from: (node: 3, port: "out"),
+                to: (node: 6, port: "notes"),
+            ),
+            (
+                from: (node: 2, port: "p6"),
+                to: (node: 6, port: "pan"),
             ),
             (
                 from: (node: 2, port: "p5"),
-                to: (node: 8, port: "pan"),
+                to: (node: 6, port: "tune"),
             ),
             (
-                from: (node: 2, port: "p7"),
-                to: (node: 9, port: "gain"),
+                from: (node: 7, port: "p2"),
+                to: (node: 8, port: "high1"),
             ),
             (
-                from: (node: 4, port: "out2"),
+                from: (node: 7, port: "p1"),
+                to: (node: 8, port: "in"),
+            ),
+            (
+                from: (node: 7, port: "p2"),
+                to: (node: 8, port: "low1"),
+            ),
+            (
+                from: (node: 7, port: "p6"),
+                to: (node: 9, port: "choke"),
+            ),
+            (
+                from: (node: 8, port: "out1"),
                 to: (node: 9, port: "in"),
             ),
             (
-                from: (node: 2, port: "p8"),
-                to: (node: 9, port: "tune"),
+                from: (node: 7, port: "p3"),
+                to: (node: 10, port: "gain"),
             ),
             (
                 from: (node: 9, port: "out"),
                 to: (node: 10, port: "in"),
             ),
             (
-                from: (node: 2, port: "p9"),
-                to: (node: 10, port: "pan"),
+                from: (node: 7, port: "p8"),
+                to: (node: 10, port: "rr_pick"),
             ),
             (
-                from: (node: 2, port: "p11"),
-                to: (node: 11, port: "gain"),
+                from: (node: 7, port: "p7"),
+                to: (node: 10, port: "sample"),
             ),
             (
-                from: (node: 4, port: "out3"),
+                from: (node: 7, port: "p4"),
+                to: (node: 10, port: "tune"),
+            ),
+            (
+                from: (node: 10, port: "out"),
                 to: (node: 11, port: "in"),
             ),
             (
-                from: (node: 2, port: "p12"),
-                to: (node: 11, port: "tune"),
+                from: (node: 7, port: "p5"),
+                to: (node: 11, port: "pan"),
             ),
             (
                 from: (node: 11, port: "out"),
-                to: (node: 12, port: "in"),
+                to: (node: 12, port: "p1"),
             ),
             (
-                from: (node: 2, port: "p13"),
-                to: (node: 12, port: "pan"),
+                from: (node: 8, port: "out1"),
+                to: (node: 12, port: "p2"),
             ),
             (
-                from: (node: 2, port: "p15"),
-                to: (node: 13, port: "gain"),
+                from: (node: 2, port: "p7"),
+                to: (node: 13, port: "key"),
             ),
             (
-                from: (node: 4, port: "out4"),
-                to: (node: 13, port: "in"),
+                from: (node: 2, port: "p8"),
+                to: (node: 13, port: "level"),
             ),
             (
-                from: (node: 2, port: "p16"),
+                from: (node: 3, port: "out"),
+                to: (node: 13, port: "notes"),
+            ),
+            (
+                from: (node: 2, port: "p10"),
+                to: (node: 13, port: "pan"),
+            ),
+            (
+                from: (node: 2, port: "p9"),
                 to: (node: 13, port: "tune"),
             ),
             (
-                from: (node: 13, port: "out"),
-                to: (node: 14, port: "in"),
+                from: (node: 14, port: "p2"),
+                to: (node: 15, port: "high1"),
             ),
             (
-                from: (node: 2, port: "p17"),
-                to: (node: 14, port: "pan"),
-            ),
-            (
-                from: (node: 2, port: "p19"),
-                to: (node: 15, port: "gain"),
-            ),
-            (
-                from: (node: 4, port: "out5"),
+                from: (node: 14, port: "p1"),
                 to: (node: 15, port: "in"),
             ),
             (
-                from: (node: 2, port: "p20"),
-                to: (node: 15, port: "tune"),
+                from: (node: 14, port: "p2"),
+                to: (node: 15, port: "low1"),
             ),
             (
-                from: (node: 15, port: "out"),
+                from: (node: 14, port: "p6"),
+                to: (node: 16, port: "choke"),
+            ),
+            (
+                from: (node: 15, port: "out1"),
                 to: (node: 16, port: "in"),
             ),
             (
-                from: (node: 2, port: "p21"),
-                to: (node: 16, port: "pan"),
-            ),
-            (
-                from: (node: 2, port: "p23"),
+                from: (node: 14, port: "p3"),
                 to: (node: 17, port: "gain"),
             ),
             (
-                from: (node: 4, port: "out6"),
+                from: (node: 16, port: "out"),
                 to: (node: 17, port: "in"),
             ),
             (
-                from: (node: 2, port: "p24"),
+                from: (node: 14, port: "p8"),
+                to: (node: 17, port: "rr_pick"),
+            ),
+            (
+                from: (node: 14, port: "p7"),
+                to: (node: 17, port: "sample"),
+            ),
+            (
+                from: (node: 14, port: "p4"),
                 to: (node: 17, port: "tune"),
             ),
             (
@@ -341,267 +562,879 @@
                 to: (node: 18, port: "in"),
             ),
             (
-                from: (node: 2, port: "p25"),
+                from: (node: 14, port: "p5"),
                 to: (node: 18, port: "pan"),
             ),
             (
-                from: (node: 2, port: "p27"),
-                to: (node: 19, port: "gain"),
+                from: (node: 18, port: "out"),
+                to: (node: 19, port: "p1"),
             ),
             (
-                from: (node: 4, port: "out7"),
-                to: (node: 19, port: "in"),
+                from: (node: 15, port: "out1"),
+                to: (node: 19, port: "p2"),
             ),
             (
-                from: (node: 2, port: "p28"),
-                to: (node: 19, port: "tune"),
+                from: (node: 2, port: "p11"),
+                to: (node: 20, port: "key"),
             ),
             (
-                from: (node: 19, port: "out"),
-                to: (node: 20, port: "in"),
+                from: (node: 2, port: "p12"),
+                to: (node: 20, port: "level"),
             ),
             (
-                from: (node: 2, port: "p29"),
+                from: (node: 3, port: "out"),
+                to: (node: 20, port: "notes"),
+            ),
+            (
+                from: (node: 2, port: "p14"),
                 to: (node: 20, port: "pan"),
             ),
             (
-                from: (node: 2, port: "p31"),
-                to: (node: 21, port: "gain"),
+                from: (node: 2, port: "p13"),
+                to: (node: 20, port: "tune"),
             ),
             (
-                from: (node: 4, port: "out8"),
-                to: (node: 21, port: "in"),
+                from: (node: 21, port: "p2"),
+                to: (node: 22, port: "high1"),
             ),
             (
-                from: (node: 2, port: "p32"),
-                to: (node: 21, port: "tune"),
-            ),
-            (
-                from: (node: 21, port: "out"),
+                from: (node: 21, port: "p1"),
                 to: (node: 22, port: "in"),
             ),
             (
+                from: (node: 21, port: "p2"),
+                to: (node: 22, port: "low1"),
+            ),
+            (
+                from: (node: 21, port: "p6"),
+                to: (node: 23, port: "choke"),
+            ),
+            (
+                from: (node: 22, port: "out1"),
+                to: (node: 23, port: "in"),
+            ),
+            (
+                from: (node: 21, port: "p3"),
+                to: (node: 24, port: "gain"),
+            ),
+            (
+                from: (node: 23, port: "out"),
+                to: (node: 24, port: "in"),
+            ),
+            (
+                from: (node: 21, port: "p8"),
+                to: (node: 24, port: "rr_pick"),
+            ),
+            (
+                from: (node: 21, port: "p7"),
+                to: (node: 24, port: "sample"),
+            ),
+            (
+                from: (node: 21, port: "p4"),
+                to: (node: 24, port: "tune"),
+            ),
+            (
+                from: (node: 24, port: "out"),
+                to: (node: 25, port: "in"),
+            ),
+            (
+                from: (node: 21, port: "p5"),
+                to: (node: 25, port: "pan"),
+            ),
+            (
+                from: (node: 25, port: "out"),
+                to: (node: 26, port: "p1"),
+            ),
+            (
+                from: (node: 22, port: "out1"),
+                to: (node: 26, port: "p2"),
+            ),
+            (
+                from: (node: 34, port: "choke out"),
+                to: (node: 27, port: "choke in"),
+            ),
+            (
+                from: (node: 2, port: "p15"),
+                to: (node: 27, port: "key"),
+            ),
+            (
+                from: (node: 2, port: "p16"),
+                to: (node: 27, port: "level"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 27, port: "notes"),
+            ),
+            (
+                from: (node: 2, port: "p18"),
+                to: (node: 27, port: "pan"),
+            ),
+            (
+                from: (node: 2, port: "p17"),
+                to: (node: 27, port: "tune"),
+            ),
+            (
+                from: (node: 28, port: "p2"),
+                to: (node: 29, port: "high1"),
+            ),
+            (
+                from: (node: 28, port: "p1"),
+                to: (node: 29, port: "in"),
+            ),
+            (
+                from: (node: 28, port: "p2"),
+                to: (node: 29, port: "low1"),
+            ),
+            (
+                from: (node: 28, port: "p6"),
+                to: (node: 30, port: "choke"),
+            ),
+            (
+                from: (node: 29, port: "out1"),
+                to: (node: 30, port: "in"),
+            ),
+            (
+                from: (node: 28, port: "p3"),
+                to: (node: 31, port: "gain"),
+            ),
+            (
+                from: (node: 30, port: "out"),
+                to: (node: 31, port: "in"),
+            ),
+            (
+                from: (node: 28, port: "p8"),
+                to: (node: 31, port: "rr_pick"),
+            ),
+            (
+                from: (node: 28, port: "p7"),
+                to: (node: 31, port: "sample"),
+            ),
+            (
+                from: (node: 28, port: "p4"),
+                to: (node: 31, port: "tune"),
+            ),
+            (
+                from: (node: 31, port: "out"),
+                to: (node: 32, port: "in"),
+            ),
+            (
+                from: (node: 28, port: "p5"),
+                to: (node: 32, port: "pan"),
+            ),
+            (
+                from: (node: 32, port: "out"),
+                to: (node: 33, port: "p1"),
+            ),
+            (
+                from: (node: 29, port: "out1"),
+                to: (node: 33, port: "p2"),
+            ),
+            (
+                from: (node: 27, port: "choke out"),
+                to: (node: 34, port: "choke in"),
+            ),
+            (
+                from: (node: 2, port: "p19"),
+                to: (node: 34, port: "key"),
+            ),
+            (
+                from: (node: 2, port: "p20"),
+                to: (node: 34, port: "level"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 34, port: "notes"),
+            ),
+            (
+                from: (node: 2, port: "p22"),
+                to: (node: 34, port: "pan"),
+            ),
+            (
+                from: (node: 2, port: "p21"),
+                to: (node: 34, port: "tune"),
+            ),
+            (
+                from: (node: 35, port: "p2"),
+                to: (node: 36, port: "high1"),
+            ),
+            (
+                from: (node: 35, port: "p1"),
+                to: (node: 36, port: "in"),
+            ),
+            (
+                from: (node: 35, port: "p2"),
+                to: (node: 36, port: "low1"),
+            ),
+            (
+                from: (node: 35, port: "p6"),
+                to: (node: 37, port: "choke"),
+            ),
+            (
+                from: (node: 36, port: "out1"),
+                to: (node: 37, port: "in"),
+            ),
+            (
+                from: (node: 35, port: "p3"),
+                to: (node: 38, port: "gain"),
+            ),
+            (
+                from: (node: 37, port: "out"),
+                to: (node: 38, port: "in"),
+            ),
+            (
+                from: (node: 35, port: "p8"),
+                to: (node: 38, port: "rr_pick"),
+            ),
+            (
+                from: (node: 35, port: "p7"),
+                to: (node: 38, port: "sample"),
+            ),
+            (
+                from: (node: 35, port: "p4"),
+                to: (node: 38, port: "tune"),
+            ),
+            (
+                from: (node: 38, port: "out"),
+                to: (node: 39, port: "in"),
+            ),
+            (
+                from: (node: 35, port: "p5"),
+                to: (node: 39, port: "pan"),
+            ),
+            (
+                from: (node: 39, port: "out"),
+                to: (node: 40, port: "p1"),
+            ),
+            (
+                from: (node: 36, port: "out1"),
+                to: (node: 40, port: "p2"),
+            ),
+            (
+                from: (node: 2, port: "p23"),
+                to: (node: 41, port: "key"),
+            ),
+            (
+                from: (node: 2, port: "p24"),
+                to: (node: 41, port: "level"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 41, port: "notes"),
+            ),
+            (
+                from: (node: 2, port: "p26"),
+                to: (node: 41, port: "pan"),
+            ),
+            (
+                from: (node: 2, port: "p25"),
+                to: (node: 41, port: "tune"),
+            ),
+            (
+                from: (node: 42, port: "p2"),
+                to: (node: 43, port: "high1"),
+            ),
+            (
+                from: (node: 42, port: "p1"),
+                to: (node: 43, port: "in"),
+            ),
+            (
+                from: (node: 42, port: "p2"),
+                to: (node: 43, port: "low1"),
+            ),
+            (
+                from: (node: 42, port: "p6"),
+                to: (node: 44, port: "choke"),
+            ),
+            (
+                from: (node: 43, port: "out1"),
+                to: (node: 44, port: "in"),
+            ),
+            (
+                from: (node: 42, port: "p3"),
+                to: (node: 45, port: "gain"),
+            ),
+            (
+                from: (node: 44, port: "out"),
+                to: (node: 45, port: "in"),
+            ),
+            (
+                from: (node: 42, port: "p8"),
+                to: (node: 45, port: "rr_pick"),
+            ),
+            (
+                from: (node: 42, port: "p7"),
+                to: (node: 45, port: "sample"),
+            ),
+            (
+                from: (node: 42, port: "p4"),
+                to: (node: 45, port: "tune"),
+            ),
+            (
+                from: (node: 45, port: "out"),
+                to: (node: 46, port: "in"),
+            ),
+            (
+                from: (node: 42, port: "p5"),
+                to: (node: 46, port: "pan"),
+            ),
+            (
+                from: (node: 46, port: "out"),
+                to: (node: 47, port: "p1"),
+            ),
+            (
+                from: (node: 43, port: "out1"),
+                to: (node: 47, port: "p2"),
+            ),
+            (
+                from: (node: 2, port: "p27"),
+                to: (node: 48, port: "key"),
+            ),
+            (
+                from: (node: 2, port: "p28"),
+                to: (node: 48, port: "level"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 48, port: "notes"),
+            ),
+            (
+                from: (node: 2, port: "p30"),
+                to: (node: 48, port: "pan"),
+            ),
+            (
+                from: (node: 2, port: "p29"),
+                to: (node: 48, port: "tune"),
+            ),
+            (
+                from: (node: 49, port: "p2"),
+                to: (node: 50, port: "high1"),
+            ),
+            (
+                from: (node: 49, port: "p1"),
+                to: (node: 50, port: "in"),
+            ),
+            (
+                from: (node: 49, port: "p2"),
+                to: (node: 50, port: "low1"),
+            ),
+            (
+                from: (node: 49, port: "p6"),
+                to: (node: 51, port: "choke"),
+            ),
+            (
+                from: (node: 50, port: "out1"),
+                to: (node: 51, port: "in"),
+            ),
+            (
+                from: (node: 49, port: "p3"),
+                to: (node: 52, port: "gain"),
+            ),
+            (
+                from: (node: 51, port: "out"),
+                to: (node: 52, port: "in"),
+            ),
+            (
+                from: (node: 49, port: "p8"),
+                to: (node: 52, port: "rr_pick"),
+            ),
+            (
+                from: (node: 49, port: "p7"),
+                to: (node: 52, port: "sample"),
+            ),
+            (
+                from: (node: 49, port: "p4"),
+                to: (node: 52, port: "tune"),
+            ),
+            (
+                from: (node: 52, port: "out"),
+                to: (node: 53, port: "in"),
+            ),
+            (
+                from: (node: 49, port: "p5"),
+                to: (node: 53, port: "pan"),
+            ),
+            (
+                from: (node: 53, port: "out"),
+                to: (node: 54, port: "p1"),
+            ),
+            (
+                from: (node: 50, port: "out1"),
+                to: (node: 54, port: "p2"),
+            ),
+            (
+                from: (node: 2, port: "p31"),
+                to: (node: 55, port: "key"),
+            ),
+            (
+                from: (node: 2, port: "p32"),
+                to: (node: 55, port: "level"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 55, port: "notes"),
+            ),
+            (
+                from: (node: 2, port: "p34"),
+                to: (node: 55, port: "pan"),
+            ),
+            (
                 from: (node: 2, port: "p33"),
-                to: (node: 22, port: "pan"),
+                to: (node: 55, port: "tune"),
+            ),
+            (
+                from: (node: 56, port: "p2"),
+                to: (node: 57, port: "high1"),
+            ),
+            (
+                from: (node: 56, port: "p1"),
+                to: (node: 57, port: "in"),
+            ),
+            (
+                from: (node: 56, port: "p2"),
+                to: (node: 57, port: "low1"),
+            ),
+            (
+                from: (node: 56, port: "p6"),
+                to: (node: 58, port: "choke"),
+            ),
+            (
+                from: (node: 57, port: "out1"),
+                to: (node: 58, port: "in"),
+            ),
+            (
+                from: (node: 56, port: "p3"),
+                to: (node: 59, port: "gain"),
+            ),
+            (
+                from: (node: 58, port: "out"),
+                to: (node: 59, port: "in"),
+            ),
+            (
+                from: (node: 56, port: "p8"),
+                to: (node: 59, port: "rr_pick"),
+            ),
+            (
+                from: (node: 56, port: "p7"),
+                to: (node: 59, port: "sample"),
+            ),
+            (
+                from: (node: 56, port: "p4"),
+                to: (node: 59, port: "tune"),
+            ),
+            (
+                from: (node: 59, port: "out"),
+                to: (node: 60, port: "in"),
+            ),
+            (
+                from: (node: 56, port: "p5"),
+                to: (node: 60, port: "pan"),
+            ),
+            (
+                from: (node: 60, port: "out"),
+                to: (node: 61, port: "p1"),
+            ),
+            (
+                from: (node: 57, port: "out1"),
+                to: (node: 61, port: "p2"),
             ),
         ],
     )),
     GroupPreset((
         name: "Natural",
         slug: "body-percussion-kit-natural",
-        topology: "63e83392077750d8",
+        topology: "5234f79002ae2211",
         nodes: [
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.0},
+            ),
+            (),
+            (),
+            (),
             (),
             (
                 params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": "72dc03fbd8c006825d129ad955808630628fc0601b67d6522ef06ddfd3e6a282"},
             ),
             (),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
             (
                 params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": "f9eabc8d898bc0356c576644ed322cdec0ab093aea71647911175c58ed18be56"},
             ),
             (
-                params: {"pan": 0.0},
+                params: {"high1": 39.0, "low1": 39.0},
+                config: {"outputs": 1},
             ),
             (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
             ),
+            (),
             (
-                params: {"pan": -0.0},
-            ),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
-            ),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
+                params: {"high1": 42.0, "low1": 42.0},
+                config: {"outputs": 1},
             ),
             (
                 params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": "63a8af7c33a0adcd3b127f0f8ed6e4444aa221c3772b6b8d6b23e21b56648c67"},
             ),
             (
-                params: {"pan": 0.0},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
             ),
+            (),
+            (),
             (
-                params: {"pan": -0.0},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"choke1": 0.0, "choke2": 0.0, "choke3": 0.0, "choke4": 1.0, "choke5": 1.0, "choke6": 0.0, "choke7": 0.0, "choke8": 0.0, "high1": 36.0, "high2": 38.0, "high3": 39.0, "high4": 42.0, "high5": 46.0, "high6": 45.0, "high7": 50.0, "high8": 49.0, "low1": 36.0, "low2": 38.0, "low3": 39.0, "low4": 42.0, "low5": 46.0, "low6": 45.0, "low7": 50.0, "low8": 49.0},
-                config: {"outputs": 8},
-            ),
-            (
-                params: {"pan": 0.0},
+                params: {"high1": 46.0, "low1": 46.0},
+                config: {"outputs": 1},
             ),
             (
                 params: {"pan": 0.0},
             ),
             (
                 params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "46b691499e779c95305fe8cbcd497206d7164ad139c34011df91f56783ded948"},
+                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
             ),
+            (
+                params: {"high1": 49.0, "low1": 49.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
+            ),
+            (),
+            (),
+            (
+                params: {"high1": 45.0, "low1": 45.0},
+                config: {"outputs": 1},
+            ),
+            (
+                params: {"high1": 36.0, "low1": 36.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
             (
                 config: {"inputs": 8},
             ),
+            (
+                params: {"high1": 50.0, "low1": 50.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "46b691499e779c95305fe8cbcd497206d7164ad139c34011df91f56783ded948"},
+            ),
+            (),
+            (),
+            (
+                params: {"pan": -0.0},
+            ),
+            (),
+            (),
             (),
         ],
     )),
     GroupPreset((
         name: "Wide",
         slug: "body-percussion-kit-wide",
-        topology: "63e83392077750d8",
+        topology: "5234f79002ae2211",
         nodes: [
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.4},
+            ),
+            (),
+            (),
+            (),
             (),
             (
                 params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": "72dc03fbd8c006825d129ad955808630628fc0601b67d6522ef06ddfd3e6a282"},
             ),
             (),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "f9eabc8d898bc0356c576644ed322cdec0ab093aea71647911175c58ed18be56"},
-            ),
+            (),
+            (),
+            (),
             (
                 params: {"pan": 0.1},
             ),
             (
                 params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+                config: {"sample": "f9eabc8d898bc0356c576644ed322cdec0ab093aea71647911175c58ed18be56"},
             ),
             (
-                params: {"pan": -0.4},
+                params: {"high1": 39.0, "low1": 39.0},
+                config: {"outputs": 1},
             ),
             (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
             ),
+            (),
             (
-                params: {"pan": 0.3},
-            ),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
-            ),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
+                params: {"high1": 42.0, "low1": 42.0},
+                config: {"outputs": 1},
             ),
             (
                 params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": "63a8af7c33a0adcd3b127f0f8ed6e4444aa221c3772b6b8d6b23e21b56648c67"},
             ),
             (
-                params: {"pan": 0.0},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
             ),
+            (),
+            (),
             (
-                params: {"pan": -0.5},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"choke1": 0.0, "choke2": 0.0, "choke3": 0.0, "choke4": 1.0, "choke5": 1.0, "choke6": 0.0, "choke7": 0.0, "choke8": 0.0, "high1": 36.0, "high2": 38.0, "high3": 39.0, "high4": 42.0, "high5": 46.0, "high6": 45.0, "high7": 50.0, "high8": 49.0, "low1": 36.0, "low2": 38.0, "low3": 39.0, "low4": 42.0, "low5": 46.0, "low6": 45.0, "low7": 50.0, "low8": 49.0},
-                config: {"outputs": 8},
+                params: {"high1": 46.0, "low1": 46.0},
+                config: {"outputs": 1},
             ),
             (
                 params: {"pan": 0.5},
             ),
             (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
+            ),
+            (
+                params: {"high1": 49.0, "low1": 49.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
+            ),
+            (),
+            (),
+            (
+                params: {"high1": 45.0, "low1": 45.0},
+                config: {"outputs": 1},
+            ),
+            (
+                params: {"high1": 36.0, "low1": 36.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (
+                params: {"pan": 0.3},
+            ),
+            (),
+            (
+                config: {"inputs": 8},
+            ),
+            (
+                params: {"high1": 50.0, "low1": 50.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+            ),
+            (
                 params: {"pan": 0.4},
             ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
             (
                 params: {"gain": -8.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": "46b691499e779c95305fe8cbcd497206d7164ad139c34011df91f56783ded948"},
             ),
+            (),
+            (),
             (
-                config: {"inputs": 8},
+                params: {"pan": -0.5},
             ),
+            (),
+            (),
             (),
         ],
     )),
     GroupPreset((
         name: "Close",
         slug: "body-percussion-kit-close",
-        topology: "63e83392077750d8",
+        topology: "5234f79002ae2211",
         nodes: [
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": -0.0},
+            ),
+            (),
+            (),
+            (),
             (),
             (
                 params: {"gain": -3.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": "72dc03fbd8c006825d129ad955808630628fc0601b67d6522ef06ddfd3e6a282"},
             ),
             (),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
             (
                 params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": "f9eabc8d898bc0356c576644ed322cdec0ab093aea71647911175c58ed18be56"},
             ),
             (
-                params: {"pan": 0.0},
+                params: {"high1": 39.0, "low1": 39.0},
+                config: {"outputs": 1},
             ),
             (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+                params: {"high1": 38.0, "low1": 38.0},
+                config: {"outputs": 1},
             ),
+            (),
             (
-                params: {"pan": -0.0},
-            ),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
-            ),
-            (
-                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
-                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
+                params: {"high1": 42.0, "low1": 42.0},
+                config: {"outputs": 1},
             ),
             (
                 params: {"gain": -3.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": "63a8af7c33a0adcd3b127f0f8ed6e4444aa221c3772b6b8d6b23e21b56648c67"},
             ),
             (
-                params: {"pan": 0.0},
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "17b21a79fb71bc34bc81f81202514b0a3a836a034ac0196815a3919c0d47e04e"},
             ),
+            (),
+            (),
             (
-                params: {"pan": -0.0},
-            ),
-            (
-                params: {"pan": 0.0},
-            ),
-            (
-                params: {"choke1": 0.0, "choke2": 0.0, "choke3": 0.0, "choke4": 1.0, "choke5": 1.0, "choke6": 0.0, "choke7": 0.0, "choke8": 0.0, "high1": 36.0, "high2": 38.0, "high3": 39.0, "high4": 42.0, "high5": 46.0, "high6": 45.0, "high7": 50.0, "high8": 49.0, "low1": 36.0, "low2": 38.0, "low3": 39.0, "low4": 42.0, "low5": 46.0, "low6": 45.0, "low7": 50.0, "low8": 49.0},
-                config: {"outputs": 8},
+                params: {"high1": 46.0, "low1": 46.0},
+                config: {"outputs": 1},
             ),
             (
                 params: {"pan": 0.0},
             ),
             (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "5dde162e948d1e98f09180b4409c591069ed267831be37b94956e0cb43e3c507"},
+            ),
+            (
+                params: {"high1": 49.0, "low1": 49.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "41b7b87ee30c4d2a25b718fb327fae2316bef427d24a50a87d090b7e55d8a41b"},
+            ),
+            (),
+            (),
+            (
+                params: {"high1": 45.0, "low1": 45.0},
+                config: {"outputs": 1},
+            ),
+            (
+                params: {"high1": 36.0, "low1": 36.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (
                 params: {"pan": 0.0},
             ),
+            (),
+            (
+                config: {"inputs": 8},
+            ),
+            (
+                params: {"high1": 50.0, "low1": 50.0},
+                config: {"outputs": 1},
+            ),
+            (),
+            (),
+            (),
+            (
+                params: {"gain": -6.0, "keytrack": 0.0, "mode": 0.0},
+                config: {"sample": "d92235dc006808bc13cfe057deb8e98b18c1238889ee87262c9117e36fceb70c"},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"pan": 0.0},
+            ),
+            (),
+            (),
             (
                 params: {"gain": -3.0, "keytrack": 0.0, "mode": 0.0},
                 config: {"sample": "46b691499e779c95305fe8cbcd497206d7164ad139c34011df91f56783ded948"},
             ),
+            (),
+            (),
             (
-                config: {"inputs": 8},
+                params: {"pan": -0.0},
             ),
+            (),
+            (),
             (),
         ],
     )),

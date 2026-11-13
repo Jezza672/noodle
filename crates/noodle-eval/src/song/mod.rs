@@ -1,4 +1,4 @@
-//! Generated songs: the evaluation's long test material (ROADMAP M8, batch 3).
+//! Generated songs: the evaluation's long test material.
 //!
 //! A song is written once, as parts and patterns in beats, and then made into
 //! a Noodle project through the normal commands: a track per part, each

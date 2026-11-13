@@ -5,7 +5,7 @@
 //! question and declines: the separation itself, and the remix steps after
 //! it, are not routed. The clip panel has a stem Quality choice (Fast, Better,
 //! Best) and a Re-separate button on clips that have stems; both need the model
-//! too, so they are covered by session tests instead (#349).
+//! too, so they are covered by session tests instead.
 
 use std::cell::Cell;
 

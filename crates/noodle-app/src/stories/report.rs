@@ -1,8 +1,8 @@
 //! The scorecard: a JSON file per route and a Markdown table across stories
 //! (the layout in `docs/architecture/usability.md`, section 4).
 //!
-//! Columns for metric groups that are not built yet show a dash. The repetition
-//! column shows the per-item cost only (the repetition ratio comes later).
+//! A column shows a dash where a route has no value for it. The repetition
+//! column shows the per-item cost only.
 //! The vocabulary report (group E) is a table of its own, written beside the
 //! scorecard.
 

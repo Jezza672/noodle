@@ -162,12 +162,9 @@ struct LadderState {
 }
 
 impl LadderState {
-    /// One sample. The four one-poles are trapezoidal, and the feedback is
-    /// solved within the sample rather than delayed by one, so the cutoff and
-    /// the point where it rings are right at every pitch. The saturation sits
-    /// at the input of the stages, after the feedback is subtracted.
-    fn tick(&mut self, x: f32, big_g: f32, k: f32) -> f32 {
-        let g = big_g;
+    /// One sample. The saturation sits at the input of the stages, after the
+    /// feedback is subtracted.
+    fn tick(&mut self, x: f32, g: f32, k: f32) -> f32 {
         let rest = 1.0 - g;
         let g2 = g * g;
         let g4 = g2 * g2;

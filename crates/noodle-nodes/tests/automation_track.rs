@@ -31,7 +31,7 @@ fn apply(project: &mut Project, history: &mut History, command: Command) {
     history.apply(project, command).unwrap();
 }
 
-/// `source` wired to an Output, plus the extra nodes and wires given.
+/// A project of `nodes` (by ID) and the wires between them.
 fn project(nodes: &[(u64, Node)], wires: &[(u64, &str, u64, &str)]) -> Project {
     let (mut project, mut history) = (Project::new(), History::new());
     for (id, node) in nodes {
@@ -85,8 +85,8 @@ fn the_lane_drawn_on_an_automation_track_is_the_signal_it_outputs() {
         ],
         &[(1, "out", 2, "in")],
     );
-    // 0 to 1 over the first beat, held at 1, then back to 0.25 over the
-    // second beat's start (points are in ticks, 960 to a beat).
+    // 0 to 1 over the first beat, then down to 0.25 by the end of the second
+    // (points are in ticks, 960 to a beat).
     lane(
         &mut p,
         1,

@@ -52,6 +52,22 @@ fn realtime(f: impl FnOnce()) -> usize {
     VIOLATIONS.replace(0)
 }
 
+fn pause() {
+    std::thread::sleep(Duration::from_millis(2));
+}
+
+/// Plays `blocks` playing blocks from `at`, advancing it, and returns the
+/// allocator violations.
+fn play_blocks(rig: &mut Rig, at: &mut u64, blocks: usize) -> usize {
+    let mut violations = 0;
+    for _ in 0..blocks {
+        violations += realtime(|| rig.run_quiet(*at, BLOCK, true));
+        *at += BLOCK as u64;
+        pause();
+    }
+    violations
+}
+
 #[test]
 fn playing_stopping_seeking_and_edits_never_touch_the_allocator() {
     let mut rig = Rig::new("realtime");
@@ -65,7 +81,6 @@ fn playing_stopping_seeking_and_edits_never_touch_the_allocator() {
 
     let mut violations = 0;
     let mut at = 0u64;
-    let pause = || std::thread::sleep(Duration::from_millis(2));
 
     // Play across the start of the second clip, so a stream is taken in and
     // the first is eventually handed back.
@@ -75,19 +90,12 @@ fn playing_stopping_seeking_and_edits_never_touch_the_allocator() {
         pause();
     }
     // Edits arrive while it plays: one that dips, one that doesn't.
-    rig.edit_clip(a, |clip| {
-        let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
-            unreachable!("not an audio clip")
-        };
+    rig.edit_audio(a, |audio| {
         audio.gain = 0.4;
     });
     rig.wav("c.wav", 1, 10_000, |_, _| 0.1);
     rig.add_clip(20, "c.wav", 0, 5_000);
-    for _ in 0..40 {
-        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-        at += BLOCK as u64;
-        pause();
-    }
+    violations += play_blocks(&mut rig, &mut at, 40);
     // Stop, seek back (reset), start again.
     for _ in 0..8 {
         violations += realtime(|| rig.run_quiet(at, BLOCK, false));
@@ -99,11 +107,7 @@ fn playing_stopping_seeking_and_edits_never_touch_the_allocator() {
         violations += realtime(|| rig.run_quiet(at, BLOCK, false));
         pause();
     }
-    for _ in 0..60 {
-        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-        at += BLOCK as u64;
-        pause();
-    }
+    violations += play_blocks(&mut rig, &mut at, 60);
     // Loop over a stretch with both clips' audio, several times round, so
     // streams opened for the loop's start are taken in and promoted, and the
     // ones a lap leaves behind are handed back.
@@ -152,31 +156,18 @@ fn playing_warped_clips_and_editing_the_warp_never_touches_the_allocator() {
 
     let mut violations = 0;
     let mut at = 0u64;
-    let pause = || std::thread::sleep(Duration::from_millis(2));
-    for _ in 0..120 {
-        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-        at += BLOCK as u64;
-        pause();
-    }
+    violations += play_blocks(&mut rig, &mut at, 120);
     // A marker is dragged while it plays: the schedule changes under it.
     for beat in [1.2, 1.4, 1.6] {
         rig.warp_clip(a, |warp| {
             warp.set_marker(WarpMarker { seconds: 1.0, beat });
         });
-        for _ in 0..20 {
-            violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-            at += BLOCK as u64;
-            pause();
-        }
+        violations += play_blocks(&mut rig, &mut at, 20);
     }
     // The switches go off and on.
     for conversion in [false, true] {
         rig.warp_clip(a, |warp| warp.tempo_conversion = conversion);
-        for _ in 0..20 {
-            violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-            at += BLOCK as u64;
-            pause();
-        }
+        violations += play_blocks(&mut rig, &mut at, 20);
     }
     // Stop, jump into the middle of the warp, start, and loop over it.
     for _ in 0..8 {
@@ -185,11 +176,7 @@ fn playing_warped_clips_and_editing_the_warp_never_touches_the_allocator() {
     }
     violations += realtime(|| rig.node.reset());
     at = 40_000;
-    for _ in 0..60 {
-        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-        at += BLOCK as u64;
-        pause();
-    }
+    violations += play_blocks(&mut rig, &mut at, 60);
     let (start, end) = (30_000u64, 100_000u64);
     rig.looping = Some((start, end));
     rig.node.reset();
@@ -234,32 +221,19 @@ fn playing_stretched_clips_and_editing_them_never_touches_the_allocator() {
     let mut violations = 0;
     let mut loud = 0.0f32;
     let mut at = 0u64;
-    let pause = || std::thread::sleep(Duration::from_millis(2));
-    for _ in 0..120 {
-        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-        at += BLOCK as u64;
-        pause();
-    }
+    violations += play_blocks(&mut rig, &mut at, 120);
     // The mode changes, then a marker is dragged (with the cheap preview on)
     // and the stretch starts over.
     for mode in [WarpMode::Beats, WarpMode::Grain] {
         rig.warp_clip(a, |warp| warp.mode = mode);
-        for _ in 0..30 {
-            violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-            at += BLOCK as u64;
-            pause();
-        }
+        violations += play_blocks(&mut rig, &mut at, 30);
     }
     rig.feeds.set_preview(true);
     for beat in [1.2, 1.4, 1.6] {
         rig.warp_clip(a, |warp| {
             warp.set_marker(WarpMarker { seconds: 1.0, beat });
         });
-        for _ in 0..20 {
-            violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-            at += BLOCK as u64;
-            pause();
-        }
+        violations += play_blocks(&mut rig, &mut at, 20);
     }
     rig.feeds.set_preview(false);
     for _ in 0..60 {
@@ -275,11 +249,7 @@ fn playing_stretched_clips_and_editing_them_never_touches_the_allocator() {
     }
     violations += realtime(|| rig.node.reset());
     at = 40_000;
-    for _ in 0..60 {
-        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-        at += BLOCK as u64;
-        pause();
-    }
+    violations += play_blocks(&mut rig, &mut at, 60);
     let (start, end) = (30_000u64, 100_000u64);
     rig.looping = Some((start, end));
     rig.node.reset();
@@ -312,10 +282,7 @@ fn playing_a_looping_section_across_its_seams_and_flipping_the_preview_never_tou
     // A section dragged out to 16 beats (8 s) from 2.5 s of audio, looping
     // beat 1 to 2 (half a second): a new piece every half second.
     let a = rig.add_clip(0, "a.wav", 0, 300_000);
-    rig.edit_clip(a, |clip| {
-        let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
-            unreachable!("not an audio clip")
-        };
+    rig.edit_audio(a, |audio| {
         audio.extent = Some(noodle_core::Tick(16 * 960));
     });
     rig.warp_clip(a, |warp| {
@@ -329,7 +296,6 @@ fn playing_a_looping_section_across_its_seams_and_flipping_the_preview_never_tou
     let mut violations = 0;
     let mut loud = 0.0f32;
     let mut at = 0u64;
-    let pause = || std::thread::sleep(Duration::from_millis(2));
     // Repitch across the first seams, with the preview flipping on and off
     // so the declick dips and comes back while pieces change.
     for round in 0..6 {
@@ -376,12 +342,7 @@ fn playing_midi_clips_and_taking_in_edits_never_touches_the_allocator() {
     rig.settle();
     let mut violations = 0;
     let mut at = 0u64;
-    let pause = || std::thread::sleep(Duration::from_millis(2));
-    for _ in 0..40 {
-        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-        at += BLOCK as u64;
-        pause();
-    }
+    violations += play_blocks(&mut rig, &mut at, 40);
     // Keys from the piano roll's keyboard go down and up.
     rig.feeds.audition(rig.id, 70, true);
     violations += realtime(|| rig.run_quiet(at, BLOCK, true));
@@ -396,22 +357,14 @@ fn playing_midi_clips_and_taking_in_edits_never_touches_the_allocator() {
         };
         midi.notes.truncate(8);
     });
-    for _ in 0..40 {
-        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-        at += BLOCK as u64;
-        pause();
-    }
+    violations += play_blocks(&mut rig, &mut at, 40);
     for _ in 0..4 {
         violations += realtime(|| rig.run_quiet(at, BLOCK, false));
         pause();
     }
     violations += realtime(|| rig.node.reset());
     at = BEAT / 3;
-    for _ in 0..40 {
-        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-        at += BLOCK as u64;
-        pause();
-    }
+    violations += play_blocks(&mut rig, &mut at, 40);
     assert_eq!(violations, 0, "the audio thread allocated or freed memory");
 }
 
@@ -453,12 +406,7 @@ fn playing_controllers_ramps_and_expressions_across_seeks_never_touches_the_allo
     rig.settle();
     let mut violations = 0;
     let mut at = 0u64;
-    let pause = || std::thread::sleep(Duration::from_millis(2));
-    for _ in 0..80 {
-        violations += realtime(|| rig.run_quiet(at, BLOCK, true));
-        at += BLOCK as u64;
-        pause();
-    }
+    violations += play_blocks(&mut rig, &mut at, 80);
     // Seeks into held controllers, then a stop.
     for jump in [3 * BEAT, 5 * BEAT, BEAT / 3, 2 * BEAT] {
         at = jump;

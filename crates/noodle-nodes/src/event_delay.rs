@@ -79,12 +79,10 @@ impl EventDelay {
             n += 1;
         }
         for p in self.queue[..n].iter().flatten() {
-            {
-                let _ = out.push(Event {
-                    time: (p.due.max(self.now) - self.now) as u32,
-                    kind: p.event.kind,
-                });
-            }
+            let _ = out.push(Event {
+                time: (p.due.max(self.now) - self.now) as u32,
+                kind: p.event.kind,
+            });
         }
         self.queue.copy_within(n..self.len, 0);
         for slot in &mut self.queue[self.len - n..self.len] {

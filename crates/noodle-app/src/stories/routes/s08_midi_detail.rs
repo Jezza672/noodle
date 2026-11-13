@@ -1,7 +1,7 @@
 //! S08: edit MIDI performance detail.
 //!
 //! Partial. The piano roll draws and moves notes, and Ctrl+A with the arrow
-//! keys transposes a selection. Humanise has two routes (#350):
+//! keys transposes a selection. Humanise has two routes:
 //!
 //! - **In the roll** (this file's default route): select the notes and press
 //!   Humanise. Each gets stored random offsets, and the clip's Timing and
@@ -132,6 +132,16 @@ const FIRST: i64 = 30;
 
 fn halve(h: &mut Handle, _size: usize) {
     h.step("halve the timing amount");
+    // The amounts live in the arrow beside Humanise, or in the "..." menu
+    // when the panel is too narrow for it.
+    let opener = if h.probe().has("Humanise amounts") {
+        "Humanise amounts"
+    } else {
+        "More controls"
+    };
+    let amounts = h.find(opener);
+    h.click(amounts, Modifiers::NONE);
+    h.probe().settle();
     let at = h.field_after("Timing");
     h.click(at, Modifiers::NONE);
     h.press(at, Modifiers::COMMAND, Key::A);
@@ -184,8 +194,6 @@ pub fn humanise_route() -> Route {
         }],
     }
 }
-
-// ---- The wire route.
 
 const NODE: Ref = Ref("event.humanise", 0);
 

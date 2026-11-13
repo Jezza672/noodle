@@ -3,7 +3,7 @@
 // middle, so each sweep lingers on the low and high notes instead of gliding
 // through them evenly.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.mod.lfo", params: {"rate": 4.0}, position: (x: 0.0, y: 0.0)),

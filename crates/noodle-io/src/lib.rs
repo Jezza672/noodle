@@ -4,6 +4,7 @@
 mod cache;
 mod decode;
 mod devices;
+mod drum_bins;
 mod export;
 mod files;
 mod hash;
@@ -38,6 +39,11 @@ pub use devices::{
     Direction, HostInfo, InputChoice, LIVE_BUFFER, VIRTUAL_OUTPUT, buffer_request, capabilities,
     choose_config, devices, hosts, virtual_output,
 };
+pub use drum_bins::{
+    Binning, Cancelled as DrumCancelled, DEFAULT_MERGE, DETECTOR_VERSION, DrumBin, DrumKind, Hit,
+    HitCache, HitFeatures, HitKey, MAX_LAYERS, analyse_hits, bin_hits, layer_split, make_bin,
+    split_bin,
+};
 pub use export::{
     ExportError, ExportFormat, ExportMetadata, ExportWriter, FLAC_MAX_CHANNELS, cue_sheet,
     normalize_isrc,
@@ -64,7 +70,7 @@ pub use onsets::{
 };
 pub use output::{
     DeviceError, DeviceErrorKind, DeviceWriter, ExtraOutput, Health, InputLatency, LatencyReport,
-    OpenedOutput, OutputStatus, Playback, SLOW_OUTPUT, Stream, VirtualCapture, is_fatal,
+    OpenedOutput, OutputStatus, Playback, Preview, SLOW_OUTPUT, Stream, VirtualCapture, is_fatal,
     looks_like_bluetooth, play, play_with_outputs, play_with_outputs_stopped,
 };
 pub use peaks::{BLOCK_FRAMES, Peak, Peaks, PeaksBuilder};

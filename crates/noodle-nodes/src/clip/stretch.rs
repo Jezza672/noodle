@@ -15,8 +15,8 @@
 //! with one segment and no attack.
 //!
 //! The stretcher does no I/O of its own: it reads the source through a
-//! [`Source`], and is meant to run on a worker thread ahead of the playhead
-//! (see `ahead.rs`). It allocates freely and is not real-time safe.
+//! [`Source`], and is meant to run on a worker thread ahead of the playhead.
+//! It allocates freely and is not real-time safe.
 
 use std::f32::consts::{FRAC_PI_2, PI};
 use std::sync::{Arc, Mutex};
@@ -597,7 +597,6 @@ impl<S: Source> Band<S> {
         }
         self.prev = Some(start);
 
-        // Sum the windowed grain into the output.
         let needed = ((a + win as i64 - self.base) * 2) as usize;
         if self.acc.len() < needed {
             self.acc.resize(needed, 0.0);
@@ -794,6 +793,7 @@ fn plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::level::rms;
 
     const RATE: f32 = 48_000.0;
 
@@ -854,10 +854,6 @@ mod tests {
         left.windows(2)
             .filter(|w| w[0] <= 0.0 && w[1] > 0.0)
             .count()
-    }
-
-    fn rms(left: &[f32]) -> f32 {
-        (left.iter().map(|x| x * x).sum::<f32>() / left.len() as f32).sqrt()
     }
 
     fn left(stereo: &[f32]) -> Vec<f32> {
@@ -1114,6 +1110,7 @@ mod tests {
 #[cfg(test)]
 mod mix_tests {
     use super::*;
+    use crate::level::rms;
     use std::f32::consts::TAU;
 
     const RATE: f32 = 48_000.0;
@@ -1225,10 +1222,6 @@ mod mix_tests {
     fn note(bass: &[f32], n: usize, speed: f64) -> &[f32] {
         let from = (n as f64 * 24_000.0 / speed) as usize + 3_000;
         &bass[from..from + (24_000.0 / speed) as usize - 6_000]
-    }
-
-    fn rms(x: &[f32]) -> f32 {
-        (x.iter().map(|v| v * v).sum::<f32>() / x.len() as f32).sqrt()
     }
 
     /// Sped up or slowed down, each bass note keeps its pitch to within a few

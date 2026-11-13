@@ -3,8 +3,8 @@
 //! Partial. The punch range is set from the ruler's menu and moved later as
 //! a late change. Punch, count-in, pre-roll and input monitoring exist (the
 //! track input's `monitor` is Auto from the start, so the route needs no step
-//! for it), but there is no headphone cue mix (#345, waiting on sends in the Mix
-//! node, #332), and a route cannot feed a live input to record from (#334), so
+//! for it), but there is no headphone cue mix (it waits on sends in the Mix
+//! node), and a route cannot feed a live input to record from, so
 //! the recording itself is not routed.
 
 use std::path::Path;

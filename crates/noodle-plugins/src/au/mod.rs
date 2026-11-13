@@ -15,10 +15,9 @@
 //! (`MusicDeviceMIDIEvent`), parameters through `AudioUnitSetParameter` with
 //! a sample offset, and state is the unit's class-info property list.
 //!
-//! Editors are in `gui.rs`. Not supported yet: AUv3 extensions that need
-//! asynchronous instantiation (and with them `AUViewController` editors),
-//! MIDI output, and sidechain buses beyond what the unit's own input buses
-//! give.
+//! Not supported yet: AUv3 extensions that need asynchronous instantiation
+//! (and with them `AUViewController` editors), MIDI output, and sidechain
+//! buses beyond what the unit's own input buses give.
 
 // Most of the helpers are for the macOS code; the rest of the crate and the
 // tests still use the pure parts everywhere.

@@ -345,7 +345,7 @@ impl Session {
                 files.extend(report.mixdown.map(|l| ("Mixdown".to_owned(), l)));
                 files.extend(report.tracks.iter().cloned());
                 self.export_summary = Some(ExportSummary {
-                    location: path.clone(),
+                    location: path,
                     files,
                     gain_db: report.gain_db,
                     cue,

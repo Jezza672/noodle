@@ -122,7 +122,12 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         returns,
         position: 0,
         control,
-        table: Box::new(TempoTable::new(&TempoMap::default(), settings.sample_rate)),
+        table: Box::new(Tempos::new(
+            &TempoMap::default(),
+            None,
+            settings.sample_rate,
+        )),
+        live: None,
         tempo_in,
         tempo_returns,
         seen_seek: 0,
@@ -174,10 +179,10 @@ pub struct Controller {
     /// The project's own tempo map, which the project is compared with.
     project_tempo: TempoMap,
     live_bpm: Option<f64>,
-    tempo_out: Producer<Box<TempoTable>>,
-    tempo_returned: Consumer<Box<TempoTable>>,
+    tempo_out: Producer<Box<Tempos>>,
+    tempo_returned: Consumer<Box<Tempos>>,
     /// A tempo table waiting for room in the queue. A newer one replaces it.
-    tempo_pending: Option<Box<TempoTable>>,
+    tempo_pending: Option<Box<Tempos>>,
 }
 
 impl Controller {
@@ -213,12 +218,18 @@ impl Controller {
         self.monitor = monitor;
     }
 
-    /// The tempo map the engine is playing by. While a live tempo is set
-    /// (see [`set_live_tempo`](Self::set_live_tempo)) it is the project's
-    /// time signatures with that one tempo, so converting the transport's
-    /// position with it gives the playhead.
+    /// The tempo map the transport reports to nodes. While a live tempo is
+    /// set (see [`set_live_tempo`](Self::set_live_tempo)) it is the project's
+    /// time signatures with that one tempo. The playhead is not found with
+    /// it: use [`timeline_map`](Self::timeline_map).
     pub fn tempo_map(&self) -> &TempoMap {
         &self.tempo_map
+    }
+
+    /// The project's tempo map, which times the timeline: convert the
+    /// transport's position with it to get the playhead.
+    pub fn timeline_map(&self) -> &TempoMap {
+        &self.project_tempo
     }
 
     /// Switches the engine to a new tempo map. The playhead keeps its tick,
@@ -232,13 +243,12 @@ impl Controller {
     /// Plays at one tempo, in quarter notes per minute, in place of the tempo
     /// map until it is cleared with `None`. This is the tempo source of the
     /// transport (tap tempo, MIDI clock): session state, not part of the
-    /// project, so it isn't a command. The playhead keeps its tick, so the
-    /// bar grid stays put and only the tempo changes. The tempo is clamped to
-    /// 20 to 400.
+    /// project, so it isn't a command. The tempo is clamped to 20 to 400.
     ///
     /// Only what reads the transport's tempo follows (Tempo, Clock, the
-    /// metronome, MIDI out). Audio clips are placed in samples by the project's
-    /// map and keep their place in time.
+    /// metronome, MIDI out). The timeline, meaning the playhead, seeks, loops
+    /// and where clips sit, stays on the project's map, so the playhead moves
+    /// at the map's speed and what is under it is what plays.
     pub fn set_live_tempo(&mut self, bpm: Option<f64>) {
         let bpm = bpm.filter(|b| b.is_finite()).map(|b| b.clamp(20.0, 400.0));
         if bpm == self.live_bpm {
@@ -265,8 +275,9 @@ impl Controller {
             .unwrap_or_else(|_| self.project_tempo.clone()),
             None => self.project_tempo.clone(),
         };
-        self.tempo_pending = Some(Box::new(TempoTable::new(
-            &self.tempo_map,
+        self.tempo_pending = Some(Box::new(Tempos::new(
+            &self.project_tempo,
+            self.live_bpm,
             self.settings.sample_rate,
         )));
         self.send_tempo();
@@ -484,6 +495,36 @@ impl Controller {
     }
 }
 
+/// What the audio thread converts time with. The timeline (the playhead,
+/// seeks, loops and where clips sit) always follows the project's tempo map,
+/// so what is under the playhead is what plays. `live` is the tapped or
+/// clocked tempo, if there is one: the beat clock the transport reports to
+/// nodes runs at it (see [`LiveClock`]).
+struct Tempos {
+    timeline: TempoTable,
+    live: Option<f64>,
+}
+
+impl Tempos {
+    fn new(timeline: &TempoMap, live: Option<f64>, sample_rate: f32) -> Self {
+        Self {
+            timeline: TempoTable::new(timeline, sample_rate),
+            live,
+        }
+    }
+}
+
+/// The beat clock under a live tempo: it runs at the live tempo from the
+/// place it was anchored, so it carries on from the beat it was on when the
+/// tempo changes, and is put back on the timeline's beat at a seek or a loop.
+#[derive(Clone, Copy)]
+struct LiveClock {
+    sample: u64,
+    tick: f64,
+    ticks_per_sample: f64,
+    bpm: f64,
+}
+
 /// Renders the current plan. Everything here is real-time safe.
 ///
 /// A plan that changes what's audible (a node on the output's path is added,
@@ -507,9 +548,11 @@ pub struct Processor {
     /// Timeline position of the next frame, in samples.
     position: u64,
     control: Arc<TransportControl>,
-    table: Box<TempoTable>,
-    tempo_in: Consumer<Box<TempoTable>>,
-    tempo_returns: Producer<Box<TempoTable>>,
+    table: Box<Tempos>,
+    /// The beat clock while a live tempo is set.
+    live: Option<LiveClock>,
+    tempo_in: Consumer<Box<Tempos>>,
+    tempo_returns: Producer<Box<Tempos>>,
     /// The last seek counted.
     seen_seek: u64,
     /// A seek waiting for the output to go silent.
@@ -643,9 +686,9 @@ impl Processor {
             } else {
                 self.control.tap().clear();
             }
+            let tick = self.beat_tick();
             match &mut self.plan {
                 Some(plan) => {
-                    let tick = self.table.tick_at(self.position);
                     let ctx = Context {
                         sample_rate,
                         frames,
@@ -654,9 +697,11 @@ impl Processor {
                             position: self.position,
                             loop_range: looping,
                             tick,
-                            bpm: self.table.bpm_at(tick),
-                            signature: self.table.signature_at(tick),
-                            signature_start: self.table.signature_start_at(tick),
+                            bpm: self
+                                .live
+                                .map_or_else(|| self.table.timeline.bpm_at(tick), |live| live.bpm),
+                            signature: self.table.timeline.signature_at(tick),
+                            signature_start: self.table.timeline.signature_start_at(tick),
                             count_in: self.control.counting_in(),
                             version: self.control.version() as u32,
                         },
@@ -672,6 +717,7 @@ impl Processor {
                     && self.position == end
                 {
                     self.position = start;
+                    self.reanchor();
                 }
             }
         }
@@ -692,7 +738,8 @@ impl Processor {
     /// after the project is sent and before the first block.
     pub fn start_at(&mut self, tick: noodle_core::Tick) {
         self.install_new_plans();
-        self.position = self.table.sample_at_tick(tick);
+        self.position = self.table.timeline.sample_at_tick(tick);
+        self.reanchor();
         self.reset_nodes();
         self.control.publish(self.position);
     }
@@ -700,8 +747,8 @@ impl Processor {
     /// The loop's start and end in samples, if it's on and not empty.
     fn loop_samples(&self) -> Option<(u64, u64)> {
         let (start, end) = self.control.loop_range()?;
-        let start = self.table.sample_at_tick(start);
-        let end = self.table.sample_at_tick(end);
+        let start = self.table.timeline.sample_at_tick(start);
+        let end = self.table.timeline.sample_at_tick(end);
         (start < end).then_some((start, end))
     }
 
@@ -749,9 +796,9 @@ impl Processor {
     /// meanwhile. A new tempo table goes in at once. It keeps the playhead's
     /// tick, so everything that reads ticks carries on unbroken, and it
     /// doesn't reset nodes, so a tempo drag leaves reverb tails alone. Only
-    /// something reading the sample position can notice the move, which in
-    /// M2 means a clip schedule; when one exists it must raise its own
-    /// discontinuity. Returns whether a seek is still waiting.
+    /// something reading the sample position can notice the move, which
+    /// today is a clip schedule; it must raise its own discontinuity. Returns
+    /// whether a seek is still waiting.
     fn install_time_changes(&mut self, silent: bool) -> bool {
         if let Some(tick) = self.control.take_seek(&mut self.seen_seek) {
             self.pending_seek = Some(tick);
@@ -760,7 +807,8 @@ impl Processor {
             if !silent {
                 return true;
             }
-            self.position = self.table.sample_at_tick(tick);
+            self.position = self.table.timeline.sample_at_tick(tick);
+            self.reanchor();
             self.pending_seek = None;
             self.reset_nodes();
         }
@@ -768,19 +816,62 @@ impl Processor {
             let Ok(next) = self.tempo_in.peek() else {
                 break;
             };
-            // The playhead keeps its tick, so its sample position moves.
-            let tick = self.table.tick_at(self.position);
-            let position = next.sample_at(tick);
+            // The playhead keeps its tick, so its sample position moves. A
+            // change to the live tempo alone leaves the timeline, and so the
+            // position, be.
+            let same_timeline = next.timeline == self.table.timeline;
+            let position = if same_timeline {
+                self.position
+            } else {
+                let tick = self.table.timeline.tick_at(self.position);
+                next.timeline.sample_at(tick)
+            };
+            // The beat the clock is on now, so a new live tempo carries on
+            // from it.
+            let beat = self.beat_tick();
             let Ok(new) = self.tempo_in.pop() else {
                 break;
             };
+            let live = new.live;
             let old = mem::replace(&mut self.table, new);
             let pushed = self.tempo_returns.push(old);
             debug_assert!(pushed.is_ok(), "checked for room above");
             self.position = position;
+            let tick = if same_timeline {
+                beat
+            } else {
+                self.table.timeline.tick_at(position)
+            };
+            let rate = f64::from(self.settings.sample_rate);
+            self.live = live.map(|bpm| LiveClock {
+                sample: position,
+                tick,
+                ticks_per_sample: bpm * noodle_core::TICKS_PER_QUARTER as f64 / 60.0 / rate,
+                bpm,
+            });
         }
         // A table is still waiting only if the return queue is full.
         !self.tempo_in.is_empty()
+    }
+
+    /// The beat at the next frame: the timeline's, or the live clock's.
+    fn beat_tick(&self) -> f64 {
+        match self.live {
+            Some(live) => {
+                live.tick + (self.position as f64 - live.sample as f64) * live.ticks_per_sample
+            }
+            None => self.table.timeline.tick_at(self.position),
+        }
+    }
+
+    /// Puts the live clock, if there is one, back on the timeline's beat at
+    /// the current position, after a seek or a loop.
+    fn reanchor(&mut self) {
+        let tick = self.table.timeline.tick_at(self.position);
+        if let Some(live) = &mut self.live {
+            live.sample = self.position;
+            live.tick = tick;
+        }
     }
 
     fn reset_nodes(&mut self) {

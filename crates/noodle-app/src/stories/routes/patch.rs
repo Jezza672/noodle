@@ -16,7 +16,7 @@ use noodle_core::{Command, Endpoint, Node, NodeId, Project};
 use super::super::handle::{Handle, Probe, peak};
 use super::{add_node_playing, finished, reveal, virtual_session};
 use crate::app::App;
-use crate::session::Edit;
+use crate::session::{Edit, Session};
 
 /// The nth node of a type, in creation order. The type is the id without the
 /// leading `noodle.`.
@@ -60,6 +60,13 @@ pub type Seed<'a> = (&'a str, f32, f32, &'a [(&'a str, f32)]);
 /// parameters), wired by index as `(from, out, to, in)`.
 pub fn seeded(dir: &Path, nodes: &[Seed], wires: &[(usize, &str, usize, &str)]) -> App {
     let mut session = virtual_session(dir);
+    seed(&mut session, nodes, wires);
+    finished(session, dir)
+}
+
+/// The nodes and wires of [`seeded`], added to a session the caller goes on
+/// to build, for a fixture that holds more than a patch.
+pub fn seed(session: &mut Session, nodes: &[Seed], wires: &[(usize, &str, usize, &str)]) {
     let mut ids = Vec::new();
     for (kind, x, y, params) in nodes {
         let id = session.new_node_id();
@@ -77,7 +84,6 @@ pub fn seeded(dir: &Path, nodes: &[Seed], wires: &[(usize, &str, usize, &str)]) 
         );
         session.edit([Edit::Apply(wire)]);
     }
-    finished(session, dir)
 }
 
 /// Drags between two sockets, panning the canvas first if either is off it.
@@ -158,10 +164,9 @@ pub fn check(p: &mut Probe, ops: &[Op]) -> Result<(), String> {
     Ok(())
 }
 
-// --- Outcome checks. A done check should ask whether the goal is met, not
-// whether the route's own nodes are there, so a patch built another way (an
-// LFO set to Random for a Sample & Hold, a different effect for the
-// distortion) still scores.
+// Outcome checks ask whether the goal is met, not whether the route's own
+// nodes are there, so a patch built another way (an LFO set to Random for a
+// Sample & Hold, a different effect for the distortion) still scores.
 
 /// Every node with a chain of wires leading to `node`, not counting itself.
 pub fn upstream(p: &Project, node: NodeId) -> std::collections::HashSet<NodeId> {

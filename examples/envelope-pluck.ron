@@ -2,7 +2,7 @@
 // Envelope plays its curve (a fast rise and a long bent fall) on each pulse,
 // and it opens a VCA on a saw that runs through a soft Distortion and a Chorus.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.generator.clock", params: {"rate": 4.0, "width": 0.25}, position: (x: 0.0, y: 0.0)),

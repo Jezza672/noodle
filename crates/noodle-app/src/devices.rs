@@ -1,4 +1,4 @@
-//! The audio settings dialog: which host, output and input devices to use,
+//! The Audio tab of the Settings window: which host, output and input devices to use,
 //! and at what sample rate and buffer size.
 //!
 //! It edits a copy of the session's [`AudioConfig`] and hands it back when
@@ -19,7 +19,6 @@ const BLUETOOTH_NOTE: &str = "Bluetooth adds 100 to 200 ms that Noodle cannot re
 const BUFFER_SIZES: [u32; 8] = [32, 64, 128, 256, 512, 1024, 2048, 4096];
 
 pub struct DevicePicker {
-    open: bool,
     /// The settings being edited.
     draft: AudioConfig,
     /// The settings when the dialog opened, to tell whether there's anything
@@ -50,7 +49,6 @@ impl DevicePicker {
         list_devices: fn(Option<&str>) -> Result<DeviceList, AudioError>,
     ) -> Self {
         Self {
-            open: false,
             draft: AudioConfig::default(),
             original: AudioConfig::default(),
             hosts: Vec::new(),
@@ -71,78 +69,67 @@ impl DevicePicker {
         self
     }
 
-    /// Opens the dialog on `current`, listing the devices afresh.
+    /// Starts editing `current`, listing the devices afresh.
     pub fn open(&mut self, current: &AudioConfig) {
-        self.open = true;
         self.draft = current.clone();
         self.original = current.clone();
         self.refresh();
     }
 
-    pub fn is_open(&self) -> bool {
-        self.open
-    }
-
-    /// Draws the dialog while it's open. Returns the new settings when the
-    /// user applies them.
-    pub fn show(
+    /// Draws the Audio tab of the Settings window. Returns the new settings
+    /// when the user applies them.
+    pub fn body(
         &mut self,
-        ctx: &egui::Context,
+        ui: &mut egui::Ui,
         latency: Option<LatencyReport>,
     ) -> Option<AudioConfig> {
-        if !self.open {
-            return None;
-        }
         let mut applied = None;
-        let modal = crate::dialog::modal(ctx, "audio settings", |ui| {
-            ui.heading("Audio Settings");
-            ui.add_space(6.0);
-            egui::Grid::new("audio settings grid")
-                .num_columns(2)
-                .spacing([12.0, 6.0])
-                .show(ui, |ui| self.fields(ui));
-            if let Some(report) = latency {
-                ui.add_space(4.0);
-                ui.label(latency_line(&report));
-                if let Some(detail) = latency_detail(&report) {
-                    ui.weak(detail);
-                }
-                // The figures move with the backlog.
-                ctx.request_repaint_after(std::time::Duration::from_millis(250));
+        egui::Grid::new("audio settings grid")
+            .num_columns(2)
+            .spacing([12.0, 6.0])
+            .show(ui, |ui| self.fields(ui));
+        if let Some(report) = latency {
+            ui.add_space(4.0);
+            ui.label(latency_line(&report));
+            if let Some(detail) = latency_detail(&report) {
+                ui.weak(detail);
             }
-            if let Some(note) = self.bluetooth_note(latency.as_ref()) {
-                ui.add_space(4.0);
-                ui.colored_label(ui.visuals().warn_fg_color, note);
-            }
-            if let Err(error) = &self.devices {
-                ui.add_space(4.0);
-                ui.colored_label(ui.visuals().warn_fg_color, error);
-            }
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                if ui
-                    .button("Refresh")
-                    .on_hover_text("List the devices again, e.g. after plugging one in")
-                    .clicked()
-                {
-                    self.refresh();
-                }
-                let changed = self.draft != self.original;
-                if ui
-                    .add_enabled(changed, egui::Button::new("Apply"))
-                    .clicked()
-                {
-                    applied = Some(self.draft.clone());
-                    self.open = false;
-                }
-                if ui.button("Cancel").clicked() {
-                    self.open = false;
-                }
-            });
-        });
-        if modal.should_close() {
-            self.open = false;
+            // The figures move with the backlog.
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(250));
         }
+        if let Some(note) = self.bluetooth_note(latency.as_ref()) {
+            ui.add_space(4.0);
+            ui.colored_label(ui.visuals().warn_fg_color, note);
+        }
+        if let Err(error) = &self.devices {
+            ui.add_space(4.0);
+            ui.colored_label(ui.visuals().warn_fg_color, error);
+        }
+        ui.add_space(8.0);
+        ui.horizontal(|ui| {
+            if ui
+                .button("Refresh")
+                .on_hover_text("List the devices again, e.g. after plugging one in")
+                .clicked()
+            {
+                self.refresh();
+            }
+            let changed = self.draft != self.original;
+            if ui
+                .add_enabled(changed, egui::Button::new("Apply"))
+                .clicked()
+            {
+                applied = Some(self.draft.clone());
+                self.original = self.draft.clone();
+            }
+            if ui
+                .add_enabled(changed, egui::Button::new("Revert"))
+                .clicked()
+            {
+                self.draft = self.original.clone();
+            }
+        });
         applied
     }
 
@@ -292,7 +279,7 @@ impl DevicePicker {
         );
         ui.end_row();
 
-        let cores = std::thread::available_parallelism().map_or(1, |n| n.get());
+        let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         let mut threads = self.draft.threads;
         combo(ui, "Worker threads", threads_label(threads), |ui| {
             for count in 0..cores.max(2) {
@@ -362,7 +349,8 @@ impl DevicePicker {
             };
             name(&list.outputs, self.draft.output.as_deref()) || input
         });
-        (named || latency.is_some_and(|r| r.output_is_slow())).then_some(BLUETOOTH_NOTE)
+        (named || latency.is_some_and(noodle_io::LatencyReport::output_is_slow))
+            .then_some(BLUETOOTH_NOTE)
     }
 
     /// Switches host. The output has to be on the chosen host, so it goes
@@ -622,7 +610,7 @@ mod tests {
         Ok(match host {
             None | Some("alsa") => DeviceList {
                 outputs: vec![
-                    device("alsa:speakers", "Speakers", true, stereo.clone()),
+                    device("alsa:speakers", "Speakers", true, stereo),
                     device(
                         "alsa:usb",
                         "USB Interface",
@@ -657,7 +645,7 @@ mod tests {
             applied: None,
         };
         crate::testkit::harness(state, egui::vec2(800.0, 600.0), |ui, state: &mut State| {
-            if let Some(config) = state.picker.show(ui.ctx(), None) {
+            if let Some(config) = state.picker.body(ui, None) {
                 state.applied = Some(config);
             }
         })
@@ -697,7 +685,6 @@ mod tests {
         harness.get_by_label("Apply").click();
         harness.run();
         let state = harness.state();
-        assert!(!state.picker.is_open());
         assert_eq!(
             state.applied,
             Some(AudioConfig {
@@ -739,13 +726,13 @@ mod tests {
     }
 
     #[test]
-    fn cancel_hands_back_nothing() {
+    fn revert_hands_back_nothing_and_undoes_the_choice() {
         let mut harness = harness(AudioConfig::default());
         choose(&mut harness, "Output", "USB Interface");
-        harness.get_by_label("Cancel").click();
+        harness.get_by_label("Revert").click();
         harness.run();
-        assert!(!harness.state().picker.is_open());
         assert_eq!(harness.state().applied, None);
+        assert_eq!(shown(&harness, "Output"), "Default (Speakers)");
     }
 
     #[test]

@@ -77,9 +77,7 @@ fn source_rates(
         .collect::<BTreeSet<_>>()
         .into_iter()
         .map(|source| {
-            let rate = sources
-                .get(ctx, directory, &source)
-                .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate);
+            let rate = sources.rate(ctx, directory, &source);
             (source, rate)
         })
         .collect()
@@ -143,10 +141,17 @@ pub struct TimelineState {
     /// time work on. Clips, automation points and a range are never selected
     /// together.
     range: Option<sections::Range>,
-    /// The marker a right-click on the ruler opened its menu at, and the name
-    /// being typed for it.
+    /// The marker a right-click on the ruler opened its menu at.
     marker_menu: Option<usize>,
+    /// The marker whose properties popup a double-click opened, and the name
+    /// being typed for it.
+    marker_popup: Option<Tick>,
     marker_name: String,
+    /// The marker whose name is being typed on its flag (a click on it), and
+    /// whether the field has yet to take focus. Shares `marker_name`.
+    marker_inline: Option<(Tick, bool)>,
+    /// A time signature change being typed on the ruler.
+    signature_edit: Option<SignatureEdit>,
     /// Whether the tempo lane is shown under the ruler.
     show_tempo: bool,
     tempo: tempo_lane::State,
@@ -202,7 +207,10 @@ impl Default for TimelineState {
             ruler_menu_bar: None,
             range: None,
             marker_menu: None,
+            marker_popup: None,
+            marker_inline: None,
             marker_name: String::new(),
+            signature_edit: None,
             tempo: tempo_lane::State::default(),
             #[cfg(test)]
             clip_rects: HashMap::new(),
@@ -763,12 +771,9 @@ pub fn show(
         let extent = project
             .timeline_clips()
             .map(|(_, clip)| {
-                let rate = clip.as_audio().map_or(FALLBACK_RATE, |audio| {
-                    state
-                        .sources
-                        .get(ui.ctx(), directory.as_deref(), &audio.source)
-                        .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
-                });
+                let rate = state
+                    .sources
+                    .clip_rate(ui.ctx(), directory.as_deref(), clip);
                 map.seconds_at(clips::clip_end(map, clip, rate, warp_of(project, clip)))
             })
             .fold(0.0, f64::max) as f32
@@ -799,10 +804,7 @@ pub fn show(
         state.fade_handles.clear();
         state.drawn_text.clear();
         state.waveforms_drawn = 0;
-        #[cfg(test)]
-        {
-            state.pins_drawn = 0;
-        }
+        state.pins_drawn = 0;
     }
 
     // The lanes and headers scroll together in a vertical scroll area, below
@@ -887,7 +889,8 @@ pub fn show(
             let clips_before = state.selected.clone();
             let take = session.take_preview();
             // Every audio-armed track shows the same waveform: work it out once.
-            let take_wave: std::cell::RefCell<Option<(usize, Vec<noodle_io::Peak>)>> = Default::default();
+            let take_wave: std::cell::RefCell<Option<(usize, Vec<noodle_io::Peak>)>> =
+                Default::default();
             for (index, &track) in tracks.iter().enumerate() {
                 let top = lane_top(index);
                 let lane_height = rows.lane_height(index);
@@ -960,9 +963,12 @@ pub fn show(
                         }
                         state.selected.insert(id);
                         // A link moves, trims and slips as one.
-                        state.selected = project.with_linked(state.selected.iter().copied()).into_iter().collect();
-                        let slipping =
-                            clip.as_audio().is_some() && ui.input(|i| i.modifiers.shift && i.modifiers.alt);
+                        state.selected = project
+                            .with_linked(state.selected.iter().copied())
+                            .into_iter()
+                            .collect();
+                        let slipping = clip.as_audio().is_some()
+                            && ui.input(|i| i.modifiers.shift && i.modifiers.alt);
                         let mode = if slipping {
                             Mode::Slip
                         } else {
@@ -1054,7 +1060,8 @@ pub fn show(
                         drag.copied = true;
                     }
                     if response.dragged()
-                        && let (Some(drag), Some(pos)) = (&state.drag, response.interact_pointer_pos())
+                        && let (Some(drag), Some(pos)) =
+                            (&state.drag, response.interact_pointer_pos())
                     {
                         let free = ui.input(|i| i.modifiers.alt);
                         let lane = rows.track_at(pos.y - content.top() + scroll_y);
@@ -1062,7 +1069,8 @@ pub fn show(
                         // Dragged out of the timeline, an audio clip is carried to a
                         // Sampler or the graph, and stays where it was.
                         let pointer = ui.input(|i| i.pointer.latest_pos()).unwrap_or(pos);
-                        let carried = drag.mode == Mode::Move && audio.is_some() && !rect.contains(pointer);
+                        let carried =
+                            drag.mode == Mode::Move && audio.is_some() && !rect.contains(pointer);
                         let (x, target) = if carried {
                             let home = drag
                                 .originals
@@ -1108,184 +1116,7 @@ pub fn show(
                         state.selected = project.linked_with(id).into_iter().collect();
                     }
                     response.context_menu(|ui| {
-                        if let Some(audio) = audio {
-                            let mute = if audio.muted { "Unmute" } else { "Mute" };
-                            if ui.button(mute).clicked() {
-                                ui.close();
-                                edits.push(Edit::Apply(toggle_mute(id, clip)));
-                            }
-                            if audio.takes.is_some() {
-                                let open = state.takes.shown.contains(&id);
-                                if ui
-                                    .button(if open { "Hide takes" } else { "Show takes" })
-                                    .on_hover_text("Show the takes under the track to comp them: drag across a take to play that part of it, click one to audition it")
-                                    .clicked()
-                                {
-                                    ui.close();
-                                    if open {
-                                        state.takes.shown.remove(&id);
-                                    } else {
-                                        state.takes.shown.insert(id);
-                                    }
-                                }
-                            }
-                            if audio.takes.is_some()
-                                && ui
-                                    .button("Flatten takes")
-                                    .on_hover_text(
-                                        "Cut the comp at its joins into plain clips and drop the takes it doesn't play",
-                                    )
-                                    .clicked()
-                            {
-                                ui.close();
-                                edits.extend(comp::flatten(project, map, id, rate).map(Edit::Apply));
-                            }
-                            if ui
-                                .button("Split to stems")
-                                .on_hover_text(
-                                    "Make a track for the drums, bass, vocals and the rest, and mute this clip",
-                                )
-                                .clicked()
-                            {
-                                ui.close();
-                                edits.push(Edit::SplitToStems(id));
-                            }
-                            if ui
-                                .button("Pin transients")
-                                .on_hover_text(
-                                    "Put a warp marker on every hit of this clip and the clips linked to it (one for a hit the mics hear a few milliseconds apart), where it plays now. Quantise and the Slices mode work from them.",
-                                )
-                                .clicked()
-                            {
-                                ui.close();
-                                edits.push(Edit::PinTransients(id, 50));
-                            }
-                            // The form has a number to edit, which a click in
-                            // the menu must not close.
-                            egui::containers::menu::SubMenuButton::new("Quantise transients…")
-                                .config(egui::containers::menu::MenuConfig::new().close_behavior(
-                                    egui::PopupCloseBehavior::CloseOnClickOutside,
-                                ))
-                                .ui(ui, |ui| {
-                                    ui.label("Pins every hit, then moves them onto a grid");
-                                    if crate::clip_panel::quantise_hits_form(ui, id, &mut edits) {
-                                        ui.close();
-                                    }
-                                });
-                            if ui
-                                .button("Slice to Sampler")
-                                .on_hover_text(
-                                    "Cut this clip at its transients onto a new track that plays each slice from a key, starting at C2",
-                                )
-                                .clicked()
-                            {
-                                ui.close();
-                                edits.push(Edit::SliceToSampler(id));
-                            }
-                            // A MIDI clip picked with this one is what the
-                            // conversion replaces.
-                            let replace = state
-                                .selected
-                                .iter()
-                                .copied()
-                                .find(|c| project.clip(*c).is_some_and(|c| c.as_midi().is_some()));
-                            ui.menu_button("Convert to MIDI", |ui| {
-                                ui.label(if replace.is_some() {
-                                    "Replaces the selected MIDI clip"
-                                } else {
-                                    "Notes on a new track (select a MIDI clip too to replace it)"
-                                });
-                                for detect in crate::session::convert::Detect::ALL {
-                                    if ui
-                                        .button(detect.label())
-                                        .on_hover_text(
-                                            "Follows one voice or line. The notes are plain notes to edit; convert again to try another setting.",
-                                        )
-                                        .clicked()
-                                    {
-                                        ui.close();
-                                        edits.push(Edit::ConvertToMidi(id, detect, replace));
-                                    }
-                                }
-                            });
-                            ui.separator();
-                        }
-                        if let Some(midi) = clip.as_midi()
-                            && midi.takes.is_some()
-                        {
-                            let open = state.takes.shown.contains(&id);
-                            if ui
-                                .button(if open { "Hide takes" } else { "Show takes" })
-                                .clicked()
-                            {
-                                ui.close();
-                                if open {
-                                    state.takes.shown.remove(&id);
-                                } else {
-                                    state.takes.shown.insert(id);
-                                }
-                            }
-                            if ui
-                                .button("Flatten takes")
-                                .on_hover_text("Keep what the comp plays as a plain clip and drop the takes")
-                                .clicked()
-                            {
-                                ui.close();
-                                edits.extend(comp::flatten_midi(project, id).map(Edit::Apply));
-                            }
-                            ui.separator();
-                        }
-                        let players = crate::pattern_panel::players(project);
-                        if clip.as_midi().is_some() && !players.is_empty() {
-                            ui.menu_button("Copy to pattern", |ui| {
-                                for (n, &player) in players.iter().enumerate() {
-                                    if ui
-                                        .button(format!("Pattern Player {}", n + 1))
-                                        .on_hover_text("Add a copy of this clip as a slot of the player")
-                                        .clicked()
-                                    {
-                                        ui.close();
-                                        edits.extend(
-                                            crate::pattern_panel::copy_to(project, clip, player)
-                                                .map(Edit::Apply),
-                                        );
-                                    }
-                                }
-                            });
-                            ui.separator();
-                        }
-                        let chosen: Vec<ClipId> = state.selected.iter().copied().collect();
-                        let linked = project.group_of(id).map(|(_, members)| members);
-                        let whole_link = linked.as_ref().is_some_and(|m| *m == chosen);
-                        if chosen.len() >= 2
-                            && !whole_link
-                            && ui
-                                .button("Link")
-                                .on_hover_text(
-                                    "Move, trim, cut, warp and delete these clips together",
-                                )
-                                .clicked()
-                        {
-                            ui.close();
-                            edits.extend(project.link_command(&chosen).map(Edit::Apply));
-                        }
-                        if chosen.iter().any(|&c| project.group_of(c).is_some())
-                            && ui.button("Unlink").clicked()
-                        {
-                            ui.close();
-                            edits.extend(project.unlink_command(&chosen).map(Edit::Apply));
-                        }
-                        ui.separator();
-                        for (action, label) in [
-                            (ClipAction::Cut, "Cut"),
-                            (ClipAction::Copy, "Copy"),
-                            (ClipAction::Duplicate, "Duplicate"),
-                        ] {
-                            if ui.button(label).clicked() {
-                                ui.close();
-                                state.pending = Some(action);
-                            }
-                        }
+                        clip_menu(ui, state, project, id, clip, rate, &mut edits)
                     });
 
                     let painter = ui.painter_at(visible);
@@ -1299,7 +1130,9 @@ pub fn show(
                     let missing = audio.is_some() && source.is_none();
                     let label = match (audio, clip.as_midi()) {
                         (Some(audio), _) => {
-                            if let Some(peaks) = loaded.as_ref().and_then(|loaded| loaded.peaks.as_ref()) {
+                            if let Some(peaks) =
+                                loaded.as_ref().and_then(|loaded| loaded.peaks.as_ref())
+                            {
                                 let wave = waveform::Clip {
                                     id,
                                     peaks,
@@ -1406,7 +1239,15 @@ pub fn show(
                             if let Some(warp) = warp_of(project, clip)
                                 && !missing
                             {
-                                let pins = pins::draw(&painter, axis, map, clip, rate, warp, (full, visible));
+                                let pins = pins::draw(
+                                    &painter,
+                                    axis,
+                                    map,
+                                    clip,
+                                    rate,
+                                    warp,
+                                    (full, visible),
+                                );
                                 #[cfg(test)]
                                 {
                                     state.pins_drawn += pins;
@@ -1502,9 +1343,10 @@ pub fn show(
                 .clips()
                 .filter_map(|(id, clip)| {
                     let audio = clip.as_audio()?;
-                    let loaded = state
-                        .sources
-                        .get(ui.ctx(), directory.as_deref(), &audio.source)?;
+                    let loaded =
+                        state
+                            .sources
+                            .get(ui.ctx(), directory.as_deref(), &audio.source)?;
                     Some((id, (loaded.source.sample_rate, loaded.source.frames)))
                 })
                 .collect();
@@ -1532,12 +1374,23 @@ pub fn show(
                     content.y_range(),
                 );
                 if band.width() > 0.0 {
-                    ui.painter_at(content)
-                        .rect_filled(band, 0.0, colors::SELECTED.gamma_multiply(0.12));
+                    ui.painter_at(content).rect_filled(
+                        band,
+                        0.0,
+                        colors::SELECTED.gamma_multiply(0.12),
+                    );
                 }
             }
             let before_box = state.selected.clone();
-            select_by_box(ui, state, &background, content, &drawn, state.scroll_x, scroll_y);
+            select_by_box(
+                ui,
+                state,
+                &background,
+                content,
+                &drawn,
+                state.scroll_x,
+                scroll_y,
+            );
             // A clip picked takes its link with it.
             if state.selected != before_box {
                 state.selected = project
@@ -1567,7 +1420,8 @@ pub fn show(
                 },
             ));
 
-            if state.automation.selected().is_some() && state.automation.selected() != point_before {
+            if state.automation.selected().is_some() && state.automation.selected() != point_before
+            {
                 state.range = None;
                 state.selected.clear();
                 state.tempo.deselect();
@@ -1647,72 +1501,13 @@ pub fn show(
             if hovered && !ui.ctx().egui_wants_keyboard_input() {
                 let split_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::S));
                 let copy_key = ui.input_mut(|i| i.consume_key(egui::Modifiers::COMMAND, Key::D));
-                let rate_of = |state: &mut TimelineState, clip: &Clip| {
-                    clip.as_audio().map_or(FALLBACK_RATE, |audio| {
-                        state
-                            .sources
-                            .get(ui.ctx(), directory.as_deref(), &audio.source)
-                            .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
-                    })
-                };
                 if split_key && let Some(at) = playhead {
-                    // Cutting one linked clip cuts them all.
-                    let wanted: Vec<ClipId> = if state.selected.is_empty() {
-                        project.timeline_clips().map(|(id, _)| id).collect()
-                    } else {
-                        project.with_linked(state.selected.iter().copied())
-                    };
-                    let mut commands = Vec::new();
-                    let mut right_halves = BTreeSet::new();
-                    let mut next = project.next_clip_id();
-                    // Which right half came from which clip, to link them as
-                    // the clips they come from were.
-                    let mut halves: BTreeMap<ClipId, ClipId> = BTreeMap::new();
-                    for id in wanted {
-                        let Some(clip) = project.clip(id) else {
-                            continue;
-                        };
-                        let rate = rate_of(state, clip);
-                        if let Some((first, second)) =
-                            clips::split(map, clip, at, rate, warp_of(project, clip))
-                        {
-                            commands.push(Command::SetClip { id, clip: first });
-                            commands.push(Command::AddClip {
-                                id: next,
-                                clip: second,
-                            });
-                            right_halves.insert(next);
-                            halves.insert(id, next);
-                            next.0 += 1;
+                    let split = split_at(state, ui.ctx(), directory.as_deref(), project, at);
+                    match split {
+                        Some(command) => edits.push(Edit::Apply(command)),
+                        None => {
+                            notice = Some("Move the playhead inside a clip to cut it".to_string())
                         }
-                    }
-                    // The left halves stay in their link; the right halves
-                    // make one of their own, which shares the warp (a clip
-                    // cut in two has one warp until a half is edited alone).
-                    let mut group_id = project.next_clip_group_id();
-                    let mut made = BTreeSet::new();
-                    for &id in halves.keys() {
-                        let Some((old, members)) = project.group_of(id) else {
-                            continue;
-                        };
-                        if !made.insert(old) {
-                            continue;
-                        }
-                        let rights: BTreeSet<ClipId> =
-                            members.iter().filter_map(|m| halves.get(m).copied()).collect();
-                        if rights.len() >= 2 {
-                            commands.push(Command::SetClipGroup {
-                                id: group_id,
-                                group: Some(noodle_core::ClipGroup { members: rights }),
-                            });
-                            group_id.0 += 1;
-                        }
-                    }
-                    if commands.is_empty() {
-                        notice = Some("Move the playhead inside a clip to cut it".to_string());
-                    } else {
-                        state.selected = right_halves;
-                        edits.push(Edit::Apply(Command::Batch(commands)));
                     }
                 }
                 let (key_copy, key_cut, key_paste) = ui.input_mut(|i| {
@@ -1747,125 +1542,16 @@ pub fn show(
             if !ui.ctx().egui_wants_keyboard_input()
                 && let Some(action) = state.pending.take()
             {
-                let rate_of = |state: &mut TimelineState, clip: &Clip| {
-                    clip.as_audio().map_or(FALLBACK_RATE, |audio| {
-                        state
-                            .sources
-                            .get(ui.ctx(), directory.as_deref(), &audio.source)
-                            .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
-                    })
-                };
-                let ranged = state
-                    .range
-                    .filter(|_| state.selected.is_empty() && state.automation.selected().is_none());
-                let pasting_section = action == ClipAction::Paste
-                    && crate::clipboard::holds(crate::clipboard::SECTION_MIME);
-                if ranged.is_some() || pasting_section {
-                    let rates = source_rates(project, &mut state.sources, ui.ctx(), directory.as_deref());
-                    let rate = |clip: &Clip| {
-                        clip.as_audio()
-                            .and_then(|audio| rates.get(&audio.source).copied())
-                            .unwrap_or(FALLBACK_RATE)
-                    };
-                    match (action, ranged) {
-                        (ClipAction::Copy | ClipAction::Cut, Some(range)) => {
-                            let section = sections::copy(project, range, &rate);
-                            crate::clipboard::copy(
-                                crate::clipboard::SECTION_MIME,
-                                &section,
-                                "a section",
-                            );
-                            if action == ClipAction::Cut {
-                                edits.push(Edit::Apply(sections::clear(project, range, &rate)));
-                            }
-                        }
-                        (ClipAction::InsertTime, Some(range)) => {
-                            edits.extend(
-                                sections::insert_time(project, range.start, range.len(), &rate)
-                                    .map(Edit::Apply),
-                            );
-                        }
-                        (ClipAction::DeleteTime, Some(range)) => {
-                            edits.push(Edit::Apply(sections::delete_time(project, range, &rate)));
-                            state.range = None;
-                        }
-                        (ClipAction::Paste, _) => {
-                            if let Some(section) = crate::clipboard::paste::<sections::Section>(
-                                crate::clipboard::SECTION_MIME,
-                            ) {
-                                let at = playhead.unwrap_or(Tick::ZERO);
-                                let (command, _) = sections::paste_section(project, &section, at);
-                                if let Some(command) = command {
-                                    edits.push(Edit::Apply(command));
-                                    state.range = sections::Range::new(
-                                        at,
-                                        Tick(at.0 + section.length.0),
-                                    );
-                                }
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-                let handled = ranged.is_some() || pasting_section;
-                if !handled {
-                edits.extend(automation::act(
+                let playhead = playhead.unwrap_or(Tick::ZERO);
+                run_clip_action(
                     action,
-                    &mut state.automation,
+                    state,
+                    ui.ctx(),
+                    directory.as_deref(),
                     project,
-                    playhead.unwrap_or(Tick::ZERO),
-                ));
-                let chosen: Vec<(ClipId, Clip)> = state
-                    .selected
-                    .iter()
-                    .filter_map(|&id| Some((id, project.clip(id)?.clone())))
-                    .collect();
-                if matches!(action, ClipAction::Copy | ClipAction::Cut) && !chosen.is_empty() {
-                    let copied = Copied::of(project, chosen.iter().map(|(_, clip)| clip));
-                    crate::clipboard::copy(
-                        crate::clipboard::CLIP_MIME,
-                        &copied,
-                        &format!("{} clips", copied.clips.len()),
-                    );
-                    if action == ClipAction::Cut {
-                        let removals = chosen
-                            .iter()
-                            .map(|&(id, _)| Command::RemoveClip { id })
-                            .collect();
-                        state.selected.clear();
-                        edits.push(Edit::Apply(Command::Batch(removals)));
-                    }
-                }
-                if action == ClipAction::Paste
-                    && let Some(clips) = crate::clipboard::paste::<Copied>(crate::clipboard::CLIP_MIME)
-                {
-                    // On the selected track if the clips come from one, else where
-                    // they came from.
-                    let track = state.selected_track.or_else(|| {
-                        let mut tracks = chosen.iter().map(|(_, clip)| clip.node);
-                        tracks.next().filter(|first| tracks.all(|t| t == *first))
-                    });
-                    let (command, pasted) = paste(project, &clips, playhead.unwrap_or(Tick::ZERO), track);
-                    if let Some(command) = command {
-                        state.selected = pasted;
-                        edits.push(Edit::Apply(command));
-                    }
-                }
-                if action == ClipAction::Duplicate && !chosen.is_empty() {
-                    let last = chosen
-                        .iter()
-                        .map(|(_, c)| clips::clip_end(map, c, rate_of(state, c), warp_of(project, c)))
-                        .max()
-                        .unwrap_or_default();
-                    let clipboard = Copied::of(project, chosen.iter().map(|(_, clip)| clip));
-                    let (command, copies) = paste(project, &clipboard, last, None);
-                    // The earliest copy goes at `last`: just after the others.
-                    if let Some(command) = command {
-                        state.selected = copies;
-                        edits.push(Edit::Apply(command));
-                    }
-                }
-                }
+                    playhead,
+                    &mut edits,
+                );
             }
 
             // Ctrl/Cmd+Left and Right take the playhead to the edges of the selected
@@ -1882,12 +1568,10 @@ pub fn show(
                         Key::ArrowLeft => selected.map(|clip| clip.start).min(),
                         _ => selected
                             .map(|clip| {
-                                let rate = clip.as_audio().map_or(FALLBACK_RATE, |audio| {
+                                let rate =
                                     state
                                         .sources
-                                        .get(ui.ctx(), directory.as_deref(), &audio.source)
-                                        .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
-                                });
+                                        .clip_rate(ui.ctx(), directory.as_deref(), clip);
                                 clips::clip_end(map, clip, rate, warp_of(project, clip))
                             })
                             .max(),
@@ -1904,28 +1588,27 @@ pub fn show(
                 }
             }
 
-            let (header_edits, header_arm) =
-                draw_headers(
-                    ui,
-                    rect,
-                    content,
-                    Lanes {
-                        tracks: &tracks,
-                        all: &all_tracks,
-                        strips: &strips,
-                        colours: &colours,
-                    },
-                    &rows,
-                    session,
-                    state,
-                    scroll_y,
-                );
+            let (header_edits, header_arm) = draw_headers(
+                ui,
+                rect,
+                content,
+                Lanes {
+                    tracks: &tracks,
+                    all: &all_tracks,
+                    strips: &strips,
+                    colours: &colours,
+                },
+                &rows,
+                session,
+                state,
+                scroll_y,
+            );
             edits.extend(header_edits);
             arm.extend(header_arm);
         });
     state.scroll_y = scroll.state.offset.y;
 
-    let _markers = draw_ruler(ui, rect, axis, &lines);
+    let _markers = draw_ruler(ui, rect, axis, &lines, state.signature_edit.as_ref());
     #[cfg(test)]
     state.drawn_text.extend(_markers);
     let ruler = Rect::from_min_max(
@@ -2141,9 +1824,17 @@ pub fn show(
             if response.drag_stopped() {
                 edits.push(Edit::EndDrag);
             }
+            if response.double_clicked() {
+                state.marker_inline = None;
+                state.marker_popup = Some(marker.at);
+                state.marker_name = marker.name.clone();
+            } else if response.clicked() && state.marker_inline.is_none() {
+                // A click types the name right on the flag.
+                state.marker_inline = Some((marker.at, true));
+                state.marker_name = marker.name.clone();
+            }
             if response.secondary_clicked() {
                 state.marker_menu = Some(i);
-                state.marker_name = marker.name.clone();
             }
             // A click in the name field must not close the menu, so its buttons
             // close it themselves.
@@ -2153,42 +1844,15 @@ pub fn show(
                     if state.marker_menu != Some(i) {
                         return;
                     }
-                    let name = ui.add(
-                        egui::TextEdit::singleline(&mut state.marker_name)
-                            .hint_text("Marker name")
-                            .desired_width(120.0),
-                    );
-                    if name.lost_focus() && ui.input(|input| input.key_pressed(Key::Enter)) {
-                        let mut renamed = markers.to_vec();
-                        renamed[i].name = state.marker_name.trim().to_string();
-                        if renamed[i].name.is_empty() {
-                            renamed[i].name = marker.name.clone();
-                        }
-                        edits.push(Edit::Apply(Command::SetMarkers(renamed)));
+                    if ui
+                        .button("Properties…")
+                        .on_hover_text("Rename the marker or set its key (double-click it)")
+                        .clicked()
+                    {
                         ui.close();
+                        state.marker_popup = Some(marker.at);
+                        state.marker_name = marker.name.clone();
                     }
-                    ui.horizontal(|ui| {
-                        ui.label("Key");
-                        let shown = marker.key.map(noodle_core::KeyTarget::Fixed);
-                        if let Some(picked) = crate::clip_panel::key_picker(
-                            ui,
-                            "marker key",
-                            shown,
-                            Some("Same as before"),
-                            false,
-                        ) {
-                            let mut changed = markers.to_vec();
-                            changed[i].key = match picked {
-                                Some(noodle_core::KeyTarget::Fixed(key)) => Some(key),
-                                _ => None,
-                            };
-                            edits.push(Edit::Apply(Command::SetMarkers(changed)));
-                        }
-                    })
-                    .response
-                    .on_hover_text(
-                        "Clips that follow the timeline's key are carried to this key from here",
-                    );
                     let next = markers
                         .get(i + 1)
                         .map_or("end of the song".to_string(), |next| {
@@ -2223,6 +1887,58 @@ pub fn show(
                     }
                 });
         }
+        if let Some((edit_at, fresh)) = state.marker_inline {
+            match markers.iter().position(|m| m.at == edit_at) {
+                Some(i) => {
+                    let id = ui.id().with(("marker_inline", edit_at.0));
+                    let field = Rect::from_min_size(
+                        Pos2::new(axis.x(edit_at), flag_top),
+                        vec2(120.0, 13.0),
+                    );
+                    let mut out = egui::TextEdit::singleline(&mut state.marker_name)
+                        .id(id)
+                        .font(FontId::proportional(10.0))
+                        .margin(vec2(3.0, 0.0))
+                        .show(&mut ui.new_child(egui::UiBuilder::new().max_rect(field)));
+                    if fresh {
+                        state.marker_inline = Some((edit_at, false));
+                        out.response.request_focus();
+                        out.state
+                            .cursor
+                            .set_char_range(Some(egui::text::CCursorRange::two(
+                                egui::text::CCursor::new(0),
+                                egui::text::CCursor::new(state.marker_name.chars().count()),
+                            )));
+                        out.state.store(ui.ctx(), id);
+                    }
+                    if out.response.lost_focus() {
+                        let typed = state.marker_name.trim().to_string();
+                        if !ui.input(|input| input.key_pressed(Key::Escape))
+                            && !typed.is_empty()
+                            && typed != markers[i].name
+                        {
+                            let mut renamed = markers.to_vec();
+                            renamed[i].name = typed;
+                            edits.push(Edit::Apply(Command::SetMarkers(renamed)));
+                        }
+                        state.marker_inline = None;
+                    }
+                }
+                None => state.marker_inline = None,
+            }
+        }
+        if let Some(popup_at) = state.marker_popup {
+            // Found by its tick, which is the marker's identity: dragging
+            // markers past each other reorders the list.
+            match markers.iter().position(|m| m.at == popup_at) {
+                Some(i) => {
+                    let marker = &markers[i];
+                    let at = Pos2::new(axis.x(marker.at), ruler.bottom() + 2.0);
+                    marker_popup(ui, state, markers, i, at, &mut edits);
+                }
+                None => state.marker_popup = None,
+            }
+        }
         // The selected range is a band along the top of the ruler.
         if let Some(range) = state.range {
             let (x0, x1) = (axis.x(range.start), axis.x(range.end));
@@ -2233,6 +1949,48 @@ pub fn show(
             if band.width() > 0.0 {
                 painter.rect_filled(band, 0.0, colors::SELECTED);
             }
+        }
+    }
+    // A click on a time signature label on the ruler types over it in place.
+    if state.signature_edit.is_none() {
+        for change in map.signatures().iter().skip(1) {
+            let x = axis.x(map.bar_start(change.bar));
+            let label =
+                Rect::from_min_size(Pos2::new(x + 2.0, ruler.bottom() - 15.0), vec2(30.0, 14.0));
+            let hit = ui
+                .interact(
+                    label,
+                    ui.id().with(("signature_label", change.bar)),
+                    Sense::click(),
+                )
+                .on_hover_cursor(egui::CursorIcon::Text);
+            if hit.clicked() {
+                state.signature_edit = Some(SignatureEdit {
+                    bar: change.bar,
+                    text: change.signature.to_string(),
+                    fresh: true,
+                });
+            }
+        }
+    }
+    if let Some(editing) = state.signature_edit.as_mut() {
+        let typed = signature_field(ui, axis, ruler, editing);
+        let bar = editing.bar;
+        match typed {
+            SignatureTyped::Open => {}
+            SignatureTyped::Done(typed) => {
+                state.signature_edit = None;
+                // The same signature as is already in force is no change.
+                edits.extend(
+                    typed
+                        .filter(|&s| s != crate::tempo::signature_at_bar(map, bar))
+                        .and_then(|signature| {
+                            crate::tempo::with_signature_at(map, bar, signature)
+                                .map(|new| Edit::Apply(Command::SetTempoMap(new)))
+                        }),
+                );
+            }
+            SignatureTyped::Cancelled => state.signature_edit = None,
         }
     }
     if scrub.secondary_clicked() {
@@ -2361,6 +2119,9 @@ pub fn show(
                     select_range(state, range);
                 }
             }
+            if let Some(range) = state.range {
+                convert_range_button(ui, range, &mut edits);
+            }
             if state.range.is_some() && ui.button("Clear selection").clicked() {
                 ui.close();
                 state.range = None;
@@ -2379,21 +2140,20 @@ pub fn show(
                     .map(|(new, _)| Edit::Apply(Command::SetTempoMap(new))),
             );
         }
-        for (numerator, denominator) in crate::tempo::SIGNATURES {
-            let signature = noodle_core::TimeSignature {
-                numerator,
-                denominator,
-            };
-            if ui
-                .button(format!("Time signature {numerator}/{denominator}"))
-                .clicked()
-            {
-                ui.close();
-                edits.extend(
-                    crate::tempo::with_signature_at(map, bar, signature)
-                        .map(|new| Edit::Apply(Command::SetTempoMap(new))),
-                );
-            }
+        if ui
+            .button(format!("Insert time signature change at bar {}", bar + 1))
+            .on_hover_text("Type the new signature on the ruler: 3/4, 6/8, 7/8")
+            .clicked()
+        {
+            ui.close();
+            // Nothing is changed until the signature is typed and entered, so
+            // Escape leaves the song and its undo history as they were.
+            let current = crate::tempo::signature_at_bar(map, bar);
+            state.signature_edit = Some(SignatureEdit {
+                bar,
+                text: current.to_string(),
+                fresh: true,
+            });
         }
         if bar > 0
             && map.signatures().iter().any(|s| s.bar == bar)
@@ -2517,6 +2277,9 @@ pub fn show(
                 edits.push(Edit::Apply(command));
             }
         }
+        if let Some(range) = state.range {
+            convert_range_button(ui, range, &mut edits);
+        }
         if ui.button("Import audio…").clicked() {
             ui.close();
             let on_lane = state.menu_at.filter(|p| content.contains(*p));
@@ -2555,8 +2318,552 @@ pub fn show(
         audition,
     }
 }
+/// Convert to sample node, for the range selected: bounce the mix over it
+/// and make a Sample node of the result.
+fn convert_range_button(ui: &mut egui::Ui, range: sections::Range, edits: &mut Vec<Edit>) {
+    if ui
+        .button("Convert to sample node")
+        .on_hover_text(
+            "Bounce what plays over the selection (every track, as mixed) to a file in the renders folder, and make a Sample node of it",
+        )
+        .clicked()
+    {
+        ui.close();
+        edits.push(Edit::BounceToSample(range.start, range.end));
+    }
+}
 
-/// The first tick of 1-based `bar`, through the signature changes.
+/// The menu on a right-clicked clip.
+fn clip_menu(
+    ui: &mut egui::Ui,
+    state: &mut TimelineState,
+    project: &Project,
+    id: ClipId,
+    clip: &Clip,
+    rate: u32,
+    edits: &mut Vec<Edit>,
+) {
+    let map = project.tempo_map();
+    let audio = clip.as_audio();
+    if let Some(audio) = audio {
+        let mute = if audio.muted { "Unmute" } else { "Mute" };
+        if ui.button(mute).clicked() {
+            ui.close();
+            edits.push(Edit::Apply(toggle_mute(id, clip)));
+        }
+        if audio.takes.is_some() {
+            let open = state.takes.shown.contains(&id);
+            if ui
+                .button(if open { "Hide takes" } else { "Show takes" })
+                .on_hover_text("Show the takes under the track to comp them: drag across a take to play that part of it, click one to audition it")
+                .clicked()
+            {
+                ui.close();
+                if open {
+                    state.takes.shown.remove(&id);
+                } else {
+                    state.takes.shown.insert(id);
+                }
+            }
+        }
+        if audio.takes.is_some()
+            && ui
+                .button("Flatten takes")
+                .on_hover_text(
+                    "Cut the comp at its joins into plain clips and drop the takes it doesn't play",
+                )
+                .clicked()
+        {
+            ui.close();
+            edits.extend(comp::flatten(project, map, id, rate).map(Edit::Apply));
+        }
+        if ui
+            .button("Split to stems")
+            .on_hover_text(
+                "Make a track for the drums, bass, vocals and the rest, and mute this clip",
+            )
+            .clicked()
+        {
+            ui.close();
+            edits.push(Edit::SplitToStems(id));
+        }
+        if ui
+            .button("Pin transients")
+            .on_hover_text(
+                "Put a warp marker on every hit of this clip and the clips linked to it (one for a hit the mics hear a few milliseconds apart), where it plays now. Quantise and the Slices mode work from them.",
+            )
+            .clicked()
+        {
+            ui.close();
+            edits.push(Edit::PinTransients(id, 50));
+        }
+        // The form has a number to edit, which a click in
+        // the menu must not close.
+        egui::containers::menu::SubMenuButton::new("Quantise transients…")
+            .config(
+                egui::containers::menu::MenuConfig::new()
+                    .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside),
+            )
+            .ui(ui, |ui| {
+                ui.label("Pins every hit, then moves them onto a grid");
+                if crate::clip_panel::quantise_hits_form(ui, id, edits) {
+                    ui.close();
+                }
+            });
+        if ui
+            .button("Slice to Sampler")
+            .on_hover_text(
+                "Cut this clip at its transients onto a new track that plays each slice from a key, starting at C2",
+            )
+            .clicked()
+        {
+            ui.close();
+            edits.push(Edit::SliceToSampler(id));
+        }
+        if ui
+            .button("Create drum rack from clip…")
+            .on_hover_text(
+                "Find the drum hits of this clip, group the ones that sound alike, and drop the groups on the pads of a new Drum Rack",
+            )
+            .clicked()
+        {
+            ui.close();
+            edits.push(Edit::AnalyseDrumClip(id));
+        }
+        // A MIDI clip picked with this one is what the
+        // conversion replaces.
+        let replace = state
+            .selected
+            .iter()
+            .copied()
+            .find(|c| project.clip(*c).is_some_and(|c| c.as_midi().is_some()));
+        ui.menu_button("Convert to MIDI", |ui| {
+            ui.label(if replace.is_some() {
+                "Replaces the selected MIDI clip"
+            } else {
+                "Notes on a new track (select a MIDI clip too to replace it)"
+            });
+            for detect in crate::session::convert::Detect::ALL {
+                if ui
+                    .button(detect.label())
+                    .on_hover_text(
+                        "Follows one voice or line. The notes are plain notes to edit; convert again to try another setting.",
+                    )
+                    .clicked()
+                {
+                    ui.close();
+                    edits.push(Edit::ConvertToMidi(id, detect, replace));
+                }
+            }
+        });
+        ui.separator();
+    }
+    if let Some(midi) = clip.as_midi()
+        && midi.takes.is_some()
+    {
+        let open = state.takes.shown.contains(&id);
+        if ui
+            .button(if open { "Hide takes" } else { "Show takes" })
+            .clicked()
+        {
+            ui.close();
+            if open {
+                state.takes.shown.remove(&id);
+            } else {
+                state.takes.shown.insert(id);
+            }
+        }
+        if ui
+            .button("Flatten takes")
+            .on_hover_text("Keep what the comp plays as a plain clip and drop the takes")
+            .clicked()
+        {
+            ui.close();
+            edits.extend(comp::flatten_midi(project, id).map(Edit::Apply));
+        }
+        ui.separator();
+    }
+    let players = crate::pattern_panel::players(project);
+    if clip.as_midi().is_some() && !players.is_empty() {
+        ui.menu_button("Copy to pattern", |ui| {
+            for (n, &player) in players.iter().enumerate() {
+                if ui
+                    .button(format!("Pattern Player {}", n + 1))
+                    .on_hover_text("Add a copy of this clip as a slot of the player")
+                    .clicked()
+                {
+                    ui.close();
+                    edits.extend(
+                        crate::pattern_panel::copy_to(project, clip, player).map(Edit::Apply),
+                    );
+                }
+            }
+        });
+        ui.separator();
+    }
+    let chosen: Vec<ClipId> = state.selected.iter().copied().collect();
+    let linked = project.group_of(id).map(|(_, members)| members);
+    let whole_link = linked.as_ref().is_some_and(|m| *m == chosen);
+    if chosen.len() >= 2
+        && !whole_link
+        && ui
+            .button("Link")
+            .on_hover_text("Move, trim, cut, warp and delete these clips together")
+            .clicked()
+    {
+        ui.close();
+        edits.extend(project.link_command(&chosen).map(Edit::Apply));
+    }
+    if chosen.iter().any(|&c| project.group_of(c).is_some()) && ui.button("Unlink").clicked() {
+        ui.close();
+        edits.extend(project.unlink_command(&chosen).map(Edit::Apply));
+    }
+    ui.separator();
+    for (action, label) in [
+        (ClipAction::Cut, "Cut"),
+        (ClipAction::Copy, "Copy"),
+        (ClipAction::Duplicate, "Duplicate"),
+    ] {
+        if ui.button(label).clicked() {
+            ui.close();
+            state.pending = Some(action);
+        }
+    }
+}
+/// Cuts the selected clips (every clip, if none is selected) at `at`; the
+/// right halves become the selection. `None` if no clip spans `at`.
+fn split_at(
+    state: &mut TimelineState,
+    ctx: &egui::Context,
+    directory: Option<&std::path::Path>,
+    project: &Project,
+    at: Tick,
+) -> Option<Command> {
+    let map = project.tempo_map();
+    // Cutting one linked clip cuts them all.
+    let wanted: Vec<ClipId> = if state.selected.is_empty() {
+        project.timeline_clips().map(|(id, _)| id).collect()
+    } else {
+        project.with_linked(state.selected.iter().copied())
+    };
+    let mut commands = Vec::new();
+    let mut right_halves = BTreeSet::new();
+    let mut next = project.next_clip_id();
+    // Which right half came from which clip, to link them as
+    // the clips they come from were.
+    let mut halves: BTreeMap<ClipId, ClipId> = BTreeMap::new();
+    for id in wanted {
+        let Some(clip) = project.clip(id) else {
+            continue;
+        };
+        let rate = state.sources.clip_rate(ctx, directory, clip);
+        if let Some((first, second)) = clips::split(map, clip, at, rate, warp_of(project, clip)) {
+            commands.push(Command::SetClip { id, clip: first });
+            commands.push(Command::AddClip {
+                id: next,
+                clip: second,
+            });
+            right_halves.insert(next);
+            halves.insert(id, next);
+            next.0 += 1;
+        }
+    }
+    // The left halves stay in their link; the right halves
+    // make one of their own, which shares the warp (a clip
+    // cut in two has one warp until a half is edited alone).
+    let mut group_id = project.next_clip_group_id();
+    let mut made = BTreeSet::new();
+    for &id in halves.keys() {
+        let Some((old, members)) = project.group_of(id) else {
+            continue;
+        };
+        if !made.insert(old) {
+            continue;
+        }
+        let rights: BTreeSet<ClipId> = members
+            .iter()
+            .filter_map(|m| halves.get(m).copied())
+            .collect();
+        if rights.len() >= 2 {
+            commands.push(Command::SetClipGroup {
+                id: group_id,
+                group: Some(noodle_core::ClipGroup { members: rights }),
+            });
+            group_id.0 += 1;
+        }
+    }
+    if commands.is_empty() {
+        return None;
+    }
+    state.selected = right_halves;
+    Some(Command::Batch(commands))
+}
+
+/// Carries out a clipboard action on the selected section, clips or
+/// automation points, with the playhead at `playhead`.
+fn run_clip_action(
+    action: ClipAction,
+    state: &mut TimelineState,
+    ctx: &egui::Context,
+    directory: Option<&std::path::Path>,
+    project: &Project,
+    playhead: Tick,
+    edits: &mut Vec<Edit>,
+) {
+    let map = project.tempo_map();
+    let ranged = state
+        .range
+        .filter(|_| state.selected.is_empty() && state.automation.selected().is_none());
+    let pasting_section =
+        action == ClipAction::Paste && crate::clipboard::holds(crate::clipboard::SECTION_MIME);
+    if ranged.is_some() || pasting_section {
+        let rates = source_rates(project, &mut state.sources, ctx, directory);
+        let rate = |clip: &Clip| {
+            clip.as_audio()
+                .and_then(|audio| rates.get(&audio.source).copied())
+                .unwrap_or(FALLBACK_RATE)
+        };
+        match (action, ranged) {
+            (ClipAction::Copy | ClipAction::Cut, Some(range)) => {
+                let section = sections::copy(project, range, &rate);
+                crate::clipboard::copy(crate::clipboard::SECTION_MIME, &section, "a section");
+                if action == ClipAction::Cut {
+                    edits.push(Edit::Apply(sections::clear(project, range, &rate)));
+                }
+            }
+            (ClipAction::InsertTime, Some(range)) => {
+                edits.extend(
+                    sections::insert_time(project, range.start, range.len(), &rate)
+                        .map(Edit::Apply),
+                );
+            }
+            (ClipAction::DeleteTime, Some(range)) => {
+                edits.push(Edit::Apply(sections::delete_time(project, range, &rate)));
+                state.range = None;
+            }
+            (ClipAction::Paste, _) => {
+                if let Some(section) =
+                    crate::clipboard::paste::<sections::Section>(crate::clipboard::SECTION_MIME)
+                {
+                    let at = playhead;
+                    let (command, _) = sections::paste_section(project, &section, at);
+                    if let Some(command) = command {
+                        edits.push(Edit::Apply(command));
+                        state.range = sections::Range::new(at, Tick(at.0 + section.length.0));
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+    let handled = ranged.is_some() || pasting_section;
+    if !handled {
+        edits.extend(automation::act(
+            action,
+            &mut state.automation,
+            project,
+            playhead,
+        ));
+        let chosen: Vec<(ClipId, Clip)> = state
+            .selected
+            .iter()
+            .filter_map(|&id| Some((id, project.clip(id)?.clone())))
+            .collect();
+        if matches!(action, ClipAction::Copy | ClipAction::Cut) && !chosen.is_empty() {
+            let copied = Copied::of(project, chosen.iter().map(|(_, clip)| clip));
+            crate::clipboard::copy(
+                crate::clipboard::CLIP_MIME,
+                &copied,
+                &format!("{} clips", copied.clips.len()),
+            );
+            if action == ClipAction::Cut {
+                let removals = chosen
+                    .iter()
+                    .map(|&(id, _)| Command::RemoveClip { id })
+                    .collect();
+                state.selected.clear();
+                edits.push(Edit::Apply(Command::Batch(removals)));
+            }
+        }
+        if action == ClipAction::Paste
+            && let Some(clips) = crate::clipboard::paste::<Copied>(crate::clipboard::CLIP_MIME)
+        {
+            // On the selected track if the clips come from one, else where
+            // they came from.
+            let track = state.selected_track.or_else(|| {
+                let mut tracks = chosen.iter().map(|(_, clip)| clip.node);
+                tracks.next().filter(|first| tracks.all(|t| t == *first))
+            });
+            let (command, pasted) = paste(project, &clips, playhead, track);
+            if let Some(command) = command {
+                state.selected = pasted;
+                edits.push(Edit::Apply(command));
+            }
+        }
+        if action == ClipAction::Duplicate && !chosen.is_empty() {
+            let last = chosen
+                .iter()
+                .map(|(_, c)| {
+                    clips::clip_end(
+                        map,
+                        c,
+                        state.sources.clip_rate(ctx, directory, c),
+                        warp_of(project, c),
+                    )
+                })
+                .max()
+                .unwrap_or_default();
+            let clipboard = Copied::of(project, chosen.iter().map(|(_, clip)| clip));
+            let (command, copies) = paste(project, &clipboard, last, None);
+            // The earliest copy goes at `last`: just after the others.
+            if let Some(command) = command {
+                state.selected = copies;
+                edits.push(Edit::Apply(command));
+            }
+        }
+    }
+}
+
+/// A time signature change being typed on the ruler.
+struct SignatureEdit {
+    bar: u32,
+    text: String,
+    /// Not yet shown: the first frame focuses the field and selects its text.
+    fresh: bool,
+}
+
+/// Reads "3/4" (or "3 / 4"). Whether the tempo map accepts it is for the map
+/// to say.
+pub(crate) fn parse_signature(text: &str) -> Option<noodle_core::TimeSignature> {
+    let (n, d) = text.split_once('/')?;
+    Some(noodle_core::TimeSignature {
+        numerator: n.trim().parse().ok()?,
+        denominator: d.trim().parse().ok()?,
+    })
+}
+
+/// How typing a time signature on the ruler ended.
+enum SignatureTyped {
+    /// Still typing.
+    Open,
+    /// Enter or a click elsewhere: what was typed, if it reads as a signature.
+    Done(Option<noodle_core::TimeSignature>),
+    /// Escape.
+    Cancelled,
+}
+
+/// The text field for the time signature change at `edit.bar`, over its
+/// marker. Enter or clicking away sets the signature; Escape keeps the old one.
+fn signature_field(
+    ui: &mut egui::Ui,
+    axis: Axis<'_>,
+    ruler: Rect,
+    edit: &mut SignatureEdit,
+) -> SignatureTyped {
+    let x = axis.x(axis.map.bar_start(edit.bar));
+    let id = ui.id().with(("signature_field", edit.bar));
+    let field = Rect::from_min_size(Pos2::new(x + 2.0, ruler.bottom() - 16.0), vec2(44.0, 15.0));
+    let mut out = egui::TextEdit::singleline(&mut edit.text)
+        .id(id)
+        .font(FontId::proportional(10.0))
+        .margin(vec2(2.0, 0.0))
+        .show(&mut ui.new_child(egui::UiBuilder::new().max_rect(field)));
+    if edit.fresh {
+        edit.fresh = false;
+        out.response.request_focus();
+        out.state
+            .cursor
+            .set_char_range(Some(egui::text::CCursorRange::two(
+                egui::text::CCursor::new(0),
+                egui::text::CCursor::new(edit.text.chars().count()),
+            )));
+        out.state.store(ui.ctx(), id);
+    }
+    if !out.response.lost_focus() {
+        SignatureTyped::Open
+    } else if ui.input(|i| i.key_pressed(Key::Escape)) {
+        SignatureTyped::Cancelled
+    } else {
+        SignatureTyped::Done(parse_signature(&edit.text))
+    }
+}
+
+/// The popup a double-click on marker `index` opens: its name and key.
+fn marker_popup(
+    ui: &mut egui::Ui,
+    state: &mut TimelineState,
+    markers: &[noodle_core::Marker],
+    index: usize,
+    at: Pos2,
+    edits: &mut Vec<Edit>,
+) {
+    let mut open = true;
+    let mut close = false;
+    egui::Window::new("Marker")
+        .id(ui.id().with("marker_popup"))
+        .fixed_pos(at)
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ui.ctx(), |ui| {
+            ui.horizontal(|ui| {
+                ui.label("Name");
+                let name = ui.add(
+                    egui::TextEdit::singleline(&mut state.marker_name)
+                        .hint_text("Marker name")
+                        .desired_width(140.0),
+                );
+                if name.lost_focus() {
+                    let typed = state.marker_name.trim();
+                    if !typed.is_empty() && typed != markers[index].name {
+                        let mut renamed = markers.to_vec();
+                        renamed[index].name = typed.to_string();
+                        edits.push(Edit::Apply(Command::SetMarkers(renamed)));
+                    }
+                    if ui.input(|i| i.key_pressed(Key::Enter)) {
+                        close = true;
+                    }
+                }
+            });
+            ui.horizontal(|ui| {
+                ui.label("Key");
+                let shown = markers[index].key.map(noodle_core::KeyTarget::Fixed);
+                if let Some(picked) = crate::clip_panel::key_picker(
+                    ui,
+                    "marker key",
+                    shown,
+                    Some("Same as before"),
+                    false,
+                ) {
+                    let mut changed = markers.to_vec();
+                    changed[index].key = match picked {
+                        Some(noodle_core::KeyTarget::Fixed(key)) => Some(key),
+                        _ => None,
+                    };
+                    edits.push(Edit::Apply(Command::SetMarkers(changed)));
+                }
+            })
+            .response
+            .on_hover_text(
+                "Clips that follow the timeline's key are carried to this key from here",
+            );
+            ui.horizontal(|ui| {
+                if ui.button("Delete marker").clicked() {
+                    let mut rest = markers.to_vec();
+                    rest.remove(index);
+                    edits.push(Edit::Apply(Command::SetMarkers(rest)));
+                    close = true;
+                }
+                if ui.button("Done").clicked() {
+                    close = true;
+                }
+            });
+        });
+    if !open || close {
+        state.marker_popup = None;
+    }
+}
+
 /// The colour of markers.
 const MARKER_COLOUR: egui::Color32 = egui::Color32::from_rgb(235, 180, 60);
 
@@ -3632,7 +3939,13 @@ fn folder_strip(
 }
 
 /// Draws the ruler, and returns the time signature markers it drew.
-fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis<'_>, lines: &[grid::Line]) -> Vec<String> {
+fn draw_ruler(
+    ui: &egui::Ui,
+    rect: Rect,
+    axis: Axis<'_>,
+    lines: &[grid::Line],
+    editing: Option<&SignatureEdit>,
+) -> Vec<String> {
     let strip = Rect::from_min_size(rect.min, Vec2::new(rect.width(), colors::RULER_HEIGHT));
     let painter = ui.painter_at(strip);
     painter.rect_filled(strip, 0.0, colors::RULER);
@@ -3676,6 +3989,10 @@ fn draw_ruler(ui: &egui::Ui, rect: Rect, axis: Axis<'_>, lines: &[grid::Line]) -
     // transport shows.
     let mut markers = Vec::new();
     for change in axis.map.signatures().iter().skip(1) {
+        if editing.is_some_and(|e| e.bar == change.bar) {
+            // The text field is drawn over it.
+            continue;
+        }
         let x = axis.x(axis.map.bar_start(change.bar));
         painter.vline(
             x,

@@ -21,16 +21,48 @@ const MARGIN: f32 = 24.0;
 /// The scroll bar is hidden, like the sequencer's and the properties
 /// panel's: a solid one would take width from the body, and a floating one
 /// would lie over it. The wheel over the dialog scrolls it.
-pub fn modal(ctx: &egui::Context, id: &str, add: impl FnOnce(&mut Ui)) -> egui::ModalResponse<()> {
+///
+/// A scroll area sizes itself from its content as it was last frame, so a
+/// body that grows (a radio choice that adds rows) would draw one frame at
+/// the old height, with its end outside the frame, and nothing repaints it
+/// until the next input. When the frame is the wrong height the pass is
+/// discarded and run again as a sizing pass, so the dialog is right the
+/// frame it changes.
+///
+/// Returns the rectangle of the body's frame, for tests.
+pub fn modal(
+    ctx: &egui::Context,
+    id: &str,
+    add: impl FnOnce(&mut Ui),
+) -> egui::ModalResponse<egui::Rect> {
     let id = Id::new(id);
-    let area = egui::Modal::default_area(id).default_size(ctx.content_rect().size());
+    // The area is as big as its content was last frame, so a body that has
+    // grown is squeezed into the old size. A sizing pass lets it measure
+    // itself against the whole window again.
+    let resize_key = id.with("resize");
+    let resize = ctx
+        .data_mut(|d| d.remove_temp::<bool>(resize_key))
+        .unwrap_or(false);
+    let area = egui::Modal::default_area(id)
+        .default_size(ctx.content_rect().size())
+        .sizing_pass(resize);
     egui::Modal::new(id).area(area).show(ctx, |ui| {
         let height = (ctx.content_rect().height() - MARGIN).max(0.0);
-        egui::ScrollArea::vertical()
+        let out = egui::ScrollArea::vertical()
             .id_salt("body")
             .max_height(height)
             .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysHidden)
             .show(ui, add);
+        let key = id.with("content height");
+        let before = ctx.data_mut(|d| d.get_temp::<f32>(key));
+        ctx.data_mut(|d| d.insert_temp(key, out.content_size.y));
+        if resize {
+            ctx.request_discard("dialog resized");
+        } else if before.is_some_and(|h| (h - out.content_size.y).abs() > 0.5) {
+            ctx.data_mut(|d| d.insert_temp(resize_key, true));
+            ctx.request_discard("dialog body changed height");
+        }
+        out.inner_rect
     })
 }
 
@@ -98,6 +130,43 @@ mod tests {
         h.get_by_label("Bottom").click();
         h.run();
         assert_eq!(h.state().pressed, 1, "the button was pressed");
+    }
+
+    /// A dialog whose body grows when a button in it is pressed has a frame
+    /// that holds the new rows in the very frame they appear.
+    #[test]
+    fn a_dialog_that_grows_has_a_frame_that_holds_it_at_once() {
+        #[derive(Default)]
+        struct Grow {
+            more: bool,
+            frame: Option<egui::Rect>,
+        }
+        let mut h = crate::testkit::harness(
+            Grow::default(),
+            egui::vec2(400.0, 400.0),
+            |ui, s: &mut Grow| {
+                let out = crate::dialog::modal(ui.ctx(), "grow", |ui| {
+                    if ui.button("More").clicked() {
+                        s.more = true;
+                    }
+                    if s.more {
+                        for row in 0..3 {
+                            ui.label(format!("extra {row}"));
+                        }
+                    }
+                    ui.label("end");
+                });
+                s.frame = Some(out.inner);
+            },
+        );
+        h.get_by_label("More").click();
+        h.step();
+        let end = h.get_by_label("end").rect();
+        let frame = h.state().frame.unwrap();
+        assert!(
+            frame.bottom() >= end.bottom(),
+            "the frame {frame:?} ends before the last row {end:?}"
+        );
     }
 
     #[test]

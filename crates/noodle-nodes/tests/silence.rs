@@ -8,8 +8,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 
 use noodle_core::{Command, Config, Connection, Endpoint, Node, NodeId, Project, Value};
 use noodle_engine::{
-    Context, Instance, Lane, LaneKernel, NodeError, NodeInfo, NodeType, OUTPUT_ID, PerLane,
-    Processor, Registry, Settings, Setup, Skip, engine,
+    Context, Controller, Instance, Lane, LaneKernel, NodeError, NodeInfo, NodeType, OUTPUT_ID,
+    PerLane, Processor, Registry, Settings, Setup, Skip, engine,
 };
 use noodle_io::MidiBus;
 use noodle_nodes::{MIDI_IN_ID, VOICE_MIX_ID, VOICES_ID, register_library};
@@ -148,27 +148,41 @@ fn synth(tail: f32) -> (Processor, MidiBus, Arc<AtomicUsize>, impl Sized) {
         Command::AddNode { id, node }.apply(&mut project).unwrap();
         ids.push(id);
     }
-    for (from, port, to, to_port) in [
-        (0, "out", 1, "in"),
-        (1, "pitch", 2, "frequency"),
-        (1, "gate", 3, "gate"),
-        (2, "out", 4, "in"),
-        (3, "out", 4, "level"),
-        (4, "out", 5, "in"),
-        (5, "out", 6, "in"),
-        (6, "out", 7, "in"),
-    ] {
+    connect_all(
+        &mut project,
+        &ids,
+        &[
+            (0, "out", 1, "in"),
+            (1, "pitch", 2, "frequency"),
+            (1, "gate", 3, "gate"),
+            (2, "out", 4, "in"),
+            (3, "out", 4, "level"),
+            (4, "out", 5, "in"),
+            (5, "out", 6, "in"),
+            (6, "out", 7, "in"),
+        ],
+    );
+    let (controller, processor) = start(&project, &registry, SETTINGS);
+    (processor, library.midi, counted, controller)
+}
+
+fn connect_all(project: &mut Project, ids: &[NodeId], wires: &[(usize, &str, usize, &str)]) {
+    for &(from, port, to, to_port) in wires {
         Command::Connect(Connection {
             from: Endpoint::new(ids[from], port),
             to: Endpoint::new(ids[to], to_port),
         })
-        .apply(&mut project)
+        .apply(project)
         .unwrap();
     }
-    let (mut controller, processor) = engine(SETTINGS).unwrap();
-    let diagnostics = controller.update_project(&project, &registry);
+}
+
+/// Compiles `project` into an engine; keep the controller alive while the processor runs.
+fn start(project: &Project, registry: &Registry, settings: Settings) -> (Controller, Processor) {
+    let (mut controller, processor) = engine(settings).unwrap();
+    let diagnostics = controller.update_project(project, registry);
     assert!(diagnostics.is_empty(), "{diagnostics:?}");
-    (processor, library.midi, counted, controller)
+    (controller, processor)
 }
 
 fn block(processor: &mut Processor) -> Vec<f32> {
@@ -306,17 +320,8 @@ fn pitch_counted_synth(busy: bool) -> (Processor, MidiBus, Arc<AtomicUsize>, imp
     if busy {
         wires.push((4, "active", 1, "busy"));
     }
-    for (from, port, to, to_port) in wires {
-        Command::Connect(Connection {
-            from: Endpoint::new(ids[from], port),
-            to: Endpoint::new(ids[to], to_port),
-        })
-        .apply(&mut project)
-        .unwrap();
-    }
-    let (mut controller, processor) = engine(SETTINGS).unwrap();
-    let diagnostics = controller.update_project(&project, &registry);
-    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    connect_all(&mut project, &ids, &wires);
+    let (controller, processor) = start(&project, &registry, SETTINGS);
     (processor, library.midi, counted, controller)
 }
 
@@ -411,33 +416,28 @@ fn subtractive() -> (Processor, MidiBus, impl Sized) {
         Command::AddNode { id, node }.apply(&mut project).unwrap();
         ids.push(id);
     }
-    for (from, port, to, to_port) in [
-        (0, "out", 1, "in"),
-        (1, "pitch", 2, "frequency"),
-        (2, "out", 3, "in"),
-        (1, "gate", 4, "gate"),
-        (4, "out", 9, "a"),
-        (9, "out", 3, "cutoff"),
-        (1, "gate", 5, "gate"),
-        (3, "out", 6, "in"),
-        (5, "out", 6, "level"),
-        (6, "out", 7, "in"),
-        (7, "out", 8, "in"),
-    ] {
-        Command::Connect(Connection {
-            from: Endpoint::new(ids[from], port),
-            to: Endpoint::new(ids[to], to_port),
-        })
-        .apply(&mut project)
-        .unwrap();
-    }
-    let (mut controller, processor) = engine(Settings {
+    connect_all(
+        &mut project,
+        &ids,
+        &[
+            (0, "out", 1, "in"),
+            (1, "pitch", 2, "frequency"),
+            (2, "out", 3, "in"),
+            (1, "gate", 4, "gate"),
+            (4, "out", 9, "a"),
+            (9, "out", 3, "cutoff"),
+            (1, "gate", 5, "gate"),
+            (3, "out", 6, "in"),
+            (5, "out", 6, "level"),
+            (6, "out", 7, "in"),
+            (7, "out", 8, "in"),
+        ],
+    );
+    let settings = Settings {
         channels: 2,
         ..SETTINGS
-    })
-    .unwrap();
-    let diagnostics = controller.update_project(&project, &registry);
-    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    };
+    let (controller, processor) = start(&project, &registry, settings);
     (processor, library.midi, controller)
 }
 
@@ -479,16 +479,16 @@ fn skipping_works_through_a_group_and_its_stage() {
     registry.register(Counter(Arc::clone(&counted)));
     let project = Project::from_ron(
         r#"(
-        format: 1,
+        format: 4,
         graph: (
             nodes: {
                 1: (type: "noodle.event.midi_in"),
                 2: (type: "noodle.poly.voices", config: {"voices": 4}, params: {"tail": 0.05}),
                 3: (type: "noodle.osc.sine"),
                 4: (type: "noodle.group"),
-                5: (type: "noodle.group.input", config: {"name": "in"}, parent: Some(4)),
+                5: (type: "noodle.group.input", config: {"ports": "1:in"}, parent: Some(4)),
                 6: (type: "test.counter", parent: Some(4)),
-                7: (type: "noodle.group.output", config: {"name": "out"}, params: {"gain": 0.0, "mute": 0.0}, parent: Some(4)),
+                7: (type: "noodle.group.output", config: {"ports": "1:out"}, params: {"gain.1": 0.0, "mute.1": 0.0}, parent: Some(4)),
                 8: (type: "noodle.poly.voice_mix"),
                 9: (type: "noodle.io.output"),
             },
@@ -496,8 +496,8 @@ fn skipping_works_through_a_group_and_its_stage() {
                 (from: (node: 1, port: "out"), to: (node: 2, port: "in")),
                 (from: (node: 2, port: "pitch"), to: (node: 3, port: "frequency")),
                 (from: (node: 3, port: "out"), to: (node: 4, port: "in")),
-                (from: (node: 5, port: "out"), to: (node: 6, port: "in")),
-                (from: (node: 6, port: "out"), to: (node: 7, port: "in")),
+                (from: (node: 5, port: "p1"), to: (node: 6, port: "in")),
+                (from: (node: 6, port: "out"), to: (node: 7, port: "p1")),
                 (from: (node: 4, port: "out"), to: (node: 8, port: "in")),
                 (from: (node: 8, port: "out"), to: (node: 9, port: "in")),
             ],
@@ -505,9 +505,7 @@ fn skipping_works_through_a_group_and_its_stage() {
     )"#,
     )
     .unwrap();
-    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
-    let diagnostics = controller.update_project(&project, &registry);
-    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+    let (_controller, mut processor) = start(&project, &registry, SETTINGS);
     let midi = library.midi;
 
     for _ in 0..4 {

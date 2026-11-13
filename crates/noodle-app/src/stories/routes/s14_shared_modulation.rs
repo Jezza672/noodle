@@ -3,7 +3,7 @@
 //!
 //! A modulation source's output can be wired to any number of parameter
 //! sockets, and a Remap before each socket gives it its own depth. The step
-//! sequencer to swap in for the LFO is a Pattern Player (#354): Replace with
+//! sequencer to swap in for the LFO is a Pattern Player: Replace with
 //! keeps the LFO's wires, because the player's `out` has the LFO's key, and
 //! "+ New slot" gives it a pattern to draw.
 
@@ -19,7 +19,6 @@ use noodle_core::Project;
 
 const SAW: Ref = Ref("osc.saw", 0);
 const NOISE: Ref = Ref("noise.white", 0);
-const OUT: Ref = Ref("io.output", 0);
 const FILTER: Ref = Ref("filter.svf", 0);
 const DRIVE: Ref = Ref("effect.distortion", 0);
 const VERB: Ref = Ref("effect.reverb", 0);

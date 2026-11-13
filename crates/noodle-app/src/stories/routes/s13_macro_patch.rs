@@ -3,13 +3,13 @@
 //! Partial. Two oscillators are layered in a Mix and run through a filter,
 //! distortion and reverb. The macro is a MIDI Control knob feeding three Remap
 //! nodes, one per target, each with its own range. There is no macro control
-//! that maps one knob to several targets with a range and curve each (#353),
+//! that maps one knob to several targets with a range and curve each,
 //! so the user builds one by hand. Saving the patch as a preset and seeing
 //! the update in another project are not routed.
 
 use std::path::Path;
 
-use super::super::handle::{Handle, Probe};
+use super::super::handle::Probe;
 use super::super::{Keep, LateChange, Route, Tag};
 use super::patch::{Op, Ref, audible, check, kind, nodes_of, output, run, seeded, upstream};
 use crate::app::App;
@@ -175,6 +175,3 @@ fn mapping(p: &Project) -> String {
     lines.sort();
     lines.join("\n")
 }
-
-#[allow(dead_code)]
-fn _unused(_: &mut Handle, _: &mut Probe) {}

@@ -207,11 +207,10 @@ impl Node for DelayNode {
         self.read_block(&io.inputs[TIME], &mut io.outputs[0], start, 0.0);
     }
 
-    fn process_output(&mut self, ctx: &Context, io: Io<'_, '_>) {
+    fn process_output(&mut self, _ctx: &Context, io: Io<'_, '_>) {
         // Everything the output reads was written by earlier blocks, so the
         // shortest delay is a whole block. It is the largest block rather than
         // this one's size, so the delay doesn't change as blocks do.
-        let _ = ctx;
         let min = self.max_frames as f32;
         self.read_block(&io.inputs[TIME], &mut io.outputs[0], self.written, min);
     }

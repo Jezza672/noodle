@@ -1,5 +1,6 @@
 //! The Clock node.
 
+use noodle_core::TICKS_PER_QUARTER;
 use noodle_engine::{
     Config, Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType, ParamInfo, Ports,
     Setup,
@@ -11,10 +12,11 @@ use noodle_engine::{
 /// on the beat, or through a Math node to cut a held sound into rhythm.
 ///
 /// It reads the timeline's position, so it stays in time through tempo
-/// changes, seeks and loops, to the resolution of a block (a tempo change or loop wrap inside a block reaches it at the next, as
-/// for the Metronome), and it is silent while the transport is stopped.
-/// Divisions are of the whole note (four beats, so `1/1` is a bar of 4/4): `1/4` is a beat, `1/8` an eighth
-/// note, and a `T` is a triplet, three to the length of two.
+/// changes, seeks and loops, to the resolution of a block (a tempo change or
+/// loop wrap inside a block reaches it at the next, as for the Metronome), and
+/// it is silent while the transport is stopped. Divisions are of the whole
+/// note (four beats, so `1/1` is a bar of 4/4): `1/4` is a beat, `1/8` an
+/// eighth note, and a `T` is a triplet, three to the length of two.
 ///
 /// Pulses start on the grid from the beginning of the timeline, so the clock
 /// and a pattern of notes on the same grid agree.
@@ -58,9 +60,6 @@ const RATE: usize = ClockPorts::RATE;
 const WIDTH: usize = ClockPorts::WIDTH;
 const OUT: usize = ClockPorts::OUT;
 
-/// Ticks to a quarter note; see `noodle_core::Tick`.
-const TICKS_PER_QUARTER: f64 = 960.0;
-
 static INFO: NodeInfo = NodeInfo {
     id: CLOCK_ID,
     version: 1,
@@ -69,6 +68,10 @@ static INFO: NodeInfo = NodeInfo {
 };
 
 impl NodeType for Clock {
+    fn pulses_on_beat(&self) -> bool {
+        true
+    }
+
     fn info(&self) -> &NodeInfo {
         &INFO
     }
@@ -107,7 +110,7 @@ impl Node for ClockNode {
         }
         let (rate, width) = (io.inputs[RATE].lane(0, 0), io.inputs[WIDTH].lane(0, 0));
         let ticks_per_sample =
-            transport.bpm / 60.0 * TICKS_PER_QUARTER / f64::from(ctx.sample_rate);
+            transport.bpm / 60.0 * TICKS_PER_QUARTER as f64 / f64::from(ctx.sample_rate);
         for (i, sample) in out.iter_mut().enumerate() {
             let division = (rate[i].round().max(0.0) as usize).min(DIVISIONS.len() - 1);
             let tick = transport.tick + i as f64 * ticks_per_sample;

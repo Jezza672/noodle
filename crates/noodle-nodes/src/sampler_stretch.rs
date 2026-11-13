@@ -23,7 +23,7 @@ use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 
-use noodle_core::{ClipWarp, NodeId, TempoMap, Tick, TimeSignature, WarpAxis};
+use noodle_core::{ClipWarp, NodeId, TempoMap, Tick, TimeSignature, WarpAxis, WarpMode};
 use noodle_engine::{Doorbell, TempoTable};
 use noodle_io::{detect_bass_onsets, detect_onsets};
 use rtrb::{Consumer, Producer, RingBuffer};
@@ -101,7 +101,7 @@ pub(crate) fn render(sample: &Sample, warp: &ClipWarp, bpm: f64) -> Option<Stret
     // As the engine finds them: the bass transients for both modes, those of
     // the whole mix for Beats only.
     let bass = detect_bass_onsets(&mono, rate);
-    let all = if warp.mode == noodle_core::WarpMode::Beats {
+    let all = if warp.mode == WarpMode::Beats {
         detect_onsets(&mono, rate)
     } else {
         Vec::new()
@@ -110,7 +110,7 @@ pub(crate) fn render(sample: &Sample, warp: &ClipWarp, bpm: f64) -> Option<Stret
         left: &sample.left,
         right: &sample.right,
     };
-    let mut stretcher = if warp.mode == noodle_core::WarpMode::Slices {
+    let mut stretcher = if warp.mode == WarpMode::Slices {
         Stretcher::slices(source, Arc::new(map.clone()), total, rate as f32)
     } else {
         Stretcher::new(
@@ -251,7 +251,7 @@ struct Shared {
     closed: AtomicBool,
 }
 
-/// The worker of one Sampler node type. See the module.
+/// The worker of one Sampler node type.
 pub(crate) struct Service {
     shared: Arc<Shared>,
     started: Mutex<bool>,
@@ -378,7 +378,6 @@ fn run(shared: &Arc<Shared>) {
             }
             job
         };
-        let job_made = job.is_some();
         if let Some(job) = job {
             busy = true;
             let made = render(&job.sample, &job.warp, job.bpm).map(Arc::new);
@@ -400,7 +399,7 @@ fn run(shared: &Arc<Shared>) {
                 link.ready = made;
             }
         }
-        if busy || job_made || pending {
+        if busy || pending {
             shared.bell.wait(Some(POLL));
         } else {
             shared.bell.wait(None);

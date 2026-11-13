@@ -20,7 +20,9 @@ pub fn renders_folder(name: &str) -> String {
 /// A render to clip under way.
 pub(super) struct Run {
     job: Job<Result<ClipReport, ExportJobError>>,
-    group: NodeId,
+    /// The group rendered to a new track, or `None` for a bounce of the mix
+    /// that becomes a Sample node.
+    group: Option<NodeId>,
     name: String,
     /// The file's path relative to the project file, as a clip names it.
     source: String,
@@ -35,6 +37,18 @@ impl Session {
     /// most ten seconds. When it is done the clip arrives on a new track,
     /// and the original is muted, as one undo step.
     pub fn render_to_clip(&mut self, group: NodeId, range: Option<(Tick, Tick)>) {
+        self.start_render(Some(group), range);
+    }
+
+    /// Starts bouncing the mix over `range`, in ticks, to a file in the
+    /// project's renders folder. When it is done a Sample node playing it
+    /// arrives, as one undo step. The mix is what the Output nodes play, so
+    /// it is the sound of every track.
+    pub fn bounce_to_sample(&mut self, range: (Tick, Tick)) {
+        self.start_render(None, Some(range));
+    }
+
+    fn start_render(&mut self, group: Option<NodeId>, range: Option<(Tick, Tick)>) {
         if self.rendering.is_some() {
             self.message = Some("A render is already running".into());
             return;
@@ -43,13 +57,20 @@ impl Session {
             self.message = Some("Save the project first: the render is written next to it".into());
             return;
         };
-        let Some((_, name)) = self
-            .exportable_groups()
-            .into_iter()
-            .find(|(id, _)| *id == group)
-        else {
-            self.message = Some("Only a track or group with an output can be rendered".into());
-            return;
+        let name = match group {
+            Some(group) => {
+                let Some((_, name)) = self
+                    .exportable_groups()
+                    .into_iter()
+                    .find(|(id, _)| *id == group)
+                else {
+                    self.message =
+                        Some("Only a track or group with an output can be rendered".into());
+                    return;
+                };
+                name
+            }
+            None => "Bounce".to_owned(),
         };
         let rate = self.export_rate();
         let table = TempoTable::new(self.project.tempo_map(), rate);
@@ -156,7 +177,10 @@ impl Session {
             Ok(Ok(report)) => match self.render_command(&run, report.frames) {
                 Ok(command) => {
                     self.edit([Edit::Apply(command)]);
-                    let mut text = format!("Rendered {name} to a clip");
+                    let mut text = match run.group {
+                        Some(_) => format!("Rendered {name} to a clip"),
+                        None => "Bounced the selection to a Sample node".to_owned(),
+                    };
                     if report.capped {
                         text.push_str(&format!(
                             ", cut at {MAX_TAIL_SECONDS:.0} s of tail while still sounding"
@@ -183,10 +207,17 @@ impl Session {
     /// The command that adds a track holding the rendered clip just after the
     /// original, and mutes the original: one undo step.
     fn render_command(&self, run: &Run, frames: u64) -> Result<Command, String> {
+        let Some(source_group) = run.group else {
+            let hash = self
+                .samples()
+                .import(&run.path)
+                .map_err(|e| format!("couldn't read the bounce: {e}"))?;
+            return Ok(self.sample_node_command(&noodle_nodes::SampleRef::whole(hash)));
+        };
         let project = &self.project;
         let graph = project.graph();
         let mute = graph
-            .control_target(run.group, MUTE)
+            .control_target(source_group, MUTE)
             .ok_or("the track was removed while it was being rendered")?;
         let mut scratch = project.clone();
         let (track, input) = add_track::with_input(scratch.graph(), || self.new_node_id());
@@ -217,7 +248,7 @@ impl Session {
             key: mute.1,
             value: Some(1.0),
         };
-        let order = Command::SetTrackOrder(stems::order_after(&scratch, run.group, &[group]));
+        let order = Command::SetTrackOrder(stems::order_after(&scratch, source_group, &[group]));
         Ok(Command::Batch(vec![track, rename, clip, mute, order]))
     }
 }
@@ -309,6 +340,41 @@ mod tests {
         session.redo();
         assert_eq!(crate::timeline::tracks(session.project()).len(), 2);
         assert!(session.project().graph().group_controls(group).mute);
+    }
+
+    #[test]
+    fn bouncing_a_range_makes_a_sample_node_of_the_mix_in_one_undo() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _) = rig(dir.path());
+        let before = session.project().clone();
+        // Half a second in, a quarter of a second long, at 120 bpm.
+        session.bounce_to_sample((Tick(960), Tick(1_440)));
+        wait(&mut session);
+        assert_eq!(
+            session.message(),
+            Some("Bounced the selection to a Sample node")
+        );
+        let nodes: Vec<_> = session
+            .project()
+            .graph()
+            .nodes()
+            .filter(|(_, n)| n.type_id == noodle_nodes::SAMPLE_INPUT_ID)
+            .collect();
+        assert_eq!(nodes.len(), 1);
+        let Some(Value::Text(text)) = nodes[0].1.config.get(noodle_nodes::SAMPLE_KEY) else {
+            panic!("the node has no sample")
+        };
+        let sample = session
+            .samples()
+            .get(&noodle_nodes::SampleRef::parse(text).hash)
+            .expect("the bounce is in the sample store");
+        let rate = session.export_rate();
+        assert!(sample.frames() as f64 >= f64::from(rate) / 4.0 - 1.0);
+        assert!(sample.left.iter().any(|s| s.abs() > 0.05));
+        // The mix is not muted or replaced: nothing else changed.
+        assert_eq!(session.project().clips().count(), 1);
+        session.undo();
+        assert_eq!(*session.project(), before);
     }
 
     #[test]

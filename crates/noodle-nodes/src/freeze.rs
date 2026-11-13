@@ -1,5 +1,5 @@
 //! Freezing and offline nodes: the glue between cache keys, the cache on
-//! disk and the renders that fill it. See "Caching" in docs/architecture/caching.md.
+//! disk and the renders that fill it.
 //!
 //! The pieces:
 //!
@@ -29,7 +29,7 @@ use noodle_engine::{
 use noodle_io::{CacheInfo, CacheStore, CacheWriter, FileHasher, Peek};
 
 use crate::cached::CachedPlayer;
-use crate::{RenderRequest, register_library_blocking};
+use crate::{Library, RenderRequest, register_library_blocking};
 
 /// How far along a target is.
 #[derive(Clone, Debug, PartialEq)]
@@ -660,8 +660,6 @@ fn grown(frames: usize, sample_rate: f32) -> usize {
     frames.div_ceil(step) * step
 }
 
-type Library = crate::Library;
-
 /// An entry being written. The tap's sink and the code that commits it both
 /// hold it.
 struct Entry {
@@ -981,15 +979,11 @@ fn render_offline(
             }
             entry.write(&chunk);
             start += n;
-            progress.report(start_f(start, frames))?;
+            progress.report(start as f32 / frames as f32)?;
         }
         entry.commit()?;
     }
     Ok(())
-}
-
-fn start_f(done: usize, total: usize) -> f32 {
-    done as f32 / total.max(1) as f32
 }
 
 /// The folder cached renders go in, beside the project file's, when the user

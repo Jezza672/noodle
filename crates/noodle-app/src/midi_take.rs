@@ -19,7 +19,7 @@ use noodle_core::{
 use noodle_io::{MidiBus, MidiMessage, MidiReceiver};
 
 /// How recorded notes are snapped to the beat. Only the notes' starts move.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum Quantise {
     #[default]
     Off,
@@ -688,7 +688,7 @@ mod tests {
             Quantise::Off,
         )
         .unwrap();
-        let mut notes = cut.notes.clone();
+        let mut notes = cut.notes;
         notes.sort_by_key(|n| n.start);
         assert_eq!(notes[0].start.0 + notes[0].length.0, notes[1].start.0);
     }

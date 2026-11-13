@@ -1,6 +1,5 @@
 //! The VST3 half of a plugin node: how parameter changes, events, the
-//! transport and the audio buses are handed to the plugin's `process` (see
-//! [`crate::bridge`] for the rest).
+//! transport and the audio buses are handed to the plugin's `process`.
 
 use std::sync::Arc;
 

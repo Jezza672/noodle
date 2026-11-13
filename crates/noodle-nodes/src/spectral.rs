@@ -10,6 +10,7 @@
 //! ([`SYNTH_LATENCY`], which the engine compensates where the spectral path
 //! meets a path that doesn't have it).
 
+use crate::level::db_to_gain;
 use noodle_engine::{
     Analyzer, BINS, Bin, Config, Context, FFT_SIZE, FormantWarp, HOP, Instance, Io, Layout, Node,
     NodeError, NodeInfo, NodeType, ParamInfo, Ports, SYNTH_LATENCY, Setup, Shape, SignalIn,
@@ -17,10 +18,6 @@ use noodle_engine::{
 };
 
 const CATEGORY: &str = "Spectral";
-
-fn db_to_amp(db: f32) -> f32 {
-    10f32.powf(db / 20.0)
-}
 
 fn wrap_phase(x: f32) -> f32 {
     let tau = std::f32::consts::TAU;
@@ -77,8 +74,6 @@ fn spectral_shape(setup: &Setup<'_>, signal_outputs: usize) -> Shape {
         .copied()
         .unwrap_or(Shape::MONO)
 }
-
-// ---------------------------------------------------------------- Analyze
 
 /// Turns audio into a spectral signal: the FFT frames the other spectral
 /// nodes work on. Each lane of the audio (voices and channels) becomes a lane
@@ -140,8 +135,6 @@ impl Node for AnalyzeNode {
     }
 }
 
-// ------------------------------------------------------------- Synthesize
-
 /// Turns a spectral signal back into audio by overlap-adding its frames. The
 /// audio sounds `SYNTH_LATENCY` samples (about 46 ms at 44.1 kHz) after the
 /// audio the frames were analysed from; the engine delays whatever is wired
@@ -202,8 +195,6 @@ impl Node for SynthesizeNode {
         self.synthesizer.reset();
     }
 }
-
-// -------------------------------------------------------------- Spectral Gate
 
 /// Silences the bins that are quiet: a bin whose magnitude is below
 /// `threshold` is turned down by `reduction`. With a high threshold it leaves
@@ -281,13 +272,11 @@ impl Node for GateNode {
                 } else {
                     f32::from(level >= threshold)
                 };
-                *out = bin.scaled(db_to_amp(-reduction * (1.0 - open)));
+                *out = bin.scaled(db_to_gain(-reduction * (1.0 - open)));
             }
         });
     }
 }
-
-// ----------------------------------------------------------- Spectral Filter
 
 /// Keeps only the bins between `low` and `high` (or, in Band stop, removes
 /// them): a filter with edges as steep as the frame size allows, about 21 Hz
@@ -370,8 +359,6 @@ impl Node for FilterNode {
         });
     }
 }
-
-// ----------------------------------------------------------- Spectral Shift
 
 /// Moves every frequency up or down by the same number of hertz, which is not
 /// the same as changing pitch: a note's partials at 100, 200 and 300 Hz
@@ -459,8 +446,6 @@ impl Node for ShiftNode {
     }
 }
 
-// ----------------------------------------------------------- Formant Shift
-
 /// Moves the formants, the broad humps of the spectrum that make a voice or
 /// an instrument sound like itself, without moving the pitch. Up makes a
 /// voice smaller or brighter, down larger or darker.
@@ -534,8 +519,6 @@ impl Node for FormantNode {
         });
     }
 }
-
-// ----------------------------------------------------------- Spectral Freeze
 
 /// Holds the spectrum while `freeze` is on, so a moment of sound goes on
 /// sounding as a steady tone or texture. It keeps each partial's level and
@@ -643,8 +626,6 @@ impl Node for FreezeNode {
     }
 }
 
-// ------------------------------------------------------------- Spectral Blur
-
 /// Smears the spectrum through time: each bin's level chases the live level
 /// instead of following it, so transients lose their edge and a sound seems
 /// to bloom and trail. At `amount` 0 nothing changes; near 1 the sound is
@@ -717,8 +698,6 @@ impl Node for BlurNode {
         }
     }
 }
-
-// --------------------------------------------------------------------- Cross
 
 /// Cross-synthesis: the levels of the `modulator` spectrum shape the
 /// `carrier`, which keeps its own phases. Wire a voice into the modulator and

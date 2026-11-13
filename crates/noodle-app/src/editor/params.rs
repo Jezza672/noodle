@@ -109,7 +109,7 @@ impl Fields {
                 let is_slider = !matches!(info.kind, noodle_engine::ParamKind::Stepped { .. });
                 // A wire that replaces the value leaves nothing to edit. The
                 // field becomes a meter of the live value; choices show
-                // nothing, as they always have.
+                // nothing.
                 let replaced = wired && !info.is_offset();
                 if replaced && !is_slider {
                     continue;

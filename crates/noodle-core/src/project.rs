@@ -40,8 +40,7 @@ pub struct Project {
     track_order: Vec<NodeId>,
     /// Colours and folders for the tracks (see [`Organisation`]).
     organisation: Organisation,
-    /// Nodes and groups whose output plays from a cached render (see
-    /// "Caching" in docs/architecture/caching.md).
+    /// Nodes and groups whose output plays from a cached render.
     frozen: BTreeSet<NodeId>,
     /// The mix versions' names, in order (see [`versions`](crate::versions)).
     pub(crate) versions: Vec<String>,
@@ -54,6 +53,11 @@ pub struct Project {
     /// newly loaded project never has the revision of the one it replaces.
     /// Not saved, and not part of equality.
     revision: u64,
+    /// The user's settings as of the last save, as text the app understands
+    /// (the project doesn't read it). Carried so a project brings its author's
+    /// preferences along; the app applies them only when asked. Not part of
+    /// equality, and not an undo step.
+    user_settings: Option<String>,
 }
 
 impl Default for Project {
@@ -83,6 +87,7 @@ impl Default for Project {
             active_version: 0,
             articulations: Vec::new(),
             revision: next_revision(),
+            user_settings: None,
         }
     }
 }
@@ -156,6 +161,8 @@ struct ProjectFile {
     active_version: usize,
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     articulations: Vec<crate::Articulation>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    user_settings: Option<String>,
 }
 
 fn is_zero(n: &usize) -> bool {
@@ -279,7 +286,7 @@ impl PunchRange {
 
 impl Project {
     /// The current file format version. Bump it when the format changes in a
-    /// way older versions can't read, and migrate older files when loading.
+    /// way older versions can't read.
     pub const FORMAT: u32 = 4;
 
     pub fn new() -> Self {
@@ -405,6 +412,18 @@ impl Project {
         std::mem::replace(&mut self.organisation, organisation)
     }
 
+    /// The user's settings saved with the project, if it has any (see
+    /// [`Project::set_user_settings`]).
+    pub fn user_settings(&self) -> Option<&str> {
+        self.user_settings.as_deref()
+    }
+
+    /// Sets the settings the next save writes into the file. They are the
+    /// app's own text, kept as it is, and not an undo step.
+    pub fn set_user_settings(&mut self, settings: Option<String>) {
+        self.user_settings = settings;
+    }
+
     /// The project as a template: the same routing, plugins and setup, with
     /// no clips. A project made from it is a copy and never follows it.
     pub fn as_template(&self) -> Self {
@@ -413,6 +432,7 @@ impl Project {
         template.clip_groups.clear();
         template.next_clip_id = 1;
         template.next_clip_group_id = 1;
+        template.user_settings = None;
         template.revision = next_revision();
         template
     }
@@ -1173,6 +1193,7 @@ impl Project {
             versions: self.versions.clone(),
             active_version: self.active_version,
             articulations: self.articulations.clone(),
+            user_settings: self.user_settings.clone(),
         };
         // Depth 3 puts each node and each connection on its own line.
         let pretty = ron::ser::PrettyConfig::default().depth_limit(3);
@@ -1189,15 +1210,12 @@ impl Project {
         let next_clip_group_id = file.clip_groups.keys().last().map_or(1, |id| id.0 + 1);
         let next_warp_id = file.warps.keys().last().map_or(1, |id| id.0 + 1);
         let next_lane_id = file.lanes.keys().last().map_or(1, |id| id.0 + 1);
-        let mut lanes = file.lanes;
-        // Format 4: a group's ports share one boundary node on each side.
-        let graph = crate::group::migrate_boundaries(&file.graph, &mut lanes).unwrap_or(file.graph);
         let mut clips = file.clips;
         for clip in clips.values_mut() {
             clip.assign_note_ids();
         }
         let project = Self {
-            graph,
+            graph: file.graph,
             frames: file.frames,
             next_frame_id,
             tempo_map: file.tempo_map,
@@ -1216,7 +1234,7 @@ impl Project {
             next_clip_group_id,
             warps: file.warps,
             next_warp_id,
-            lanes,
+            lanes: file.lanes,
             next_lane_id,
             track_order: file.track_order,
             organisation: file.organisation,
@@ -1225,6 +1243,7 @@ impl Project {
             active_version: file.active_version,
             articulations: file.articulations,
             revision: next_revision(),
+            user_settings: file.user_settings,
         };
         for (id, warp) in &project.warps {
             project.check_warp(*id, warp).map_err(LoadError::Broken)?;
@@ -1294,7 +1313,7 @@ mod tests {
 
     const HAND_WRITTEN: &str = r#"
         (
-            format: 1,
+            format: 4,
             graph: (
                 nodes: {
                     1: (type: "noodle.osc.sine", params: {"frequency": 220.0}),
@@ -1435,7 +1454,7 @@ mod tests {
 
     #[test]
     fn rejects_a_newer_format() {
-        let text = HAND_WRITTEN.replace("format: 1", "format: 99");
+        let text = HAND_WRITTEN.replace("format: 4", "format: 99");
         assert!(matches!(
             Project::from_ron(&text),
             Err(LoadError::NewerFormat(99))
@@ -1967,11 +1986,7 @@ mod tests {
         let org = Organisation::default()
             .with_new_folder("Drums", &[live, gone])
             .with_colour(&[live, gone], Some(4));
-        apply(
-            &mut project,
-            &mut history,
-            Command::SetOrganisation(org.clone()),
-        );
+        apply(&mut project, &mut history, Command::SetOrganisation(org));
         assert_eq!(project.organisation().colour(live), Some(4));
         let loaded = Project::from_ron(&project.to_ron()).unwrap();
         assert_eq!(loaded.organisation().colour(gone), None);
@@ -2385,12 +2400,11 @@ mod tests {
     }
 
     #[test]
-    fn projects_saved_before_warps_still_load() {
+    fn a_file_without_warps_loads_with_none() {
         let (project, _, _, clip, _) = with_timeline();
         let text = project.to_ron();
         assert!(!text.contains("warp"), "{text}");
-        let older = text.replace("format: 3", "format: 2");
-        let loaded = Project::from_ron(&older).unwrap();
+        let loaded = Project::from_ron(&text).unwrap();
         assert_eq!(loaded, project);
         assert!(
             loaded

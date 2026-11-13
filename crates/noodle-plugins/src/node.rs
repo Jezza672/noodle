@@ -49,8 +49,7 @@ const NONDETERMINISTIC: ConfigInfo = ConfigInfo::int(
     0,
 );
 
-/// Which parameters get ports; see [`exposed_params`]. Chosen in the
-/// properties panel.
+/// Which parameters get ports, chosen in the properties panel.
 const EXPOSED: ConfigInfo = ConfigInfo::text(PARAMS_KEY, "Exposed parameters");
 
 static CONFIG: [ConfigInfo; 2] = [NONDETERMINISTIC, EXPOSED];
@@ -372,8 +371,7 @@ impl PluginNodeType {
 /// A node type shared between registries, so a render's registry and the live
 /// one build the same thing without leaking a new `NodeInfo` each time.
 ///
-/// `.1` is whether renders using it wait for a slow sandboxed plugin (see
-/// `instantiate_with`).
+/// `.1` is whether renders using it wait for a slow sandboxed plugin.
 pub(crate) struct Shared(pub Arc<PluginNodeType>, pub bool);
 
 impl NodeType for Shared {

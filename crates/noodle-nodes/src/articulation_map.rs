@@ -182,14 +182,14 @@ impl ArticulationMapNode {
 }
 
 impl Node for ArticulationMapNode {
-    fn process(&mut self, _ctx: &Context, io: Io<'_, '_>) {
+    fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let Io {
             event_inputs,
             event_outputs,
             ..
         } = io;
         let out = &mut event_outputs[0];
-        let ctx_frames = _ctx.frames as u32;
+        let frames = ctx.frames as u32;
         for event in event_inputs[0] {
             let EventKind::Channel {
                 control: ChannelControl::Articulation,
@@ -262,11 +262,11 @@ impl Node for ArticulationMapNode {
         }
         for slot in &mut self.held {
             if let Some(held) = slot {
-                if held.remaining < ctx_frames {
+                if held.remaining < frames {
                     let _ = out.insert(Self::off(held.key, held.remaining));
                     *slot = None;
                 } else {
-                    held.remaining -= ctx_frames;
+                    held.remaining -= frames;
                 }
             }
         }

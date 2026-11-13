@@ -70,6 +70,7 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.spectral.analyze",
     "noodle.spectral.synthesize",
     "noodle.event.mono",
+    "noodle.event.choke_gate",
     "noodle.event.control",
     "noodle.group.stage",
     "noodle.input.button",
@@ -97,7 +98,8 @@ const WITHOUT_PRESETS: &[&str] = &[
 ];
 
 /// Every built-in node has presets (bar a few), each fits a node of its type
-/// with the preset's config (some, like Note Split's rest output, need it) and sets only parameters that exist, inside their range.
+/// with the preset's config (some, like Note Split's rest output, need it) and
+/// sets only parameters that exist, inside their range.
 #[test]
 fn every_node_has_presets_that_fit() {
     let library = Library::in_memory();

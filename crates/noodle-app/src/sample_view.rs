@@ -149,21 +149,20 @@ pub fn loaded(ctx: &egui::Context, session: &Session, id: NodeId) -> Option<Load
     let (hash, sample, _) = contents(session, id)?;
     let peaks = pane::peaks_of(ctx, &hash, &sample);
     let key = egui::Id::new(("sample analysis", &hash));
-    let analysis = match ctx.data(|d| d.get_temp::<Arc<noodle_io::Analysis>>(key)) {
-        Some(found) => found,
-        None => {
-            let limit = (f64::from(sample.sample_rate) * noodle_io::ANALYSIS_SECONDS) as usize;
-            let mono: Vec<f32> = sample
-                .left
-                .iter()
-                .zip(sample.right.iter())
-                .take(limit)
-                .map(|(l, r)| (l + r) * 0.5)
-                .collect();
-            let found = Arc::new(noodle_io::Analysis::of(&mono, sample.sample_rate));
-            ctx.data_mut(|d| d.insert_temp(key, found.clone()));
-            found
-        }
+    let analysis = if let Some(found) = ctx.data(|d| d.get_temp::<Arc<noodle_io::Analysis>>(key)) {
+        found
+    } else {
+        let limit = (f64::from(sample.sample_rate) * noodle_io::ANALYSIS_SECONDS) as usize;
+        let mono: Vec<f32> = sample
+            .left
+            .iter()
+            .zip(sample.right.iter())
+            .take(limit)
+            .map(|(l, r)| (l + r) * 0.5)
+            .collect();
+        let found = Arc::new(noodle_io::Analysis::of(&mono, sample.sample_rate));
+        ctx.data_mut(|d| d.insert_temp(key, found.clone()));
+        found
     };
     Some(Loaded {
         path: std::path::PathBuf::new(),

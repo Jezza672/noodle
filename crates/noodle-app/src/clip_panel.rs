@@ -900,12 +900,45 @@ pub fn unwarped(
     edits: &mut Vec<Edit>,
 ) {
     ui.weak("Not warped: plays as recorded, whatever the tempo.");
+    detected(ui, analysis);
     let button = ui
         .button("Warp")
         .on_hover_text("Follow the timeline's tempo, from the tempo found in the audio");
     if button.clicked() {
         edits.extend(start_warp(project, subject, analysis).map(Edit::Apply));
     }
+}
+
+/// What was found in the audio, shown without warping it: the tempo estimate
+/// (and how sure it is), the key and the number of transients.
+fn detected(ui: &mut Ui, analysis: Option<&Analysis>) {
+    let Some(analysis) = analysis else {
+        ui.weak("Reading the file…");
+        return;
+    };
+    ui.horizontal(|ui| {
+        ui.label("Tempo");
+        match analysis.grid {
+            Some(found) if found.is_clear() => ui.label(format!("{:.1} bpm", found.bpm)),
+            Some(found) => ui.label(format!(
+                "{:.1} bpm (a guess, {:.0}% sure)",
+                found.bpm,
+                found.confidence * 100.0
+            )),
+            None => ui.weak("none found"),
+        };
+    });
+    ui.horizontal(|ui| {
+        ui.label("Key");
+        match analysis.key {
+            Some(key) => ui.label(key.to_string()),
+            None => ui.weak("none found"),
+        };
+    });
+    ui.horizontal(|ui| {
+        ui.label("Transients");
+        ui.label(analysis.onsets.len().to_string());
+    });
 }
 
 /// The loop checkbox of clip `id`, and how long the loop is.

@@ -1,7 +1,7 @@
 //! How hard a separator works: the same model, run with more overlap and on
 //! shifted copies of the audio, which costs time and smooths the seams.
 
-/// A separation quality.
+/// How hard to work on a separation.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
 pub enum Quality {
     /// A quarter overlap between segments, one pass.

@@ -13,8 +13,9 @@
 //! start of the clip. Seeking is a request: the worker restarts from the new
 //! position, and chunks it made before are recognised by where they start and
 //! dropped (a stale chunk that happens to start where the stream now is holds
-//! the right audio, so it is used). Until new chunks arrive, [`ClipStream::read`] returns short and
-//! counts an underrun, which is the caller's cue to play silence.
+//! the right audio, so it is used). Until new chunks arrive,
+//! [`ClipStream::read`] returns short and counts an underrun, which is the
+//! caller's cue to play silence.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -381,7 +382,7 @@ struct Source {
     to_skip: u64,
     /// Output frames still to drop (the filter's delay and the pre-roll).
     out_skip: usize,
-    /// The next clip frame to deliver, and how many remain.
+    /// The next clip frame to deliver.
     position: u64,
     flushed: bool,
     scratch: Vec<f32>,
@@ -460,7 +461,7 @@ impl Source {
         };
         let landed = self.decoder.seek(start)?.min(start);
         self.to_skip = start - landed;
-        // Read up to the end of the clip, plus a little for the filter's tail.
+        // Read up to the end of the clip; the resampler flushes its own tail.
         let end = self.offset + self.length;
         self.to_read = end.saturating_sub(start);
         if let Some(r) = &mut self.resampler {

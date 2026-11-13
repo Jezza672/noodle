@@ -14,15 +14,10 @@ use egui_kittest::Harness;
 use egui_kittest::kittest::NodeT;
 use noodle_io::{AudioConfig, VIRTUAL_OUTPUT};
 
-// ---------------------------------------------------------------------
-// The action log
-//
-// The usability scorecard measures a route by what a user would have to do.
-// While a `Recording` is alive, every helper below appends an `Action`. It
-// is off by default, so existing tests are unchanged. The log is per thread
-// (libtest runs each test on its own), so tests running side by side do not
-// mix their actions.
-// ---------------------------------------------------------------------
+// The action log: while a `Recording` is alive, every helper below appends an
+// `Action`, and the usability scorecard measures a route by what a user would
+// have to do. It is off by default. The log is per thread (libtest runs each
+// test on its own), so tests running side by side do not mix their actions.
 
 /// What one user action was.
 #[derive(Clone, Debug, PartialEq)]
@@ -136,7 +131,7 @@ impl Drop for PlayingMode {
 
 /// Lets the UI settle after an action.
 fn settle<S>(h: &mut Harness<'_, S>) {
-    if PLAYING.with(|p| p.get()) {
+    if PLAYING.with(std::cell::Cell::get) {
         h.run_steps(3);
     } else if h.try_run().is_err() {
         // A background render (a freeze, an offline node) keeps the app
@@ -521,6 +516,7 @@ pub fn type_text<S>(h: &mut Harness<'_, S>, at: Pos2, text: &str) {
 
 /// Types the program `code` into the focused field (a Script node's text),
 /// logged as code rather than text so the scorecard can tell them apart.
+#[allow(dead_code, reason = "no route types a program yet")]
 pub fn type_code<S>(h: &mut Harness<'_, S>, at: Pos2, code: &str) {
     push(
         h,

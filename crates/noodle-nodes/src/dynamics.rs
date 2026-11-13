@@ -1,8 +1,8 @@
 //! The Dynamics node: compressor, limiter, gate and expander.
 
 use noodle_engine::{
-    Config, ConfigInfo, Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
-    ParamInfo, ParamWriter, Ports, Setup, Shape, ShapeError, Telemetry, Unit,
+    Config, ConfigInfo, Context, GraphKind, Instance, Io, Layout, Node, NodeError, NodeInfo,
+    NodeType, NodeView, ParamInfo, ParamWriter, Ports, Setup, Shape, ShapeError, Telemetry, Unit,
 };
 
 /// Turns the level of a signal into a gain, and applies it. One node covers
@@ -217,8 +217,8 @@ pub fn release_response(from_db: f32, release: f32, seconds: f32) -> f32 {
 }
 
 impl NodeType for Dynamics {
-    fn view(&self, _config: &Config) -> noodle_engine::NodeView {
-        noodle_engine::NodeView::Graph(noodle_engine::GraphKind::Dynamics)
+    fn view(&self, _config: &Config) -> NodeView {
+        NodeView::Graph(GraphKind::Dynamics)
     }
 
     fn info(&self) -> &NodeInfo {

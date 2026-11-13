@@ -3,9 +3,9 @@
 //! A VST3 module is loaded from its bundle, its factory lists the plugin
 //! classes, and each is made as a component (the audio side) and a controller
 //! (parameters and state). Plugins are made, set up and torn down on the
-//! shared plugin thread (see `thread.rs`), and processed on the audio thread.
+//! shared plugin thread, and processed on the audio thread.
 //!
-//! Editors (`IPlugView`) are embedded in a window the app makes (`gui.rs`).
+//! Editors (`IPlugView`) are embedded in a window the app makes.
 //! A component and controller that are separate objects are connected, so
 //! their messages reach each other, and the controller's edits reach the
 //! processor as parameter changes.

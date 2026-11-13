@@ -1,5 +1,4 @@
-//! A plugin's reported latency reaches the engine, which compensates for it
-//! (see `noodle-nodes/tests/pdc.rs` for the compensation itself).
+//! A plugin's reported latency reaches the engine, which compensates for it.
 //!
 //! The test plugins report the latency in `NOODLE_TEST_PLUGIN_LATENCY`, so
 //! this file sets it once, before any plugin loads; it is its own process.

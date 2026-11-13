@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 
 pub mod automate;
 pub mod convert;
+pub mod drum_rack;
 mod export;
 pub mod learn_midi;
 mod library;
@@ -25,6 +26,7 @@ pub mod replace;
 pub mod sample_set;
 mod stems;
 mod take_merge;
+mod to_sample;
 mod transport_tempo;
 pub mod versions;
 pub use export::{ExportChoice, ExportSummary};
@@ -163,6 +165,15 @@ pub enum Edit {
     /// Splits an audio clip into stems (see [`Session::split_to_stems`]). Not
     /// an edit itself: the tracks arrive as one undo step when the job is done.
     SplitToStems(noodle_core::ClipId),
+    /// Finds the drum hits of an audio clip on a background job (see
+    /// [`Session::analyse_drum_clip`]). Not an edit: the result is held by the
+    /// session.
+    AnalyseDrumClip(noodle_core::ClipId),
+    /// Stops the drum analysis under way.
+    CancelDrumAnalysis,
+    /// Makes a Drum Rack track from the held analysis of a clip (see
+    /// [`Session::create_drum_rack`]). One undo step.
+    CreateDrumRack(noodle_core::ClipId, drum_rack::DrumRackPlan),
     /// Convert an audio clip to MIDI at a sensitivity, replacing the MIDI clip
     /// if one is given.
     ConvertToMidi(
@@ -172,6 +183,16 @@ pub enum Edit {
     ),
     /// Slice an audio clip at its transients onto a new Sampler track.
     SliceToSampler(noodle_core::ClipId),
+    /// Make a Sample node of the part of a clip's file between two seconds
+    /// (see [`Session::region_to_sample_node`]).
+    RegionToSample(noodle_core::ClipId, f64, f64),
+    /// Make a Sampler track of the stretches between consecutive cuts, in
+    /// seconds of the clip's file (see [`Session::cuts_to_sampler`]).
+    CutsToSampler(noodle_core::ClipId, Vec<f64>),
+    /// Bounce the mix over a range of the arrangement to a file and make a
+    /// Sample node of it (see [`Session::bounce_to_sample`]). Not an edit
+    /// itself: the node arrives as one undo step when the render is done.
+    BounceToSample(Tick, Tick),
     /// Pin the transients of a clip and the clips linked to it, at a
     /// sensitivity in percent.
     PinTransients(noodle_core::ClipId, u8),
@@ -486,6 +507,8 @@ pub struct Session {
     export_summary: Option<ExportSummary>,
     /// Split to stems: the separator and the split under way, if any.
     stems: stems::Stems,
+    /// Create drum rack from clip: the analysis under way, and its result.
+    drum_rack: drum_rack::DrumRack,
     /// A rescan of a Sample Set's folder, waiting for the user to look at it.
     rescan: std::cell::RefCell<Option<sample_set::PendingRescan>>,
 }
@@ -780,6 +803,7 @@ impl Session {
             rendering: None,
             export_summary: None,
             stems: stems::Stems::new(),
+            drum_rack: Default::default(),
             rescan: Default::default(),
             clip_problems: Vec::new(),
             freezing: Freezing::new(),
@@ -1721,12 +1745,36 @@ impl Session {
                     self.split_to_stems(clip);
                     continue;
                 }
+                Edit::AnalyseDrumClip(clip) => {
+                    self.analyse_drum_clip(clip);
+                    continue;
+                }
+                Edit::CancelDrumAnalysis => {
+                    self.cancel_drum_analysis();
+                    continue;
+                }
+                Edit::CreateDrumRack(clip, plan) => {
+                    self.create_drum_rack(clip, &plan);
+                    continue;
+                }
                 Edit::ConvertToMidi(clip, detect, replace) => {
                     self.convert_to_midi(clip, detect, replace);
                     continue;
                 }
                 Edit::SliceToSampler(clip) => {
                     self.slice_to_sampler(clip);
+                    continue;
+                }
+                Edit::RegionToSample(clip, from, to) => {
+                    self.region_to_sample_node(clip, from, to);
+                    continue;
+                }
+                Edit::CutsToSampler(clip, cuts) => {
+                    self.cuts_to_sampler(clip, &cuts);
+                    continue;
+                }
+                Edit::BounceToSample(from, to) => {
+                    self.bounce_to_sample((from, to));
                     continue;
                 }
                 Edit::PinTransients(clip, percent) => {
@@ -1913,7 +1961,12 @@ impl Session {
     }
 
     /// Returns whether it saved. If not, the reason is in [`Self::message`].
+    /// The user's current settings go into the file, for whoever opens it to
+    /// import (see [`crate::prefs`]).
     pub fn save_as(&mut self, path: &Path) -> bool {
+        if let Some(settings) = crate::prefs::portable_text() {
+            self.project.set_user_settings(Some(settings));
+        }
         match write_atomically(path, &self.project.to_ron()) {
             Ok(()) => {
                 // Relative clip paths resolve against the file's directory.
@@ -2533,7 +2586,10 @@ impl Session {
         };
         let samples = audio.controller.transport().position();
         let rate = f64::from(audio.controller.settings().sample_rate);
-        let tick = audio.controller.tempo_map().tick_at_sample(samples, rate);
+        let tick = audio
+            .controller
+            .timeline_map()
+            .tick_at_sample(samples, rate);
         Tick(tick.round() as i64)
     }
 
@@ -2617,6 +2673,7 @@ impl Session {
         self.poll_export();
         self.poll_render();
         self.poll_split();
+        self.poll_drum_analysis();
         self.poll_plugin_scan();
         self.poll_plugin_editors();
         self.poll_param_learn();
@@ -2627,7 +2684,7 @@ impl Session {
             return;
         };
         audio.controller.maintain();
-        if audio.controller.tempo_map() != self.project.tempo_map() {
+        if audio.controller.timeline_map() != self.project.tempo_map() {
             audio.controller.set_tempo_map(self.project.tempo_map());
         }
         // The loop is project state, so undo and loading change it too.
@@ -2737,6 +2794,18 @@ impl Session {
 
     pub fn set_snap(&mut self, ticks: i64) {
         self.snap = ticks.max(1);
+    }
+
+    /// Takes the user settings that live in the session: the ones that aren't
+    /// about this machine (its devices and plugin sandbox are set at start-up).
+    pub fn apply_user_settings(&mut self, prefs: &crate::prefs::Prefs) {
+        self.set_auto_cache(prefs.auto_cache);
+        self.set_count_in_bars(prefs.count_in_bars);
+        self.set_pre_roll_bars(prefs.pre_roll_bars);
+        self.set_record_midi(prefs.midi_record);
+        self.set_automation_mode(prefs.automation_mode);
+        self.set_snap(prefs.snap);
+        self.set_record_quantise(prefs.record_quantise);
     }
 
     /// How the MIDI of the next take is snapped to the beat.
@@ -3042,7 +3111,7 @@ impl Session {
             return;
         };
         let map = match &self.audio {
-            Some(audio) => audio.controller.tempo_map(),
+            Some(audio) => audio.controller.timeline_map(),
             None => self.project.tempo_map(),
         };
         let rate = match &self.audio {
@@ -4184,7 +4253,6 @@ mod tests {
         assert!(session.templates().is_empty());
     }
 
-    /// A sine into an output, with the sine in a group.
     /// A sine through a chorus in a group, to the output. The chorus makes
     /// the group worth caching (see `DEFAULT_MIN_COST`).
     fn grouped_sine(session: &mut Session) -> (NodeId, NodeId) {
@@ -4357,14 +4425,12 @@ mod tests {
 
     /// The entries in the cache folder.
     fn cached_entries(dir: &Path) -> usize {
-        std::fs::read_dir(dir)
-            .map(|files| {
-                files
-                    .flatten()
-                    .filter(|file| file.path().extension().is_none_or(|e| e != "partial"))
-                    .count()
-            })
-            .unwrap_or(0)
+        std::fs::read_dir(dir).map_or(0, |files| {
+            files
+                .flatten()
+                .filter(|file| file.path().extension().is_none_or(|e| e != "partial"))
+                .count()
+        })
     }
 
     #[test]
@@ -4983,7 +5049,7 @@ mod tests {
 
         // Cancelled, it leaves no file.
         let path = dir.path().join("cancelled.flac");
-        session.start_export(path.clone(), choice.clone()).unwrap();
+        session.start_export(path.clone(), choice).unwrap();
         session.cancel_export();
         until(&mut session, "the export stops", |s| {
             s.export_progress().is_none()

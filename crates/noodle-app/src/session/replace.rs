@@ -339,7 +339,7 @@ pub fn plan(
     let mut lanes = Vec::new();
     for (id, lane) in project.lanes().filter(|(_, l)| l.target.node == node) {
         let key = &lane.target.port;
-        match map_port(
+        if let Some(new_key) = map_port(
             &old_layout,
             &new_layout,
             Side::Input,
@@ -347,27 +347,24 @@ pub fn plan(
             plugins,
             &mut taken,
         ) {
-            Some(new_key) => {
-                let old_kind = kind_of(&old_layout, key).expect("a lane has a port");
-                let new_kind = kind_of(&new_layout, &new_key).unwrap();
-                let mut moved: AutomationLane = lane.clone();
-                moved.target = Endpoint::new(node, new_key.clone());
-                for p in &mut moved.points {
-                    p.value = rescale(old_kind, new_kind, p.value);
-                }
-                if matches!(new_kind, InputKind::Param(_)) {
-                    new_param_keys.push(new_key);
-                }
-                lanes.push(Command::SetLane { id, lane: moved });
-                report.kept += 1;
+            let old_kind = kind_of(&old_layout, key).expect("a lane has a port");
+            let new_kind = kind_of(&new_layout, &new_key).unwrap();
+            let mut moved: AutomationLane = lane.clone();
+            moved.target = Endpoint::new(node, new_key.clone());
+            for p in &mut moved.points {
+                p.value = rescale(old_kind, new_kind, p.value);
             }
-            None => {
-                lanes.push(Command::RemoveLane { id });
-                report.dropped.push(format!(
-                    "{} (automation)",
-                    name_of(&old_layout, Side::Input, key)
-                ));
+            if matches!(new_kind, InputKind::Param(_)) {
+                new_param_keys.push(new_key);
             }
+            lanes.push(Command::SetLane { id, lane: moved });
+            report.kept += 1;
+        } else {
+            lanes.push(Command::RemoveLane { id });
+            report.dropped.push(format!(
+                "{} (automation)",
+                name_of(&old_layout, Side::Input, key)
+            ));
         }
     }
 

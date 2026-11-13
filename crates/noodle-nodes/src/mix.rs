@@ -3,6 +3,7 @@ use noodle_engine::{
     NodeType, ParamInfo, PerLane, Setup, SignalIn, Skip, Telemetry, Unit,
 };
 
+use crate::level::db_to_gain;
 use crate::meter::{LevelProbe, voice_sum};
 
 /// Sums its inputs, each through its own gain and mute. How many inputs it
@@ -93,11 +94,7 @@ impl NodeType for Mix {
 
 /// The linear gain of an input with `db` of gain, silent if `mute` is on.
 fn input_gain(db: f32, mute: f32) -> f32 {
-    if mute >= 0.5 {
-        0.0
-    } else {
-        10f32.powf(db / 20.0)
-    }
+    if mute >= 0.5 { 0.0 } else { db_to_gain(db) }
 }
 
 struct MixNode {

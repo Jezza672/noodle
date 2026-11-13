@@ -27,6 +27,8 @@ const REDO: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::Z);
 const NEW: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::N);
 const OPEN: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::O);
+const OPEN_WITH_SETTINGS: KeyboardShortcut =
+    KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::O);
 const SAVE: KeyboardShortcut = KeyboardShortcut::new(Modifiers::COMMAND, Key::S);
 const SAVE_AS: KeyboardShortcut =
     KeyboardShortcut::new(Modifiers::COMMAND.plus(Modifiers::SHIFT), Key::S);
@@ -82,7 +84,12 @@ pub struct App {
     clip_panel: ClipPanel,
     /// The track the piano roll last played keys on, to let them go.
     audition_track: Option<noodle_core::NodeId>,
+    /// The clip that was selected on the timeline last frame, so the open
+    /// piano roll follows a change of selection and nothing else.
+    roll_followed: Option<noodle_core::ClipId>,
     devices: DevicePicker,
+    settings: crate::settings::Settings,
+    display: crate::display::Display,
     export: ExportDialog,
     /// An action waiting for the user to decide what to do with unsaved
     /// changes.
@@ -110,6 +117,7 @@ pub struct App {
     outputs_open: bool,
     plugin_browser: PluginBrowser,
     cache_panel: CachePanel,
+    drum_rack_dialog: crate::drum_rack_dialog::DrumRackDialog,
     outputs: OutputsView,
     /// Whether the MIDI ports view is showing.
     midi_ports_open: bool,
@@ -150,10 +158,19 @@ pub(crate) enum SelectedClipAction {
     ConvertToMidi(crate::session::convert::Detect),
 }
 
+/// The width of the tempo field, which holds "120.00 bpm" and "120.00" alike.
+const BPM_WIDTH: f32 = 84.0;
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum Action {
     New,
     Open,
+    /// Open a project and take the settings saved in it as the user's own.
+    OpenWithSettings,
+    /// Take settings from a file, or from a project that has them.
+    ImportSettings,
+    /// Write the settings to a file, to take to another machine.
+    ExportSettings,
     Save,
     SaveAs,
     Undo,
@@ -165,8 +182,15 @@ pub(crate) enum Action {
     /// Makes the live tempo a tempo change in the map at the playhead.
     WriteTempoToMap,
     Rewind,
+    /// Moves the playhead: a position typed or scrubbed in the transport.
+    Seek(noodle_core::Tick),
     ToggleRecord,
     ToggleKeyboard,
+    /// The octave and the velocity the computer keyboard plays at.
+    SetKeyboardOctave(i8),
+    SetKeyboardVelocity(u8),
+    /// Turns the playback cache's own picks on or off.
+    SetAutoCache(bool),
     /// How the MIDI of the next take is snapped.
     SetRecordQuantise(crate::midi_take::Quantise),
     SetRecordMidi(crate::midi_take::MidiRecord),
@@ -183,6 +207,9 @@ pub(crate) enum Action {
     /// Chooses the device the monitor plays on: the nth listed output, or
     /// the main output for `None`.
     SetMonitorDevice(Option<usize>),
+    /// Opens the Settings window.
+    Settings,
+    /// Opens the Settings window on its Audio tab.
     AudioSettings,
     ToggleMixer,
     ToggleMetronome,
@@ -247,7 +274,11 @@ impl Action {
     fn discards(self) -> bool {
         matches!(
             self,
-            Self::New | Self::Open | Self::Close | Self::NewFromTemplate(_)
+            Self::New
+                | Self::Open
+                | Self::OpenWithSettings
+                | Self::Close
+                | Self::NewFromTemplate(_)
         )
     }
 
@@ -283,7 +314,7 @@ fn added_automation_node(edits: &[Edit]) -> Option<noodle_core::NodeId> {
 impl App {
     pub fn new(session: Session) -> Self {
         let templates = session.templates();
-        Self {
+        let mut app = Self {
             session,
             version_edits: std::cell::RefCell::new(Vec::new()),
             editor: EditorState::default(),
@@ -293,7 +324,10 @@ impl App {
             clip_editor: ClipEditor::default(),
             clip_panel: ClipPanel::default(),
             audition_track: None,
+            roll_followed: None,
             devices: DevicePicker::default(),
+            display: crate::prefs::display(),
+            settings: Default::default(),
             export: ExportDialog::default(),
             confirming: None,
             after_save: None,
@@ -308,6 +342,7 @@ impl App {
             outputs_open: false,
             plugin_browser: PluginBrowser::default(),
             cache_panel: CachePanel::default(),
+            drum_rack_dialog: Default::default(),
             outputs: OutputsView::default(),
             midi_ports_open: false,
             midi_ports: MidiPortsView::default(),
@@ -318,7 +353,9 @@ impl App {
             keymap: commands::Keymap::from_saved(&crate::prefs::keymap()),
             templates,
             template_name: None,
-        }
+        };
+        app.editor.set_display(app.display);
+        app
     }
 
     /// Turns autosave on, and offers whatever a crashed run left in it.
@@ -349,9 +386,20 @@ impl App {
         (self.export.is_open(), mixdown, groups)
     }
 
+    /// Whether the Playback cache panel is open, for the usability routes.
+    #[cfg(test)]
+    pub fn cache_panel_open(&self) -> bool {
+        self.cache_panel.is_open()
+    }
+
     #[cfg(test)]
     pub fn session(&self) -> &Session {
         &self.session
+    }
+
+    #[cfg(test)]
+    pub fn clip_editor(&self) -> &ClipEditor {
+        &self.clip_editor
     }
 
     #[cfg(test)]
@@ -455,15 +503,7 @@ impl App {
         egui::Panel::top("menu").show(ui, |ui| {
             #[cfg(test)]
             crate::testkit::mark_view(ui, "menu");
-            egui::MenuBar::new().ui(ui, |ui| {
-                self.menus(ui, &mut actions);
-                ui.separator();
-                self.transport(ui, &mut actions);
-                ui.separator();
-                if let Some(step) = crate::snap::menu(ui, self.session.snap()) {
-                    self.session.set_snap(step);
-                }
-            });
+            egui::MenuBar::new().ui(ui, |ui| self.top_bar(ui, &mut actions));
         });
 
         egui::Panel::bottom("status").show(ui, |ui| {
@@ -669,6 +709,23 @@ impl App {
             self.piano_roll.open(clip);
         }
 
+        // An open roll follows the clip selected on the timeline, not only the
+        // one double-clicked.
+        let selected = self.timeline.selected_clip();
+        if selected != self.roll_followed {
+            self.roll_followed = selected;
+            if let Some(clip) = selected
+                && self.piano_roll.clip().is_some()
+                && self
+                    .session
+                    .project()
+                    .clip(clip)
+                    .is_some_and(|c| c.as_midi().is_some())
+            {
+                self.piano_roll.open(clip);
+            }
+        }
+
         let mut roll_rect = None;
         if let Some(clip) = self.piano_roll.clip() {
             roll_rect = Some(
@@ -683,6 +740,9 @@ impl App {
                         let out =
                             piano_roll::show(ui, &mut self.piano_roll, &self.session, playhead);
                         self.session.edit(out.edits);
+                        if let Some(at) = out.seek {
+                            self.session.seek(at);
+                        }
                         if let Some(track) = self.session.project().clip(clip).map(|c| c.node) {
                             self.audition_track = Some(track);
                             for (key, on) in out.audition {
@@ -736,6 +796,7 @@ impl App {
             .show(ui, |ui| {
                 #[cfg(test)]
                 crate::testkit::mark_view(ui, "node editor");
+                self.switch_strip(ui, &mut actions);
                 let edits = editor::show(ui, &mut self.editor, &self.session);
                 self.session.edit(edits);
                 self.open_requested_view();
@@ -766,12 +827,30 @@ impl App {
         self.palette_and_templates(ui.ctx(), &mut actions);
         crate::stems_dialog::show(ui.ctx(), &mut self.session);
         crate::sample_set_dialog::show(ui.ctx(), &mut self.session);
+        self.drum_rack_dialog.show(ui.ctx(), &mut self.session);
         if self.export.has_choice() {
             actions.push(Action::StartExport);
         }
-        if let Some(config) = self.devices.show(ui.ctx(), self.session.latency_report()) {
+        let settings = self.settings.show(
+            ui.ctx(),
+            &mut self.devices,
+            self.session.latency_report(),
+            &mut self.display,
+            &mut self.session,
+        );
+        if let Some(config) = settings.audio {
             self.session.set_audio_config(config);
             crate::prefs::remember_audio(self.session.audio_config());
+        }
+        if settings.display_changed {
+            crate::prefs::remember_display(self.display);
+            self.editor.set_display(self.display);
+        }
+        if settings.import {
+            actions.push(Action::ImportSettings);
+        }
+        if settings.export {
+            actions.push(Action::ExportSettings);
         }
         self.editor.retain_existing(&self.session);
         // A safety net for undo grouping: a drag's edits are one undo step,
@@ -812,8 +891,8 @@ impl App {
             return;
         }
         let typing = ctx.egui_wants_keyboard_input()
-            && ctx.memory(|m| m.focused()) != Some(crate::editor::canvas_id());
-        let dialog = self.devices.is_open()
+            && ctx.memory(egui::Memory::focused) != Some(crate::editor::canvas_id());
+        let dialog = self.settings.is_open()
             || self.export.is_open()
             || self.confirming.is_some()
             || self.palette.is_open()
@@ -865,11 +944,11 @@ impl App {
         // The editor canvas holds focus so it can receive Tab, and isn't a
         // text field.
         let typing = ctx.egui_wants_keyboard_input()
-            && ctx.memory(|m| m.focused()) != Some(crate::editor::canvas_id());
+            && ctx.memory(egui::Memory::focused) != Some(crate::editor::canvas_id());
         // A dialog has the user's attention; shortcuts would act behind it.
         // The editor's own keys are safe too, since they need the pointer
         // over the canvas and a modal's backdrop covers it. Keep it so.
-        let dialog = self.devices.is_open()
+        let dialog = self.settings.is_open()
             || self.export.is_open()
             || self.confirming.is_some()
             || self.palette.is_open()
@@ -927,9 +1006,17 @@ impl App {
                 }
             };
         let template = std::cell::Cell::new(None);
+        let bind = std::cell::Cell::new(None);
         ui.menu_button("File", |ui| {
             item(ui, "New", Some(&NEW), true, Action::New);
             item(ui, "Open…", Some(&OPEN), true, Action::Open);
+            item(
+                ui,
+                "Open with Settings…",
+                Some(&OPEN_WITH_SETTINGS),
+                true,
+                Action::OpenWithSettings,
+            );
             item(ui, "Save", Some(&SAVE), true, Action::Save);
             item(ui, "Save As…", Some(&SAVE_AS), true, Action::SaveAs);
             ui.separator();
@@ -954,13 +1041,7 @@ impl App {
             item(ui, "Import Audio…", None, true, Action::ImportAudio);
             item(ui, "Export Audio…", None, true, Action::ExportAudio);
             ui.separator();
-            item(
-                ui,
-                "Audio Settings…",
-                Some(&SETTINGS),
-                true,
-                Action::AudioSettings,
-            );
+            item(ui, "Settings…", Some(&SETTINGS), true, Action::Settings);
         });
         ui.menu_button("Edit", |ui| {
             item(
@@ -1027,7 +1108,21 @@ impl App {
                 true,
                 Action::ArrangeNodes,
             );
+            ui.menu_button("Add Switch Button", |ui| {
+                if let Some(n) = self.switch_choice(ui) {
+                    bind.set(Some(n));
+                    ui.close();
+                }
+            })
+            .response
+            .on_hover_text(
+                "Put a button along the top of the node editor that turns a node's \
+                 On/Off setting on or off, such as a reverb you want to switch while you play",
+            );
         });
+        if let Some(n) = bind.get() {
+            actions.push(Action::BindButton(n));
+        }
         if let Some(n) = template.get() {
             actions.push(Action::NewFromTemplate(n));
         }
@@ -1114,9 +1209,102 @@ impl App {
         });
     }
 
-    /// The transport pill: rewind, play, pause, record, the position and the
-    /// metronome, in a rounded capsule like the Canvas design's.
+    /// The whole top row. Menus and the tempo group sit on the left, the
+    /// transport and the position in the middle of the window, and the
+    /// engine, the keyboard and the user's switches on the right.
+    ///
+    /// Nothing in it changes width because of what the project is doing: a
+    /// status is a dot, a toggle never changes its label, and each field has
+    /// a fixed width. So a button never moves while it is being pressed.
+    fn top_bar(&mut self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        use egui::{Align, Layout, UiBuilder};
+        let row = ui.max_rect();
+        self.menus(ui, actions);
+        ui.separator();
+        let snap = self.tempo_group(ui, actions);
+        if let Some(step) = snap {
+            self.session.set_snap(step);
+            crate::prefs::remember_snap(step);
+        }
+        let left_end = ui.cursor().min.x;
+        // The right group is placed by the width it had last frame, like the
+        // transport below. (A right-to-left layout would be simpler, but its
+        // rect spans the whole row, and sits over the menus.)
+        let right_id = egui::Id::new("top bar right width");
+        let right_width = ui.data(|d| d.get_temp::<f32>(right_id)).unwrap_or(150.0);
+        let right_rect = egui::Rect::from_min_max(
+            egui::pos2((row.max.x - right_width).max(left_end + 10.0), row.min.y),
+            row.max,
+        );
+        let used = ui
+            .scope_builder(
+                UiBuilder::new()
+                    .id_salt("top bar right")
+                    .max_rect(right_rect)
+                    .layout(Layout::left_to_right(Align::Center)),
+                |ui| self.right_group(ui, actions),
+            )
+            .response
+            .rect
+            .width();
+        if (used - right_width).abs() > 0.5 {
+            ui.data_mut(|d| d.insert_temp(right_id, used));
+            ui.request_repaint();
+        }
+        let right_start = right_rect.min.x;
+        // The transport is centred on the window, and gives way to the groups
+        // on either side when there is no room.
+        let id = egui::Id::new("top bar transport width");
+        let width = ui.data(|d| d.get_temp::<f32>(id)).unwrap_or(280.0);
+        let low = left_end + 10.0;
+        let high = (right_start - 10.0 - width).max(low);
+        let x = (row.center().x - width / 2.0).clamp(low, high);
+        let rect = egui::Rect::from_min_max(
+            egui::pos2(x, row.min.y),
+            egui::pos2(x + width + 4.0, row.max.y),
+        );
+        let used = ui
+            .scope_builder(
+                UiBuilder::new()
+                    .id_salt("top bar transport")
+                    .max_rect(rect)
+                    .layout(Layout::left_to_right(Align::Center)),
+                |ui| self.transport(ui, actions),
+            )
+            .response
+            .rect
+            .width();
+        if (used - width).abs() > 0.5 {
+            ui.data_mut(|d| d.insert_temp(id, used));
+            ui.request_repaint();
+        }
+    }
+
+    /// The capsule round the transport: rewind, play, record with its options,
+    /// and the position.
     fn transport(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        let capsule = egui::Frame::NONE
+            .fill(theme::TRANSPORT_FILL)
+            .stroke(egui::Stroke::new(1.0, theme::TRANSPORT_OUTLINE))
+            .corner_radius(egui::CornerRadius::same(theme::PILL_RADIUS))
+            .inner_margin(egui::Margin::symmetric(8, 1))
+            .show(ui, |ui| {
+                ui.spacing_mut().item_spacing.x = 4.0;
+                self.transport_buttons(ui, actions)
+            });
+        // The record options open centred under the whole capsule, not under
+        // the small arrow, so they read as belonging to the transport.
+        egui::Popup::menu(&capsule.inner)
+            .anchor(egui::PopupAnchor::ParentRect(capsule.response.rect))
+            .align(egui::RectAlign::BOTTOM)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| self.record_options(ui, actions));
+    }
+
+    /// The capsule round the tempo, the metronome, the time signature, where
+    /// the tempo comes from, and the snap step. Says the snap step picked.
+    fn tempo_group(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) -> Option<i64> {
+        let mut snap = None;
         egui::Frame::NONE
             .fill(theme::TRANSPORT_FILL)
             .stroke(egui::Stroke::new(1.0, theme::TRANSPORT_OUTLINE))
@@ -1124,11 +1312,25 @@ impl App {
             .inner_margin(egui::Margin::symmetric(8, 1))
             .show(ui, |ui| {
                 ui.spacing_mut().item_spacing.x = 4.0;
-                self.transport_buttons(ui, actions);
+                self.metronome_button(ui, actions);
+                self.tempo_fields(ui, actions);
+                self.tempo_source_controls(ui, actions);
+                ui.separator();
+                snap = crate::snap::menu(ui, self.session.snap());
             });
+        snap
     }
 
-    fn transport_buttons(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    /// The right edge: the computer keyboard, the mix version and the audio
+    /// engine.
+    fn right_group(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        self.keyboard_button(ui, actions);
+        self.version_menu(ui, actions);
+        self.engine_chip(ui, actions);
+    }
+
+    /// Returns the record options arrow, whose click opens the popover.
+    fn transport_buttons(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) -> egui::Response {
         // The transport moves whether or not the engine is on: playing turns
         // the engine on, and stopping leaves it running.
         let playing = self.session.transport_running();
@@ -1155,48 +1357,66 @@ impl App {
         {
             actions.push(Action::TogglePlayback);
         }
-        self.engine_button(ui, actions);
-        self.version_menu(ui, actions);
-        self.cache_indicator(ui, actions);
         let recording = self.session.is_recording() || self.session.is_counting_in();
-        let record = egui::Button::new(egui::RichText::new("⏺").color(if recording {
-            theme::RECORD
-        } else {
-            theme::timeline::TEXT
-        }))
-        .selected(recording);
-        if ui
-            .add(record)
-            .on_hover_text(
+        // The options arrow is part of the record button, not a control of
+        // its own, so it is joined to it.
+        let (record, options) = crate::transport_widgets::split_button(
+            ui,
+            "Record options",
+            |ui| {
+                let button = egui::Button::new(egui::RichText::new("⏺").color(if recording {
+                    theme::RECORD
+                } else {
+                    theme::timeline::TEXT
+                }))
+                .selected(recording);
+                ui.add(button).on_hover_text(
                 "Record the input onto the armed tracks (RA and RM on a track header), from the playhead",
             )
-            .clicked()
-        {
+            },
+        );
+        if record.clicked() {
             actions.push(Action::ToggleRecord);
         }
-        self.quantise_menu(ui, actions);
-        self.lead_in_menus(ui, actions);
-        self.automation_mode_menu(ui, actions);
-        self.monitor_menu(ui, actions);
-        self.keyboard_button(ui, actions);
-        self.metronome_button(ui, actions);
-        self.tempo_fields(ui, actions);
-        self.extra_buttons(ui, actions);
-        self.tempo_source_controls(ui, actions);
-        let at = self
-            .session
-            .project()
-            .tempo_map()
-            .position(self.session.playhead());
-        let position = format!("{}.{}.{:03}", at.bar + 1, at.beat + 1, at.tick);
-        ui.monospace(position).on_hover_text("Bar.beat.tick");
+        if self.session.count_in_bars() > 0 || self.session.pre_roll_bars() > 0 {
+            // A count-in or a pre-roll is set, which changes what record does.
+            ui.painter().circle_filled(
+                record.rect.right_top() + egui::vec2(-4.0, 4.5),
+                2.5,
+                theme::ACCENT,
+            );
+        }
+        let options = options.on_hover_text(
+            "Record options: quantise, loop recording, count-in, pre-roll and automation",
+        );
+        ui.separator();
+        let map = self.session.project().tempo_map();
+        // Seeking ends a take, so a drag that slips sideways must not be able
+        // to while one is being made.
+        ui.add_enabled_ui(!recording, |ui| {
+            if let Some(tick) =
+                crate::transport_widgets::position_field(ui, map, self.session.playhead())
+            {
+                actions.push(Action::Seek(tick));
+            }
+        });
+        options
     }
 
-    /// The tempo source, the Tap button, and Write to map while a tap or a
+    /// The tempo source menu, which also has Tap tempo, and Write to map while a tap or a
     /// clock is in charge.
     fn tempo_source_controls(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let source = self.session.tempo_source();
         ui.menu_button(format!("♪ {}", source.label()), |ui| {
+            if ui
+                .button("Tap tempo")
+                .on_hover_text("Tap the tempo (T). Three taps make a tempo")
+                .clicked()
+            {
+                actions.push(Action::TapTempo);
+                ui.close();
+            }
+            ui.separator();
             for choice in crate::tempo_source::TempoSource::ALL {
                 if ui
                     .selectable_label(choice == source, choice.label())
@@ -1222,13 +1442,6 @@ impl App {
         })
         .response
         .on_hover_text("Where the tempo comes from: the tempo map, taps, or a MIDI clock");
-        if ui
-            .button("Tap")
-            .on_hover_text("Tap the tempo (T). Three taps make a tempo")
-            .clicked()
-        {
-            actions.push(Action::TapTempo);
-        }
     }
 
     /// The session's tempo and time signature. The tempo is the one that holds
@@ -1240,10 +1453,16 @@ impl App {
         // A tap or a clock in charge: its tempo shows in place of the map's
         // field, which would edit a tempo nothing is playing.
         let response = if let Some(live) = self.session.live_tempo() {
-            ui.add(egui::Label::new(format!("{live:.1} bpm")).sense(egui::Sense::hover()))
-                .on_hover_text("The live tempo, from taps or the MIDI clock")
+            ui.add_sized(
+                [BPM_WIDTH, ui.spacing().interact_size.y],
+                egui::Label::new(format!("{live:.1} bpm")).sense(egui::Sense::hover()),
+            )
+            .on_hover_text("The live tempo, from taps or the MIDI clock")
         } else {
-            ui.add(
+            // A fixed width: typing a tempo drops the " bpm" suffix, and a field
+            // that shrank then would move every button after it.
+            ui.add_sized(
+                [BPM_WIDTH, ui.spacing().interact_size.y],
                 egui::DragValue::new(&mut bpm)
                     .range(noodle_core::TempoMap::MIN_BPM..=noodle_core::TempoMap::MAX_BPM)
                     .speed(0.2)
@@ -1267,6 +1486,7 @@ impl App {
         }
         let current = map.signatures()[0].signature;
         crate::widgets::Dropdown::from_id_salt("time_signature")
+            .arrow(false)
             .width(44.0)
             .selected_text(current.to_string())
             .show_ui(ui, |ui| {
@@ -1287,91 +1507,113 @@ impl App {
             .on_hover_text("The time signature");
     }
 
-    /// How recorded MIDI is snapped to the beat. What is heard while
-    /// recording is never snapped, only the clip the take becomes.
-    fn quantise_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let current = self.session.record_quantise();
-        crate::widgets::Dropdown::from_id_salt("record_quantise")
-            .width(48.0)
-            .selected_text(format!("Q {}", current.label()))
-            .show_ui(ui, |ui| {
+    /// The record popover: two columns. On the left, how recorded MIDI is
+    /// snapped (what is heard while recording is never snapped, only the clip
+    /// the take becomes). On the right, the count-in (bars of metronome before
+    /// a take), the pre-roll (bars of the project before a punch-in), what a
+    /// loop does, and how armed Automation nodes write.
+    fn record_options(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        ui.horizontal_top(|ui| {
+            ui.vertical(|ui| {
+                ui.label(egui::RichText::new("Quantise").weak());
+                let current = self.session.record_quantise();
                 for choice in crate::midi_take::Quantise::ALL {
                     if ui
                         .selectable_label(choice == current, choice.label())
+                        .on_hover_text("Snap the notes of recorded MIDI to this grid")
                         .clicked()
                     {
                         actions.push(Action::SetRecordQuantise(choice));
                     }
                 }
-                ui.separator();
-                ui.label("Loop recording MIDI");
-                let mode = self.session.record_midi();
-                for choice in crate::midi_take::MidiRecord::ALL {
-                    if ui
-                        .selectable_label(choice == mode, choice.label())
-                        .on_hover_text(match choice {
-                            crate::midi_take::MidiRecord::Takes => {
-                                "A take of every cycle, in a take folder to comp from"
-                            }
-                            crate::midi_take::MidiRecord::Merge => "Every cycle in one clip",
-                        })
-                        .clicked()
-                    {
-                        actions.push(Action::SetRecordMidi(choice));
-                    }
-                }
-            })
-            .response
-            .on_hover_text("Snap the notes of recorded MIDI to this grid");
-    }
-
-    /// The count-in (bars of metronome before a take) and the pre-roll (bars of
-    /// the project before a punch-in).
-    fn lead_in_menus(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let menu = |ui: &mut egui::Ui,
-                    id: &str,
-                    label: &str,
-                    current: u8,
-                    choices: &[u8],
-                    tip: &str,
-                    actions: &mut Vec<Action>,
-                    action: fn(u8) -> Action| {
-            crate::widgets::Dropdown::from_id_salt(id)
-                .width(48.0)
-                .selected_text(format!("{label} {current}"))
-                .show_ui(ui, |ui| {
-                    for &bars in choices {
-                        if ui
-                            .selectable_label(bars == current, format!("{bars} bars"))
-                            .clicked()
-                        {
-                            actions.push(action(bars));
+            });
+            ui.separator();
+            ui.vertical(|ui| {
+                egui::Grid::new("record options")
+                    .num_columns(3)
+                    .spacing([10.0, 8.0])
+                    .show(ui, |ui| {
+                        ui.label("Count-in");
+                        let choices: Vec<_> = [0u8, 1, 2]
+                            .iter()
+                            .map(|n| {
+                                (
+                                    n.to_string(),
+                                    *n,
+                                    "Bars of metronome before recording starts",
+                                )
+                            })
+                            .collect();
+                        if let Some(n) = crate::transport_widgets::inline(
+                            ui,
+                            &choices,
+                            self.session.count_in_bars(),
+                        ) {
+                            actions.push(Action::SetCountIn(n));
                         }
-                    }
-                })
-                .response
-                .on_hover_text(tip);
-        };
-        menu(
-            ui,
-            "count_in",
-            "In",
-            self.session.count_in_bars(),
-            &[0, 1, 2],
-            "Bars of metronome before recording starts",
-            actions,
-            Action::SetCountIn,
-        );
-        menu(
-            ui,
-            "pre_roll",
-            "Pre",
-            self.session.pre_roll_bars(),
-            &[0, 1, 2, 4],
-            "Bars of the project played before a punch-in",
-            actions,
-            Action::SetPreRoll,
-        );
+                        ui.weak("bars");
+                        ui.end_row();
+
+                        ui.label("Pre-roll");
+                        let choices: Vec<_> = [0u8, 1, 2, 4]
+                            .iter()
+                            .map(|n| {
+                                (
+                                    n.to_string(),
+                                    *n,
+                                    "Bars of the project played before a punch-in",
+                                )
+                            })
+                            .collect();
+                        if let Some(n) = crate::transport_widgets::inline(
+                            ui,
+                            &choices,
+                            self.session.pre_roll_bars(),
+                        ) {
+                            actions.push(Action::SetPreRoll(n));
+                        }
+                        ui.weak("bars");
+                        ui.end_row();
+
+                        ui.label("Loop MIDI");
+                        let mode = self.session.record_midi();
+                        let choices: Vec<_> = crate::midi_take::MidiRecord::ALL
+                            .iter()
+                            .map(|m| {
+                                let tip = match m {
+                                    crate::midi_take::MidiRecord::Takes => {
+                                        "A take of every cycle, in a take folder to comp from"
+                                    }
+                                    crate::midi_take::MidiRecord::Merge => {
+                                        "Every cycle in one clip"
+                                    }
+                                };
+                                (m.label().to_owned(), *m, tip)
+                            })
+                            .collect();
+                        if let Some(choice) = crate::transport_widgets::inline(ui, &choices, mode) {
+                            actions.push(Action::SetRecordMidi(choice));
+                        }
+                        ui.label("");
+                        ui.end_row();
+
+                        ui.label("Automation");
+                        let current = self.session.automation_mode();
+                        let choices: Vec<_> =
+                            crate::session::record_automation::AutomationMode::ALL
+                                .iter()
+                                .map(|m| (m.label().to_owned(), *m, m.tooltip()))
+                                .collect();
+                        if let Some(choice) =
+                            crate::transport_widgets::inline(ui, &choices, current)
+                        {
+                            actions.push(Action::SetAutomationMode(choice));
+                        }
+                        ui.label("");
+                        ui.end_row();
+                    });
+            });
+        });
     }
 
     /// Which mix version plays. Shown once the project has versions (the
@@ -1434,96 +1676,21 @@ impl App {
             .on_hover_text("The mix version that plays");
     }
 
-    /// How armed Automation nodes write: Read, Touch or Latch.
-    fn automation_mode_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        use crate::session::record_automation::AutomationMode;
-        let current = self.session.automation_mode();
-        crate::widgets::Dropdown::from_id_salt("automation_mode")
-            .width(64.0)
-            .selected_text(format!("Auto {}", current.label()))
-            .show_ui(ui, |ui| {
-                for choice in AutomationMode::ALL {
-                    if ui
-                        .selectable_label(choice == current, choice.label())
-                        .on_hover_text(choice.tooltip())
-                        .clicked()
-                    {
-                        actions.push(Action::SetAutomationMode(choice));
-                    }
-                }
-            })
-            .response
-            .on_hover_text(
-                "How armed Automation nodes record: Read plays back, Touch writes while you move, Latch holds the last move",
-            );
-    }
-
-    /// Where the monitor buttons on nodes play: the main output or any other
-    /// device. While something is monitored, a button stops it.
-    fn monitor_menu(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let current = self.session.monitor_device();
-        let name = |id: &str| {
-            self.outputs
-                .device_name(id)
-                .unwrap_or_else(|| id.to_owned())
-        };
-        let shown = if current.is_empty() {
-            "Master".to_owned()
-        } else {
-            name(current)
-        };
-        crate::widgets::Dropdown::from_id_salt("monitor_device")
-            .width(64.0)
-            .selected_text(format!("Mon {shown}"))
-            .show_ui(ui, |ui| {
-                if ui.selectable_label(current.is_empty(), "Master").clicked() {
-                    actions.push(Action::SetMonitorDevice(None));
-                }
-                for (n, device) in self.outputs.devices().iter().enumerate() {
-                    if ui
-                        .selectable_label(current == device.id, &device.name)
-                        .clicked()
-                    {
-                        actions.push(Action::SetMonitorDevice(Some(n)));
-                    }
-                }
-            })
-            .response
-            .on_hover_text(
-                "Where a node's monitor button plays. Click it to listen to a node, \
-                 Shift-click to add another, Ctrl-click to silence the other outputs on \
-                 this device, Ctrl+Shift-click to silence all of them",
-            );
-        if !self.session.monitored().is_empty()
-            && ui
-                .button(
-                    egui::RichText::new(match self.session.monitor_mode() {
-                        crate::session::MonitorMode::Sum => "Stop monitor",
-                        crate::session::MonitorMode::Exclusive => "Stop monitor (solo device)",
-                        crate::session::MonitorMode::SilenceOthers => "Stop monitor (solo)",
-                    })
-                    .color(theme::ACCENT),
-                )
-                .on_hover_text("Stop listening to the monitored nodes (Escape)")
-                .clicked()
-        {
-            actions.push(Action::StopMonitor);
-        }
-    }
-
-    /// The computer keyboard as a MIDI source. While on it shows the octave
-    /// and velocity the Z X C V keys set.
-    /// The audio engine's switch. Lit while it runs, amber when it runs on
-    /// something other than what was chosen (the hover says what).
-    fn engine_button(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+    /// The audio engine's switch with its options arrow. Lit while the engine
+    /// runs; the dot says how the sound is being made, so the chip never
+    /// changes size: grey is live, a ring is caching, lime is played from the
+    /// cache, amber is the engine running on something other than what was
+    /// chosen (the hover says what).
+    fn engine_chip(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let on = self.session.engine_running();
         let warning = self.session.engine_warning();
-        let (label, colour) = match (on, warning) {
-            (true, Some(_)) => ("⚠ Audio", theme::WARNING),
-            (true, None) => ("Audio", theme::ACCENT),
-            (false, _) => ("Audio", theme::timeline::TEXT_WEAK),
+        let status = self.session.cache_status();
+        let colour = match (on, warning) {
+            (true, Some(_)) => theme::WARNING,
+            (true, None) => theme::ACCENT,
+            (false, _) => theme::timeline::TEXT_WEAK,
         };
-        let tip = match (on, warning) {
+        let mut tip = match (on, warning) {
             (true, Some(warning)) => format!(
                 "The audio engine is on, but not as chosen: {warning}. Click to turn it off"
             ),
@@ -1539,68 +1706,230 @@ impl App {
             ),
             (false, _) => "The audio engine is off, so nothing sounds. Click to turn it on".into(),
         };
-        let label = egui::RichText::new(label).color(colour);
-        if ui
-            .add(egui::Button::new(label).selected(on))
-            .on_hover_text(tip)
-            .clicked()
-        {
-            actions.push(Action::ToggleEngine);
+        if on && !matches!(status, CacheStatus::Off | CacheStatus::Idle) {
+            tip.push_str(&format!(". {}", crate::cache_panel::status_line(status).0));
         }
-    }
-
-    /// Whether the sound is computed live or played from the playback cache.
-    /// Shown while the engine runs and the cache is on, and has something to
-    /// cache; a click opens the cache panel.
-    fn cache_indicator(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
-        let status = self.session.cache_status();
-        let (label, colour) = match status {
-            CacheStatus::Off | CacheStatus::Idle => return,
-            CacheStatus::Live => ("Live", theme::timeline::TEXT_WEAK),
-            CacheStatus::Rendering(_) => ("Caching…", theme::timeline::TEXT_WEAK),
-            CacheStatus::Cached => ("From cache", theme::ACCENT),
-        };
-        let mut tip = crate::cache_panel::status_line(status).0;
         if let Some(n) = self.session.underruns().filter(|&n| n > 0) {
             let times = if n == 1 { "underrun" } else { "underruns" };
             tip.push_str(&format!(". {n} {times} since playback started"));
         }
-        if ui
-            .add(egui::Button::new(egui::RichText::new(label).color(colour)))
-            .on_hover_text(tip)
-            .clicked()
-        {
-            actions.push(Action::ToggleCache);
+        let (chip, options) = crate::transport_widgets::split_button(ui, "Audio options", |ui| {
+            // Room on the left for the dot.
+            ui.scope(|ui| {
+                ui.spacing_mut().button_padding.x = 17.0;
+                let label = egui::RichText::new("Audio").color(colour);
+                ui.add(egui::Button::new(label).selected(on))
+                    .on_hover_text(tip)
+            })
+            .inner
+        });
+        if chip.clicked() {
+            actions.push(Action::ToggleEngine);
+        }
+        let centre = chip.rect.left_center() + egui::vec2(10.0, 0.0);
+        let (colour, filled) = self.engine_dot();
+        if filled {
+            ui.painter().circle_filled(centre, 3.5, colour);
+        } else {
+            ui.painter()
+                .circle_stroke(centre, 3.0, egui::Stroke::new(1.5, colour));
+        }
+        egui::Popup::menu(&options)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| self.audio_options(ui, actions));
+        options.on_hover_text("Where monitoring plays, the playback cache, and audio settings");
+    }
+
+    /// The colour of the Audio chip's dot, and whether it is filled: grey
+    /// live, a ring while caching, lime from the cache, amber when the engine
+    /// runs on something other than what was chosen, a grey ring when off.
+    fn engine_dot(&self) -> (egui::Color32, bool) {
+        let weak = theme::timeline::TEXT_WEAK;
+        match (
+            self.session.engine_running(),
+            self.session.engine_warning(),
+            self.session.cache_status(),
+        ) {
+            (false, _, _) => (weak, false),
+            (true, Some(_), _) => (theme::WARNING, true),
+            (true, None, CacheStatus::Cached) => (theme::ACCENT, true),
+            (true, None, CacheStatus::Rendering(_)) => (theme::ACCENT, false),
+            (true, None, _) => (weak, true),
         }
     }
 
+    /// The audio chip's popover, in three parts: the engine and whether it
+    /// runs as chosen, where the monitor buttons on nodes play, and the
+    /// playback cache (what it is, whether it is on, and where the sound is
+    /// coming from now).
+    fn audio_options(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        use crate::transport_widgets::dot_label;
+        let weak = theme::timeline::TEXT_WEAK;
+        let heading = |text: &str| egui::RichText::new(text).strong();
+        ui.set_width(270.0);
+
+        // The engine.
+        let on = self.session.engine_running();
+        ui.horizontal(|ui| {
+            ui.label(heading("Audio engine"));
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                let choices = [
+                    ("On", true, "Turn the engine on"),
+                    ("Off", false, "Turn the engine off: nothing sounds"),
+                ];
+                let choices: Vec<_> = choices
+                    .iter()
+                    .map(|(l, v, t)| (l.to_string(), *v, *t))
+                    .collect();
+                if crate::transport_widgets::inline(ui, &choices, on).is_some_and(|v| v != on) {
+                    actions.push(Action::ToggleEngine);
+                }
+            });
+        });
+        match (on, self.session.engine_warning()) {
+            (true, Some(warning)) => dot_label(
+                ui,
+                theme::WARNING,
+                true,
+                egui::RichText::new(format!("Not as chosen: {warning}")).color(theme::WARNING),
+            ),
+            (true, None) => dot_label(ui, theme::ACCENT, true, "Running"),
+            (false, _) => dot_label(ui, weak, false, "Off, so nothing sounds"),
+        }
+        if let Some(report) = self.session.latency_report() {
+            ui.label(egui::RichText::new(crate::devices::latency_line(&report)).color(weak));
+        }
+        if let Some(n) = self.session.underruns().filter(|&n| n > 0) {
+            let times = if n == 1 { "underrun" } else { "underruns" };
+            ui.colored_label(
+                theme::WARNING,
+                format!("{n} {times} since playback started"),
+            );
+        }
+
+        // Monitoring.
+        ui.separator();
+        ui.label(heading("Monitor plays on")).on_hover_text(
+            "Where a node's monitor button plays. Click it to listen to a node, \
+                 Shift-click to add another, Ctrl-click to silence the other outputs on \
+                 this device, Ctrl+Shift-click to silence all of them",
+        );
+        let current = self.session.monitor_device();
+        if ui.radio(current.is_empty(), "Main output").clicked() {
+            actions.push(Action::SetMonitorDevice(None));
+        }
+        for (n, device) in self.outputs.devices().iter().enumerate() {
+            if ui.radio(current == device.id, &device.name).clicked() {
+                actions.push(Action::SetMonitorDevice(Some(n)));
+            }
+        }
+        if !self.session.monitored().is_empty()
+            && ui
+                .button(
+                    egui::RichText::new(match self.session.monitor_mode() {
+                        crate::session::MonitorMode::Sum => "Stop monitor",
+                        crate::session::MonitorMode::Exclusive => "Stop monitor (solo device)",
+                        crate::session::MonitorMode::SilenceOthers => "Stop monitor (solo)",
+                    })
+                    .color(theme::ACCENT),
+                )
+                .on_hover_text("Stop listening to the monitored nodes (Escape)")
+                .clicked()
+        {
+            actions.push(Action::StopMonitor);
+        }
+
+        // The cache.
+        ui.separator();
+        ui.label(heading("Playback cache"));
+        ui.label(
+            egui::RichText::new(
+                "Renders groups and tracks in the background, so playing them again \
+                 plays the saved audio instead of computing it.",
+            )
+            .color(weak)
+            .small(),
+        );
+        let mut auto = self.session.auto_cache();
+        if ui
+            .checkbox(&mut auto, "Cache automatically")
+            .on_hover_text("Off plays everything live. Frozen nodes are not affected")
+            .changed()
+        {
+            actions.push(Action::SetAutoCache(auto));
+        }
+        let status = self.session.cache_status();
+        let (line, _) = crate::cache_panel::status_line(status);
+        let (colour, filled) = self.engine_dot();
+        dot_label(ui, colour, filled, line);
+
+        ui.separator();
+        ui.horizontal(|ui| {
+            if ui
+                .button("Cache details…")
+                .on_hover_text("What the cache holds, and how much room it has left")
+                .clicked()
+            {
+                actions.push(Action::ToggleCache);
+                ui.close();
+            }
+            if ui.button("Audio settings…").clicked() {
+                actions.push(Action::AudioSettings);
+                ui.close();
+            }
+        });
+    }
+
+    /// The computer keyboard as a MIDI source, with an arrow for its octave and
+    /// velocity. The button never changes its label.
     fn keyboard_button(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let on = self.keyboard.is_on();
-        let label = if on {
-            format!(
-                "⌨ {} · {}",
-                self.keyboard.octave_label(),
-                self.keyboard.velocity()
-            )
-        } else {
-            "⌨".to_owned()
-        };
-        let label = egui::RichText::new(label).color(if on {
-            theme::ACCENT
-        } else {
-            theme::timeline::TEXT
-        });
-        if ui
-            .add(egui::Button::new(label).selected(on))
-            .on_hover_text(
-                "Play the MIDI In nodes, and record, from the computer keyboard (M). \
-                 A W S E D F T G Y H U J K are the notes, Z and X change the octave, \
-                 C and V the velocity.",
-            )
-            .clicked()
-        {
+        let (button, options) =
+            crate::transport_widgets::split_button(ui, "Keyboard options", |ui| {
+                crate::transport_widgets::keyboard_toggle(ui, on).on_hover_text(format!(
+                    "Play the MIDI In nodes, and record, from the computer keyboard (M). \
+                     A W S E D F T G Y H U J K are the notes, Z and X change the octave, \
+                     C and V the velocity. Now {} at velocity {}",
+                    self.keyboard.octave_label(),
+                    self.keyboard.velocity()
+                ))
+            });
+        if button.clicked() {
             actions.push(Action::ToggleKeyboard);
         }
+        egui::Popup::menu(&options)
+            .close_behavior(egui::PopupCloseBehavior::CloseOnClickOutside)
+            .show(|ui| {
+                ui.set_min_width(200.0);
+                ui.label(egui::RichText::new("Computer keyboard").strong());
+                let mut octave = self.keyboard.octave();
+                ui.horizontal(|ui| {
+                    ui.label("Octave");
+                    if ui
+                        .add(
+                            egui::DragValue::new(&mut octave)
+                                .range(crate::keyboard::OCTAVES)
+                                .prefix("C"),
+                        )
+                        .on_hover_text("Z and X")
+                        .changed()
+                    {
+                        actions.push(Action::SetKeyboardOctave(octave));
+                    }
+                });
+                let mut velocity = self.keyboard.velocity();
+                ui.horizontal(|ui| {
+                    ui.label("Velocity");
+                    if ui
+                        .add(egui::DragValue::new(&mut velocity).range(1..=127))
+                        .on_hover_text("C and V")
+                        .changed()
+                    {
+                        actions.push(Action::SetKeyboardVelocity(velocity));
+                    }
+                });
+            });
+        options.on_hover_text("The keyboard's octave and velocity");
     }
 
     /// Lit while the bound button is on. A metronome that is missing shows
@@ -1630,8 +1959,33 @@ impl App {
         }
     }
 
-    /// The other Button nodes, lit while on, and a menu to bind a new one
-    /// to a switch on any node.
+    /// The strip along the top of the node editor: the user's own switches,
+    /// each a Button node lit while on and named for what it switches, and a
+    /// menu to add one wired to the On/Off setting of any node. The Button
+    /// nodes are ordinary nodes in the graph; this is only a place to press
+    /// them. It wraps onto more rows when there are many, and is only there
+    /// while there is a switch to show (Edit > Add Switch Button makes the first).
+    fn switch_strip(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
+        // No strip, and no height taken from the graph, until there is a switch.
+        if pill_buttons::extras(self.session.project(), self.session.registry()).is_empty() {
+            return;
+        }
+        egui::Frame::NONE
+            .fill(theme::PANEL)
+            .inner_margin(egui::Margin::symmetric(8, 3))
+            .show(ui, |ui| {
+                ui.set_width(ui.available_width());
+                ui.horizontal_wrapped(|ui| {
+                    ui.label(egui::RichText::new("Switches").weak())
+                        .on_hover_text(
+                            "Buttons for the On/Off settings you want in reach while you play",
+                        );
+                    self.extra_buttons(ui, actions);
+                });
+            });
+    }
+
+    /// The switches in the strip, then its menu.
     fn extra_buttons(&self, ui: &mut egui::Ui, actions: &mut Vec<Action>) {
         let project = self.session.project();
         let registry = self.session.registry();
@@ -1644,28 +1998,48 @@ impl App {
             let tip = if extra.target.is_empty() {
                 "A button nothing is wired to".to_owned()
             } else {
-                extra.target.clone()
+                format!("Switches {}. Click to turn it on or off", extra.target)
             };
+            // The node it switches, so it can be told from the others.
+            let name = extra
+                .target
+                .split(" · ")
+                .next()
+                .filter(|name| !name.is_empty())
+                .unwrap_or("Switch");
             let button =
-                egui::Button::new(egui::RichText::new("⏻").color(colour)).selected(extra.on);
+                egui::Button::new(egui::RichText::new(name).color(colour)).selected(extra.on);
             if ui.add(button).on_hover_text(tip).clicked() {
                 actions.push(Action::PressButton(extra.button));
             }
         }
-        ui.menu_button("＋", |ui| {
-            let switches = pill_buttons::switches(project, registry);
-            if switches.is_empty() {
-                ui.weak("No switches to bind a button to");
-            }
-            for (n, switch) in switches.iter().enumerate() {
-                if ui.button(&switch.label).clicked() {
-                    actions.push(Action::BindButton(n));
-                    ui.close();
-                }
+        ui.menu_button("+ Switch", |ui| {
+            if let Some(n) = self.switch_choice(ui) {
+                actions.push(Action::BindButton(n));
+                ui.close();
             }
         })
         .response
-        .on_hover_text("Add a button here that switches a node's On/Off setting");
+        .on_hover_text(
+            "Add a button here that turns a node's On/Off setting on or off, \
+             such as a reverb you want to switch while you play",
+        );
+    }
+
+    /// The list of On/Off settings a switch can be added for. Says which was
+    /// picked, as its place in [`pill_buttons::switches`].
+    fn switch_choice(&self, ui: &mut egui::Ui) -> Option<usize> {
+        let switches = pill_buttons::switches(self.session.project(), self.session.registry());
+        if switches.is_empty() {
+            ui.weak("No On/Off settings to add a switch for");
+        }
+        let mut picked = None;
+        for (n, switch) in switches.iter().enumerate() {
+            if ui.button(&switch.label).clicked() {
+                picked = Some(n);
+            }
+        }
+        picked
     }
 
     fn status_bar(&mut self, ui: &mut egui::Ui) {
@@ -1832,8 +2206,6 @@ impl App {
         }
     }
 
-    /// Asks what to do with unsaved changes before an action that would
-    /// lose them.
     /// The command palette, and the box that names a template being saved.
     fn palette_and_templates(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         if self.palette.is_open() || self.template_name.is_some() {
@@ -1862,9 +2234,10 @@ impl App {
         let modal = egui::Modal::new(egui::Id::new("template name")).show(ctx, |ui| {
             ui.label("Name the project template");
             let field = ui.add(egui::TextEdit::singleline(name).hint_text("Template name"));
-            // Read Enter before asking for the focus back: asking again
-            // would cancel the focus loss Enter causes.
-            let enter = field.lost_focus() && ui.input(|i| i.key_pressed(Key::Enter));
+            // The dialog is modal and has one field, so Enter anywhere in it
+            // confirms, whether or not the field still has the focus. Take
+            // the key so nothing behind the dialog sees it.
+            let enter = ui.input_mut(|i| i.consume_key(egui::Modifiers::NONE, Key::Enter));
             if !field.has_focus() && !enter {
                 field.request_focus();
             }
@@ -1891,6 +2264,8 @@ impl App {
         }
     }
 
+    /// Asks what to do with unsaved changes before an action that would
+    /// lose them.
     fn confirm_dialog(&mut self, ctx: &egui::Context, actions: &mut Vec<Action>) {
         let Some(action) = self.confirming else {
             return;
@@ -1937,6 +2312,12 @@ impl App {
     /// Runs an action, first asking about unsaved changes if it would lose
     /// them.
     fn request(&mut self, ctx: &egui::Context, action: Action) {
+        // Shift on Open is Open with Settings.
+        let action = if action == Action::Open && ctx.input(|i| i.modifiers.shift) {
+            Action::OpenWithSettings
+        } else {
+            action
+        };
         if action.discards() && self.session.is_dirty() {
             if action == Action::Close {
                 ctx.send_viewport_cmd(egui::ViewportCommand::CancelClose);
@@ -1947,17 +2328,72 @@ impl App {
         }
     }
 
+    /// Opens the Settings window on `tab`, listing the devices afresh.
+    fn open_settings(&mut self, tab: crate::settings::Tab) {
+        self.devices.open(self.session.audio_config());
+        self.settings.open(tab);
+    }
+
+    /// Makes `settings` the user's own, here and in the settings file.
+    fn adopt_settings(&mut self, settings: &crate::prefs::Prefs) {
+        let now = crate::prefs::adopt(settings);
+        self.session.apply_user_settings(&now);
+        self.display = now.display;
+        self.editor.set_display(self.display);
+        self.keymap = commands::Keymap::from_saved(&now.keymap);
+        self.session.notify("Settings imported".to_owned());
+    }
+
     fn run(&mut self, ctx: &egui::Context, action: Action) {
         match action {
             Action::New => {
                 self.session.new_project();
                 self.editor = EditorState::default();
             }
-            Action::Open => {
+            Action::Open | Action::OpenWithSettings => {
                 if let Some(path) = crate::picker::pick_file(("Noodle project", &["ron"]))
                     && self.session.load(&path)
                 {
                     self.editor = EditorState::default();
+                    if action == Action::OpenWithSettings {
+                        match self
+                            .session
+                            .project()
+                            .user_settings()
+                            .map(crate::prefs::from_text)
+                        {
+                            Some(Ok(settings)) => self.adopt_settings(&settings),
+                            Some(Err(error)) => self
+                                .session
+                                .notify(format!("Couldn't read the project's settings: {error}")),
+                            None => self
+                                .session
+                                .notify("This project has no settings saved in it".to_owned()),
+                        }
+                    }
+                }
+            }
+            Action::ImportSettings => {
+                if let Some(path) =
+                    crate::picker::pick_file(("Noodle settings or project", &["ron"]))
+                {
+                    match crate::prefs::import_from(&path) {
+                        Ok(settings) => self.adopt_settings(&settings),
+                        Err(error) => self.session.notify(error),
+                    }
+                }
+            }
+            Action::ExportSettings => {
+                if let Some(path) = crate::picker::save_file(
+                    "noodle-settings.ron",
+                    ("Noodle settings", &["ron"]),
+                    None,
+                ) {
+                    self.session
+                        .notify(match crate::prefs::export_to(&with_extension(path)) {
+                            Ok(()) => "Exported settings".to_owned(),
+                            Err(error) => format!("Couldn't export settings: {error}"),
+                        });
                 }
             }
             Action::Save => {
@@ -2052,7 +2488,11 @@ impl App {
                 crate::prefs::remember_monitor_device(&device);
             }
             Action::Rewind => self.session.rewind(),
-            Action::SetRecordQuantise(quantise) => self.session.set_record_quantise(quantise),
+            Action::Seek(tick) => self.session.seek(tick),
+            Action::SetRecordQuantise(quantise) => {
+                self.session.set_record_quantise(quantise);
+                crate::prefs::remember_record_quantise(quantise);
+            }
             Action::SetRecordMidi(mode) => {
                 self.session.set_record_midi(mode);
                 crate::prefs::remember_midi_record(mode);
@@ -2075,6 +2515,12 @@ impl App {
                 self.session.set_automation_mode(mode);
                 crate::prefs::remember_automation_mode(mode);
             }
+            Action::SetKeyboardOctave(octave) => self.keyboard.set_octave(octave),
+            Action::SetKeyboardVelocity(velocity) => self.keyboard.set_velocity(velocity),
+            Action::SetAutoCache(on) => {
+                self.session.set_auto_cache(on);
+                crate::prefs::remember_auto_cache(on);
+            }
             Action::ToggleKeyboard => {
                 for message in self.keyboard.set_on(!self.keyboard.is_on()) {
                     self.session.midi_bus().send(message);
@@ -2089,19 +2535,19 @@ impl App {
                     self.session.record();
                 }
             }
-            Action::AudioSettings => self.devices.open(self.session.audio_config()),
+            Action::Settings => self.open_settings(crate::settings::Tab::General),
+            Action::AudioSettings => self.open_settings(crate::settings::Tab::Audio),
             Action::ToggleMixer => self.mixer_open = !self.mixer_open,
             Action::ToggleMetronome => {
                 let ids = || std::array::from_fn(|_| self.session.new_node_id());
-                match metronome::press(self.session.project(), ids) {
-                    Some(command) => self.session.edit([Edit::Apply(command)]),
-                    None => {
-                        let why = match metronome::binding(self.session.project()) {
-                            metronome::Binding::Broken(why) => why,
-                            _ => "The metronome can't be pressed".to_owned(),
-                        };
-                        self.session.notify(why);
-                    }
+                if let Some(command) = metronome::press(self.session.project(), ids) {
+                    self.session.edit([Edit::Apply(command)])
+                } else {
+                    let why = match metronome::binding(self.session.project()) {
+                        metronome::Binding::Broken(why) => why,
+                        _ => "The metronome can't be pressed".to_owned(),
+                    };
+                    self.session.notify(why);
                 }
             }
             Action::PressButton(button) => {
@@ -2348,7 +2794,6 @@ impl App {
         }
     }
 
-    /// Asks which audio files to add, and adds them as clips at `target`.
     /// What is known about the audio file of clip `id`.
     fn clip_source(
         &mut self,
@@ -2442,6 +2887,20 @@ impl App {
     /// Rescan); on the empty canvas they become a new Sample Set.
     fn files_dropped_on_graph(&mut self, dropped: editor::DroppedFiles) {
         use noodle_core::{Command, Node};
+        // One audio file on a pad (or a Sampler) is that drum's sample.
+        if let Some(sampler) = dropped.pad
+            && let [path] = dropped.paths.as_slice()
+            && path.is_file()
+        {
+            match self.session.samples().import(path) {
+                Ok(hash) => {
+                    let command = crate::sample_drop::choose(&self.session, sampler, &hash);
+                    self.session.edit([crate::session::Edit::Apply(command)]);
+                }
+                Err(e) => self.session.notify(format!("Couldn't read that file: {e}")),
+            }
+            return;
+        }
         let (node, new) = match dropped.on {
             Ok(node) => (node, None),
             Err(at) => {
@@ -2476,6 +2935,7 @@ impl App {
         self.editor.select_only([node]);
     }
 
+    /// Asks which audio files to add, and adds them as clips at `target`.
     fn import_audio(&mut self, target: timeline::Target) {
         let picked =
             crate::picker::pick_files(("Audio", &["wav", "flac", "mp3", "ogg", "m4a", "aac"]));
@@ -2560,6 +3020,36 @@ mod tests {
         h.run();
         assert!(!h.state().palette.is_open(), "it closes after running one");
         assert!(folded(&h));
+    }
+
+    #[test]
+    fn the_palette_keeps_the_scroll_the_mouse_wheel_gave_it() {
+        let mut h = harness(folded_app());
+        h.run();
+        let at = egui::pos2(300.0, 200.0);
+        crate::testkit::press(&mut h, at, Modifiers::COMMAND, Key::K);
+        h.run();
+        let first = commands::first_name();
+        let top = |h: &Harness<'_, App>| h.get_by_label(first).rect().min.y;
+        let before = top(&h);
+        for _ in 0..4 {
+            crate::testkit::wheel(
+                &mut h,
+                egui::pos2(500.0, 300.0),
+                egui::MouseWheelUnit::Point,
+                egui::vec2(0.0, -80.0),
+            );
+        }
+        h.run_steps(10);
+        let scrolled = h.query_by_label(first).map(|n| n.rect().min.y);
+        assert!(
+            scrolled.is_none_or(|y| y < before - 20.0),
+            "the wheel scrolled the list ({before} -> {scrolled:?})"
+        );
+        // Every later frame must leave it there, not snap back to the selection.
+        h.run_steps(10);
+        let later = h.query_by_label(first).map(|n| n.rect().min.y);
+        assert_eq!(scrolled, later, "the list stays where the wheel left it");
     }
 
     fn palette_run(app: App, query: &str) -> Harness<'static, App> {
@@ -2949,7 +3439,7 @@ mod tests {
     }
 
     #[test]
-    fn the_audio_button_shows_when_the_engine_fell_back() {
+    fn the_audio_chip_keeps_its_place_and_label_when_the_engine_fell_back() {
         let mut app = empty();
         app.session.set_audio_config(noodle_io::AudioConfig {
             output: Some("alsa:no such device".into()),
@@ -2959,7 +3449,9 @@ mod tests {
         let mut harness = harness(app);
         harness.run_steps(3);
         assert!(harness.state().session.engine_warning().is_some());
-        harness.get_by_label("⚠ Audio");
+        // The warning is the chip's amber dot and its hover, not a longer
+        // label, so nothing next to it moves.
+        harness.get_by_label("Audio");
     }
 
     #[test]
@@ -3147,15 +3639,13 @@ mod tests {
     }
 
     #[test]
-    fn running_plugins_in_separate_processes_is_switched_from_the_plugin_browser_and_remembered() {
+    fn running_plugins_in_separate_processes_is_switched_from_settings_and_remembered() {
         let dir = tempfile::tempdir().unwrap();
         let prefs = dir.path().join("prefs.ron");
         crate::prefs::init(prefs.clone());
         let mut harness = harness(empty());
         harness.run();
-        harness.get_by_label("View").click();
-        harness.run();
-        harness.get_by_label("Plugins").click();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Comma);
         harness.run();
         assert!(!harness.state().session().sandbox_plugins());
         harness
@@ -3173,12 +3663,166 @@ mod tests {
         assert!(!noodle_plugins::sandbox_enabled());
     }
 
+    /// An app whose preferences are in a file of their own, and a handler
+    /// that answers every file picker with `answer`.
+    fn app_with_prefs(dir: &std::path::Path, name: &str) -> (App, PathBuf) {
+        let prefs = dir.join(name);
+        crate::prefs::init(prefs.clone());
+        (empty(), prefs)
+    }
+
+    fn answer_pickers_with(path: PathBuf) {
+        crate::picker::set_handler(Box::new(move |_| vec![path.clone()]));
+    }
+
+    #[test]
+    fn the_snap_step_is_picked_from_the_menu_and_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let (app, prefs) = app_with_prefs(dir.path(), "prefs.ron");
+        let mut harness = harness(app);
+        harness.run();
+        harness.get_by_label("Snap: Beat").click();
+        harness.run();
+        harness.get_by_label("1/4 beat").click();
+        harness.run();
+        let step = noodle_core::TICKS_PER_QUARTER / 4;
+        assert_eq!(harness.state().session().snap(), step);
+        assert_eq!(crate::prefs::load(&prefs).unwrap().snap, step);
+    }
+
+    #[test]
+    fn a_project_carries_the_settings_but_only_open_with_settings_takes_them() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let step = noodle_core::TICKS_PER_QUARTER / 4;
+        // One machine: sets a snap step, and saves a project.
+        let (mut author, _) = app_with_prefs(dir.path(), "author.ron");
+        crate::prefs::remember_snap(step);
+        crate::prefs::remember_recording(2, 0);
+        let project = dir.path().join("song.ron");
+        assert!(author.session.save_as(&project));
+        // Another: opens it. A plain open leaves its own settings alone.
+        let (mut other, prefs) = app_with_prefs(dir.path(), "other.ron");
+        answer_pickers_with(project.clone());
+        other.run(&ctx, Action::Open);
+        assert_eq!(other.session.snap(), crate::snap::DEFAULT);
+        assert_eq!(
+            crate::prefs::load(&prefs).unwrap().snap,
+            crate::snap::DEFAULT
+        );
+        // Open with Settings takes them, and keeps them.
+        other.run(&ctx, Action::OpenWithSettings);
+        assert_eq!(other.session.snap(), step);
+        assert_eq!(other.session.count_in_bars(), 2);
+        assert_eq!(crate::prefs::load(&prefs).unwrap().snap, step);
+    }
+
+    #[test]
+    fn settings_are_exported_and_imported_from_a_file_or_from_a_project() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let step = noodle_core::TICKS_PER_QUARTER / 2;
+        let (mut first, _) = app_with_prefs(dir.path(), "first.ron");
+        crate::prefs::remember_snap(step);
+        let file = dir.path().join("mine.ron");
+        answer_pickers_with(file.clone());
+        first.run(&ctx, Action::ExportSettings);
+        let project = dir.path().join("song.ron");
+        assert!(first.session.save_as(&project));
+        for from in [&file, &project] {
+            let (mut second, prefs) = app_with_prefs(dir.path(), "second.ron");
+            answer_pickers_with(from.clone());
+            second.run(&ctx, Action::ImportSettings);
+            assert_eq!(second.session.snap(), step, "from {}", from.display());
+            assert_eq!(crate::prefs::load(&prefs).unwrap().snap, step);
+            std::fs::remove_file(&prefs).unwrap();
+        }
+    }
+
+    #[test]
+    fn importing_settings_keeps_this_machines_devices_and_refuses_a_project_without_settings() {
+        let dir = tempfile::tempdir().unwrap();
+        let ctx = egui::Context::default();
+        let (mut app, prefs) = app_with_prefs(dir.path(), "prefs.ron");
+        crate::prefs::remember_monitor_device("local-speakers");
+        let theirs = crate::prefs::Prefs {
+            monitor_device: "their-speakers".into(),
+            sandbox_plugins: true,
+            snap: noodle_core::TICKS_PER_QUARTER / 8,
+            ..Default::default()
+        };
+        let file = dir.path().join("theirs.ron");
+        std::fs::write(&file, ron::to_string(&theirs).unwrap()).unwrap();
+        answer_pickers_with(file);
+        app.run(&ctx, Action::ImportSettings);
+        let kept = crate::prefs::load(&prefs).unwrap();
+        assert_eq!(kept.monitor_device, "local-speakers");
+        assert!(!kept.sandbox_plugins);
+        assert_eq!(kept.snap, theirs.snap);
+        // A project nobody saved settings into says so.
+        let bare = dir.path().join("bare.ron");
+        std::fs::write(&bare, noodle_core::Project::new().to_ron()).unwrap();
+        answer_pickers_with(bare);
+        app.run(&ctx, Action::ImportSettings);
+        assert!(app.session.message().unwrap().contains("no settings"));
+    }
+
+    #[test]
+    fn display_switches_are_set_from_the_dialog_and_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let prefs = dir.path().join("prefs.ron");
+        crate::prefs::init(prefs.clone());
+        let mut harness = harness(empty());
+        harness.run();
+        harness
+            .state_mut()
+            .settings
+            .open(crate::settings::Tab::Display);
+        harness.run();
+        // Everything is on but the CPU tint.
+        assert!(harness.state().editor.bodies_display().event_wires);
+        assert!(!harness.state().editor.bodies_display().cpu_heat);
+        harness.get_by_label("Level bars on outputs").click();
+        harness.run();
+        assert!(!crate::prefs::load(&prefs).unwrap().display.output_meters);
+        assert!(!harness.state().editor.bodies_display().output_meters);
+        harness.get_by_label("Heat tint for CPU use").click();
+        harness.run();
+        assert!(crate::prefs::load(&prefs).unwrap().display.cpu_heat);
+        assert!(harness.state().editor.bodies_display().cpu_heat);
+        // Performance mode shows none of it, and keeps the choices.
+        harness.get_by_label("Performance mode").click();
+        harness.run();
+        let saved = crate::prefs::load(&prefs).unwrap().display;
+        assert!(saved.performance && saved.event_wires && saved.cpu_heat);
+        let shown = harness.state().editor.bodies_display();
+        assert!(!shown.event_wires && !shown.cpu_heat);
+        // And the engine is told to stop measuring.
+        assert!(!harness.state().session().telemetry().gather().events());
+        harness.get_by_label("Performance mode").click();
+        harness.run();
+        assert!(harness.state().editor.bodies_display().event_wires);
+        assert!(harness.state().session().telemetry().gather().events());
+        assert!(
+            !harness
+                .state()
+                .session()
+                .telemetry()
+                .gather()
+                .output_levels()
+        );
+    }
+
     #[test]
     fn the_playback_cache_is_switched_from_its_panel_and_remembered() {
         let dir = tempfile::tempdir().unwrap();
         let prefs = dir.path().join("prefs.ron");
         crate::prefs::init(prefs.clone());
-        let mut harness = harness(empty());
+        // An empty cache folder of its own: the default one is shared with
+        // every other test and with the user's real renders.
+        let mut session = Session::new(crate::session::Nodes::all());
+        session.use_cache_dir(dir.path().join("cache"));
+        let mut harness = harness(App::new(session));
         harness.run();
         harness.get_by_label("View").click();
         harness.run();
@@ -3485,6 +4129,7 @@ mod tests {
         let discarding: Vec<_> = [
             Action::New,
             Action::Open,
+            Action::OpenWithSettings,
             Action::Save,
             Action::SaveAs,
             Action::Undo,
@@ -3497,7 +4142,15 @@ mod tests {
         .into_iter()
         .filter(|a| a.discards())
         .collect();
-        assert_eq!(discarding, [Action::New, Action::Open, Action::Close]);
+        assert_eq!(
+            discarding,
+            [
+                Action::New,
+                Action::Open,
+                Action::OpenWithSettings,
+                Action::Close
+            ]
+        );
     }
 
     #[test]
@@ -3517,7 +4170,20 @@ mod tests {
     }
 
     #[test]
-    fn audio_settings_open_from_the_shortcut_and_reach_the_session() {
+    fn the_shortcut_opens_settings_and_close_shuts_them() {
+        let mut harness = harness(empty());
+        harness.run();
+        assert!(!harness.state().settings.is_open());
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::Comma);
+        harness.run();
+        assert!(harness.state().settings.is_open());
+        harness.get_by_label("Close").click();
+        harness.run();
+        assert!(!harness.state().settings.is_open());
+    }
+
+    #[test]
+    fn audio_settings_reach_the_session() {
         let dir = tempfile::tempdir().unwrap();
         let prefs = dir.path().join("prefs.ron");
         crate::prefs::init(prefs.clone());
@@ -3525,9 +4191,11 @@ mod tests {
         app.devices = no_devices();
         let mut harness = harness(app);
         harness.run();
-        assert!(harness.query_by_label("Audio Settings").is_none());
+        assert!(!harness.state().settings.is_open());
 
-        harness.key_press_modifiers(Modifiers::COMMAND, Key::Comma);
+        harness
+            .state_mut()
+            .open_settings(crate::settings::Tab::Audio);
         harness.run();
         harness.get_by_label("Buffer size").click();
         harness.run();
@@ -3535,8 +4203,10 @@ mod tests {
         harness.run();
         harness.get_by_label("Apply").click();
         harness.run();
+        harness.get_by_label("Close").click();
+        harness.run();
 
-        assert!(harness.query_by_label("Audio Settings").is_none());
+        assert!(!harness.state().settings.is_open());
         let session = harness.state().session();
         assert_eq!(session.audio_config().buffer_size, Some(256));
         assert!(!session.engine_running());
@@ -3573,7 +4243,7 @@ mod tests {
         // X is a note-keyboard key now, not delete.
         harness.key_press(Key::X);
         harness.run();
-        assert_eq!(harness.state().keyboard.octave(), 4);
+        assert_eq!(harness.state().keyboard.octave(), 5);
         assert_eq!(
             harness.state().session().project().graph().nodes().count(),
             1
@@ -3586,6 +4256,34 @@ mod tests {
         harness.key_press(Key::M);
         harness.run();
         assert_eq!(heard.pop(), Some([0x80, 76, 0]));
+    }
+
+    #[test]
+    fn an_open_piano_roll_follows_the_selected_clip() {
+        use noodle_core::{Clip, ClipId, Tick};
+        let mut app = empty();
+        app.session.edit([Edit::Apply(Command::AddNode {
+            id: noodle_core::NodeId(1),
+            node: Node::new(crate::timeline::TRACK_INPUT),
+        })]);
+        for (id, start) in [(1, 0), (2, 3840)] {
+            app.session.edit([Edit::Apply(Command::AddClip {
+                id: ClipId(id),
+                clip: Clip::midi(noodle_core::NodeId(1), Tick(start), Tick(3840)),
+            })]);
+        }
+        app.piano_roll.open(ClipId(1));
+        let mut harness = harness(app);
+        harness.run();
+        assert_eq!(harness.state().piano_roll.clip(), Some(ClipId(1)));
+        harness.state_mut().timeline.select_only(ClipId(2));
+        harness.run();
+        assert_eq!(harness.state().piano_roll.clip(), Some(ClipId(2)));
+        // A roll that is closed stays closed.
+        harness.state_mut().piano_roll.close();
+        harness.state_mut().timeline.select_only(ClipId(1));
+        harness.run();
+        assert_eq!(harness.state().piano_roll.clip(), None);
     }
 
     #[test]
@@ -3613,6 +4311,53 @@ mod tests {
         });
         output.textures_delta.clear();
         assert_eq!(seen, (false, true), "A is taken, Delete is not");
+    }
+
+    /// Typing in a text field wins over the note keys: the letters reach the
+    /// field and no note sounds, from the first key after it is clicked.
+    #[test]
+    fn a_focused_text_field_overrides_the_note_keys() {
+        let mut app = empty();
+        app.keyboard.set_on(true);
+        let ctx = egui::Context::default();
+        let mut heard = app.session.midi_bus().subscribe();
+        let mut text = String::new();
+        let field = egui::Id::new("a text field");
+        let frame = |app: &mut App, events: Vec<egui::Event>, text: &mut String| {
+            let input = egui::RawInput {
+                events,
+                ..Default::default()
+            };
+            let mut seen = true;
+            let mut output = ctx.run_ui(input, |ui| {
+                app.keyboard_midi(ui.ctx());
+                seen = ui.ctx().input(|i| i.key_pressed(Key::A));
+                let edit = ui.add(egui::TextEdit::singleline(text).id(field));
+                if !edit.has_focus() {
+                    edit.request_focus();
+                }
+            });
+            output.textures_delta.clear();
+            seen
+        };
+        // The frame that opens the field has focus after the keys are read,
+        // so a key arriving with it may still be a note; the next ones not.
+        frame(&mut app, vec![], &mut text);
+        let key = egui::Event::Key {
+            key: Key::A,
+            physical_key: Some(Key::A),
+            pressed: true,
+            repeat: false,
+            modifiers: Modifiers::NONE,
+        };
+        let seen = frame(
+            &mut app,
+            vec![key, egui::Event::Text("a".into())],
+            &mut text,
+        );
+        assert!(seen, "the field sees A, it was not taken as a note");
+        assert_eq!(text, "a");
+        assert_eq!(heard.pop(), None, "no note sounded");
     }
 
     #[test]
@@ -3675,7 +4420,7 @@ mod tests {
         std::fs::remove_dir_all(&dir).ok();
     }
 
-    /// Issue #420: Enter in the template dialog saves it, and Ctrl+A selects
+    /// Enter in the template dialog saves it, and Ctrl+A selects
     /// the name being typed.
     #[test]
     fn enter_confirms_the_template_dialog() {
@@ -3692,6 +4437,21 @@ mod tests {
         assert_eq!(harness.state().template_name, None);
     }
 
+    /// Enter confirms the template dialog even when the name field has
+    /// lost the focus, say to the Save button's neighbour.
+    #[test]
+    fn enter_confirms_the_template_dialog_without_the_field_focused() {
+        let mut app = empty();
+        app.template_name = Some("Band".into());
+        let mut harness = harness(app);
+        harness.run();
+        harness.key_press(Key::Tab);
+        harness.run();
+        harness.key_press(Key::Enter);
+        harness.run();
+        assert_eq!(harness.state().template_name, None);
+    }
+
     #[test]
     fn shortcuts_do_nothing_behind_a_dialog() {
         let mut app = empty();
@@ -3700,7 +4460,7 @@ mod tests {
         app.session
             .edit([Edit::Apply(Command::AddNode { id, node })]);
         app.devices = no_devices();
-        app.devices.open(&noodle_io::AudioConfig::default());
+        app.open_settings(crate::settings::Tab::Audio);
         let mut harness = harness(app);
         harness.run();
 
@@ -3929,13 +4689,108 @@ mod tests {
     }
 
     #[test]
-    fn the_plus_menu_binds_a_new_pill_button_that_presses_a_switch() {
+    fn switching_the_engine_or_keyboard_does_not_move_the_transport() {
+        let mut harness = harness(empty());
+        harness.run();
+        let place = |h: &Harness<'_, App>| {
+            [
+                h.get_by_label("▶").rect(),
+                h.get_by_label("⏺").rect(),
+                h.get_by_label("Audio").rect(),
+            ]
+        };
+        let before = place(&harness);
+        harness.get_by_label("Computer keyboard").click();
+        harness.run();
+        harness.get_by_label("Audio").click();
+        harness.run_steps(4);
+        assert_eq!(place(&harness), before);
+    }
+
+    #[test]
+    fn typing_a_tempo_does_not_move_the_buttons_after_it() {
+        let mut harness = harness(empty());
+        harness.run();
+        let source = |h: &Harness<'_, App>| h.get_by_label_contains("Tempo map").rect();
+        let before = source(&harness);
+        // The tempo field is the spin button that holds the default 120.
+        let field = harness
+            .query_all_by_role(egui::accesskit::Role::SpinButton)
+            .find(|n| n.value().is_some_and(|v| v.starts_with("120")))
+            .unwrap();
+        field.click();
+        harness.run();
+        assert_eq!(source(&harness), before);
+    }
+
+    #[test]
+    fn editing_or_moving_the_position_does_not_move_the_transport() {
+        let mut harness = harness(empty());
+        harness.run();
+        let place = |h: &Harness<'_, App>| {
+            [
+                h.get_by_label("▶").rect(),
+                h.get_by_label("⏺").rect(),
+                h.get_by_label("Position").rect(),
+                h.get_by_label_contains("Tempo map").rect(),
+                h.get_by_label("Audio").rect(),
+            ]
+        };
+        let before = place(&harness);
+        // A far-off, wide position.
+        harness
+            .state_mut()
+            .session
+            .seek(noodle_core::Tick(9999 * 4 * noodle_core::TICKS_PER_QUARTER));
+        harness.run();
+        assert_eq!(place(&harness), before, "wide position");
+        // Typing into the field.
+        harness.get_by_label("Position").click();
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        harness.event(egui::Event::Text("123456.2.100".into()));
+        harness.run();
+        assert_eq!(place(&harness), before, "while typing");
+    }
+
+    #[test]
+    fn the_record_options_arrow_sits_flush_against_the_record_button() {
+        let mut harness = harness(empty());
+        harness.run();
+        let record = harness.get_by_label("⏺").rect();
+        let arrow = harness.get_by_label("Record options").rect();
+        assert_eq!(record.right(), arrow.left());
+    }
+
+    #[test]
+    fn a_position_typed_into_the_transport_moves_the_playhead() {
+        let mut harness = harness(empty());
+        harness.run();
+        // Bar 3, beat 2: two bars and a beat in.
+        harness.get_by_label("Position").click();
+        harness.run();
+        harness.key_press_modifiers(Modifiers::COMMAND, Key::A);
+        harness.event(egui::Event::Text("3.2".into()));
+        harness.run();
+        harness.key_press(Key::Enter);
+        harness.run();
+        assert_eq!(
+            harness.state().session.playhead(),
+            noodle_core::Tick(9 * noodle_core::TICKS_PER_QUARTER)
+        );
+    }
+
+    #[test]
+    fn adding_a_switch_from_the_edit_menu_shows_a_strip_button_that_presses_it() {
         let mut harness = harness(empty());
         harness.run();
         // The metronome's own button makes a metronome with a switch left.
         harness.get_by_label("♩").click();
         harness.run();
-        harness.get_by_label("＋").click();
+        // With no switch yet there is no strip: the Edit menu makes the first.
+        harness.get_by_label("Edit").click();
+        harness.run();
+        harness.get_by_label_contains("Add Switch Button").click();
         harness.run();
         harness.get_by_label("Metronome · Accent").click();
         harness.run();
@@ -3945,7 +4800,7 @@ mod tests {
         };
         assert_eq!(shown().len(), 1);
         assert!(shown()[0].on);
-        harness.get_by_label("⏻").click();
+        harness.get_by_label("Metronome").click();
         harness.run();
         let state = harness.state();
         let extras = pill_buttons::extras(state.session.project(), state.session.registry());

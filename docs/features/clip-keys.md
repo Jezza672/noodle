@@ -10,3 +10,5 @@ Issue #348 (S05), as amended by Jeremy on 2026-11-03.
 - **Limits.** Upward shifts alias slightly above about 15 kHz at 44.1 kHz (the cubic read-back has no anti-alias filter); a Sampler ignores the transpose.
 
 Tests: `noodle-core/src/key.rs`, `project.rs` (key per marker), `noodle-io/src/key.rs`, `noodle-nodes/src/clip/pitch.rs`, `noodle-nodes/tests/transposed_clips.rs` (pitch measured after a fixed shift, a Follow that changes at a marker, and no change in the timeline's own key; the marker test fails if the key changes are ignored). The S05 route sets the key by hand, sets the project to F minor, and has a late change that modulates at a marker.
+
+- **Detected tempo, key and transients show on selection.** An unwarped audio clip's panel (selecting the clip is enough) lists the tempo estimate, marked a guess with its confidence when weak, the detected key and the transient count, so they are visible without warping.

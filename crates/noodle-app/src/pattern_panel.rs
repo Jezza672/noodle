@@ -12,8 +12,8 @@ use noodle_nodes::{CLOCK_DIVISIONS, DIVISION_TICKS, PATTERN_MAX_SLOTS};
 use crate::session::{Edit, Session};
 use crate::theme;
 
-/// A step grid's cell, in graph points.
-/// The widest a step's cell is drawn; narrower panels squeeze the grid to fit.
+/// The widest a step's cell is drawn, in graph points; narrower panels squeeze
+/// the grid to fit.
 const CELL: f32 = 18.0;
 /// The narrowest the grid is squeezed to.
 const CELL_MIN: f32 = 11.0;
@@ -136,18 +136,15 @@ pub fn note_at(midi: &MidiClip, region: &Region, key: u8, step: usize) -> Option
 /// Puts a note on `key` at `step`, half a step long so that neighbours leave
 /// a gap for a gate to close in, or takes it away if there is one.
 pub fn toggle(midi: &mut MidiClip, region: &Region, key: u8, step: usize) {
-    match note_at(midi, region, key, step) {
-        Some(index) => {
-            midi.notes.remove(index);
-        }
-        None => {
-            let start = region.begin_tick() + step as i64 * region.step_ticks;
-            let mut note = MidiNote::new(Tick(start), Tick((region.step_ticks / 2).max(1)), key);
-            note.velocity = 0.8;
-            midi.notes.push(note);
-            // The clip has to reach the note for it to play.
-            midi.length = Tick(midi.length.0.max(region.end_tick()));
-        }
+    if let Some(index) = note_at(midi, region, key, step) {
+        midi.notes.remove(index);
+    } else {
+        let start = region.begin_tick() + step as i64 * region.step_ticks;
+        let mut note = MidiNote::new(Tick(start), Tick((region.step_ticks / 2).max(1)), key);
+        note.velocity = 0.8;
+        midi.notes.push(note);
+        // The clip has to reach the note for it to play.
+        midi.length = Tick(midi.length.0.max(region.end_tick()));
     }
 }
 
@@ -413,7 +410,7 @@ mod tests {
         }
     }
 
-    /// Issue #417: 16 steps fit the sidebar's default width.
+    /// 16 steps fit the sidebar's default width.
     #[test]
     fn the_grid_squeezes_to_fit_and_never_grows_past_a_cell() {
         assert!(16.0 * cell_width(260.0, 16) + 30.0 <= 260.0);

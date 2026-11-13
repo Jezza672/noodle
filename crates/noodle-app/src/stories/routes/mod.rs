@@ -45,7 +45,7 @@ use noodle_core::{NodeId, Project};
 use super::Route;
 use super::handle::Handle;
 use crate::app::App;
-use crate::session::{Nodes, Session};
+use crate::session::{Edit, Nodes, Session};
 use crate::testkit::virtual_audio;
 
 /// Every route, in story order.
@@ -64,6 +64,7 @@ pub fn all() -> Vec<Route> {
         s08_midi_detail::wire_route(),
         s09_drum_pattern::route(),
         s09_drum_pattern::pattern_route(),
+        s09_drum_pattern::rack_from_clip_route(),
         s10_keyswitch::route(),
         s11_audio_to_midi::route(),
         s12_multisampler::route(),
@@ -73,6 +74,8 @@ pub fn all() -> Vec<Route> {
         s16_spectral_cross::route(),
         s17_resample::route(),
         s17_slice::route(),
+        s17_slice::convert_route(),
+        s17_slice::region_route(),
         s18_plugins::route(),
         s18_replace::route(),
         s19_drum_bus::route(),
@@ -106,6 +109,37 @@ pub fn virtual_session(dir: &Path) -> Session {
         "the project saves"
     );
     session
+}
+
+/// Adds `n` empty tracks to `session`, in a grid from `(x, y)` so they do not
+/// sit on top of each other or of a patch beside them.
+pub fn add_tracks(session: &mut Session, n: usize, x: f32, y: f32) {
+    for i in 0..n {
+        let ids: Vec<_> = (0..16).map(|_| session.new_node_id()).collect();
+        let mut ids = ids.into_iter();
+        let at = noodle_core::Position {
+            x: x + (i % 10) as f32 * 260.0,
+            y: y + (i / 10) as f32 * 200.0,
+        };
+        let (_, create) = noodle_core::group::create_track(None, at, || {
+            ids.next().expect("a track needs few ids")
+        });
+        session.edit([Edit::Apply(create)]);
+    }
+}
+
+/// Fails unless the project holds at least `n` tracks. A story that names a
+/// size (150 tracks, 60 tracks) checks its fixture is that size, so a run on
+/// a smaller project says nothing and cannot pass.
+pub fn has_tracks(p: &Project, n: usize) -> Result<(), String> {
+    let have = crate::timeline::tracks(p).len();
+    if have >= n {
+        Ok(())
+    } else {
+        Err(format!(
+            "the project has {have} tracks, the story has {n}: the fixture is not the story's"
+        ))
+    }
 }
 
 /// The fixture's session saved and opened again on the virtual output, so

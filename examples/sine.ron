@@ -1,6 +1,6 @@
 // The smallest useful project: a 440 Hz sine, turned down.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.osc.sine", params: {"frequency": 440.0}, position: (x: 0.0, y: 0.0)),

@@ -145,9 +145,10 @@ renders of the old sound are not replayed.
   preferences; the View menu's *Playback cache* panel has the checkbox, and
   turning it off plays everything live at once. Explicit freezes are not
   affected.
-- **Indicator.** A toolbar button beside Audio: *From cache*, *Caching…* or
-  *Live* (`Session::cache_status`), hidden when the cache is off or has nothing
-  to cache. Clicking it opens the panel.
+- **Indicator.** A dot on the Audio chip (`Session::cache_status`): grey for
+  live, a ring while caching, lime from the cache, no change when the cache is off
+  or has nothing to cache. The words are in the chip's tooltip and its options
+  popover, whose *Playback cache…* button opens the panel.
 - **Readout.** The panel shows entries and bytes against the 4 GB limit, the
   bytes dropped to stay under it, and the underruns since the stream opened
   (`Session::underruns`, kept from the health check). The cache is also trimmed
@@ -159,7 +160,7 @@ renders of the old sound are not replayed.
   in blocks of 4 800 and of 96 (it differed by 0.012 before).
 - **Tests.** Prefs default and round trip, the panel's toggle reaching the
   session and the file, the status through the stop-stop-play session test
-  (Live or Caching, then From cache, then Off), the readout counting one entry
+  (Live or Caching, then From cache, then Off; the chip's dot, not its words), the readout counting one entry
   after the first render and no underruns on the virtual output.
 - **Left, from the roadmap.** Expensive-node and chain cuts, a measured cost
   model and section alignment, after real projects are measured.

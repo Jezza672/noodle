@@ -1,6 +1,5 @@
 //! The usability scorecard's routes: scripted user journeys that reach a
 //! story's goal through the real UI, so their cost can be measured.
-//! Design: `docs/architecture/usability.md`. Stories: `docs/usability/stories.md`.
 //!
 //! A [`Route`] has a story ID, a tag, a fixture to start from, optionally a
 //! size, the steps and a done check. The steps get a [`Handle`], which can
@@ -10,9 +9,6 @@
 //! Every route is run as an ordinary test, so a UI change that breaks a
 //! route fails CI. With `NOODLE_SCORECARD_DIR` set, the run also writes the
 //! scorecard there (CI uploads it).
-//!
-//! **A PR that changes how a story is done updates its route in the same
-//! PR.**
 
 mod agent;
 mod effort;
@@ -50,7 +46,9 @@ pub enum Tag {
     Default,
     /// The fastest known way.
     Expert,
+    #[allow(dead_code, reason = "a tag no route uses yet")]
     Keyboard,
+    #[allow(dead_code, reason = "a tag no route uses yet")]
     Scripted,
 }
 
@@ -130,15 +128,15 @@ fn window_with(mut app: App, render: bool) -> AppHarness {
     }
     // While audio plays the app keeps repainting, so settle a few frames
     // rather than `run` until it stops.
-    let mut builder = Harness::builder().with_size(Vec2::new(1280.0, 800.0));
+    // egui calls two clicks a double click if they come within 0.3 s by the
+    // frame clock. With the default 0.25 s pass and two passes a step, the
+    // two steps of `double_click` would be 0.5 s apart; a short pass keeps an
+    // agent's double clicks working as a person's do.
+    let mut builder = Harness::builder()
+        .with_size(Vec2::new(1280.0, 800.0))
+        .with_step_dt(0.05);
     if render {
-        // egui calls two clicks a double click if they come within 0.3 s by
-        // the frame clock. The harness advances it 0.25 s a pass and the app
-        // takes two passes a step, so the two steps of `double_click` were
-        // 0.5 s apart and no double click ever registered: not on a lane, a
-        // track name, nor the canvas. A short pass fixes that for an agent,
-        // whose double clicks must work as a person's do.
-        builder = builder.wgpu().with_step_dt(0.05);
+        builder = builder.wgpu();
     }
     let mut h = builder.build_ui_state(|ui, app: &mut App| app.show(ui), app);
     h.run_steps(3);
@@ -196,7 +194,7 @@ struct Played {
 fn panic_message(payload: Box<dyn std::any::Any + Send>) -> String {
     payload
         .downcast_ref::<&str>()
-        .map(|s| s.to_string())
+        .map(std::string::ToString::to_string)
         .or_else(|| payload.downcast_ref::<String>().cloned())
         .unwrap_or_else(|| "a panic".into())
 }
@@ -247,11 +245,12 @@ fn live_edit(route: &Route, n: usize) -> LiveEdit {
 /// the same and that the route's done check still passes on it.
 fn reopen(h: &mut AppHarness, route: &Route, n: usize) -> Reopen {
     let session = h.state_mut().session_mut();
-    let saved = session.project_ron();
     let playing = session.transport_running();
     if !matches!(session.save(), Saved::Yes) {
         return Reopen::CannotSave;
     }
+    // After the save, which writes the user's settings into the project.
+    let saved = session.project_ron();
     let Some(path) = session.path().map(Path::to_owned) else {
         return Reopen::CannotSave;
     };
@@ -488,8 +487,6 @@ mod tests {
         );
     }
 
-    // --- the scorers, on small routes of their own ---
-
     use egui::{Key, Modifiers, Pos2};
 
     use super::routes::{add_node, empty_project};
@@ -518,7 +515,6 @@ mod tests {
             .ok_or(format!("{n} sines, wanted {at_least}"))
     }
 
-    fn nothing(_: &mut Handle, _: usize) {}
     fn fine(_: &mut Probe, _: usize) -> Result<(), String> {
         Ok(())
     }
@@ -695,8 +691,6 @@ mod tests {
         assert!(late.cost.unwrap() < 1.5);
     }
 
-    // --- feedback, surfaces and robustness ---
-
     #[test]
     fn a_route_that_listens_reports_what_it_took_to_hear() {
         let smoke = routes::all()
@@ -788,10 +782,5 @@ mod tests {
     fn a_project_that_reads_back_the_same_passes_the_reopen_check() {
         let out = run(&route(by_hand, all_by_hand, Some(2), &[]), None);
         assert_eq!(out.score.robustness.reopen, Reopen::Same);
-    }
-
-    #[allow(dead_code)]
-    fn unused(_: Steps) {
-        let _ = nothing;
     }
 }

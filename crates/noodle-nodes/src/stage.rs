@@ -3,6 +3,7 @@ use noodle_engine::{
     ParamInfo, PerLane, Ports, Setup, Skip, Telemetry, Unit,
 };
 
+use crate::level::db_to_gain;
 use crate::meter::{LevelProbe, voice_sum_out};
 
 /// What a group's boundary node becomes when its gain or mute is in use, and
@@ -148,7 +149,7 @@ impl LaneKernel for StageKernel {
             out.iter_mut().zip(input).zip(gain).zip(mute).zip(solo_mute)
         {
             let muted = mute.max(*solo_mute).clamp(0.0, 1.0);
-            *o = x * 10f32.powf(db / 20.0) * (1.0 - muted);
+            *o = x * db_to_gain(*db) * (1.0 - muted);
         }
     }
 }

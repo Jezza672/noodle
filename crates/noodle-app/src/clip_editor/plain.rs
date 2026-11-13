@@ -31,6 +31,7 @@ pub struct Geometry {
 /// off.
 pub(super) fn loop_toggle(
     ui: &mut egui::Ui,
+    mode: crate::toolbar::Mode,
     project: &noodle_core::Project,
     subject: Subject,
     section: &Section,
@@ -38,15 +39,26 @@ pub(super) fn loop_toggle(
     edits: &mut Vec<Edit>,
 ) {
     let rate = f64::from(span.rate.max(1));
-    let mut on = section.looping.is_some();
-    if ui
-        .checkbox(&mut on, "Loop")
-        .on_hover_text(match subject {
+    let on = section.looping.is_some();
+    let spec = crate::toolbar::Pill {
+        icon: crate::toolbar::Icon::Loop,
+        label: "Loop",
+        active: on,
+        enabled: true,
+        tip: match subject {
             Subject::Clip(_) => "Repeat the lit part when the clip is dragged out past its audio",
             Subject::Sampler(_) => "Repeat a stretch of the sample while a note is held",
-        })
-        .changed()
-    {
+        },
+    };
+    let pressed = match mode {
+        crate::toolbar::Mode::Bar => crate::toolbar::pill_only(ui, &spec),
+        crate::toolbar::Mode::Menu => ui
+            .add(egui::Button::new("Loop").selected(on))
+            .on_hover_text(spec.tip)
+            .clicked(),
+    };
+    if pressed {
+        let on = !on;
         let lit = (
             section.audio.offset as f64 / rate,
             (section.audio.offset + section.audio.length) as f64 / rate,
@@ -135,6 +147,8 @@ pub(super) fn show(
             lit: (offset_secs, offset_secs + length_secs),
             looping: section.looping,
             gain: audio.gain,
+            pickable: matches!(subject, Subject::Clip(_)),
+            region: state.region,
             playheads: &playheads,
         },
     );
@@ -206,11 +220,31 @@ pub(super) fn show(
                     }
                 }
             }
+            Gesture::Region(from, to) => state.region = Some((from, to)),
             Gesture::Release => {
                 state.slip = None;
                 edits.push(Edit::EndDrag);
             }
         }
+    }
+    if response.clicked() && !ui.input(|i| i.modifiers.shift) {
+        state.region = None;
+    }
+    // Right-click inside the region to make a Sample node of it.
+    if response.secondary_clicked()
+        && let Some(pos) = response.interact_pointer_pos()
+    {
+        state.region_menu = state.region.is_some_and(|(a, b)| {
+            (axis.x(a.min(b) - zero)..=axis.x(a.max(b) - zero)).contains(&pos.x)
+        });
+    }
+    if let Subject::Clip(clip) = subject {
+        let region = state
+            .region
+            .filter(|&(a, b)| state.region_menu && (a - b).abs() >= super::MIN_REGION_SECONDS);
+        response.context_menu(|ui| {
+            super::convert_items(ui, clip, region, &Default::default(), &[], 0.0, &mut edits);
+        });
     }
     if state.slip.is_some() && subject.read(project, span).is_none() {
         state.slip = None;

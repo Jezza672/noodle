@@ -8,12 +8,11 @@
 //! the audio streams ahead of the playhead, so nothing in
 //! [`Node::process`] opens a file, allocates, frees or waits.
 //!
-//! What plays at each sample follows the rule in `docs/architecture/` (see "Time warping" and the track input): one
-//! audio clip at a time, the one that started last, with no crossfade but the
-//! clip's own fades. On top of that the node declicks itself: it fades out
-//! when the transport stops, fades in when it starts or jumps, and dips (out
-//! and back in over about 5 ms) when an edit changes what is heard at the
-//! playhead.
+//! What plays at each sample: one audio clip at a time, the one that started
+//! last, with no crossfade but the clip's own fades. On top of that the node
+//! declicks itself: it fades out when the transport stops, fades in when it
+//! starts or jumps, and dips (out and back in over about 5 ms) when an edit
+//! changes what is heard at the playhead.
 
 mod ahead;
 mod formant;
@@ -152,7 +151,7 @@ static INFO: NodeInfo = NodeInfo {
 /// The note IDs of live monitoring; see [`TrackInput::with_midi`].
 const LIVE_ID: u32 = 0x2000_0000;
 
-/// Registered by [`register_library`](crate::register_library).
+/// The track input node.
 pub struct TrackInput {
     feeds: ClipFeeds,
     midi: Option<MidiBus>,

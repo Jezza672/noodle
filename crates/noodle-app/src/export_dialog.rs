@@ -187,12 +187,11 @@ impl ExportDialog {
         // wrote anything.
         if self.started && running.is_none() {
             self.started = false;
-            match session.last_export() {
-                Some(summary) => self.done = Some(summary.clone()),
-                None => {
-                    self.open = false;
-                    return;
-                }
+            if let Some(summary) = session.last_export() {
+                self.done = Some(summary.clone())
+            } else {
+                self.open = false;
+                return;
             }
         }
         let modal = crate::dialog::modal(ctx, "export", |ui| {

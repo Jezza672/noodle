@@ -10,6 +10,7 @@ mod beat_length;
 mod bitcrush;
 mod button;
 mod cached;
+mod choke_gate;
 mod chorus;
 mod clip;
 mod clock;
@@ -31,6 +32,7 @@ mod humanise;
 mod ladder;
 mod lag;
 mod launch_quantise;
+mod level;
 mod lfo;
 mod math;
 mod meter;
@@ -97,6 +99,7 @@ pub use beat_length::{BEAT_LENGTH_ID, BeatLength};
 pub use bitcrush::{BITCRUSHER_ID, Bitcrusher, quantise};
 pub use button::{BUTTON_ID, BUTTON_STATE, Button};
 pub use cached::{CACHED_ID, CachedPlayer};
+pub use choke_gate::{CHOKE_GATE_ID, ChokeGate};
 pub use chorus::{CHORUS_ID, Chorus};
 pub use clip::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip,
@@ -178,6 +181,7 @@ pub use sample_set::{
     LayerZone, NameInfo, Rescan, Row, SAMPLE_SET_ID, SET_FOLDER_KEY, SET_MIDDLE_C_KEY,
     SET_NAMES_KEY, SampleSet, SetEntry, SetTables, folder_of, is_set, middle_c_of, parse_name,
     parse_set, rescan, rows_from_files, rows_of, rows_to_config, sample_hashes, set_to_text,
+    velocity_layer,
 };
 pub use sampler::{GAIN_ENV_KEY, GAIN_ENV_SCALE, SAMPLE_KEY, SAMPLER_ID, Sampler, WARP_KEY};
 pub use scope::{SCOPE_ID, Scope};
@@ -312,6 +316,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Key);
     registry.register(MonoNote);
     registry.register(NoteSplit);
+    registry.register(ChokeGate);
     registry.register(ArticulationMap);
     registry.register(VersionValue);
     registry.register(RandomSelect);

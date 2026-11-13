@@ -2,7 +2,7 @@
 // amount swept by an LFO wired into the script's own "fold" parameter. The
 // script is the node's config, and its `param` lines are its ports.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.osc.sine", params: {"frequency": 3.0}, position: (x: 0.0, y: 0.0)),

@@ -11,6 +11,7 @@ pub enum Status {
     /// A route reaches part of it; the rest is listed in `missing`.
     Partial,
     /// Possible only with an external tool or a hack.
+    #[allow(dead_code, reason = "a status no story has needed yet")]
     Workaround,
     /// Not possible yet; `missing` names the missing piece.
     Blocked,
@@ -40,19 +41,19 @@ pub const STORIES: [Story; 28] = [
         id: "S01",
         title: "Comp a vocal from multiple takes",
         status: Status::Partial,
-        missing: "A new recording lands as its own clip instead of joining the take folder it was recorded over, and sliding the comp. The takes are recorded for real through the virtual input (#334).",
+        missing: "A new recording lands as its own clip instead of joining the take folder it was recorded over, and sliding the comp. The takes are recorded for real through the virtual input.",
     },
     Story {
         id: "S02",
         title: "Punch in on a live overdub",
         status: Status::Partial,
-        missing: "A headphone cue mix is not routed (#345); recording is not routed because a route has no live input (#334).",
+        missing: "A headphone cue mix is not routed; recording is not routed because a route has no live input.",
     },
     Story {
         id: "S03",
         title: "Drive external hardware like an internal instrument",
         status: Status::Partial,
-        missing: "Recording the synth's audio back is not routed (#334).",
+        missing: "Recording the synth's audio back is not routed.",
     },
     Story {
         id: "S04",
@@ -70,7 +71,7 @@ pub const STORIES: [Story; 28] = [
         id: "S06",
         title: "Separate a song into stems and remix it",
         status: Status::Partial,
-        missing: "The route stops at the model download question, so separation and the remix are not routed; no quality setting: #349.",
+        missing: "The route stops at the model download question, so separation and the remix are not routed; no quality setting.",
     },
     Story {
         id: "S07",
@@ -88,7 +89,7 @@ pub const STORIES: [Story; 28] = [
         id: "S09",
         title: "Program a drum pattern with swing and choke",
         status: Status::Partial,
-        missing: "Loading the samples into the rack and swapping the snare are not routed. The pattern can also be drawn in a Pattern Player's step grid (#354).",
+        missing: "Loading the samples into the rack and swapping the snare are not routed. The pattern can also be drawn in a Pattern Player's step grid.",
     },
     Story {
         id: "S10",
@@ -112,7 +113,7 @@ pub const STORIES: [Story; 28] = [
         id: "S13",
         title: "Design a modulated synth patch",
         status: Status::Partial,
-        missing: "The macro is built by hand from Remap nodes; no macro control with ranges and curves: #353. Saving and updating the preset are not routed.",
+        missing: "The macro is built by hand from Remap nodes; no macro control with ranges and curves. Saving and updating the preset are not routed.",
     },
     Story {
         id: "S14",
@@ -130,13 +131,13 @@ pub const STORIES: [Story; 28] = [
         id: "S16",
         title: "Make a vocoder or spectral effect",
         status: Status::Partial,
-        missing: "The spectral frame size is fixed (a roadmap item); the band count is Cross's `bands` parameter (#355).",
+        missing: "The spectral frame size is fixed (a roadmap item); the band count is Cross's `bands` parameter.",
     },
     Story {
         id: "S17",
         title: "Resample and mangle audio",
         status: Status::Partial,
-        missing: "The live chain through a To Sample node is not built; rendering to a clip is not routed.",
+        missing: "The live chain through a To Sample node is not built; rendering to a clip and bouncing a selection to a Sample node are not routed (they are background renders). Slicing is routed two ways: Slice to Sampler, and picking hits in the clip editor to convert to a sampler.",
     },
     Story {
         id: "S18",
@@ -154,7 +155,7 @@ pub const STORIES: [Story; 28] = [
         id: "S20",
         title: "Automate a mix in real time",
         status: Status::Partial,
-        missing: "Trimming a range by a dB amount is not routed: an Automation lane trims in its 0 to 1 value (#333 built the range trim); changing parameter or surface is not routed.",
+        missing: "Trimming a range by a dB amount is not routed: an Automation lane trims in its 0 to 1 value; changing parameter or surface is not routed.",
     },
     Story {
         id: "S21",
@@ -166,31 +167,31 @@ pub const STORIES: [Story; 28] = [
         id: "S22",
         title: "Produce a surround or immersive mix",
         status: Status::Partial,
-        missing: "No ADM export (dropped); the export dialog is a native file dialog, so the route stops before it. A 3D object panner with x, y, z is backlog #379.",
+        missing: "No ADM export (dropped); the export dialog is a native file dialog, so the route stops before it. A 3D object panner with x, y, z is backlog.",
     },
     Story {
         id: "S23",
         title: "Master to loudness targets",
         status: Status::Partial,
-        missing: "No album sequence with gaps and crossfades (waits on the setlist design, #366); DDP is dropped for a CUE sheet; the native file dialog stops the export.",
+        missing: "No album sequence with gaps and crossfades (waits on the setlist design); DDP is dropped for a CUE sheet; the native file dialog stops the export.",
     },
     Story {
         id: "S24",
         title: "Deliver stems to a collaborator",
         status: Status::Partial,
-        missing: "No tail length setting: #361; the native folder dialog stops the export.",
+        missing: "No tail length setting; the native folder dialog stops the export.",
     },
     Story {
         id: "S27",
         title: "Jam live with pads that launch loops and patterns",
         status: Status::Partial,
-        missing: "No Ableton Link (#365); tap tempo and MIDI clock in are built, but a route cannot see the session-only tempo source. Loading a loop into a pad and the late changes are not routed.",
+        missing: "No Ableton Link; tap tempo and MIDI clock in are built, but a route cannot see the session-only tempo source. Loading a loop into a pad and the late changes are not routed.",
     },
     Story {
         id: "S28",
         title: "Run backing tracks reliably on stage",
         status: Status::Blocked,
-        missing: "No setlist: #366.",
+        missing: "No setlist.",
     },
     Story {
         id: "S29",
@@ -201,8 +202,8 @@ pub const STORIES: [Story; 28] = [
     Story {
         id: "S30",
         title: "Keep a large project responsive",
-        status: Status::Partial,
-        missing: "The CPU view and the 60-track size are not routed: #369.",
+        status: Status::Full,
+        missing: "",
     },
 ];
 

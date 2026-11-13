@@ -52,7 +52,7 @@ impl PluginFormat {
 /// bundle.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Descriptor {
-    /// Absent in scans saved before VST3 was supported, which are all CLAP.
+    /// Defaults to CLAP when a saved scan has none.
     #[serde(default)]
     pub format: PluginFormat,
     /// The plugin's own ID, e.g. `com.u-he.diva` for CLAP; for VST3 the class
@@ -112,13 +112,12 @@ impl PluginFile {
     }
 }
 
-/// A plugin's size and modification time in whole seconds. (For an Audio
-/// Unit, zero and its version number.) For a macOS
+/// A plugin's size and modification time in whole seconds. For a macOS
 /// bundle (a folder), the total size and the newest modification time of
 /// everything inside: replacing the binary in place doesn't touch the
-/// folder's own time.
+/// folder's own time. An Audio Unit is no file; its stamp is zero and its
+/// version number.
 pub fn file_stamp(path: &std::path::Path) -> Option<(u64, u64)> {
-    // An Audio Unit is no file: its stamp is its version.
     if crate::au::is_component_path(path) {
         return crate::au::stamp(path);
     }
@@ -194,7 +193,6 @@ pub fn param_key(id: u32) -> String {
 /// A plugin with at most this many parameters shows all of them on a new
 /// node; one with more shows none, and the user opts in to the ones they
 /// want (a synth can have hundreds, which makes a node too tall to use).
-/// See [`initial_params`].
 pub const DEFAULT_EXPOSED_LIMIT: usize = 4;
 
 /// The `params` setting a newly added node of this plugin starts with, if it

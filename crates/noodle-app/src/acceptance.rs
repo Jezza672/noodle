@@ -12,7 +12,7 @@ use crate::testkit::{drag_playing, drop_files, virtual_audio};
 use egui::{Event, Key, Modifiers, Pos2, Vec2};
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
-use noodle_core::{Endpoint, NodeId, Project};
+use noodle_core::{Command, Endpoint, NodeId, Project, Tick};
 use noodle_engine::OUTPUT_ID;
 
 use crate::app::App;
@@ -295,6 +295,35 @@ fn the_transport_plays_pauses_rewinds_and_follows_tempo_edits() {
 }
 
 #[test]
+fn a_tap_sets_the_map_when_it_has_one_tempo() {
+    use noodle_core::TempoMap;
+
+    use crate::tempo_source::TempoSource;
+
+    let dir = tempfile::tempdir().unwrap();
+    crate::prefs::init(dir.path().join("prefs.ron"));
+    let mut session = Session::new(Nodes::all());
+    session.set_audio_config(virtual_audio());
+    let mut h = harness(App::new(session));
+    h.run_steps(3);
+    let start = std::time::Instant::now();
+    {
+        let session = h.state_mut().session_mut();
+        for i in 0..4 {
+            session.tap_tempo(start + Duration::from_millis(250 * i));
+        }
+    }
+    let session = h.state().session();
+    // Still following the map, which now has the tapped tempo.
+    assert_eq!(session.tempo_source(), TempoSource::Map);
+    assert_eq!(session.live_tempo(), None);
+    let map = session.project().tempo_map();
+    assert_eq!(map.tempos().len(), 1);
+    assert!((map.tempos()[0].bpm - 240.0).abs() < 0.5);
+    assert_ne!(map, &TempoMap::default());
+}
+
+#[test]
 fn a_tap_or_a_midi_clock_sets_the_live_tempo_without_touching_the_map() {
     use noodle_core::TempoMap;
     use noodle_io::ClockEvent;
@@ -306,6 +335,24 @@ fn a_tap_or_a_midi_clock_sets_the_live_tempo_without_touching_the_map() {
     let nodes = Nodes::all();
     let midi = nodes.midi.clone();
     let mut session = Session::new(nodes);
+    // Two tempos, so a tap is live and leaves the map alone.
+    let two = TempoMap::new(
+        vec![
+            noodle_core::TempoChange {
+                tick: Tick::ZERO,
+                bpm: 120.0,
+            },
+            noodle_core::TempoChange {
+                tick: Tick(3_840_000),
+                bpm: 100.0,
+            },
+        ],
+        TempoMap::default().signatures().to_vec(),
+    )
+    .unwrap();
+    session.edit([crate::session::Edit::Apply(Command::SetTempoMap(
+        two.clone(),
+    ))]);
     session.set_audio_config(virtual_audio());
     let mut h = harness(App::new(session));
     h.key_press(Key::Space);
@@ -331,10 +378,7 @@ fn a_tap_or_a_midi_clock_sets_the_live_tempo_without_touching_the_map() {
     play_for(&mut h, Duration::from_millis(100));
     assert_eq!(engine_bpm(&h), Some(240.0));
     // The project is as it was, and nothing was added to the undo history.
-    assert_eq!(
-        h.state().session().project().tempo_map(),
-        &TempoMap::default()
-    );
+    assert_eq!(h.state().session().project().tempo_map(), &two);
     assert_eq!(h.state().session().history_position(), history);
 
     // A MIDI clock at 90 bpm.
@@ -355,7 +399,14 @@ fn a_tap_or_a_midi_clock_sets_the_live_tempo_without_touching_the_map() {
     let session = h.state().session();
     assert_eq!(session.tempo_source(), TempoSource::Map);
     assert_eq!(session.live_tempo(), None);
-    assert!((session.project().tempo_map().tempos().last().unwrap().bpm - 90.0).abs() < 0.5);
+    assert!(
+        session
+            .project()
+            .tempo_map()
+            .tempos()
+            .iter()
+            .any(|t| (t.bpm - 90.0).abs() < 0.5)
+    );
     assert_ne!(session.history_position(), history);
 }
 

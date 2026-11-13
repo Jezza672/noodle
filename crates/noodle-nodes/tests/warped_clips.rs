@@ -1,6 +1,5 @@
 //! Audio clips with a warp play back at the speed the warp gives them (Repitch:
-//! the pitch follows), at the same samples whatever the block size, with no
-//! allocation on the audio thread.
+//! the pitch follows), at the same samples whatever the block size.
 
 use std::path::{Path, PathBuf};
 
@@ -114,10 +113,41 @@ fn follows(samples: &[f32], from: usize, to: usize, source: impl Fn(f64) -> f64)
     }
 }
 
+/// Checks the playback of `markers(5.0)` over a 4 s clip: natural speed up to
+/// the first marker, slowed between the two, natural again after the second.
+fn follows_markers(samples: &[f32]) {
+    follows(samples, FADE, 48_000, |f| f);
+    follows(samples, 48_000, 120_000, |f| {
+        48_000.0 + (f - 48_000.0) * 2.0 / 3.0
+    });
+    follows(samples, 120_000, 216_000 - 2, |f| {
+        96_000.0 + (f - 120_000.0)
+    });
+}
+
 fn silent(samples: &[f32], from: usize, to: usize) {
     for f in from..to {
         assert_eq!(samples[f * 2], 0.0, "frame {f} isn't silent");
     }
+}
+
+/// A clip at the timeline's 120 bpm with markers pinning 1 s to beat 2 and
+/// 2 s to `second_beat`.
+fn markers(second_beat: f64) -> ClipWarp {
+    let mut warp = ClipWarp::at_tempo(120.0);
+    warp.set_marker(WarpMarker {
+        seconds: 1.0,
+        beat: 2.0,
+    });
+    warp.set_marker(WarpMarker {
+        seconds: 2.0,
+        beat: second_beat,
+    });
+    warp
+}
+
+fn loose_markers() -> ClipWarp {
+    markers(4.8)
 }
 
 #[test]
@@ -165,41 +195,13 @@ fn markers_stretch_the_audio_between_them() {
     // 120 bpm on a 120 timeline. The moment at 1 s stays on beat 2; the one
     // at 2 s is pulled back to beat 5 (2.5 s), so the second between them
     // takes a second and a half.
-    let mut warp = ClipWarp::at_tempo(120.0);
-    warp.set_marker(WarpMarker {
-        seconds: 1.0,
-        beat: 2.0,
-    });
-    warp.set_marker(WarpMarker {
-        seconds: 2.0,
-        beat: 5.0,
-    });
+    let warp = markers(5.0);
     let project = project(Some(warp), 0, 4 * 48_000);
     let rendered = render(&project, &dir, SETTINGS, 5 * 48_000);
     let samples = &rendered.render.samples;
-    follows(samples, FADE, 48_000, |f| f);
-    follows(samples, 48_000, 120_000, |f| {
-        48_000.0 + (f - 48_000.0) * 2.0 / 3.0
-    });
-    // After the second marker it plays at the clip's own tempo again, and the
-    // clip is half a second longer than its audio.
-    follows(samples, 120_000, 216_000 - 2, |f| {
-        96_000.0 + (f - 120_000.0)
-    });
+    follows_markers(samples);
+    // The clip is half a second longer than its audio.
     silent(samples, 216_000 + 8, 5 * 48_000);
-}
-
-fn loose_markers() -> ClipWarp {
-    let mut warp = ClipWarp::at_tempo(120.0);
-    warp.set_marker(WarpMarker {
-        seconds: 1.0,
-        beat: 2.0,
-    });
-    warp.set_marker(WarpMarker {
-        seconds: 2.0,
-        beat: 4.8,
-    });
-    warp
 }
 
 #[test]
@@ -220,13 +222,7 @@ fn warp_quantise_plays_the_markers_on_the_grid_and_baking_sounds_the_same() {
         5 * 48_000,
     );
     let samples = &quantised.render.samples;
-    follows(samples, FADE, 48_000, |f| f);
-    follows(samples, 48_000, 120_000, |f| {
-        48_000.0 + (f - 48_000.0) * 2.0 / 3.0
-    });
-    follows(samples, 120_000, 216_000 - 2, |f| {
-        96_000.0 + (f - 120_000.0)
-    });
+    follows_markers(samples);
 
     let baked = render(
         &project(Some(baked), 0, 4 * 48_000),
@@ -276,15 +272,7 @@ fn half_amount_quantise_lands_half_way() {
 #[test]
 fn markers_that_are_switched_off_do_nothing() {
     let dir = folder("markers-off");
-    let mut warp = ClipWarp::at_tempo(120.0);
-    warp.set_marker(WarpMarker {
-        seconds: 1.0,
-        beat: 2.0,
-    });
-    warp.set_marker(WarpMarker {
-        seconds: 2.0,
-        beat: 5.0,
-    });
+    let mut warp = markers(5.0);
     warp.use_markers = false;
     let project = project(Some(warp), 0, 96_000);
     let samples = render(&project, &dir, SETTINGS, 100_000).render.samples;
@@ -294,15 +282,7 @@ fn markers_that_are_switched_off_do_nothing() {
 #[test]
 fn a_section_showing_part_of_a_warped_clip_plays_that_part() {
     let dir = folder("part");
-    let mut warp = ClipWarp::at_tempo(120.0);
-    warp.set_marker(WarpMarker {
-        seconds: 1.0,
-        beat: 2.0,
-    });
-    warp.set_marker(WarpMarker {
-        seconds: 2.0,
-        beat: 5.0,
-    });
+    let warp = markers(5.0);
     // From 1.5 s to 3 s of the file: half a second of the slow part, then the
     // rest at the clip's tempo.
     let project = project(Some(warp), 72_000, 72_000);
@@ -558,8 +538,7 @@ fn dragging_the_edge_out_never_changes_what_plays_before_it() {
 #[test]
 fn a_looping_section_dragged_shorter_than_its_window_ends_there() {
     let dir = folder("loop-shorter");
-    // 3 beats of a 4 s window, past the loop's end at beat 3? No: 2 beats,
-    // before it, so nothing repeats.
+    // Dragged to 2 beats, before the loop's end at beat 3, so nothing repeats.
     let project = section(Some(looping(1.0, 3.0)), 0, 4 * 48_000, Some(Tick(2 * 960)));
     let samples = render(&project, &dir, SETTINGS, 4 * 48_000).render.samples;
     follows(&samples, FADE, 48_000 - 4, |f| f);

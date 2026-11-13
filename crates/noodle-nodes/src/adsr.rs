@@ -106,7 +106,7 @@ impl AdsrShape {
     /// `gate_time` (which should be at least the attack and decay together,
     /// or the envelope is released from wherever it has got to).
     pub fn level(&self, t: f32, gate_time: f32) -> f32 {
-        let (attack, decay) = (self.attack.max(1e-4), self.decay.max(1e-4));
+        let (attack, decay) = (self.attack.max(MIN_TIME), self.decay.max(MIN_TIME));
         let sustain = self.sustain.clamp(0.0, 1.0);
         let held = |t: f32| {
             if t < attack {
@@ -120,13 +120,16 @@ impl AdsrShape {
         } else if t <= gate_time {
             held(t)
         } else {
-            held(gate_time) * (-SIXTY_DB * (t - gate_time) / self.release.max(1e-4)).exp()
+            held(gate_time) * (-SIXTY_DB * (t - gate_time) / self.release.max(MIN_TIME)).exp()
         }
     }
 }
 
 /// -ln(0.001): the exponent at which a decay has covered 99.9% of its distance.
 const SIXTY_DB: f32 = 6.907_755;
+
+/// The shortest stage time in seconds, so a zero never divides.
+const MIN_TIME: f32 = 1e-4;
 
 /// Below this the release is over and the envelope goes idle.
 const SILENT: f32 = 1e-5;
@@ -222,11 +225,11 @@ impl Rates {
     }
 
     fn attack_step(seconds: f32, sample_rate: f32) -> f32 {
-        1.0 / (seconds.max(1e-4) * sample_rate)
+        1.0 / (seconds.max(MIN_TIME) * sample_rate)
     }
 
     fn coefficient(seconds: f32, sample_rate: f32) -> f32 {
-        (-SIXTY_DB / (seconds.max(1e-4) * sample_rate)).exp()
+        (-SIXTY_DB / (seconds.max(MIN_TIME) * sample_rate)).exp()
     }
 }
 
@@ -449,15 +452,8 @@ mod tests {
 
     #[test]
     fn a_finished_envelope_is_skipped_and_a_ringing_one_is_not() {
-        use noodle_engine::testing::Harness;
-        let mut h = Harness::new(
-            &Adsr,
-            &Config::new(),
-            &[(GATE, noodle_engine::Shape::MONO)],
-            48_000.0,
-            480,
-        )
-        .unwrap();
+        let mut h =
+            Harness::new(&Adsr, &Config::new(), &[(GATE, Shape::MONO)], 48_000.0, 480).unwrap();
         h.set(RELEASE, 0.01);
         h.input(GATE, 480).lane_mut(0, 0).fill(1.0);
         h.run(480).unwrap();

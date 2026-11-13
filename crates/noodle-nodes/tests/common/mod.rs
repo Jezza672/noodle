@@ -43,6 +43,22 @@ pub struct Rig {
     midi: Vec<noodle_engine::Event>,
 }
 
+/// The largest jump between neighbouring samples.
+pub fn biggest_step(signal: &[f32]) -> f32 {
+    signal
+        .windows(2)
+        .map(|w| (w[1] - w[0]).abs())
+        .fold(0.0, f32::max)
+}
+
+/// How long to wait after a block of `frames`: as long as it lasts at `rate`,
+/// or 1 ms.
+fn pause(frames: usize, rate: Option<f64>) -> Duration {
+    rate.map_or(Duration::from_millis(1), |rate| {
+        Duration::from_secs_f64(frames as f64 / rate)
+    })
+}
+
 impl Rig {
     pub fn new(name: &str) -> Self {
         Self::with_feeds(name, ClipFeeds::default())
@@ -200,6 +216,16 @@ impl Rig {
         self.update();
     }
 
+    /// Changes an audio clip's settings and feeds the result to the node.
+    pub fn edit_audio(&mut self, id: ClipId, change: impl FnOnce(&mut noodle_core::AudioClip)) {
+        self.edit_clip(id, |clip| {
+            let noodle_core::ClipContent::Audio(audio) = &mut clip.content else {
+                unreachable!("not an audio clip")
+            };
+            change(audio);
+        });
+    }
+
     /// Changes how a clip is warped and feeds the result to the node.
     pub fn warp_clip(&mut self, id: ClipId, change: impl FnOnce(&mut noodle_core::ClipWarp)) {
         let command = self.project.warp_edit(id, change).unwrap();
@@ -297,18 +323,7 @@ impl Rig {
 
     /// Plays from `from` to `to` in blocks and returns the whole output.
     pub fn play(&mut self, from: u64, to: u64) -> (Vec<f32>, Vec<f32>) {
-        let (mut left, mut right) = (Vec::new(), Vec::new());
-        let mut at = from;
-        while at < to {
-            let n = BLOCK.min((to - at) as usize);
-            let (l, r) = self.run(at, n, true);
-            left.extend(l);
-            right.extend(r);
-            at += n as u64;
-            // The test runs faster than real time; let the disk keep up.
-            std::thread::sleep(Duration::from_millis(1));
-        }
-        (left, right)
+        self.play_at_speed(from, to, None)
     }
 
     /// Like [`play`](Self::play), but each block takes as long as the audio
@@ -316,6 +331,13 @@ impl Rig {
     /// ahead is not outrun by a test that runs several times faster than the
     /// sound, however slowly the machine schedules its threads).
     pub fn play_realtime(&mut self, from: u64, to: u64) -> (Vec<f32>, Vec<f32>) {
+        self.play_at_speed(from, to, Some(f64::from(RATE)))
+    }
+
+    /// Plays in blocks, sleeping `n / rate` seconds for a block of `n`
+    /// frames, or 1 ms (a test that runs faster than real time lets the disk
+    /// keep up) when there is no rate.
+    fn play_at_speed(&mut self, from: u64, to: u64, rate: Option<f64>) -> (Vec<f32>, Vec<f32>) {
         let (mut left, mut right) = (Vec::new(), Vec::new());
         let mut at = from;
         while at < to {
@@ -324,7 +346,7 @@ impl Rig {
             left.extend(l);
             right.extend(r);
             at += n as u64;
-            std::thread::sleep(Duration::from_secs_f64(n as f64 / f64::from(RATE)));
+            std::thread::sleep(pause(n, rate));
         }
         (left, right)
     }
@@ -341,7 +363,7 @@ impl Rig {
     /// outrun by a test that runs ten times faster than the sound, however
     /// slowly the machine schedules its threads.
     pub fn play_looping_realtime(&mut self, from: u64, frames: usize) -> (Vec<f32>, Vec<f32>) {
-        self.looping_at_speed(from, frames, Some(48_000.0))
+        self.looping_at_speed(from, frames, Some(f64::from(RATE)))
     }
 
     fn looping_at_speed(
@@ -362,10 +384,7 @@ impl Rig {
             if at == end {
                 at = start;
             }
-            std::thread::sleep(match rate {
-                Some(rate) => Duration::from_secs_f64(n as f64 / rate),
-                None => Duration::from_millis(1),
-            });
+            std::thread::sleep(pause(n, rate));
         }
         (left, right)
     }

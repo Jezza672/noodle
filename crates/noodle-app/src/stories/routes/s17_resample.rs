@@ -2,7 +2,7 @@
 //!
 //! Partial. Reverse is a node, and a processed track can be rendered to a
 //! clip from the track menu (not routed here). Slicing a clip at its
-//! transients onto a sampler's pads does not exist (#356), so the route
+//! transients onto a sampler's pads does not exist, so the route
 //! covers the processing chain: a source through Distortion and Reverse.
 
 use std::path::Path;

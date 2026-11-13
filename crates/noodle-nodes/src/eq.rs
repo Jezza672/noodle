@@ -342,8 +342,8 @@ impl LaneKernel for EqKernel {
             }
             start = end;
         }
-        // Reset memory an infinite input made non-finite, and flush the tiny
-        // so it doesn't decay into subnormals.
+        // Reset memory an infinite input made non-finite, and flush tiny
+        // values so they don't decay into subnormals.
         for z in state.z.iter_mut().flatten() {
             if !z.is_finite() || z.abs() < 1e-30 {
                 *z = 0.0;

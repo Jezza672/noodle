@@ -1,13 +1,13 @@
 //! S09: program a drum pattern.
 //!
 //! Partial. The Drum Rack and the piano roll cover the pattern. Swing and each
-//! slot's choke group are controls in the rack's panel (#433): Swing sets a
-//! Swing node in front of the Note Split (#330), and the closed and open hat
-//! share a choke group in the template, so a closed hat cuts the open one off
+//! pad's key are controls in the rack's panel: Swing sets a Swing node
+//! in front of the pads, and the closed and open hat pads are wired to
+//! choke each other in the template, so a closed hat cuts the open one off
 //! with no setting to make. Loading the samples into
-//! the rack's slots is not routed: a sample reaches a slot by dragging an
-//! audio clip across from the timeline onto a Sampler inside the group,
-//! which no route reaches yet, so the fixture starts with the kit loaded.
+//! the rack's pads is not routed: a sample reaches a pad (Kick, Snare, ...) by
+//! dragging an audio clip from the timeline, or a file from the desktop, onto
+//! it. No route reaches that yet, so the fixture starts with the kit loaded.
 //! Swapping the snare sample is therefore not routed.
 
 use std::path::Path;
@@ -79,26 +79,31 @@ fn kit(dir: &Path) -> App {
     ] {
         session.edit([Edit::Apply(spare::wire(from, to))]);
     }
-    let samplers: Vec<NodeId> = session
-        .project()
-        .graph()
-        .nodes()
-        .filter(|(_, n)| n.type_id == SAMPLER_ID && n.parent == Some(rack))
-        .map(|(id, _)| id)
-        .collect();
-    for (slot, (name, hz)) in [
-        ("kick", 60.0),
-        ("snare", 200.0),
-        ("hat", 3000.0),
-        ("open", 2000.0),
+    // Each drum's sample goes to the Sampler inside the pad of that name.
+    let sampler_in = |session: &crate::session::Session, pad: &str| -> NodeId {
+        let graph = session.project().graph();
+        let pad = graph
+            .children(Some(rack))
+            .find(|&(id, _)| crate::editor::group_title(graph, id) == pad)
+            .map_or_else(|| panic!("the rack has a pad called {pad}"), |(id, _)| id);
+        graph
+            .children(Some(pad))
+            .find(|(_, n)| n.type_id == SAMPLER_ID)
+            .map(|(id, _)| id)
+            .expect("the pad has a Sampler")
+    };
+    for (pad, name, hz) in [
+        ("Kick", "kick", 60.0),
+        ("Snare", "snare", 200.0),
+        ("Closed Hat", "hat", 3000.0),
+        ("Open Hat", "open", 2000.0),
     ]
     .into_iter()
-    .enumerate()
     {
         let path = dir.join(format!("{name}.wav"));
         drum_wav(&path, hz);
         let hash = session.samples().import(&path).expect("the sample imports");
-        let command = crate::sample_drop::choose(&session, samplers[slot], &hash);
+        let command = crate::sample_drop::choose(&session, sampler_in(&session, pad), &hash);
         session.edit([Edit::Apply(command)]);
     }
     finished(session, dir)
@@ -158,8 +163,7 @@ fn node_of(p: &Project, type_id: &str) -> NodeId {
     p.graph()
         .nodes()
         .find(|(_, n)| n.type_id == type_id)
-        .map(|(id, _)| id)
-        .unwrap_or_else(|| panic!("no {type_id} node"))
+        .map_or_else(|| panic!("no {type_id} node"), |(id, _)| id)
 }
 
 /// The Drum Rack group: the top-level group.
@@ -257,21 +261,24 @@ fn swung_and_choked(p: &Project) -> Result<(), String> {
     if (amount - SWING).abs() > 0.01 {
         return Err(format!("the swing amount is {amount}, wanted {SWING}"));
     }
-    let split = node_of(p, noodle_nodes::NOTE_SPLIT_ID);
-    let group = |n: usize| {
-        p.graph()
-            .node(split)
-            .and_then(|s| s.params.get(&format!("choke{n}")))
-            .copied()
-            .unwrap_or(0.0)
+    // The closed and open hat pads cut each other off: each one's choke out
+    // is wired to the other's choke in.
+    let graph = p.graph();
+    let rack = rack_of(p);
+    let pad = |name: &str| {
+        graph
+            .children(Some(rack))
+            .find(|&(id, _)| crate::editor::group_title(graph, id) == name)
+            .map_or_else(|| panic!("no pad called {name}"), |(id, _)| id)
     };
-    // Slots 3 and 4 are the closed and open hat.
-    if group(3) < 0.5 || group(3) != group(4) {
-        return Err(format!(
-            "the hats are not in one choke group ({} and {})",
-            group(3),
-            group(4)
-        ));
+    let (closed, open) = (pad("Closed Hat"), pad("Open Hat"));
+    for (from, to) in [(closed, open), (open, closed)] {
+        let wired = graph
+            .source(&Endpoint::new(to, "choke in"))
+            .is_some_and(|s| s.node == from && s.port == "choke out");
+        if !wired {
+            return Err(format!("pad {from:?} does not choke pad {to:?}"));
+        }
     }
     Ok(())
 }
@@ -341,8 +348,6 @@ fn extended(p: &mut Probe, _size: usize) -> Result<(), String> {
     }
     Ok(())
 }
-
-// --- The Pattern Player route ---
 
 pub fn pattern_route() -> Route {
     Route {
@@ -433,4 +438,68 @@ fn player_done(p: &mut Probe, _size: usize) -> Result<(), String> {
         }
     }
     Ok(())
+}
+
+/// Turns a drum clip into a rack: right-click the clip, Create drum rack from
+/// clip, wait for the analysis, place the group on a pad from its Place on…
+/// menu (dragging its handle does the same), Create.
+pub fn rack_from_clip_route() -> Route {
+    Route {
+        story: "S09",
+        tag: Tag::Default,
+        name: "drum rack from a recorded drum clip",
+        fixture: |dir| super::audio_clip::clicks_at(dir, 100.0),
+        size: None,
+        steps: rack_steps,
+        done: rack_done,
+        late: &[],
+    }
+}
+
+fn rack_steps(h: &mut Handle, _size: usize) {
+    h.step("analyse the clip");
+    let id = super::audio_clip::clip_of(h.probe().project());
+    let at = h.clip_rect(id).center();
+    h.right_click(at);
+    let entry = h.find_first("Create drum rack from clip…");
+    h.click(entry, Modifiers::NONE);
+    // The analysis runs on a background worker.
+    h.waited(0.5);
+    for _ in 0..1500 {
+        h.probe().settle();
+        if h.probe().mentions("hits ·") {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(20));
+    }
+    h.step("place the group on the kick pad from its menu");
+    let place = h.find_first("Place on…");
+    h.click(place, Modifiers::NONE);
+    h.probe().settle();
+    let pad = h.find_like("Place on Bass Drum");
+    h.click(pad, Modifiers::NONE);
+    h.probe().settle();
+    h.step("create the rack");
+    let create = h.find("Create");
+    h.click(create, Modifiers::NONE);
+    h.probe().settle();
+}
+
+fn rack_done(p: &mut Probe, _size: usize) -> Result<(), String> {
+    let graph = p.project().graph();
+    if !graph
+        .nodes()
+        .any(|(_, n)| n.type_id == noodle_nodes::SAMPLE_SET_ID)
+    {
+        return Err("no Sample Set holds the hits".into());
+    }
+    let named = graph.nodes().any(|(_, n)| {
+        matches!(n.config.get(noodle_core::group::PORT_NAME),
+            Some(noodle_core::Value::Text(t)) if t.ends_with("(drum rack)"))
+    });
+    if named {
+        Ok(())
+    } else {
+        Err("there is no drum rack track".into())
+    }
 }

@@ -48,7 +48,7 @@ pub(crate) fn cstring(text: &[std::ffi::c_char]) -> String {
 }
 
 /// `IHostApplication`: the host's name, and the messages and attribute lists
-/// plugins use to talk to each other (see [`HostMessage`]).
+/// plugins use to talk to each other.
 pub(crate) struct HostApp;
 
 impl Class for HostApp {

@@ -165,8 +165,7 @@ fn four_linked_mics_stay_sample_aligned_through_a_slide_and_a_warp() {
         );
     }
 
-    // One undo takes the warp off all four, and the link goes with the
-    // link's own undo.
+    // One undo takes the warp edit off all four.
     history.undo(&mut project).unwrap();
     assert!(project.warp(warps[0]).unwrap().markers.is_empty());
 }

@@ -233,7 +233,7 @@ mod tests {
         }
     }
 
-    /// The issue's case: a filter cutoff inside a synth group.
+    /// A filter cutoff inside a synth group.
     #[test]
     fn automating_a_filter_cutoff_in_a_group_is_one_undo_step_and_sounds_the_same() {
         let mut session = Session::new(Nodes::all());

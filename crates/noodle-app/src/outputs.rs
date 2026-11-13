@@ -131,14 +131,6 @@ impl OutputsView {
         self.listed()
     }
 
-    /// The name of the listed device `id`.
-    pub fn device_name(&self, id: &str) -> Option<String> {
-        self.listed()
-            .iter()
-            .find(|d| d.id == id)
-            .map(|d| d.name.clone())
-    }
-
     /// The output devices last listed.
     fn listed(&self) -> &[DeviceInfo] {
         match &self.devices {
@@ -356,14 +348,11 @@ mod tests {
                 .all(|d| d.id != noodle_io::VIRTUAL_OUTPUT)
         );
         // It is in the audio settings' list, though.
-        assert!(
-            noodle_io::devices(None)
-                .map(|list| list
-                    .outputs
-                    .iter()
-                    .any(|d| d.id == noodle_io::VIRTUAL_OUTPUT))
-                .unwrap_or(true)
-        );
+        assert!(noodle_io::devices(None).map_or(true, |list| {
+            list.outputs
+                .iter()
+                .any(|d| d.id == noodle_io::VIRTUAL_OUTPUT)
+        }));
     }
 
     #[test]

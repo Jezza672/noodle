@@ -16,7 +16,7 @@
 //! - which key each held note was played with, so a note-off can say;
 //! - [`musical_position`], the one reckoning of beats and bars;
 //! - the quiet state: while a plugin has nothing to do, it isn't called, and
-//!   its outputs are flagged silent (see "Plugins" in the architecture notes).
+//!   its outputs are flagged silent.
 //!
 //! Everything here runs on the audio thread: nothing allocates.
 
@@ -576,8 +576,8 @@ mod tests {
 
     #[test]
     fn a_six_eight_bar_is_three_quarter_notes() {
-        // Tick 3 x 960 is the start of the second bar (the old CLAP reckoning,
-        // which took the numerator for quarter notes, said bar 0).
+        // Tick 3 x 960 is the start of the second bar; taking the numerator
+        // for quarter notes would say bar 0.
         let p = at(3.0, (6, 8), 0.0);
         assert_eq!((p.beats, p.bar_start, p.bar_number), (3.0, 3.0, 1));
         let p = at(5.5, (6, 8), 0.0);

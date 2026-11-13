@@ -13,8 +13,8 @@
 //! | `ModifierDrag` | A pointer gesture that needs a held modifier key: hidden. |
 //! | `Untagged` | The scorer cannot tell. Listed, so each one gets looked at. |
 //!
-//! **How it is tagged.** The prototype asked whether widgets could carry a tag
-//! without editing every call site. They cannot usefully: menu bodies are
+//! **How it is tagged.** Widgets cannot usefully carry a tag without editing
+//! every call site: menu bodies are
 //! only built while a menu is open, and the shortcuts are consumed in about
 //! thirty places. What the log already has is egui's accessibility tree at
 //! each end of each action, which says whether a labelled widget was there.
@@ -77,6 +77,10 @@ pub struct Chord {
     pub key: Key,
     pub surface: Surface,
     /// Where the other way is, or why there is none.
+    #[allow(
+        dead_code,
+        reason = "documents each chord; the scorecard does not read it"
+    )]
     pub note: &'static str,
 }
 
@@ -110,6 +114,12 @@ pub const CHORDS: &[Chord] = &[
     chord(CMD, Key::S, Surface::Menu, "File > Save"),
     chord(CMD_SHIFT, Key::S, Surface::Menu, "File > Save As"),
     chord(CMD, Key::O, Surface::Menu, "File > Open"),
+    chord(
+        CMD_SHIFT,
+        Key::O,
+        Surface::Menu,
+        "File > Open with Settings",
+    ),
     chord(CMD, Key::N, Surface::Menu, "File > New"),
     chord(CMD, Key::Comma, Surface::Menu, "Settings in the menu"),
     chord(CMD, Key::K, Surface::Menu, "View > Command Palette"),

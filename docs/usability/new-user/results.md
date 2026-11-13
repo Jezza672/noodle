@@ -157,6 +157,8 @@ and finishes S04; S14 found Sample & Hold.
 **Still hard:** creating a MIDI clip (S08, S10, S12, S09, S03), the macro and
 per-link depth features (S13, S14), and getting sound out of a track.
 
+**Fixed afterwards (#451):** the S23, S24, S29 and S30 fixtures now hold the story's project (clips to export, 150 tracks, 60 tracks), and their done checks fail on a smaller one, so the runs above are void and need repeating.
+
 **Harness gaps this round exposed:** the fixtures for S23, S24, S29 and S30 do
 not hold the project the story describes (no clips, 3 tracks, an empty
 `project.ron`); fixing them is a scorecard issue.

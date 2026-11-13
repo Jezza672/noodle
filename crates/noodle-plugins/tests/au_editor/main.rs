@@ -1,4 +1,4 @@
-//! Audio Unit editors (macOS), embedded in a fake window. See `macos.rs`.
+//! Audio Unit editors (macOS), embedded in a fake window.
 
 #[cfg(target_os = "macos")]
 #[path = "../common/mod.rs"]

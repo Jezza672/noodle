@@ -361,8 +361,6 @@ fn a_background_export_reports_progress_and_finishes() {
     assert_eq!(job.fraction(), 1.0);
 }
 
-// Track export.
-
 /// Two tracks, each playing its own tone, into a mixer into an Output.
 /// Returns the track groups, their track inputs, and the mixer.
 fn two_tracks(rig: &mut Rig) -> ([NodeId; 2], [NodeId; 2], NodeId) {
@@ -582,7 +580,7 @@ impl Rig {
                 frames: FRAMES,
                 extend_registry: None,
             },
-            group,
+            group: Some(group),
             name: name.into(),
             start: range.0,
             end: range.1,
@@ -624,6 +622,21 @@ fn a_rendered_clip_is_the_tracks_own_render_and_its_tail_stops_at_silence() {
             .iter()
             .any(|s| s.abs() > CLIP_SILENCE)
     );
+}
+
+#[test]
+fn a_rendered_clip_of_no_group_is_the_mix_over_the_range() {
+    let mut rig = setup("clip-mix");
+    two_tracks(&mut rig);
+    // The whole mix, as the mixdown export writes it.
+    let whole = rig.export("whole-mix");
+
+    let mut request = rig.clip_request(NodeId(0), "mix", (20_000, 50_000), 0);
+    request.group = None;
+    let report = render_clip(&request, &Progress::new()).unwrap();
+    assert_eq!(report.frames, 30_000);
+    let clip = read(&request.path);
+    assert_eq!(clip, whole[20_000 * 2..50_000 * 2]);
 }
 
 #[test]

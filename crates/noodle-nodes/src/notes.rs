@@ -2,8 +2,8 @@
 //! [`MonoNote`] turns them into the pitch, gate and velocity signals that a
 //! monophonic patch plays from.
 //!
-//! The *Voices* node does the same for many notes at once, once polyphony
-//! lands; this one plays the most recent note.
+//! The *Voices* node does the same for many notes at once; this one plays the
+//! most recent note.
 
 use noodle_engine::{
     Config, Context, Event, EventKind, Expression, Instance, Io, Layout, Node, NodeError, NodeInfo,
@@ -179,6 +179,13 @@ struct MonoNode {
 }
 
 impl MonoNode {
+    fn release(&mut self, id: u32) {
+        if let Some(i) = self.held[..self.len].iter().position(|h| h.id == id) {
+            self.held.copy_within(i + 1..self.len, i);
+            self.len -= 1;
+        }
+    }
+
     fn apply(&mut self, kind: EventKind) {
         match kind {
             EventKind::NoteOn {
@@ -188,10 +195,7 @@ impl MonoNode {
                 ..
             } => {
                 // A note-on for an id that is already held replaces it.
-                if let Some(i) = self.held[..self.len].iter().position(|h| h.id == note.0) {
-                    self.held.copy_within(i + 1..self.len, i);
-                    self.len -= 1;
-                }
+                self.release(note.0);
                 if self.len == HELD {
                     self.held.copy_within(1.., 0);
                     self.len -= 1;
@@ -204,12 +208,7 @@ impl MonoNode {
                 };
                 self.len += 1;
             }
-            EventKind::NoteOff { note, .. } => {
-                if let Some(i) = self.held[..self.len].iter().position(|h| h.id == note.0) {
-                    self.held.copy_within(i + 1..self.len, i);
-                    self.len -= 1;
-                }
-            }
+            EventKind::NoteOff { note, .. } => self.release(note.0),
             EventKind::Expression {
                 note,
                 expression: Expression::Pitch,

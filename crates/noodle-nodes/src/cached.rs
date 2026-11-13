@@ -3,8 +3,8 @@
 //! play this way.
 //!
 //! Live, the audio comes off the disk through a worker, a task on
-//! `noodle_io::pool::io`, that keeps a few chunks ready ahead of the playhead, in the manner of
-//! `noodle_io::ClipStream`: full chunks go to the audio thread through one
+//! `noodle_io::pool::io`, that keeps a few chunks ready ahead of the playhead,
+//! in the manner of `noodle_io::ClipStream`: full chunks go to the audio thread through one
 //! lock-free queue and spent ones come back through another, so the audio
 //! side never allocates, locks or touches the disk. The worker follows the
 //! transport's loop, so a loop wraps without a gap. A jump asks the worker to
@@ -67,12 +67,8 @@ impl CachedPlayer {
     /// plays silence.
     pub fn new(store: CacheStore, key: CacheKey, shape: Shape) -> Self {
         Self {
-            store,
             key: Some(key),
-            shape,
-            blocking: false,
-            start: 0,
-            laps: Vec::new(),
+            ..Self::silent(store, shape)
         }
     }
 
@@ -115,17 +111,19 @@ impl CachedPlayer {
         }
     }
 
+    /// The entry's key in hex, or "silent".
+    fn name(&self) -> String {
+        self.key.map_or_else(|| "silent".into(), |key| key.to_hex())
+    }
+
     /// This player as a [`Replacement`] for the compiler. Its config names
     /// the entry, so a plan built for a different render replaces the node.
     pub fn replacement(self) -> Replacement {
-        let name = self.key.map_or_else(|| "silent".into(), |key| key.to_hex());
+        let name = self.name();
         let laps = self
             .laps
             .iter()
-            .map(|lap| {
-                let key = lap.key.map_or_else(|| "silent".into(), |key| key.to_hex());
-                format!("{key}@{}", lap.start)
-            })
+            .map(|lap| format!("{}@{}", lap.name(), lap.start))
             .collect::<Vec<_>>()
             .join(",");
         Replacement {

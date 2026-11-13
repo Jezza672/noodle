@@ -208,6 +208,7 @@ impl<'h> Handle<'h> {
 
     /// Types a program into the focused Script text box. Scored as code:
     /// see `effort.rs`.
+    #[allow(dead_code, reason = "no route types a program yet")]
     pub fn type_code(&mut self, at: Pos2, code: &str) {
         testkit::type_code(self.h, at, code);
         self.watch(false);
@@ -336,6 +337,28 @@ impl<'h> Handle<'h> {
         self.probe().ruler_at(seconds)
     }
 
+    /// Where the clip editor drew the handle of the hit at `seconds` of the
+    /// file.
+    pub fn editor_handle(&mut self, clip: ClipId, seconds: f64) -> Pos2 {
+        self.probe().settle();
+        self.probe().editor_handle(clip, seconds).unwrap_or_else(|| {
+            panic!(
+                "no hit handle at {seconds} s in the clip editor (open: {:?}, drawn: {}, warped: {})",
+                self.h.state().clip_editor().subject(),
+                self.h.state().clip_editor().geometry().is_some(),
+                self.h.state().session().project().warp_of(clip).is_some(),
+            )
+        })
+    }
+
+    /// Where the clip editor drew the waveform at `seconds` of the file.
+    pub fn editor_wave(&mut self, clip: ClipId, seconds: f64) -> Pos2 {
+        self.probe().settle();
+        self.probe()
+            .editor_wave(clip, seconds)
+            .unwrap_or_else(|| panic!("{seconds} s is not on the clip editor's waveform"))
+    }
+
     /// Where the arrangement drew the clip.
     pub fn clip_rect(&mut self, id: ClipId) -> Rect {
         self.probe().clip_rect(id)
@@ -376,15 +399,6 @@ impl Probe<'_> {
 
     pub fn find(&self, label: &str) -> Pos2 {
         self.h.get_by_label(label).rect().center()
-    }
-
-    /// The centre of the one multi-line text box on screen (a Script node's
-    /// text in the properties).
-    pub fn text_box(&self) -> Pos2 {
-        self.h
-            .get_by_role(egui::accesskit::Role::MultilineTextInput)
-            .rect()
-            .center()
     }
 
     /// The centre of the one single-line text box on screen (the name field
@@ -456,11 +470,6 @@ impl Probe<'_> {
             .center()
     }
 
-    /// Where the playhead is.
-    pub fn playhead(&self) -> noodle_core::Tick {
-        self.h.state().session().playhead()
-    }
-
     /// Where the arrangement's ruler is at `seconds` into the song.
     pub fn ruler_at(&self, seconds: f64) -> Pos2 {
         self.h
@@ -486,6 +495,16 @@ impl Probe<'_> {
         self.h.state().session().freeze_pending()
     }
 
+    /// Whether the CPU meters are showing on the nodes.
+    pub fn cpu_meters_on(&self) -> bool {
+        self.h.state().editor().show_cpu()
+    }
+
+    /// Whether the Playback cache panel is open.
+    pub fn cache_panel_open(&self) -> bool {
+        self.h.state().cache_panel_open()
+    }
+
     /// Whether the export dialog is open, with the mixdown ticked, and the
     /// groups ticked.
     pub fn export_ticks(&self) -> (bool, bool, Vec<String>) {
@@ -495,13 +514,6 @@ impl Probe<'_> {
     /// Whether anything on screen has a label containing `word`.
     pub fn mentions(&self, word: &str) -> bool {
         self.h.query_all_by_label_contains(word).next().is_some()
-    }
-
-    pub fn labels_like(&self, word: &str) -> Vec<String> {
-        self.h
-            .query_all_by_label_contains(word)
-            .map(|n| format!("{:?}", n))
-            .collect()
     }
 
     /// Whether anything on screen is labelled exactly `label`.
@@ -527,6 +539,25 @@ impl Probe<'_> {
     /// The lane, if it is on screen.
     pub fn try_take_lane(&self, id: ClipId, k: usize) -> Option<Rect> {
         self.h.state().timeline().take_lane(id, k)
+    }
+
+    /// Where the clip editor drew the handle of the hit at `seconds` of
+    /// `clip`'s file (the warped editor), if it is open and the hit is on
+    /// screen.
+    pub fn editor_handle(&self, clip: ClipId, seconds: f64) -> Option<Pos2> {
+        let g = self.h.state().clip_editor().geometry()?;
+        let (_, warp) = self.project().warp_of(clip)?;
+        let at = Pos2::new(g.x(warp.beat_at(seconds)), g.handles.center().y);
+        g.handles.contains(at).then_some(at)
+    }
+
+    /// Where the clip editor drew the waveform at `seconds` of `clip`'s file
+    /// (the warped editor), if it is on screen.
+    pub fn editor_wave(&self, clip: ClipId, seconds: f64) -> Option<Pos2> {
+        let g = self.h.state().clip_editor().geometry()?;
+        let (_, warp) = self.project().warp_of(clip)?;
+        let at = Pos2::new(g.x(warp.beat_at(seconds)), g.wave.center().y);
+        g.wave.contains(at).then_some(at)
     }
 
     /// Where the piano roll drew `key` at `tick`, if it is open and the

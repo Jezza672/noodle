@@ -2,7 +2,7 @@
 // constant 440 (the Mix's unconnected second input holds that value), drives
 // the main oscillator's frequency.
 (
-    format: 1,
+    format: 4,
     graph: (
         nodes: {
             1: (type: "noodle.osc.sine", params: {"frequency": 6.0}, position: (x: 0.0, y: 0.0)),

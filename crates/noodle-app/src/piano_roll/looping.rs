@@ -1,5 +1,5 @@
-//! A MIDI clip's loop in the piano roll: the Loop toggle with its start and
-//! length in the toolbar, and a brace on the ruler whose ends and body drag.
+//! A MIDI clip's loop in the piano roll: the Loop pill with its start and
+//! length in a popover, and a brace on the ruler whose ends and body drag.
 
 use egui::{Pos2, Rect, Sense, Stroke, vec2};
 use noodle_core::{Clip, ClipContent, ClipId, MIN_LOOP_LEN, MidiClip, Tick};
@@ -7,6 +7,7 @@ use noodle_core::{Clip, ClipContent, ClipId, MIN_LOOP_LEN, MidiClip, Tick};
 use super::{Axes, EDGE, Output, PianoRoll};
 use crate::session::Edit;
 use crate::theme;
+use crate::toolbar::{Icon, Mode, Opens, Pill, pill_with_popover};
 use noodle_core::Command;
 
 /// Which part of the brace is being dragged.
@@ -41,25 +42,38 @@ fn set_midi(id: ClipId, clip: &Clip, midi: MidiClip, drag: bool) -> Edit {
     }
 }
 
-/// The Loop checkbox and, while looping, the loop's start and length in beats.
+/// The Loop pill: pressing it loops the clip, and its popover sets the loop's
+/// start and length in beats.
 pub(super) fn controls(
     ui: &mut egui::Ui,
+    mode: Mode,
     out: &mut Output,
     id: ClipId,
     clip: &Clip,
     midi: &MidiClip,
 ) {
-    let mut on = midi.loop_on;
-    if ui
-        .checkbox(&mut on, "Loop")
-        .on_hover_text("Repeat a section of the clip until its end")
-        .changed()
-    {
+    let spec = Pill {
+        icon: Icon::Loop,
+        label: "Loop",
+        active: midi.loop_on,
+        enabled: true,
+        tip: "Repeat a section of the clip until its end",
+    };
+    let pressed = pill_with_popover(ui, mode, &spec, Opens::Chevron, "Loop range", |ui| {
+        range(ui, out, id, clip, midi)
+    })
+    .pressed;
+    if pressed {
         let mut changed = midi.clone();
-        changed.set_looping(on);
+        changed.set_looping(!midi.loop_on);
         out.edits.push(set_midi(id, clip, changed, false));
     }
+}
+
+/// The loop's start and length, in beats.
+fn range(ui: &mut egui::Ui, out: &mut Output, id: ClipId, clip: &Clip, midi: &MidiClip) {
     if !midi.loop_on {
+        ui.weak("Turn Loop on to set its range");
         return;
     }
     let beat = noodle_core::TICKS_PER_QUARTER as f64;
@@ -67,19 +81,27 @@ pub(super) fn controls(
     let length = midi.length.0 as f64 / beat;
     let mut start = midi.loop_start.0 as f64 / beat;
     let mut len = midi.loop_len.0 as f64 / beat;
-    ui.label("Start");
-    let a = ui.add(
-        egui::DragValue::new(&mut start)
-            .speed(0.05)
-            .range(0.0..=(length - min).max(0.0))
-            .suffix(" beats"),
-    );
-    ui.label("Length");
-    let b = ui.add(
-        egui::DragValue::new(&mut len)
-            .speed(0.05)
-            .range(min..=(length - start).max(min))
-            .suffix(" beats"),
+    let (a, b) = (
+        ui.horizontal(|ui| {
+            ui.label("Start");
+            ui.add(
+                egui::DragValue::new(&mut start)
+                    .speed(0.05)
+                    .range(0.0..=(length - min).max(0.0))
+                    .suffix(" beats"),
+            )
+        })
+        .inner,
+        ui.horizontal(|ui| {
+            ui.label("Length");
+            ui.add(
+                egui::DragValue::new(&mut len)
+                    .speed(0.05)
+                    .range(min..=(length - start).max(min))
+                    .suffix(" beats"),
+            )
+        })
+        .inner,
     );
     for response in [&a, &b] {
         if response.changed() {

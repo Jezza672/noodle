@@ -15,7 +15,7 @@ use noodle_engine::{
 /// content hash and the window), not a link: the clip can move or change
 /// afterwards and the node keeps the sound it took.
 ///
-/// The `sample` option is a [[`SampleRef`]: the hash of the audio, or
+/// The `sample` option is a [`SampleRef`]: the hash of the audio, or
 /// `hash:start:end` with the window as fractions of it. It makes no sound by
 /// itself and does no work while the engine runs; the compiler reads it.
 pub struct SampleInput;
