@@ -186,35 +186,41 @@ data that is openly licensed exists: [E-GMD](https://research.google/pubs/improv
 so training our own LarsNet-style model on permissive data is possible but is a
 project of its own.
 
-**Licence findings (#500, read 2026-11-12).** `huggingface.co`, `zenodo.org`,
-`arxiv.org` and `mvsep.com` were still unreachable from the cloud session, so
-what follows comes from the GitHub READMEs and the PyPI page, which are
-readable, and from search results. **No model was run on real drum tracks**
-(the weights are on Hugging Face, Google Drive and GitHub Releases, none of
-which the session can fetch); quality is from the papers and community
-reports, not our own ears. Two things in the table above are corrected: the
-LARS repository page states no code licence at all (only the weights'), and
-the MDX23C checkpoint's terms are worse than "unsettled".
+**Licence findings (#500, cards read 2026-11-13 from the user's Mac, where
+Hugging Face, Zenodo and arXiv are reachable; the cloud session still cannot
+reach them).** No weights were downloaded and **no model was run on real drum
+tracks**, so quality below is from the papers and cards, not our ears. The
+earlier table is corrected: LARS/LarsNet has no LICENSE file at all (only the
+README's statement on the weights), MDX23C DrumSep has no licence anywhere
+upstream, and Timbrica turned out to be CC BY-NC-SA.
 
-| Model | Weights licence (evidence) | Training data | Size | Opt-in download? |
+| Model | Weights licence (evidence) | Training data | Size and parts | Verdict |
 |---|---|---|---|---|
-| **LarsNet** ([polimi-ispl/larsnet](https://github.com/polimi-ispl/larsnet)) | **CC BY-NC 4.0**, stated by the authors on the README. Code licence not stated on the page (check for a LICENSE file before reusing any code; we would only run the weights through our own ONNX loader). | StemGMD, **CC BY 4.0** (Zenodo, per its record and the paper). Built from the Groove MIDI Dataset. | about 562 MB zip, 5 stems (kick, snare, toms, hi-hat, cymbals); PyTorch, so an ONNX export is ours to make and check | **Yes**, the clearest case: licence is explicit, non-commercial only, which Jeremy accepts for an opt-in download. Attribution (BY) goes in the download dialog. The weights are on Google Drive, so we would host an ONNX export ourselves (derived work, same CC BY-NC 4.0, attributed) or point at the author's link. Ask the authors before re-hosting. |
-| **drumsep** ([inagoy](https://github.com/inagoy/drumsep)) | **Not stated.** Repo is MIT; the README says nothing of the weights or the data. The "MIT" on the ONNX conversion is its uploader's claim, which cannot relicense someone else's weights. | Not described (a 2022 thesis, Hybrid Demucs fine-tune) | not stated; weights only through a Colab notebook and install scripts | **No**, until the author answers. An unlicensed weight file is all-rights-reserved by default. |
-| **MDX23C DrumSep** (aufr33 and jarredou) | **No licence from the authors.** The original GitHub release is gone; mirrors disagree (one tagged MIT by its uploader, an OpenVINO conversion CC BY-NC-SA 4.0). The [`mdxnet-infer`](https://pypi.org/project/mdxnet-infer/) page advises treating them as non-commercial only. | Not documented | not stated | **No.** Provenance is lost, and we could not name a licence in the download dialog. The 5-stem checkpoint is no longer available at all; only the 6-stem (kick, snare, toms, hi-hat, ride, crash) survives. |
-| **Timbrica** (Faridzar) | Could not be read (Hugging Face). Uploader's own notes only. | Claims synthetic data | not read | **Unverified.** Revisit only if the card is readable and states a licence. |
+| **LarsNet** ([polimi-ispl/larsnet](https://github.com/polimi-ispl/larsnet)) | **CC BY-NC 4.0**, stated in the README. The repo has **no LICENSE file** (GitHub reports none), so its code is all-rights-reserved: we run the weights through our own loader and copy no code. | StemGMD, **CC BY 4.0** ([Zenodo](https://zenodo.org/records/7860223)), from the Groove MIDI Dataset (CC BY 4.0) rendered through ten Logic Pro X kits whose sample licence is not stated | 562 MB zip (Google Drive), five U-Nets: kick, snare, toms, hi-hat, cymbals; PyTorch, so the ONNX export is ours | **Opt-in download only.** The one with all five parts and a published evaluation. |
+| **Timbrica** ([Faridzar](https://huggingface.co/Faridzar/timbrica-drum-separator)) | **CC BY-NC-SA 4.0** ("commercial licensing: support@timbrica.com") | Groove MIDI (CC BY 4.0) through FluidR3_GM soundfont kits (MIT) plus Naked Drums (CC BY 4.0); the card says LarsNet's weights were not used | ONNX fp16, three models of 19.7 MB each (kick, snare, toms); hat and cymbals are only the remainder; same U-Net as LarsNet | **Opt-in download only.** Small and already ONNX, but fewer parts, and the licence is share-alike. Card reports snare 7.7 dB SI-SDR on a real unseen kit (MuldjordKit); kick and toms not reported. |
+| **drumsep** ([inagoy](https://github.com/inagoy/drumsep), ONNX at [splitzo/drumsep](https://huggingface.co/splitzo/drumsep)) | **MIT** on the repo and the ONNX card. There is **no Hugging Face repo** for inagoy itself. The MIT on the mirrors is inherited from the repo. | **Not stated** (a 2022 thesis; the v2 electronic-drum fine-tune says Groove MIDI plus the owner's one-shots, but its base data is unstated) | 335 MB ONNX, Hybrid Demucs, 44.1 kHz, 40 s segments (the STFT sits outside the graph); kick, snare, cymbals, toms, no hi-hat | **The only MIT option**, so the only one that could ever be shipped, but the data behind MIT is unverified and it has fewer parts. Worth asking the author. |
+| **MDX23C DrumSep** (aufr33, jarredou) | **None.** Mirrors disagree (one repo is tagged MIT, which covers its own files only; Intel's OpenVINO copy is CC BY-NC-SA 4.0); the GGUF mirror says outright that no licence is stated upstream and the release page is gone | Not documented | 438 MB checkpoint; the 6-stem (kick, snare, toms, hi-hat, ride, crash) survives, the 5-stem is lost | **No.** Provenance is lost. |
 
-The pick is LarsNet, from the licence and the parts alone. Its open training
-data (StemGMD, CC BY 4.0) also means a permissive retrain is possible later,
-which would lift the non-commercial limit: the data is the hard part and it
-is already free. **Still owed, with the network open:** run LarsNet on three or
-four real drum tracks (a dry kit, a loud rock kit with ringing cymbals, an
-electronic kit, a room-miked live take), listen for bleed and the cymbal
-smear, and read the paper's per-stem SI-SDR. Note LarsNet trains on
-StemGMD's synthetic kits (Groove MIDI Dataset played through sample libraries), so
-quality on real acoustic kits is its main risk. For runtime, it is a set of
-small per-stem U-Nets (not one large network) over a spectrogram, so an ONNX export through
-`noodle-stems`' `ort` path is plausible and offline per-clip use is not
-real-time sensitive; this is from the paper's description and is unchecked.
+**LarsNet quality** (paper, "Toward Deep Drum Source Separation"; nSDR, not
+SI-SDR; StemGMD eval, average over ten kits, four of them held out): kick
+27.2 dB, snare 21.8, toms 9.1, hi-hat 6.4, cymbals 4.1; the best held-out kit
+averages 18.9 dB overall and the worst 15.5. Cymbals reach −0.35 dB on one kit.
+So kick and snare are good and **hi-hat and cymbals are weak**, which is the
+part a drum rack most needs to be clean. Speed: 62× real time on a Titan V,
+6.6× on a Xeon CPU, which is fine for offline per-clip use. All of this is on
+synthetic StemGMD kits; real acoustic kits are the unmeasured risk (Timbrica's
+own card shows snare falling to about 4 dB on a real unseen kit before it
+added more kit variety).
+
+**Pick:** LarsNet as the opt-in download (five parts, explicit licence,
+published numbers, and Jeremy accepts non-commercial opt-in), with the model
+behind a trait so Timbrica (smaller, already ONNX) or an MIT drumsep can sit
+beside it. To ever ship one in the app we would retrain: StemGMD's own licence
+is CC BY 4.0, the Logic Pro sample provenance is the open question, and
+training on the Groove MIDI Dataset through CC BY or our own kits (the route
+Timbrica took) is the clean version. **Still owed:** listen to LarsNet,
+Timbrica and drumsep on three or four real kits (dry, loud rock with ringing
+cymbals, electronic, a room-miked live take) before building version 3.
 
 **One-shot classification (what drum is this sample).**
 [DLDC](https://github.com/alecames/DLDC) (GPLv3, kick/snare/hat/tom/cymbal),
