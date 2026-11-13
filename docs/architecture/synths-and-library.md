@@ -354,3 +354,30 @@ These are primitives; instruments and racks built from them are groups.
   Beat Length (`noodle.mod.beat_length`) is the same for any tempo: a `bpm`
   parameter (wire a tempo into it; a wire sets its value) and a `division`, with
   the same `time` and `rate` outputs.
+
+## Sample pack formats (`noodle-packs`)
+
+ADR 0012 sets the design; this is the file format. Every format carries
+`format: 1` (`FORMAT_VERSION`), and readers refuse versions they do not know.
+The formats are the contract with hosted sources, so any change bumps it.
+
+- **Pack definition** (RON, in git): `id` (lowercase, digits, hyphens), `name`,
+  `version` (the pack's own revision), `description`, `author` and `licence`
+  (defaults for the samples), and `samples`. A sample has `hash` (64 lowercase
+  hex digits, of the *decoded* audio, not the file bytes), `name`, an optional
+  `file` (relative to the pack's directory), and optional `author`, `licence`,
+  `tags` and `credit`.
+- **Manifest** (JSON, one per pack): the same samples with author and licence
+  resolved, plus the publisher's `bytes`. `PackDef::manifest()` builds it.
+- **`index.json`**: `packs`, each with `id`, `name`, `version`, the manifest's
+  path relative to the index, and a sample count.
+- **Licences:** `Default` (use in your own projects, commercial or not; do not
+  redistribute), `Spdx(id)` from a short list (CC0-1.0, CC-BY-4.0,
+  CC-BY-SA-4.0, CC-BY-NC-4.0, CC-BY-3.0, MIT) or `Custom(text)`. CC-BY and MIT
+  require a `credit` on each sample.
+- **Validator:** `validate(&pack)` and `validate_dir(&pack, dir)` return every
+  `Problem { sample, kind }` found (a structured list, not strings): format,
+  pack id and name, hash form, duplicate hashes and names, empty tags, missing
+  author or credit, unknown SPDX ids, empty custom licences, unsafe `file`
+  paths, and files missing from `dir`. It does no network I/O and does not
+  decode audio, so checking a hash against a file is the publisher's job.
