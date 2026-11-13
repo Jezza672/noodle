@@ -1,0 +1,15 @@
+[package]
+name = "noodle-packs"
+description = "Sample packs: pack definitions, published manifests and indexes, licences and the validator."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+ron = "0.12.2"
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.152"
+thiserror = "2"
+
+[dev-dependencies]
+tempfile = "3.27.0"

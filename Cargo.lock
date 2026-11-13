@@ -2704,6 +2704,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "noodle-packs"
+version = "0.1.0"
+dependencies = [
+ "ron",
+ "serde",
+ "serde_json",
+ "tempfile",
+ "thiserror 2.0.21",
+]
+
+[[package]]
 name = "noodle-plugins"
 version = "0.1.0"
 dependencies = [
