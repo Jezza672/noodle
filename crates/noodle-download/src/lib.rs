@@ -130,7 +130,7 @@ impl From<std::io::Error> for Error {
 /// An open response: how long it says it is, and its bytes.
 pub struct Response {
     pub length: Option<u64>,
-    pub body: Box<dyn Read>,
+    pub body: Box<dyn Read + Send>,
 }
 
 /// Where the bytes come from. Tests use a fake; the app uses [`Http`].
@@ -167,7 +167,7 @@ pub type Progress<'a> = &'a mut dyn FnMut(f32) -> bool;
 /// A check run on the finished `.partial` file, after the byte checksum. An
 /// error discards the download. Pack samples use it to decode the file and
 /// hash the audio (their names are the hash of decoded audio, not of bytes).
-pub type Verify = Box<dyn Fn(&Path) -> Result<(), Error>>;
+pub type Verify = Box<dyn Fn(&Path) -> Result<(), Error> + Send>;
 
 /// Downloads over a transport.
 pub struct Downloader<T = Http> {
@@ -189,8 +189,16 @@ impl<T: Transport> Downloader<T> {
         }
     }
 
+    /// Whether a verify hook is set.
+    pub fn has_verify(&self) -> bool {
+        self.verify.is_some()
+    }
+
     /// Adds a check on the whole file, run after the byte checksum (if any).
-    pub fn with_verify(mut self, verify: impl Fn(&Path) -> Result<(), Error> + 'static) -> Self {
+    pub fn with_verify(
+        mut self,
+        verify: impl Fn(&Path) -> Result<(), Error> + Send + 'static,
+    ) -> Self {
         self.verify = Some(Box::new(verify));
         self
     }
@@ -305,6 +313,11 @@ impl Cache {
     /// the decoded audio for pack samples (checked by the downloader's
     /// [`with_verify`](Downloader::with_verify)). A hit asks no consent and
     /// touches no network.
+    ///
+    /// The key must be earned: either `request.sha256` equals the key, or the
+    /// downloader has a verify hook (which is then responsible for checking
+    /// the content against the key). Otherwise nothing unchecked is stored
+    /// under a content-addressed name, and this returns `NoChecksum`.
     pub fn get<T: Transport>(
         &self,
         downloader: &Downloader<T>,
@@ -313,10 +326,12 @@ impl Cache {
         consent: Option<Consent<'_>>,
         progress: Progress<'_>,
     ) -> Result<PathBuf, Error> {
-        if key.is_empty() {
+        let key = key.trim().to_ascii_lowercase();
+        let earned = request.sha256.as_deref() == Some(key.as_str()) || downloader.has_verify();
+        if key.is_empty() || !earned {
             return Err(Error::NoChecksum);
         }
-        let path = self.path(key);
+        let path = self.path(&key);
         if path.is_file() {
             return Ok(path);
         }
@@ -512,7 +527,21 @@ mod tests {
             .unwrap();
         assert_eq!(hit, path);
         assert_eq!(fake.opened.get(), 1);
+        // A key the download is not checked against is refused, and nothing is stored.
+        let other_key = "ab".repeat(32);
         let unkeyed = Request::new("http://x/y");
+        assert!(matches!(
+            cache.get(&downloader, &other_key, &request, None, &mut |_| true),
+            Err(Error::NoChecksum)
+        ));
+        assert!(!cache.contains(&other_key));
+        // With a verify hook the caller vouches for the key.
+        let hooked = Downloader::new(&fake).with_verify(|_| Ok(()));
+        assert!(
+            cache
+                .get(&hooked, &other_key, &unkeyed, None, &mut |_| true)
+                .is_ok()
+        );
         assert!(matches!(
             cache.get(&downloader, "", &unkeyed, None, &mut |_| true),
             Err(Error::NoChecksum)
