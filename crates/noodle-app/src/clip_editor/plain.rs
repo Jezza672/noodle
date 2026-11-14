@@ -265,21 +265,24 @@ pub(super) fn show(
                 };
                 let end = map.sample_at(section.start, rate) + audio.length;
                 let length = Tick(map.tick_at_sample(end, rate).round() as i64 - section.start.0);
-                edits.extend(gain_line::show(
-                    ui,
-                    &painter,
-                    &gain_line::Frame {
-                        wave,
-                        length,
-                        x_of: &x_of,
-                        tick_at: &tick_at,
-                        adding: true,
-                    },
-                    subject,
-                    &audio.gain_points,
-                    &set,
-                    &response,
-                ));
+                edits.extend(
+                    gain_line::show(
+                        ui,
+                        &painter,
+                        &gain_line::Frame {
+                            wave,
+                            length,
+                            x_of: &x_of,
+                            tick_at: &tick_at,
+                            adding: true,
+                        },
+                        subject,
+                        &audio.gain_points,
+                        &set,
+                        &response,
+                    )
+                    .0,
+                );
             }
             Subject::Sampler(_) => {
                 // Millionths of the sample.
@@ -293,21 +296,24 @@ pub(super) fn show(
                             .clamp(0.0, scale) as i64,
                     )
                 };
-                edits.extend(gain_line::show(
-                    ui,
-                    &painter,
-                    &gain_line::Frame {
-                        wave,
-                        length: ENVELOPE_LENGTH,
-                        x_of: &x_of,
-                        tick_at: &tick_at,
-                        adding: true,
-                    },
-                    subject,
-                    &audio.gain_points,
-                    &set,
-                    &response,
-                ));
+                edits.extend(
+                    gain_line::show(
+                        ui,
+                        &painter,
+                        &gain_line::Frame {
+                            wave,
+                            length: ENVELOPE_LENGTH,
+                            x_of: &x_of,
+                            tick_at: &tick_at,
+                            adding: true,
+                        },
+                        subject,
+                        &audio.gain_points,
+                        &set,
+                        &response,
+                    )
+                    .0,
+                );
             }
         }
     }

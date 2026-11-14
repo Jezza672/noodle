@@ -366,6 +366,9 @@ struct DeviceWatch {
     checked: Option<Instant>,
     list: ListDevices,
     looking: Option<Job<Option<noodle_io::DeviceList>>>,
+    /// The list at which the saved device was listed but did not open, so
+    /// the engine is not restarted again until the list changes.
+    tried: Option<noodle_io::DeviceList>,
 }
 
 impl Default for DeviceWatch {
@@ -374,6 +377,7 @@ impl Default for DeviceWatch {
             checked: None,
             list: Arc::new(|host| noodle_io::devices(host).ok()),
             looking: None,
+            tried: None,
         }
     }
 }
@@ -1507,11 +1511,6 @@ impl Session {
         (!self.plugins.is_empty()).then(|| self.plugins.extender())
     }
 
-    /// The chosen MIDI ports can each be unplugged and plugged back in, and
-    /// the drivers don't say when, so look at the list of ports about once a
-    /// second: let go of a port when it is gone, and open it again when it
-    /// returns (or when it was missing from the start). Ports are matched by
-    /// name without ALSA's numbers, which change when a device comes back.
     /// Whether the engine is running on a fallback while the device that was
     /// chosen is unavailable, so that it is worth looking for it.
     fn watching_device(&self) -> bool {
@@ -1534,13 +1533,19 @@ impl Session {
                 None => return,
                 Some(result) => {
                     self.device_watch.looking = None;
-                    if let Ok(Some(devices)) = result
-                        && saved_output_is_back(&self.audio_config, &devices)
-                    {
-                        self.reopen_stream();
-                        // Still on a fallback: it was no use, say nothing.
-                        if self.engine_warning().is_none() {
-                            self.message = Some("The audio device is back".into());
+                    if let Ok(Some(devices)) = result {
+                        if !saved_output_is_back(&self.audio_config, &devices) {
+                            self.device_watch.tried = None;
+                        } else if self.device_watch.tried.as_ref() != Some(&devices) {
+                            self.reopen_stream();
+                            if self.engine_warning().is_none() {
+                                self.message = Some("The audio device is back".into());
+                            } else {
+                                // Listed but won't open (busy, or a rate it
+                                // doesn't take): leave the fallback alone
+                                // until the list changes.
+                                self.device_watch.tried = Some(devices);
+                            }
                         }
                     }
                 }
@@ -1562,6 +1567,11 @@ impl Session {
         self.device_watch.looking = Some(Job::spawn(move |_| list(host.as_deref())));
     }
 
+    /// The chosen MIDI ports can each be unplugged and plugged back in, and
+    /// the drivers don't say when, so look at the list of ports about once a
+    /// second: let go of a port when it is gone, and open it again when it
+    /// returns (or when it was missing from the start). Ports are matched by
+    /// name without ALSA's numbers, which change when a device comes back.
     /// An unplug and replug between two looks that leaves the port's name
     /// as it was isn't seen.
     fn watch_midi(&mut self, now: Instant) {
@@ -7365,6 +7375,18 @@ mod tests {
         assert_eq!(looks.load(std::sync::atomic::Ordering::SeqCst), 2);
         // It is still on the fallback: the device was not listed.
         assert!(session.engine_warning().is_some());
+        // Listed but unable to open: tried once, then left alone until the
+        // list changes.
+        session.device_watch.list = Arc::new(|_| Some(listing(&["alsa:no such device"])));
+        wait(&mut session, start + DEVICE_WATCH_INTERVAL * 2);
+        assert!(session.device_watch.tried.is_some());
+        wait(&mut session, start + DEVICE_WATCH_INTERVAL * 3);
+        assert!(session.device_watch.tried.is_some());
+        assert!(session.engine_warning().is_some());
+        // It goes away again: the next return is tried afresh.
+        session.device_watch.list = Arc::new(|_| Some(listing(&["alsa:other"])));
+        wait(&mut session, start + DEVICE_WATCH_INTERVAL * 4);
+        assert!(session.device_watch.tried.is_none());
     }
 
     #[test]

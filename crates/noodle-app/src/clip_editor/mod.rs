@@ -879,13 +879,16 @@ pub fn show(
     // The gain envelope. Cmd or Ctrl with a double-click adds a point; a plain
     // double-click is for markers.
     let adding = ui.input(|i| i.modifiers.command);
-    out.edits.extend(beat_gain(
+    let (gain_edits, gain_used) = beat_gain(
         ui, &painter, project, subject, &section, warp, axis, wave, rate, file_secs, &response,
         adding,
-    ));
-    // Double-click adds a marker, or makes a transient's handle one.
+    );
+    out.edits.extend(gain_edits);
+    // Double-click adds a marker, or makes a transient's handle one, unless
+    // the gain line took it (deleting a point).
     if response.double_clicked()
         && !adding
+        && !gain_used
         && let Some(pos) = response.interact_pointer_pos()
         && !matches!(hit(pos), Some(Gesture::Marker(_)))
     {
@@ -1362,7 +1365,6 @@ fn draw_waveform(
     painter.hline(wave.x_range(), middle, Stroke::new(1.0, colors::BEAT_LINE));
 }
 
-/// Dims the audio the section doesn't show.
 /// The gain envelope over the beat view. A clip's points are ticks from its
 /// start, which are beats on this axis (as the playhead has it); a Sampler's
 /// are millionths of the sample.
@@ -1380,7 +1382,7 @@ fn beat_gain(
     file_secs: f64,
     response: &egui::Response,
     adding: bool,
-) -> Vec<Edit> {
+) -> (Vec<Edit>, bool) {
     let audio = &section.audio;
     let set = |points: Vec<GainPoint>| subject.set_gain_points(project, points);
     let painter = painter.with_clip_rect(wave);
@@ -1388,7 +1390,7 @@ fn beat_gain(
         Subject::Clip(_) => {
             let curve = warp.curve();
             if curve.axis != WarpAxis::Beats {
-                return Vec::new();
+                return (Vec::new(), false);
             }
             let from = curve.at(audio.offset as f64 / rate);
             let per = TICKS_PER_QUARTER as f64;
@@ -1438,6 +1440,7 @@ fn beat_gain(
     }
 }
 
+/// Dims the audio the section doesn't show.
 fn draw_window(
     painter: &egui::Painter,
     wave: Rect,

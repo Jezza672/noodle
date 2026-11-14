@@ -39,7 +39,8 @@ fn db_at(wave: Rect, y: f32) -> f32 {
 
 /// Draws the envelope `points` of `id` and handles its edits, which `set`
 /// turns into commands. `waveform` is the response of the waveform behind it,
-/// for a double-click that adds a point.
+/// for a double-click that adds a point. Also says whether the pointer's click
+/// was used.
 pub(super) fn show(
     ui: &mut egui::Ui,
     painter: &egui::Painter,
@@ -48,7 +49,7 @@ pub(super) fn show(
     points: &[GainPoint],
     set: &dyn Fn(Vec<GainPoint>) -> Option<Command>,
     waveform: &egui::Response,
-) -> Vec<Edit> {
+) -> (Vec<Edit>, bool) {
     let mut edits = Vec::new();
     let colour = Color32::from_rgb(0xF0, 0xB4, 0x4A);
     let at = |p: &GainPoint| Pos2::new((frame.x_of)(p.tick), y_of(frame.wave, p.db));
@@ -125,6 +126,7 @@ pub(super) fn show(
             },
         );
         edits.extend(set(added).map(Edit::Apply));
+        handled = true;
     }
-    edits
+    (edits, handled)
 }

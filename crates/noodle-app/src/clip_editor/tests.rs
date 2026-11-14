@@ -1595,3 +1595,16 @@ fn the_beat_view_draws_the_gain_line_and_takes_points_by_cmd_double_click() {
     h.state_mut().session.undo();
     assert_eq!(gain_points(&h), points);
 }
+
+#[test]
+fn double_clicking_a_gain_handle_in_the_beat_view_removes_it_and_adds_no_marker() {
+    let mut h = rig(true);
+    let g = geometry(&h);
+    let at = |beat: f64, db: f32| Pos2::new(g.x(beat), super::gain_line::y_of(g.wave, db));
+    crate::testkit::double_click_with(&mut h, at(2.0, -12.0), Modifiers::COMMAND);
+    assert_eq!(gain_points(&h).len(), 1);
+    wait_out_double_click(&mut h);
+    double_click(&mut h, at(2.0, -12.0));
+    assert!(gain_points(&h).is_empty());
+    assert!(warp(&h).markers.is_empty(), "{:?}", warp(&h).markers);
+}
