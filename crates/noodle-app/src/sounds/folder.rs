@@ -229,7 +229,6 @@ mod tests {
     #[test]
     fn a_missing_folder_is_unreachable() {
         let dir = tempfile::tempdir().unwrap();
-        let scratch = tempfile::tempdir().unwrap();
         let gone = dir.path().join("gone");
         let (source, folder) = source(&gone);
         assert!(scan(&source, &folder, &[]).is_err());

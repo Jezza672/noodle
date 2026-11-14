@@ -72,6 +72,7 @@ impl Settings {
     }
 
     /// Draws the window while it is open.
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -99,10 +100,12 @@ impl Settings {
                 Tab::Audio => out.audio = devices.body(ui, latency),
                 Tab::Display => out.display_changed = crate::display::body(ui, display),
                 Tab::Models => models.body(ui),
-                Tab::Sources => egui::ScrollArea::vertical()
-                    .max_height(480.0)
-                    .show(ui, |ui| sounds.body(ui))
-                    .inner,
+                Tab::Sources => {
+                    egui::ScrollArea::vertical()
+                        .max_height(480.0)
+                        .show(ui, |ui| sounds.body(ui))
+                        .inner
+                }
             }
             ui.add_space(8.0);
             ui.separator();

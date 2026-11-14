@@ -6,14 +6,14 @@
 
 use std::path::PathBuf;
 
-use noodle_download::Auth;
+use noodle_network::Auth;
 use noodle_packs::Licence;
 
+use super::Sounds;
 use super::catalogue::SourceId;
 use super::page::Cleanable;
 use super::source::{Source, clean_url};
 use super::vault::Kept;
-use super::Sounds;
 
 /// The credentials a new source is added with.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -94,7 +94,9 @@ impl Sounds {
         };
         let id = self.next_id();
         let source = Source::remote(id, name, url, auth);
-        let kept = source.secret().map(|secret| self.vault.keep(&source.id, secret));
+        let kept = source
+            .secret()
+            .map(|secret| self.vault.keep(&source.id, secret));
         let name = source.name.clone();
         let id = self.adopt(source);
         self.note = Some(match kept {

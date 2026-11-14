@@ -315,11 +315,13 @@ pub fn remember_source_secret(id: &str, secret: Option<&str>) {
             return;
         };
         let changed = match secret {
-            Some(secret) => prefs
-                .source_secrets
-                .insert(id.to_owned(), secret.to_owned())
-                .as_deref()
-                != Some(secret),
+            Some(secret) => {
+                prefs
+                    .source_secrets
+                    .insert(id.to_owned(), secret.to_owned())
+                    .as_deref()
+                    != Some(secret)
+            }
             None => prefs.source_secrets.remove(id).is_some(),
         };
         if changed && let Err(error) = save(path, prefs) {

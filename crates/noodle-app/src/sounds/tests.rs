@@ -2,9 +2,9 @@ use std::time::{Duration, Instant};
 
 use super::catalogue::Entry;
 use super::source::{Net, fake::Site};
-use noodle_packs::Licence;
 use super::*;
 use crate::session::{Nodes, Session};
+use noodle_packs::Licence;
 
 use super::source::fake::{BASE, site, source, tone};
 
@@ -227,10 +227,12 @@ fn serve(site: &Site, token: &str) -> String {
             let body = files.lock().unwrap().get(&format!("{BASE}{path}")).cloned();
             let mut stream = stream;
             let _ = match (authorised, body) {
-                (false, _) => stream
-                    .write_all(b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
-                (true, None) => stream
-                    .write_all(b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"),
+                (false, _) => stream.write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                ),
+                (true, None) => stream.write_all(
+                    b"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                ),
                 (true, Some(body)) => stream
                     .write_all(
                         format!(
@@ -252,8 +254,8 @@ fn a_self_hosted_source_is_read_with_its_login_and_the_secret_stays_out_of_the_p
     let (site, _) = site(dir.path(), &[220.0, 440.0]);
     let address = serve(&site, "s3cret");
     let vault = vault::Memory::default();
-    let mut s = Sounds::with(Net::http(), Some(dir.path().join("data")), vec![])
-        .with_vault(vault.clone());
+    let mut s =
+        Sounds::with(Net::http(), Some(dir.path().join("data")), vec![]).with_vault(vault.clone());
     let id = s
         .add_remote("Mine", &address, manage::NewLogin::Bearer("s3cret".into()))
         .unwrap();

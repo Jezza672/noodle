@@ -361,7 +361,9 @@ impl Sounds {
     /// Asks for the sound `entry` and says what to do with it. A sound that is
     /// not here and is big asks first.
     pub fn request(&mut self, entry: Entry, then: Then) {
-        let in_folder = self.source(&entry.source).is_some_and(|s| s.folder.is_some());
+        let in_folder = self
+            .source(&entry.source)
+            .is_some_and(|s| s.folder.is_some());
         if self.cache.is_none() && !in_folder {
             self.message = Some("There is nowhere to keep sounds on this computer".into());
             return;
@@ -432,7 +434,9 @@ impl Sounds {
                 Ok(fetched) => {
                     self.cached.insert(entry.key.clone());
                     if let Ok(meta) = std::fs::metadata(&fetched.path)
-                        && self.source(&entry.source).is_some_and(|s| s.folder.is_none())
+                        && self
+                            .source(&entry.source)
+                            .is_some_and(|s| s.folder.is_none())
                     {
                         self.sizes.insert(entry.key.clone(), meta.len());
                         self.cleanable = None;

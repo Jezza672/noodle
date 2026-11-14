@@ -470,12 +470,21 @@ mod tests {
             "https://Packs.example.com/sounds"
         );
         assert_eq!(ok("https://x.test/", true).unwrap(), "https://x.test");
-        assert_eq!(ok("https://x.test/p/?a=1#b", false).unwrap(), "https://x.test/p");
+        assert_eq!(
+            ok("https://x.test/p/?a=1#b", false).unwrap(),
+            "https://x.test/p"
+        );
         assert!(ok("x.test", false).is_err(), "no scheme");
         assert!(ok("ftp://x.test", false).is_err());
         assert!(ok("https://", false).is_err());
-        assert!(ok("https://me:pw@x.test", false).is_err(), "login in the address");
-        assert!(ok("http://x.test", true).is_err(), "a login over plain http");
+        assert!(
+            ok("https://me:pw@x.test", false).is_err(),
+            "login in the address"
+        );
+        assert!(
+            ok("http://x.test", true).is_err(),
+            "a login over plain http"
+        );
         assert!(ok("http://x.test", false).is_ok());
         assert!(ok("http://localhost:8080", true).is_ok());
         assert!(ok("http://127.0.0.1:9", true).is_ok());

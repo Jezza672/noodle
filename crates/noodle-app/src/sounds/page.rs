@@ -261,9 +261,7 @@ impl Sounds {
                 }
                 LoginChoice::Basic => {
                     ui.label("User");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.form.user).desired_width(260.0),
-                    );
+                    ui.add(egui::TextEdit::singleline(&mut self.form.user).desired_width(260.0));
                     ui.end_row();
                     ui.label("Password");
                     ui.add(
