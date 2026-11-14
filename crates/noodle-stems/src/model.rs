@@ -6,10 +6,7 @@
 //! checked against a SHA-256 before they are kept.
 
 use std::fmt;
-use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
-
-use sha2::{Digest, Sha256};
 
 use crate::ModelId;
 
@@ -271,18 +268,9 @@ impl ModelStore {
         let url = spec.url.as_deref().ok_or(DownloadError::NoAddress)?;
         std::fs::create_dir_all(&self.dir)?;
         let target = self.path(spec);
-        let partial = target.with_extension("partial");
-        let result = fetch(url, &partial, spec.sha256.as_deref(), progress);
-        match result {
-            Ok(()) => {
-                std::fs::rename(&partial, &target)?;
-                Ok(target)
-            }
-            Err(error) => {
-                let _ = std::fs::remove_file(&partial);
-                Err(error)
-            }
-        }
+        // The shared downloader streams to `<target>.partial` and renames.
+        fetch(url, &target, spec.sha256.as_deref(), progress)?;
+        Ok(target)
     }
 }
 
@@ -323,46 +311,29 @@ fn extract(spec: &RuntimeSpec, archive: &Path, out: &Path) -> Result<(), Downloa
 
 fn fetch(
     url: &str,
-    partial: &Path,
+    dest: &Path,
     sha256: Option<&str>,
     progress: &mut dyn FnMut(f32) -> bool,
 ) -> Result<(), DownloadError> {
-    let response = ureq::get(url)
-        .call()
-        .map_err(|e| DownloadError::Network(e.to_string()))?;
-    let total = response.body().content_length();
-    let mut reader = response.into_body().into_reader();
-    let mut file = std::fs::File::create(partial)?;
-    let mut hash = Sha256::new();
-    let mut buffer = vec![0u8; 64 * 1024];
-    let mut done = 0u64;
-    loop {
-        let n = reader
-            .read(&mut buffer)
-            .map_err(|e| DownloadError::Network(e.to_string()))?;
-        if n == 0 {
-            break;
-        }
-        file.write_all(&buffer[..n])?;
-        hash.update(&buffer[..n]);
-        done += n as u64;
-        let fraction = total.map_or(0.0, |t| (done as f32 / t.max(1) as f32).min(1.0));
-        if !progress(fraction) {
-            return Err(DownloadError::Cancelled);
+    let mut request = noodle_download::Request::new(url);
+    if let Some(hash) = sha256 {
+        request = request.with_sha256(hash);
+    }
+    noodle_download::Downloader::default()
+        .fetch(&request, dest, None, progress)
+        .map_err(DownloadError::from)
+}
+
+impl From<noodle_download::Error> for DownloadError {
+    fn from(error: noodle_download::Error) -> Self {
+        use noodle_download::Error as E;
+        match error {
+            E::Cancelled | E::Declined => DownloadError::Cancelled,
+            E::Network(why) => DownloadError::Network(why),
+            E::Disk(why) => DownloadError::Disk(why),
+            E::WrongChecksum | E::NoChecksum => DownloadError::WrongChecksum,
         }
     }
-    file.flush()?;
-    if total.is_some_and(|t| t != done) {
-        return Err(DownloadError::Network("the file was cut short".into()));
-    }
-    if let Some(want) = sha256 {
-        let got: String = hash.finalize().iter().map(|b| format!("{b:02x}")).collect();
-        if got != want {
-            return Err(DownloadError::WrongChecksum);
-        }
-    }
-    progress(1.0);
-    Ok(())
 }
 
 #[cfg(test)]
@@ -401,6 +372,7 @@ mod tests {
     }
 
     fn sha256_of(bytes: &[u8]) -> String {
+        use sha2::{Digest, Sha256};
         Sha256::digest(bytes)
             .iter()
             .map(|b| format!("{b:02x}"))
