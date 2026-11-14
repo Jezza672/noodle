@@ -196,7 +196,11 @@ fn free_name(dir: &Path, name: &str) -> String {
         .expect("there are only so many files")
 }
 
-fn to_rate(audio: &Stereo, from: u32, to: u32) -> Result<Stereo, noodle_io::ResampleError> {
+pub(crate) fn to_rate(
+    audio: &Stereo,
+    from: u32,
+    to: u32,
+) -> Result<Stereo, noodle_io::ResampleError> {
     if from == to {
         return Ok(audio.clone());
     }
@@ -212,7 +216,7 @@ fn to_rate(audio: &Stereo, from: u32, to: u32) -> Result<Stereo, noodle_io::Resa
 }
 
 /// `audio` cut or padded with silence to `frames`.
-fn fit(mut audio: Stereo, frames: usize) -> Stereo {
+pub(crate) fn fit(mut audio: Stereo, frames: usize) -> Stereo {
     audio.left.resize(frames, 0.0);
     audio.right.resize(frames, 0.0);
     audio

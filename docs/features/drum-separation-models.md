@@ -63,8 +63,8 @@ dominates a kick-and-hat mix). Not listened to on real kits yet.
   has not been asked about. It is machine-local, so not exported or embedded.
 - **Ready** means enabled and downloaded; the drum rack dialog's "Separation model"
   drop-down lists only those, in the app's order (LarsNet, Timbrica, drumsep). With
-  none it says where to switch one on. The choice is held by the dialog; nothing
-  consumes it until the analyser (version 3) is built.
+  none it says where to switch one on. The choice is held by the dialog; the
+  analyser (`drum-separation-analyser.md`) reads it.
 - **Settings, Models tab:** per model an enable toggle, parts and what it lacks,
   size, licence (with the non-commercial warning), credit, provenance, a source
   link, and Download / Cancel (progress bar) / Remove, plus where the weights are

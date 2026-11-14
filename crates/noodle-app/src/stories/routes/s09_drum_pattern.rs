@@ -481,6 +481,11 @@ fn rack_steps(h: &mut Handle, _size: usize) {
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
     }
+    // Separation is an optional extra that needs a downloaded model; without
+    // one the dialog says where to get it and the model-free analysis is
+    // unchanged. Running it needs a model, so the session tests cover that.
+    let says_so = h.probe().mentions("Enable and download one in Settings");
+    SEPARATION_OFFERED.with(|o| o.set(says_so));
     h.step("place the group on the kick pad from its menu");
     let place = h.find_first("Place on…");
     h.click(place, Modifiers::NONE);
@@ -494,7 +499,15 @@ fn rack_steps(h: &mut Handle, _size: usize) {
     h.probe().settle();
 }
 
+thread_local! {
+    /// Whether the dialog said, with no model downloaded, where to get one.
+    static SEPARATION_OFFERED: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
 fn rack_done(p: &mut Probe, _size: usize) -> Result<(), String> {
+    if !SEPARATION_OFFERED.with(std::cell::Cell::get) {
+        return Err("the dialog did not say where to get a separation model".into());
+    }
     let graph = p.project().graph();
     if !graph
         .nodes()

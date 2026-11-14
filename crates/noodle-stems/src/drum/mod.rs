@@ -15,6 +15,7 @@
 //! blending, remainder and cancelling are tested without a runtime; the ONNX
 //! implementations are in `onnx.rs` and run only against real files.
 
+mod analyse;
 mod hybrid;
 mod manifest;
 mod mapping;
@@ -26,6 +27,7 @@ mod store;
 
 use std::fmt;
 
+pub use analyse::{ACTIVE_WITHIN_DB, HitSeparation, HitWindow, Separation, separate_hits};
 pub use hybrid::{HybridNet, HybridOutput, HybridSeparator};
 pub use manifest::{
     ALL_MODELS, Chunking, DRUMSEP, DrumModelManifest, LARSNET, Layout, MaskOutput, ModelFile,

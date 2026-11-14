@@ -21,6 +21,7 @@ use noodle_io::{
 use crate::models::Models;
 use crate::session::drum_rack::{DrumAnalysis, DrumRackPlan, PadAssignment, PlannedBin, pad_name};
 use crate::session::{Edit, Session};
+use noodle_stems::drum::DrumPart;
 
 /// The pads the grid starts with: the keys of the Drum Rack template's pads.
 pub const COMMON_KEYS: [u8; 8] = [36, 38, 42, 46, 39, 45, 50, 49];
@@ -77,6 +78,11 @@ enum Action {
     Layers(usize, u8),
     Play(usize),
     Undo,
+    /// Run the separation model of this id.
+    Separate(&'static str),
+    CancelSeparation,
+    /// Play a separated part of a hit instead of the hit, or the hit again.
+    TakePart(usize, Option<DrumPart>),
 }
 
 struct State {
@@ -90,6 +96,8 @@ struct State {
     /// The separation model chosen in the drop-down: the id of an enabled,
     /// downloaded one, or `None` when there is none.
     model: Option<&'static str>,
+    /// Whether what the separation found has been put into the groups.
+    separation_applied: bool,
     /// The bins and pads before each manual edit (move, split, merge), newest
     /// last. The slider throws them away with the edits.
     undo: Vec<(Binning, BTreeMap<u8, Placed>)>,
@@ -105,6 +113,7 @@ impl State {
             show_all: false,
             groove: false,
             model: None,
+            separation_applied: false,
             undo: Vec::new(),
         };
         state.guess_pads();
@@ -115,8 +124,28 @@ impl State {
     /// they point at are no longer there.
     fn rebin(&mut self, analysis: &DrumAnalysis) {
         self.binning = bin_hits(&analysis.hits, self.merge);
+        self.separation_applied = false;
         self.undo.clear();
         self.guess_pads();
+    }
+
+    /// Takes in what the separation found: a hit with two parts sounding is
+    /// mixed, so it ranks last in its group and is never the default pick.
+    fn apply_separation(&mut self, analysis: &DrumAnalysis) {
+        self.separation_applied = true;
+        let mut changed = false;
+        for hit in 0..analysis.hits.len() {
+            if analysis.separated_mixed(hit) && !self.binning.mixed[hit] {
+                self.binning.mixed[hit] = true;
+                changed = true;
+            }
+        }
+        if changed {
+            for bin in 0..self.binning.bins.len() {
+                let members = self.binning.bins[bin].members.clone();
+                self.reset_bin(analysis, bin, members);
+            }
+        }
     }
 
     fn remember(&mut self) {
@@ -430,6 +459,9 @@ impl DrumRackDialog {
             self.state = Some(State::new(&analysis));
         }
         let state = self.state.as_mut().expect("just made");
+        if analysis.separation.is_some() && !state.separation_applied {
+            state.apply_separation(&analysis);
+        }
         let ready = models.ready();
         if state
             .model
@@ -464,7 +496,14 @@ impl DrumRackDialog {
 
 /// The drop-down of separation models: only the enabled, downloaded ones. With
 /// none, it says where to switch one on.
-fn model_choice(ui: &mut Ui, state: &mut State, models: &Models) {
+fn model_choice(
+    ui: &mut Ui,
+    session: &Session,
+    analysis: &DrumAnalysis,
+    state: &mut State,
+    models: &Models,
+    actions: &mut Vec<Action>,
+) {
     let ready = models.ready();
     ui.horizontal(|ui| {
         ui.label("Separation model");
@@ -495,6 +534,38 @@ fn model_choice(ui: &mut Ui, state: &mut State, models: &Models) {
                 "Enable and download one in Settings, on the Models tab"
             });
         }
+        if let Some(fraction) = session.drum_separation_progress() {
+            ui.add(
+                egui::ProgressBar::new(fraction)
+                    .desired_width(140.0)
+                    .show_percentage(),
+            );
+            if ui.button("Cancel").clicked() {
+                actions.push(Action::CancelSeparation);
+            }
+            ui.ctx()
+                .request_repaint_after(std::time::Duration::from_millis(100));
+        } else if let Some(separation) = &analysis.separation {
+            let mixed = (0..analysis.hits.len())
+                .filter(|&h| analysis.separated_mixed(h))
+                .count();
+            ui.weak(format!(
+                "Separated with {}: {mixed} mixed hits",
+                ready
+                    .iter()
+                    .find(|m| m.id == separation.model.id)
+                    .map_or(separation.model.id.as_str(), |m| m.name)
+            ));
+        } else if let Some(id) = state.model {
+            let run = ui
+                .button("Find overlapping drums")
+                .on_hover_text(
+                    "Separates the clip into kick, snare, hats and so on, and marks hits where two sound together. Slow on a long clip.",
+                );
+            if run.clicked() {
+                actions.push(Action::Separate(id));
+            }
+        }
     });
 }
 
@@ -518,7 +589,7 @@ fn body(
         .weak(),
     );
     ui.add_space(4.0);
-    model_choice(ui, state, models);
+    model_choice(ui, session, analysis, state, models, &mut actions);
     ui.horizontal(|ui| {
         ui.label("Merge more");
         let slider = ui.add(egui::Slider::new(&mut state.merge, 0.0..=1.0).show_value(false));
@@ -584,6 +655,9 @@ fn body(
             Action::Layers(bin, n) => state.set_layers(bin, n),
             Action::Play(hit) => session.audition_drum_hit(hit),
             Action::Undo => state.undo(),
+            Action::Separate(id) => session.edit([Edit::SeparateDrumHits(id.to_owned())]),
+            Action::CancelSeparation => session.edit([Edit::CancelDrumSeparation]),
+            Action::TakePart(hit, part) => session.edit([Edit::TakeSeparatedPart(hit, part)]),
         }
     }
     answer
@@ -762,6 +836,29 @@ fn hit_row(
         {
             actions.push(Action::Play(hit));
         }
+        if let Some(found) = analysis
+            .separation
+            .as_ref()
+            .and_then(|s| s.hits.get(hit))
+            .filter(|h| h.is_mixed() || analysis.is_taken(hit))
+        {
+            ui.menu_button("Use part…", |ui| {
+                for &part in &found.active {
+                    if ui.button(format!("Use the {part} part")).clicked() {
+                        actions.push(Action::TakePart(hit, Some(part)));
+                        ui.close();
+                    }
+                }
+                if analysis.is_taken(hit) && ui.button("Use the original hit").clicked() {
+                    actions.push(Action::TakePart(hit, None));
+                    ui.close();
+                }
+            })
+            .response
+            .on_hover_text(
+                "Plays one drum of this hit, as the separator heard it, instead of the whole hit",
+            );
+        }
         ui.menu_button("Move to…", |ui| {
             for j in 0..state.binning.bins.len() {
                 if Some(j) != from && ui.button(state.bin_name(j)).clicked() {
@@ -784,7 +881,15 @@ fn hit_row(
 /// What is odd about a hit, for its row: the drums a mixed hit is made of, or
 /// that it was cut short.
 fn hit_note(state: &State, analysis: &DrumAnalysis, hit: usize) -> String {
-    if state.binning.mixed.get(hit).copied().unwrap_or(false) {
+    let separated = analysis
+        .separation
+        .as_ref()
+        .and_then(|s| s.hits.get(hit))
+        .filter(|h| h.is_mixed());
+    let mut note = if let Some(found) = separated {
+        let parts: Vec<&str> = found.active.iter().map(|p| p.label()).collect();
+        format!(" (mixed: {})", parts.join(" + "))
+    } else if state.binning.mixed.get(hit).copied().unwrap_or(false) {
         match state.parts_of(hit) {
             parts if parts.is_empty() => " (mixed)".to_owned(),
             parts => format!(" (mixed: {parts})"),
@@ -793,7 +898,11 @@ fn hit_note(state: &State, analysis: &DrumAnalysis, hit: usize) -> String {
         " (cut short)".to_owned()
     } else {
         String::new()
+    };
+    if analysis.is_taken(hit) {
+        note.push_str(" · plays the separated part");
     }
+    note
 }
 
 /// What a velocity layer is called, softest first.
@@ -1161,5 +1270,40 @@ mod tests {
         // Mixed with no known parts says only that.
         state.binning.parts[3].clear();
         assert_eq!(hit_note(&state, &analysis, 3), " (mixed)");
+    }
+    #[test]
+    fn a_hit_the_separation_found_mixed_ranks_last_and_is_named_by_its_parts() {
+        use noodle_stems::drum::{HitSeparation, Separation};
+        use noodle_stems::{ModelId, Stereo};
+        let (mut analysis, mut state) = two_groups();
+        // Hit 0 is the best kick by default; the separation hears a hat in it.
+        let kicks = state.bin_of(0).unwrap();
+        assert_ne!(state.binning.bins[kicks].members.last(), Some(&0));
+        let none = || HitSeparation {
+            levels: Vec::new(),
+            active: vec![DrumPart::Kick],
+            audio: Vec::new(),
+        };
+        let mut hits: Vec<HitSeparation> = (0..8).map(|_| none()).collect();
+        hits[0].active = vec![DrumPart::Kick, DrumPart::HiHat];
+        hits[0].audio = vec![(DrumPart::Kick, Stereo::silent(10))];
+        analysis.separation = Some(std::sync::Arc::new(Separation {
+            model: ModelId {
+                id: "larsnet".into(),
+                version: "1".into(),
+            },
+            parts: vec![DrumPart::Kick, DrumPart::HiHat],
+            hits,
+        }));
+        assert!(!state.separation_applied);
+        state.apply_separation(&analysis);
+        assert!(state.separation_applied);
+        assert!(state.binning.mixed[0]);
+        assert_eq!(state.binning.bins[kicks].members.last(), Some(&0));
+        assert_ne!(state.binning.bins[kicks].members[0], 0);
+        assert_eq!(hit_note(&state, &analysis, 0), " (mixed: kick + hi-hat)");
+        // The slider re-bins, so what the separation found is taken in again.
+        state.rebin(&analysis);
+        assert!(!state.separation_applied);
     }
 }

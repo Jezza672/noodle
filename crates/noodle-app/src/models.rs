@@ -43,10 +43,16 @@ pub struct Models {
     popup: Option<BTreeMap<&'static str, bool>>,
 }
 
+/// Where the drum separation weights are kept, for the Models tab and for the
+/// analyser that opens them.
+pub fn default_drum_store() -> Option<DrumModelStore> {
+    directories::ProjectDirs::from("", "", "Noodle")
+        .map(|dirs| DrumModelStore::new(dirs.data_dir().join("models").join("drums")))
+}
+
 impl Default for Models {
     fn default() -> Self {
-        let store = directories::ProjectDirs::from("", "", "Noodle")
-            .map(|dirs| DrumModelStore::new(dirs.data_dir().join("models").join("drums")));
+        let store = default_drum_store();
         Self::with(
             ALL_MODELS.to_vec(),
             store,
