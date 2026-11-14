@@ -1,10 +1,12 @@
-# Sample packs (ADR 0012, docs/architecture/packs.md): check pack definitions on
-# PRs, and on merge to main build the site and upload it to the R2 bucket.
+# Sample packs (ADR 0012, docs/architecture/packs.md). The audio is not in git:
+# whoever makes a pack runs `noodle packs upload` first, so the objects are
+# already in R2, and then raises a PR with the definition. This workflow
+# validates definitions on PRs, and on merge to main publishes the manifests
+# and index.json after checking every object is in R2 and hashes to its name.
 #
-# The upload needs four repo secrets: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
-# R2_SECRET_ACCESS_KEY and R2_BUCKET. Without them the publish job builds and
-# verifies the site and then skips the upload, so adding this workflow
-# publishes nothing.
+# Publishing needs four repo secrets: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
+# R2_SECRET_ACCESS_KEY and R2_BUCKET. Without them the publish job only
+# validates, so adding this workflow publishes nothing.
 name: Packs
 
 on:
@@ -13,11 +15,13 @@ on:
     paths:
       - "packs/**"
       - "crates/noodle-publish/**"
+      - "crates/noodle-network/**"
       - ".github/workflows/packs.yml"
   pull_request:
     paths:
       - "packs/**"
       - "crates/noodle-publish/**"
+      - "crates/noodle-network/**"
       - ".github/workflows/packs.yml"
   workflow_dispatch:
 
@@ -37,7 +41,7 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install ALSA
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      - name: Validate
+      - name: Validate definitions
         run: |
           if compgen -G "packs/*/pack.ron" > /dev/null; then
             cargo run -p noodle-cli -- packs validate packs
@@ -51,7 +55,7 @@ jobs:
     runs-on: ubuntu-latest
     permissions:
       contents: read
-    # One publish at a time, and never cancelled half way through an upload.
+    # One publish at a time, and never cancelled half way through.
     concurrency:
       group: packs-publish
       cancel-in-progress: false
@@ -62,59 +66,26 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Install ALSA
         run: sudo apt-get update && sudo apt-get install -y libasound2-dev
-      # Objects are immutable: the build leaves any object already in
-      # site/objects alone and takes its size from that file. So start from
-      # what the bucket serves, and an object is never re-encoded, replaced or
-      # given a manifest size that differs from the served bytes.
-      - name: Fetch the live objects
-        if: env.HAS_R2 == 'true'
-        env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
-          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
-          ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          BUCKET: ${{ secrets.R2_BUCKET }}
-        run: |
-          mkdir -p site/objects
-          aws s3 sync "s3://$BUCKET/objects" site/objects --endpoint-url "$ENDPOINT"
-      - name: Build the site
-        id: build
+      - name: Validate definitions
+        id: validate
         run: |
           if ! compgen -G "packs/*/pack.ron" > /dev/null; then
             echo "No packs yet."
             echo "any=false" >> "$GITHUB_OUTPUT"
             exit 0
           fi
-          cargo run -p noodle-cli -- packs build packs --out site
-          cargo run -p noodle-cli -- packs verify site
+          cargo run -p noodle-cli -- packs validate packs
           echo "any=true" >> "$GITHUB_OUTPUT"
-      - name: Upload to R2
-        if: steps.build.outputs.any == 'true' && env.HAS_R2 == 'true'
+      # Checks that each object is in the bucket and decodes to the hash in its
+      # name, then writes the manifests, and index.json last.
+      - name: Publish to R2
+        if: steps.validate.outputs.any == 'true' && env.HAS_R2 == 'true'
         env:
-          AWS_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
-          AWS_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
-          AWS_DEFAULT_REGION: auto
-          # R2 does not take the checksum headers newer AWS CLIs add.
-          AWS_REQUEST_CHECKSUM_CALCULATION: when_required
-          AWS_RESPONSE_CHECKSUM_VALIDATION: when_required
-          ENDPOINT: https://${{ secrets.R2_ACCOUNT_ID }}.r2.cloudflarestorage.com
-          BUCKET: ${{ secrets.R2_BUCKET }}
-        run: |
-          # Objects first: they are immutable and never deleted. Every object
-          # already in the bucket was downloaded above and left as it was, so
-          # `sync --size-only` uploads only names the bucket does not have.
-          # Then the
-          # manifests, and `index.json` last, so a reader never sees a pack
-          # whose objects are not up yet.
-          aws s3 sync site/objects "s3://$BUCKET/objects" --endpoint-url "$ENDPOINT" \
-            --size-only --cache-control "public, max-age=31536000, immutable" \
-            --content-type audio/flac
-          aws s3 cp site/packs "s3://$BUCKET/packs" --recursive --endpoint-url "$ENDPOINT" \
-            --cache-control "no-cache" --content-type application/json
-          aws s3 cp site/index.json "s3://$BUCKET/index.json" --endpoint-url "$ENDPOINT" \
-            --cache-control "no-cache" --content-type application/json
-      - name: Skipped the upload
-        if: steps.build.outputs.any == 'true' && env.HAS_R2 != 'true'
-        run: echo "R2 secrets are not set, so the site was built and verified but not uploaded."
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: cargo run -p noodle-cli -- packs publish packs
+      - name: Skipped the publish
+        if: steps.validate.outputs.any == 'true' && env.HAS_R2 != 'true'
+        run: echo "R2 secrets are not set, so the definitions were validated but nothing was published."

@@ -315,18 +315,18 @@ fn fetch(
     sha256: Option<&str>,
     progress: &mut dyn FnMut(f32) -> bool,
 ) -> Result<(), DownloadError> {
-    let mut request = noodle_download::Request::new(url);
+    let mut request = noodle_network::Request::new(url);
     if let Some(hash) = sha256 {
         request = request.with_sha256(hash);
     }
-    noodle_download::Downloader::default()
+    noodle_network::Downloader::default()
         .fetch(&request, dest, None, progress)
         .map_err(DownloadError::from)
 }
 
-impl From<noodle_download::Error> for DownloadError {
-    fn from(error: noodle_download::Error) -> Self {
-        use noodle_download::Error as E;
+impl From<noodle_network::Error> for DownloadError {
+    fn from(error: noodle_network::Error) -> Self {
+        use noodle_network::Error as E;
         match error {
             E::Cancelled | E::Declined => DownloadError::Cancelled,
             E::Network(why) => DownloadError::Network(why),

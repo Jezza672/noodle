@@ -244,3 +244,113 @@ fn verify_catches_a_corrupted_object() {
     fs::remove_file(&object).unwrap();
     assert!(verify(out.path()).is_err());
 }
+
+fn built() -> (tempfile::TempDir, tempfile::TempDir, Audio) {
+    let (root, kick, _) = fixture();
+    let site = tempfile::tempdir().unwrap();
+    build(root.path(), site.path()).unwrap();
+    (root, site, kick)
+}
+
+#[test]
+fn a_contributor_uploads_objects_and_ci_publishes_from_definitions_alone() {
+    let (root, site, kick) = built();
+    let store = tempfile::tempdir().unwrap();
+    let done = upload_objects(site.path(), &DirStore(store.path().to_owned())).unwrap();
+    assert_eq!(
+        done,
+        Uploaded {
+            objects_stored: 2,
+            objects_present: 0
+        }
+    );
+    // Only objects so far: no manifest, no index.
+    assert!(!store.path().join(INDEX).exists());
+    assert!(!store.path().join("packs").exists());
+    let again = upload_objects(site.path(), &DirStore(store.path().to_owned())).unwrap();
+    assert_eq!((again.objects_stored, again.objects_present), (0, 2));
+
+    // CI has the definitions and not the audio.
+    for f in ["kick.wav", "pad.wav"] {
+        fs::remove_file(root.path().join("starter").join(f)).unwrap();
+    }
+    let published = publish(root.path(), &DirStore(store.path().to_owned())).unwrap();
+    assert_eq!(
+        published,
+        Published {
+            packs: 1,
+            samples: 2
+        }
+    );
+    // The store is now a whole site, and it verifies.
+    assert_eq!(verify(store.path()).unwrap(), 2);
+    let index = Index::from_json(&fs::read_to_string(store.path().join(INDEX)).unwrap()).unwrap();
+    let manifest = Manifest::from_json(
+        &fs::read_to_string(store.path().join(&index.packs[0].manifest)).unwrap(),
+    )
+    .unwrap();
+    let kick_hash = hash_of(&kick);
+    let sample = manifest
+        .samples
+        .iter()
+        .find(|s| s.hash == kick_hash)
+        .unwrap();
+    let stored = fs::metadata(store.path().join(object_path(&kick_hash)))
+        .unwrap()
+        .len();
+    assert_eq!(sample.bytes, Some(stored));
+}
+
+#[test]
+fn publish_refuses_a_definition_whose_object_was_never_uploaded() {
+    let (root, _site, _) = built();
+    let store = tempfile::tempdir().unwrap();
+    assert!(matches!(
+        publish(root.path(), &DirStore(store.path().to_owned())),
+        Err(PublishError::MissingObject { .. })
+    ));
+    assert!(
+        !store.path().join(INDEX).exists(),
+        "no index for a failed publish"
+    );
+}
+
+#[test]
+fn publish_refuses_an_object_that_does_not_hash_to_its_name() {
+    let (root, site, kick) = built();
+    let store = tempfile::tempdir().unwrap();
+    upload_objects(site.path(), &DirStore(store.path().to_owned())).unwrap();
+    // The kick's name now holds the pad's audio.
+    let pad = fs::read_dir(store.path().join("objects"))
+        .unwrap()
+        .map(|e| e.unwrap().path())
+        .find(|p| !p.to_string_lossy().contains(&hash_of(&kick)))
+        .unwrap();
+    fs::copy(pad, store.path().join(object_path(&hash_of(&kick)))).unwrap();
+    assert!(matches!(
+        publish(root.path(), &DirStore(store.path().to_owned())),
+        Err(PublishError::HashMismatch { .. })
+    ));
+    assert!(!store.path().join(INDEX).exists());
+}
+
+#[test]
+fn upload_never_replaces_an_object() {
+    let (_root, site, kick) = built();
+    let store = tempfile::tempdir().unwrap();
+    upload_objects(site.path(), &DirStore(store.path().to_owned())).unwrap();
+    let served = store.path().join(object_path(&hash_of(&kick)));
+    let mut older = fs::read(&served).unwrap();
+    older.extend_from_slice(&[0; 7]);
+    fs::write(&served, &older).unwrap();
+    upload_objects(site.path(), &DirStore(store.path().to_owned())).unwrap();
+    assert_eq!(fs::read(&served).unwrap(), older, "the object was replaced");
+}
+
+#[test]
+fn definitions_can_be_checked_without_the_audio() {
+    let (root, _site, _) = built();
+    fs::remove_file(root.path().join("starter/kick.wav")).unwrap();
+    check_defs(root.path()).unwrap();
+    assert!(check(root.path()).is_err());
+}

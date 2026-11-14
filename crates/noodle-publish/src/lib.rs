@@ -14,6 +14,11 @@
 //! to repeat because objects never change once written and the site is
 //! uploaded objects first, `index.json` last.
 
+mod upload;
+
+pub use noodle_network::s3::Bucket;
+pub use upload::{DirStore, Published, Put, R2, Store, Uploaded, publish, upload_objects};
+
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -21,7 +26,9 @@ use flacenc::component::BitRepr;
 use flacenc::error::Verify;
 use noodle_io::{DecodeError, decode_file};
 use noodle_nodes::Sample;
-use noodle_packs::{Error as PackError, Index, Manifest, PackDef, Problem, is_hash, validate_dir};
+use noodle_packs::{
+    Error as PackError, Index, Manifest, PackDef, Problem, is_hash, validate, validate_dir,
+};
 
 /// Bits per sample in a published FLAC. 24 holds every sample a 16 or 24-bit
 /// source file can, exactly.
@@ -83,6 +90,12 @@ pub enum PublishError {
     Encode { path: PathBuf, message: String },
     #[error("{}: the FLAC decodes to a different hash ({actual}), so it was not published", path.display())]
     RoundTrip { path: PathBuf, actual: String },
+    #[error("uploading {key}: {message}")]
+    Upload { key: String, message: String },
+    #[error(
+        "pack {pack:?}: object {hash} is not in the store; upload it first with `noodle packs upload`"
+    )]
+    MissingObject { pack: String, hash: String },
     #[error("two packs are both called {id:?}: {} and {}", first.display(), second.display())]
     DuplicateId {
         id: String,
@@ -103,7 +116,7 @@ fn list(problems: &[Problem]) -> String {
         .join("; ")
 }
 
-fn io(path: &Path) -> impl FnOnce(std::io::Error) -> PublishError + '_ {
+pub(crate) fn io(path: &Path) -> impl FnOnce(std::io::Error) -> PublishError + '_ {
     move |source| PublishError::Io {
         path: path.to_owned(),
         source,
@@ -151,6 +164,37 @@ pub fn find_packs(dir: &Path) -> Result<Vec<FoundPack>, PublishError> {
     }
     found.sort_by(|a, b| a.def.id.cmp(&b.def.id));
     Ok(found)
+}
+
+/// Finds the packs under `dir` and checks their definitions alone: no audio
+/// is read, so it works where only the definitions are checked out.
+pub fn check_defs(dir: &Path) -> Result<Vec<FoundPack>, PublishError> {
+    let packs = find_packs(dir)?;
+    for pack in &packs {
+        let problems = validate(&pack.def);
+        if !problems.is_empty() {
+            return Err(PublishError::Invalid {
+                path: pack.dir.join("pack.ron"),
+                problems,
+            });
+        }
+    }
+    Ok(packs)
+}
+
+/// The hash of FLAC (or any audio) bytes, decoded.
+pub(crate) fn bytes_hash(bytes: &[u8]) -> Result<String, PublishError> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let path = std::env::temp_dir().join(format!(
+        "noodle-publish-{}-{}.flac",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    fs::write(&path, bytes).map_err(io(&path))?;
+    let hash = object_hash(&path);
+    let _ = fs::remove_file(&path);
+    hash
 }
 
 /// Decodes a sample's file and checks it is the audio the pack names.

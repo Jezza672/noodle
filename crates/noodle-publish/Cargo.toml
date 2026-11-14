@@ -8,6 +8,7 @@ license.workspace = true
 [dependencies]
 flacenc = "0.5.1"
 noodle-io.workspace = true
+noodle-network.workspace = true
 noodle-nodes.workspace = true
 noodle-packs.workspace = true
 thiserror = "2"
