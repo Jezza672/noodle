@@ -16,17 +16,21 @@ use std::sync::Arc;
 
 use egui::{RichText, Ui};
 use noodle_engine::Job;
-use noodle_stems::drum::{ALL_MODELS, DrumModelManifest, DrumModelStore};
+use noodle_stems::drum::{ALL_MODELS, DrumModelManifest, DrumModelStore, StoreError};
 
 /// Fetches a model's weights into a store, reporting progress (0 to 1) and
 /// answering whether to go on. Tests swap in one that needs no network.
 type Fetch = Arc<
-    dyn Fn(&DrumModelStore, &DrumModelManifest, &mut dyn FnMut(f32) -> bool) -> Result<(), String>
+    dyn Fn(
+            &DrumModelStore,
+            &DrumModelManifest,
+            &mut dyn FnMut(f32) -> bool,
+        ) -> Result<(), StoreError>
         + Send
         + Sync,
 >;
 
-type Download = Job<Result<(), String>>;
+type Download = Job<Result<(), StoreError>>;
 
 pub struct Models {
     manifests: Vec<&'static DrumModelManifest>,
@@ -46,9 +50,7 @@ impl Default for Models {
         Self::with(
             ALL_MODELS.to_vec(),
             store,
-            Arc::new(|store, model, progress| {
-                store.fetch(model, progress).map_err(|e| e.to_string())
-            }),
+            Arc::new(|store, model, progress| store.fetch(model, progress)),
         )
     }
 }
@@ -163,11 +165,11 @@ impl Models {
                 Ok(Ok(())) => {
                     self.problems.remove(id);
                 }
-                Ok(Err(e)) if e.contains("cancel") => {
+                Ok(Err(e)) if e.is_cancelled() => {
                     self.problems.remove(id);
                 }
                 Ok(Err(e)) => {
-                    self.problems.insert(id, e);
+                    self.problems.insert(id, e.to_string());
                 }
                 Err(e) => {
                     self.problems.insert(id, e.to_string());
@@ -211,7 +213,7 @@ impl Models {
         }
         let mut toggles = self.popup.take().unwrap_or_default();
         for m in &asking {
-            toggles.entry(m.id).or_insert(!m.non_commercial);
+            toggles.entry(m.id).or_insert(starts_on(m));
         }
         let mut answer = None;
         let modal = crate::dialog::modal(ctx, "models first use", |ui| {
@@ -253,16 +255,25 @@ impl Models {
             answer.get_or_insert(false);
         }
         match answer {
-            Some(download) => {
-                for m in asking {
-                    let on = download && toggles.get(m.id).copied().unwrap_or(false);
-                    self.set_enabled(m, on);
-                    if on {
-                        self.download(m);
-                    }
-                }
-            }
+            Some(download) => self.answer(&asking, &toggles, download),
             None => self.popup = Some(toggles),
+        }
+    }
+
+    /// Records the popup's answer for `asking`: with `download`, the ticked
+    /// models are enabled and fetched and the rest are off; without, all are off.
+    fn answer(
+        &mut self,
+        asking: &[&'static DrumModelManifest],
+        toggles: &BTreeMap<&'static str, bool>,
+        download: bool,
+    ) {
+        for &m in asking {
+            let on = download && toggles.get(m.id).copied().unwrap_or(false);
+            self.set_enabled(m, on);
+            if on {
+                self.download(m);
+            }
         }
     }
 
@@ -353,6 +364,12 @@ impl Models {
             }
         });
     }
+}
+
+/// A model under a non-commercial licence starts off in the popup, so
+/// downloading it is a choice.
+fn starts_on(m: &DrumModelManifest) -> bool {
+    !m.non_commercial
 }
 
 const NOT_PUBLISHED: &str = "Not available yet: its download address is not published";
@@ -521,25 +538,58 @@ mod tests {
         let mut m = models(vec![free, nc], &dir.path().join("w"));
         let ctx = egui::Context::default();
         assert!(m.first_use_due());
-        // Press Download selected with the defaults: the free one only.
-        m.popup = None;
-        let mut toggles = BTreeMap::new();
-        for x in m.unasked() {
-            toggles.insert(x.id, !x.non_commercial);
-        }
+        // Download selected with the popup's own defaults: the free one only.
+        let asking = m.unasked();
+        let toggles: BTreeMap<_, _> = asking.iter().map(|x| (x.id, starts_on(x))).collect();
         assert_eq!(toggles.get("free"), Some(&true));
         assert_eq!(toggles.get("nc"), Some(&false));
-        for x in m.unasked() {
-            let on = toggles[x.id];
-            m.set_enabled(x, on);
-            if on {
-                m.download(x);
-            }
-        }
+        m.answer(&asking, &toggles, true);
         finish(&mut m, &ctx);
         assert!(!m.first_use_due());
         assert!(m.is_enabled(free) && !m.is_enabled(nc));
         assert_eq!(m.ready(), vec![free]);
+    }
+
+    #[test]
+    fn not_now_answers_every_model_off() {
+        let dir = tempfile::tempdir().unwrap();
+        prefs_in(dir.path());
+        let free = leak_model("free", true, false);
+        let mut m = models(vec![free], &dir.path().join("w"));
+        let asking = m.unasked();
+        let toggles = asking.iter().map(|x| (x.id, true)).collect();
+        m.answer(&asking, &toggles, false);
+        assert!(!m.first_use_due());
+        assert!(!m.is_enabled(free));
+        assert!(!m.is_downloading(free));
+    }
+
+    #[test]
+    fn a_cancelled_download_is_not_a_problem_but_a_failure_is() {
+        let dir = tempfile::tempdir().unwrap();
+        prefs_in(dir.path());
+        let a = leak_model("a", true, false);
+        let ctx = egui::Context::default();
+        for (error, shown) in [
+            (
+                StoreError::Download(noodle_download::Error::Cancelled),
+                false,
+            ),
+            (
+                StoreError::Download(noodle_download::Error::WrongChecksum),
+                true,
+            ),
+        ] {
+            let error = std::sync::Mutex::new(Some(error));
+            let mut m = Models::with(
+                vec![a],
+                Some(DrumModelStore::new(dir.path().join("w"))),
+                Arc::new(move |_, _, _| Err(error.lock().unwrap().take().unwrap())),
+            );
+            m.download(a);
+            finish(&mut m, &ctx);
+            assert_eq!(m.problems.contains_key("a"), shown);
+        }
     }
 
     #[test]

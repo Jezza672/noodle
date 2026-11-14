@@ -33,6 +33,16 @@ impl fmt::Display for StoreError {
     }
 }
 
+impl StoreError {
+    /// Whether the download was stopped by the user, which is not a failure.
+    pub fn is_cancelled(&self) -> bool {
+        matches!(
+            self,
+            StoreError::Download(noodle_download::Error::Cancelled)
+        )
+    }
+}
+
 impl std::error::Error for StoreError {}
 
 impl From<noodle_download::Error> for StoreError {
