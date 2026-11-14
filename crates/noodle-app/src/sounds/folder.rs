@@ -42,7 +42,7 @@ fn is_audio(path: &Path) -> bool {
 /// Every audio file under `root`, in a fixed order. Symbolic links and hidden
 /// files and folders are left alone, so a link can't lead the scan out of the
 /// folder or round in a loop.
-fn files_under(root: &Path) -> Vec<PathBuf> {
+pub(super) fn files_under(root: &Path) -> Vec<PathBuf> {
     let mut found = Vec::new();
     let mut stack = vec![(root.to_owned(), 0usize)];
     while let Some((dir, depth)) = stack.pop() {
@@ -73,7 +73,7 @@ fn files_under(root: &Path) -> Vec<PathBuf> {
 
 /// The words a path's folders say about its sound: each folder between the
 /// source's folder and the file, in lower case.
-fn tags_of(root: &Path, path: &Path) -> Vec<String> {
+pub(super) fn tags_of(root: &Path, path: &Path) -> Vec<String> {
     let Ok(relative) = path.strip_prefix(root) else {
         return Vec::new();
     };

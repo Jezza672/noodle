@@ -18,7 +18,6 @@ deliberately deferred items.
 2. **`noodle-network`:** the shared downloader and S3 client (renamed from `noodle-download`; consent, streaming, SHA-256, content-keyed cache), with the stem separator moved onto it.
 3. **`noodle-packs`:** pack definitions, manifests, licence and credit fields, validation.
 4. **`noodle-publish`:** built (docs/architecture/packs.md). Owed: add the repo secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` for the first real publish, and decide how contributors other than Jeremy get an upload credential.
-7. **Make shareable pack:** the wizard and its usability stories and routes (find a sample, add a source, make a pack).
 
 Later: Nodes, Groups and Presets as tabs of the same browser.
 

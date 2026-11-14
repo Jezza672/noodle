@@ -68,3 +68,24 @@ Mac.
   bounce and take merge still point at the files they wrote, by path; the
   engine plays both.
 - ADR 0004 records where the store sits.
+
+## Chunk 7: Make shareable pack (#514)
+
+- A wizard (`sounds/wizard.rs`), from File ▸ Make Shareable Pack… or the
+  right-click menu of a folder source (or of "Sources…") in the Sounds panel.
+  It reads and hashes a folder on a worker, then sets name, id, author, licence
+  (default, an SPDX id or the author's own text), tags and credit for the pack
+  or per sound, with bulk apply (author, tag, licence) over the included sounds.
+- The default licence is "use in your own projects, commercial or not, not
+  redistribute".
+- The result panel is `noodle_packs::validate_dir`, the check CI and the CLI
+  make, so a pack that passes here passes there. Export is disabled until it
+  does.
+- Export writes a static site (`noodle_publish::build_packs`) to a folder, or
+  `<id>.zip` (`build_zip`). It never uploads, and refuses a folder inside the
+  one being packed. A folder export can be added as a source from the wizard: a
+  `file://` source read from disk.
+- The pack's own definition (the RON for a PR to the built-in source) is still
+  made by the CLI; contributor upload credentials remain open.
+- Story S33 and its route; S09's "Place on…" step now waits for the submenu
+  to open instead of settling a fixed time (#530).

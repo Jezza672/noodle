@@ -14,6 +14,7 @@ noodle-plugins.workspace = true
 noodle-stems = { workspace = true, features = ["onnx"] }
 noodle-network.workspace = true
 noodle-packs.workspace = true
+noodle-publish.workspace = true
 serde_json = "1"
 eframe = "0.36.2"
 rfd = "0.17.2"
