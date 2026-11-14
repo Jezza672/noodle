@@ -1,6 +1,6 @@
 //! S31: find a sound in the packs, hear it, and put it on a Sampler.
 //!
-//! The panel is opened from the View menu, searched, and the result clicked
+//! The browser is opened from the View menu (its Sounds tab is the first), searched, and the result clicked
 //! to audition it (the sound is downloaded first, from a fake source: a route
 //! never touches the network). Then the result is dragged onto the Sampler on
 //! the canvas, which takes its hash.
@@ -50,10 +50,10 @@ fn fixture(dir: &Path) -> App {
 
 fn steps(h: &mut Handle, _size: usize) {
     AUDITIONED.with(|a| a.set(false));
-    h.step("open the Sounds panel");
+    h.step("open the Browser, on its Sounds tab");
     let view = h.find("View");
     h.click(view, Modifiers::NONE);
-    let item = h.find("Sounds");
+    let item = h.find("Browser");
     h.click(item, Modifiers::NONE);
     h.probe().settle_sounds();
     h.step("search for a tone");

@@ -19,8 +19,6 @@ deliberately deferred items.
 3. **`noodle-packs`:** pack definitions, manifests, licence and credit fields, validation.
 4. **`noodle-publish`:** built (docs/architecture/packs.md). Owed: add the repo secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` for the first real publish, and decide how contributors other than Jeremy get an upload credential.
 
-Later: Nodes, Groups and Presets as tabs of the same browser.
-
 ## Playback cache
 
 **What it is.** Replaying a Pass with nothing changed does no DSP: playback streams cached audio and mixes it, but does not recompute it. Editing one part of the graph re-renders only that part. Every cacheable cluster becomes an automatic target. An entry is the audio of one cluster for one start, rendered from a fresh state at that start (ADR 0010). The existing per-user disk store, `CachedPlayer`, replacements and freeze chain carry it; the new work is the partition, the tier analysis, start-scoped keys, growing entries and the policy.

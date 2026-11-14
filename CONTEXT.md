@@ -346,6 +346,9 @@ _Avoid_: Library (that means saved nodes, groups and presets), repository
 **Pack**:
 A named set of samples with a manifest of hashes, authors, licences and tags. Defined in a RON file in git, published as a static site.
 
+**Browser**:
+The side panel, collapsible to a strip, with a tab each for Sounds, Nodes, Groups and Presets.
+
 **Sounds**:
-The panel that browses the samples of all sources. It is a content browser that nodes, groups and presets can join later.
+The browser's tab for the samples of all sources.
 _Avoid_: Sample library
