@@ -5580,20 +5580,20 @@ mod tests {
     fn the_browser_shows_its_tabs_and_collapses_to_a_strip() {
         let dir = tempfile::tempdir().unwrap();
         let mut h = harness(app_with_fake_sounds(dir.path()));
-        h.run();
+        h.run_steps(3);
         assert!(
             h.query_by_label("Nodes").is_none(),
             "hidden until asked for"
         );
         h.get_by_label("View").click();
-        h.run();
+        h.run_steps(3);
         h.get_by_label("Browser").click();
-        h.run();
+        h.run_steps(3);
         for tab in ["Sounds", "Nodes"] {
             h.get_by_label(tab);
         }
         h.get_by_label("◀").click();
-        h.run();
+        h.run_steps(3);
         assert!(h.state().browser.is_collapsed());
         assert!(
             h.query_by_label("Nodes").is_none(),
@@ -5619,7 +5619,7 @@ mod tests {
         app.browser.toggle_collapsed();
         app.sounds.open();
         let mut h = harness(app);
-        h.run();
+        h.run_steps(3);
         assert!(!h.state().browser.is_collapsed());
         assert_eq!(
             h.state().browser.visible_tab(),
