@@ -81,22 +81,22 @@ Six features picked from a shortlist in November 2026. Each issue holds the desi
 
 1. The node, the `.scl` and `.kbm` parser, the loader in the properties panel, an example with a golden render. Size M.
 
-**Harmony and chance nodes (#538).** Scale Quantise, Chord, Transpose, Euclidean and Chance on the events wire, and a Key source node that puts the timeline's key on a wire (the pattern of ADR 0008).
+**Harmony and chance nodes (#538).** Scale Quantise, Chord, Transpose, Euclidean and Chance on the events wire, and a Song Key source node (named apart from the existing Key node, which makes notes from a gate) that puts the timeline's key on a wire (the pattern of ADR 0008).
 
-1. Scale Quantise, Chord, Transpose, the Key node and `Transport::key`. Size M.
+1. Scale Quantise, Chord, Transpose, the Song Key node and `Transport::key`. Size M.
 2. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M.
 
 **Wavetable oscillator (#536).** `noodle.osc.wavetable`: a table is a sample in the store, `position` is a parameter, band-limited copies are built off the audio thread.
 
 1. The oscillator, the table builder, an example with a golden render. Size M.
-2. Generated CC0 tables as system samples, the Wavetable Synth template and presets, the cycle drawn on the node, drop a table on the node. Size M.
+2. Generated CC0 tables committed as system samples with their generator, the Wavetable Synth template and presets, the cycle drawn on the node, drop a table on the node. Size M.
 
 **Grains (#537).** `noodle.instrument.grains`: a granular sample player with position, spray, size, density, pitch and scatter as parameters, one cloud per voice.
 
 1. The node, an example with a golden render. Size M to L.
 2. The Grain Pad and Grain Freeze templates, the waveform and grains drawn on the node, the S17 route. Size M.
 
-**Looper (#541).** `noodle.util.looper`: record, loop on the bar, overdub, undo the last layer and clear, driven by gate parameters. The recording is session state.
+**Looper (#541).** `noodle.util.looper`: record, loop on the bar, overdub, undo the last layer and clear, driven by gate parameters. The recording is session state and survives a seek, so the node is exempt from the reset-equals-fresh tests.
 
 1. The node. Size L.
 2. The Looper template (Buttons, Launch Quantise, Mono Note for the gate), the state display, the S27 route. Size M.
