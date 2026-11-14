@@ -1,0 +1,91 @@
+# Sample packs (ADR 0012, docs/architecture/packs.md). The audio is not in git:
+# whoever makes a pack runs `noodle packs upload` first, so the objects are
+# already in R2, and then raises a PR with the definition. This workflow
+# validates definitions on PRs, and on merge to main publishes the manifests
+# and index.json after checking every object is in R2 and hashes to its name.
+#
+# Publishing needs four repo secrets: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID,
+# R2_SECRET_ACCESS_KEY and R2_BUCKET. Without them the publish job only
+# validates, so adding this workflow publishes nothing.
+name: Packs
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "packs/**"
+      - "crates/noodle-publish/**"
+      - "crates/noodle-network/**"
+      - ".github/workflows/packs.yml"
+  pull_request:
+    paths:
+      - "packs/**"
+      - "crates/noodle-publish/**"
+      - "crates/noodle-network/**"
+      - ".github/workflows/packs.yml"
+  workflow_dispatch:
+
+env:
+  CARGO_PROFILE_DEV_DEBUG: 0
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  check:
+    name: Check packs
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ALSA
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Validate definitions
+        run: |
+          if compgen -G "packs/*/pack.ron" > /dev/null; then
+            cargo run -p noodle-cli -- packs validate packs
+          else
+            echo "No packs yet."
+          fi
+
+  publish:
+    name: Publish packs
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    # One publish at a time, and never cancelled half way through.
+    concurrency:
+      group: packs-publish
+      cancel-in-progress: false
+    env:
+      HAS_R2: ${{ secrets.R2_BUCKET != '' && secrets.R2_ACCOUNT_ID != '' && secrets.R2_ACCESS_KEY_ID != '' && secrets.R2_SECRET_ACCESS_KEY != '' }}
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+      - name: Install ALSA
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Validate definitions
+        id: validate
+        run: |
+          if ! compgen -G "packs/*/pack.ron" > /dev/null; then
+            echo "No packs yet."
+            echo "any=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          cargo run -p noodle-cli -- packs validate packs
+          echo "any=true" >> "$GITHUB_OUTPUT"
+      # Checks that each object is in the bucket and decodes to the hash in its
+      # name, then writes the manifests, and index.json last.
+      - name: Publish to R2
+        if: steps.validate.outputs.any == 'true' && env.HAS_R2 == 'true'
+        env:
+          R2_ACCOUNT_ID: ${{ secrets.R2_ACCOUNT_ID }}
+          R2_BUCKET: ${{ secrets.R2_BUCKET }}
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+        run: cargo run -p noodle-cli -- packs publish packs
+      - name: Skipped the publish
+        if: steps.validate.outputs.any == 'true' && env.HAS_R2 != 'true'
+        run: echo "R2 secrets are not set, so the definitions were validated but nothing was published."

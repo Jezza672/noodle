@@ -12,7 +12,7 @@ noodle-nodes.workspace = true
 noodle-io.workspace = true
 noodle-plugins.workspace = true
 noodle-stems = { workspace = true, features = ["onnx"] }
-noodle-download.workspace = true
+noodle-network.workspace = true
 noodle-packs.workspace = true
 serde_json = "1"
 eframe = "0.36.2"
@@ -31,4 +31,4 @@ keyring = { version = "3.6", default-features = false, features = ["apple-native
 [dev-dependencies]
 egui_kittest = { version = "0.36.2", features = ["wgpu"] }
 tempfile = "3.27.0"
-noodle-download.workspace = true
+noodle-network.workspace = true

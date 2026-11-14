@@ -1,13 +1,13 @@
 //! Where the downloaded weights are kept, and downloading them.
 //!
-//! Files are named by their SHA-256 in `noodle-download`'s cache, so the same
+//! Files are named by their SHA-256 in `noodle-network`'s cache, so the same
 //! weights are fetched once. A model counts as downloaded when every file of
 //! it is in the cache; removing it deletes those files.
 
 use std::fmt;
 use std::path::{Path, PathBuf};
 
-use noodle_download::{Cache, Consent, Downloader, Request, Transport};
+use noodle_network::{Cache, Consent, Downloader, Request, Transport};
 
 use crate::drum::{DrumModelManifest, ModelFile};
 
@@ -16,7 +16,7 @@ pub enum StoreError {
     /// The manifest has no address or checksum for this file yet, so nothing
     /// can be downloaded (or checked) for it.
     NotPublished(String),
-    Download(noodle_download::Error),
+    Download(noodle_network::Error),
     Disk(std::io::Error),
 }
 
@@ -36,17 +36,14 @@ impl fmt::Display for StoreError {
 impl StoreError {
     /// Whether the download was stopped by the user, which is not a failure.
     pub fn is_cancelled(&self) -> bool {
-        matches!(
-            self,
-            StoreError::Download(noodle_download::Error::Cancelled)
-        )
+        matches!(self, StoreError::Download(noodle_network::Error::Cancelled))
     }
 }
 
 impl std::error::Error for StoreError {}
 
-impl From<noodle_download::Error> for StoreError {
-    fn from(e: noodle_download::Error) -> Self {
+impl From<noodle_network::Error> for StoreError {
+    fn from(e: noodle_network::Error) -> Self {
         StoreError::Download(e)
     }
 }
@@ -159,7 +156,7 @@ mod tests {
     use std::cell::Cell;
     use std::io::Cursor;
 
-    use noodle_download::{Error, Response};
+    use noodle_network::{Error, Response};
     use sha2::{Digest, Sha256};
 
     use super::*;

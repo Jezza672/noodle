@@ -8,8 +8,8 @@ use std::io::Read;
 use std::path::PathBuf;
 use std::sync::Arc;
 
-use noodle_download::{Auth, Cache, Downloader, Error, Request, Response, Transport};
 use noodle_io::decode_file;
+use noodle_network::{Auth, Cache, Downloader, Error, Request, Response, Transport};
 use noodle_nodes::Sample;
 use noodle_packs::{Index, Licence, Manifest};
 use serde::{Deserialize, Serialize};
@@ -241,7 +241,7 @@ impl Net {
     }
 
     pub fn http() -> Self {
-        Self::new(noodle_download::Http)
+        Self::new(noodle_network::Http)
     }
 }
 
@@ -347,8 +347,8 @@ pub(crate) mod fake {
     use std::io::Cursor;
     use std::sync::{Arc, Mutex};
 
-    use noodle_download::{Error, Request, Response, Transport};
     use noodle_io::{ExportFormat, ExportWriter, decode_file};
+    use noodle_network::{Error, Request, Response, Transport};
     use noodle_nodes::Sample;
     use noodle_packs::{FORMAT_VERSION, Index, Licence, Manifest, ManifestSample};
 
