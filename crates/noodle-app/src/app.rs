@@ -119,6 +119,7 @@ pub struct App {
     sounds: crate::sounds::Sounds,
     cache_panel: CachePanel,
     drum_rack_dialog: crate::drum_rack_dialog::DrumRackDialog,
+    models: crate::models::Models,
     outputs: OutputsView,
     /// Whether the MIDI ports view is showing.
     midi_ports_open: bool,
@@ -347,6 +348,7 @@ impl App {
             sounds: crate::sounds::Sounds::default(),
             cache_panel: CachePanel::default(),
             drum_rack_dialog: Default::default(),
+            models: Default::default(),
             outputs: OutputsView::default(),
             midi_ports_open: false,
             midi_ports: MidiPortsView::default(),
@@ -835,7 +837,9 @@ impl App {
         self.palette_and_templates(ui.ctx(), &mut actions);
         crate::stems_dialog::show(ui.ctx(), &mut self.session);
         crate::sample_set_dialog::show(ui.ctx(), &mut self.session);
-        self.drum_rack_dialog.show(ui.ctx(), &mut self.session);
+        self.models.poll(ui.ctx());
+        self.drum_rack_dialog
+            .show(ui.ctx(), &mut self.session, &mut self.models);
         if self.export.has_choice() {
             actions.push(Action::StartExport);
         }
@@ -845,6 +849,7 @@ impl App {
             self.session.latency_report(),
             &mut self.display,
             &mut self.session,
+            &mut self.models,
         );
         if let Some(config) = settings.audio {
             self.session.set_audio_config(config);

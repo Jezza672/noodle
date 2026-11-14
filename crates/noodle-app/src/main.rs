@@ -24,6 +24,7 @@ mod metronome;
 mod midi_ports;
 mod midi_take;
 mod mixer;
+mod models;
 mod outputs;
 mod pattern_panel;
 mod piano_roll;
