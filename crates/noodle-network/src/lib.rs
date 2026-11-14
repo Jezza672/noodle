@@ -1,5 +1,7 @@
-//! The shared downloader (ADR 0006, ADR 0012): the one place Noodle fetches
-//! files from the network.
+//! Noodle's network code (ADR 0006, ADR 0012): the shared downloader, and a
+//! client for an S3-compatible bucket ([`s3`]) that publishing uses.
+//!
+//! The downloader is the one place Noodle fetches files from the network.
 //!
 //! A download asks consent first (when a hook is set), streams to a `.partial`
 //! file with progress and cancel, checks the SHA-256 if one is known, and only
@@ -8,6 +10,9 @@
 //!
 //! Nothing reachable from `Processor::process` may use this, and the CLI and
 //! offline renders never call it.
+
+pub mod s3;
+mod sigv4;
 
 use std::fmt;
 use std::io::{Read, Write};

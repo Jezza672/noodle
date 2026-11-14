@@ -28,6 +28,7 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [autosave.md](autosave.md) | Autosave and crash recovery |
 | [midi-controllers-in-clips.md](midi-controllers-in-clips.md) | MIDI controllers and expressions in clips: data, playback, recording, piano roll lanes |
 | [track-export.md](track-export.md) | Track export, loudness and dither, render to clip |
+| [sample-packs.md](sample-packs.md) | Sample packs: publishing (more chunks to follow) |
 | [linked-clips.md](linked-clips.md) | Linked clips across tracks, shared warp, linked stems |
 | [midi-learn.md](midi-learn.md) | Several MIDI inputs, Learn MIDI, MIDI Control encoder and pickup modes |
 | [piano-roll-editing.md](piano-roll-editing.md) | Piano roll: keyboard octave naming, live keys, vertical zoom, marquee, ruler seek, follow selection |

@@ -90,12 +90,66 @@ enum Command {
     /// and parameters. New or changed plugin files are scanned (in a child
     /// process) and the results cached.
     Plugins,
+    /// Build and check sample packs for publishing (ADR 0012).
+    Packs {
+        #[command(subcommand)]
+        command: PacksCommand,
+    },
     /// List the audio hosts, and the devices on one, with their IDs for
     /// `play`.
     Devices {
         /// The host to list (default: the platform's default host).
         #[arg(long)]
         host: Option<String>,
+    },
+}
+
+#[derive(Subcommand)]
+enum PacksCommand {
+    /// Check the pack definitions under a directory (`<dir>/<pack>/pack.ron`).
+    /// With --audio, also that each file exists and its audio hashes to what
+    /// the pack says. Writes nothing.
+    Validate {
+        /// The directory of packs.
+        dir: PathBuf,
+        /// Also check the audio files, which a definition alone does not need.
+        #[arg(long)]
+        audio: bool,
+    },
+    /// Build the static site a source serves: FLAC objects named by hash,
+    /// a manifest per pack and `index.json`. Objects already in --out are
+    /// left alone, so building into a copy of the live site writes only
+    /// what is new. This is also how to self-host a pack.
+    Build {
+        /// The directory of packs.
+        dir: PathBuf,
+        /// Where to write the site.
+        #[arg(long)]
+        out: PathBuf,
+    },
+    /// Check a built site: every object decodes and hashes to its name.
+    Verify {
+        /// The site directory (`packs build --out`).
+        site: PathBuf,
+    },
+    /// Upload the audio of a pack to the bucket, before raising the PR that
+    /// adds its definition. Objects are only added, never replaced. Needs
+    /// `R2_ACCOUNT_ID`, `R2_BUCKET`, `R2_ACCESS_KEY_ID` and
+    /// `R2_SECRET_ACCESS_KEY`; with --to it goes into a directory instead.
+    Upload {
+        /// The directory of packs, with their audio.
+        dir: PathBuf,
+        #[arg(long)]
+        to: Option<PathBuf>,
+    },
+    /// Publish the packs' manifests and `index.json` from their definitions,
+    /// once every object they name is in the bucket and hashes to its name.
+    /// This is what CI runs on merge. Same destination as `upload`.
+    Publish {
+        /// The directory of packs. No audio is needed.
+        dir: PathBuf,
+        #[arg(long)]
+        to: Option<PathBuf>,
     },
 }
 
@@ -143,6 +197,59 @@ impl DeviceArgs {
             threads: 0,
         }
     }
+}
+
+fn pack_store(to: Option<PathBuf>) -> Result<Box<dyn noodle_publish::Store>, String> {
+    Ok(match to {
+        Some(dir) => Box::new(noodle_publish::DirStore(dir)),
+        None => Box::new(noodle_publish::R2(noodle_publish::Bucket::from_env()?)),
+    })
+}
+
+fn packs(command: PacksCommand) -> Result<(), String> {
+    let err = |e: noodle_publish::PublishError| e.to_string();
+    match command {
+        PacksCommand::Validate { dir, audio } => {
+            let packs = if audio {
+                noodle_publish::check(&dir)
+            } else {
+                noodle_publish::check_defs(&dir)
+            }
+            .map_err(err)?;
+            let samples: usize = packs.iter().map(|p| p.def.samples.len()).sum();
+            println!("{} packs, {samples} samples: ok", packs.len());
+        }
+        PacksCommand::Build { dir, out } => {
+            let r = noodle_publish::build(&dir, &out).map_err(err)?;
+            println!(
+                "{} packs, {} samples: {} objects written, {} already there",
+                r.packs, r.samples, r.written, r.skipped
+            );
+        }
+        PacksCommand::Verify { site } => {
+            let n = noodle_publish::verify(&site).map_err(err)?;
+            println!("{n} samples: ok");
+        }
+        PacksCommand::Upload { dir, to } => {
+            let store = pack_store(to)?;
+            let site = std::env::temp_dir().join(format!("noodle-packs-{}", std::process::id()));
+            let result = noodle_publish::build(&dir, &site)
+                .and_then(|_| noodle_publish::verify(&site))
+                .and_then(|_| noodle_publish::upload_objects(&site, &*store));
+            let _ = std::fs::remove_dir_all(&site);
+            let done = result.map_err(err)?;
+            println!(
+                "{} objects stored, {} already there",
+                done.objects_stored, done.objects_present
+            );
+        }
+        PacksCommand::Publish { dir, to } => {
+            let store = pack_store(to)?;
+            let done = noodle_publish::publish(&dir, &*store).map_err(err)?;
+            println!("{} packs, {} samples published", done.packs, done.samples);
+        }
+    }
+    Ok(())
 }
 
 fn main() -> ExitCode {
@@ -240,6 +347,7 @@ fn run(command: Command) -> Result<(), String> {
             report(&rendered.diagnostics);
             Ok(())
         }
+        Command::Packs { command } => packs(command),
         Command::Plugins => {
             list_plugins();
             Ok(())
