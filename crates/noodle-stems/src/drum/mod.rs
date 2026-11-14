@@ -8,7 +8,7 @@
 //! fixed stems of [`Separator`](crate::Separator). [`mapping`] puts a model's
 //! parts onto the drum rack's pads, so what reads the result need not know
 //! which model made it. Nothing is bundled: [`DrumModelStore`] downloads the
-//! weights through `noodle-download` once the user has said yes.
+//! weights through `noodle-network` once the user has said yes.
 //!
 //! The STFT front end of every model is here, outside the ONNX graph. The
 //! neural step is behind [`MaskNet`] and [`HybridNet`], so the chunking,

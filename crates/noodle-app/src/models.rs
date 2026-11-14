@@ -578,11 +578,11 @@ mod tests {
         let ctx = egui::Context::default();
         for (error, shown) in [
             (
-                StoreError::Download(noodle_download::Error::Cancelled),
+                StoreError::Download(noodle_network::Error::Cancelled),
                 false,
             ),
             (
-                StoreError::Download(noodle_download::Error::WrongChecksum),
+                StoreError::Download(noodle_network::Error::WrongChecksum),
                 true,
             ),
         ] {

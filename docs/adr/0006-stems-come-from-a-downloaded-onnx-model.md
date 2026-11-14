@@ -8,4 +8,4 @@ We considered bundling the weights (hundreds of MB in every install and a licenc
 
 The cost is a native library on three platforms and a download with a consent prompt. The licences are settled: Demucs and the ONNX export of HT-Demucs we point at are MIT, and ONNX Runtime is MIT. With no release build yet, the runtime is downloaded like the weights (pinned release archive, checked by SHA-256) instead of being shipped. A Burn backend can be added behind the same trait if packaging the native library proves painful. Stem warp ships only if the evaluation shows a clear gain over the best whole-mix mode.
 
-The download itself is done by the shared `noodle-download` crate (consent, SHA-256 check, atomic write), which sample packs use too (ADR 0012).
+The download itself is done by the shared `noodle-network` crate (consent, SHA-256 check, atomic write), which sample packs use too (ADR 0012).
