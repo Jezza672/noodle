@@ -6,8 +6,8 @@ is recorded in [features/](features/README.md); the design as it stands is in
 its record to a file in `features/` and delete it from this page.
 
 All milestones M0 to M11 are built in code. What is left is the feature
-items below that make Noodle usable in place of another DAW, checks that need a
-person and hardware, and a few
+items below that make Noodle usable in place of another DAW, planned
+features with issues, checks that need a person and hardware, and a few
 deliberately deferred items.
 
 ## Sample packs
@@ -18,8 +18,6 @@ deliberately deferred items.
 2. **`noodle-network`:** the shared downloader and S3 client (renamed from `noodle-download`; consent, streaming, SHA-256, content-keyed cache), with the stem separator moved onto it.
 3. **`noodle-packs`:** pack definitions, manifests, licence and credit fields, validation.
 4. **`noodle-publish`:** built (docs/architecture/packs.md). Owed: add the repo secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` for the first real publish, and decide how contributors other than Jeremy get an upload credential.
-
-Later: Nodes, Groups and Presets as tabs of the same browser.
 
 ## Playback cache
 
@@ -68,6 +66,54 @@ Later: Nodes, Groups and Presets as tabs of the same browser.
 
 **Then:** routes for the 24 stories that have a status but no route (U10, #316, #368), more naive-agent runs (#319), grades and thresholds once there is data for every story (#323), and the cross-DAW baseline (#325, optional).
 
+
+## Planned: new nodes and MIDI files
+
+Seven features picked from a shortlist in November 2026. Each issue holds the design, the tests and the open questions; the chunks below are one PR each. Every instrument here ships as a group template built from the new primitive, never as a synth node. They are independent of each other, so the order is only a suggestion: quick wins first, then the two sound primitives, the looper and the morph.
+
+**MIDI file import and export (#540).** Drop a .mid on the timeline or use File > Import MIDI; export a clip, a track or the arrangement.
+
+1. Reader and writer in `noodle-io` (`smf.rs`, on `midly`), the mapping to `MidiClip` and `TempoMap`, timeline drop and menu import as one undo step, export, and `noodle midi-export`. Size L.
+
+**Microtuning (#539).** A Tuning node on the events wire retunes notes from a Scala file by adding a per-note pitch expression, so Voices, Mono Note, the Sampler and plugins that honour tuning follow it.
+
+1. The node, the `.scl` and `.kbm` parser, the loader in the properties panel, an example with a golden render. Size M.
+
+**Harmony and chance nodes (#538).** Scale Quantise, Chord, Transpose, Euclidean and Chance on the events wire, and a Song Key source node (named apart from the existing Key node, which makes notes from a gate) that puts the timeline's key on a wire (the pattern of ADR 0008).
+
+1. Scale Quantise, Chord, Transpose, the Song Key node and `Transport::key`. Size M.
+2. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M.
+
+**Wavetable oscillator (#536).** `noodle.osc.wavetable`: a table is a sample in the store, `position` is a parameter, band-limited copies are built off the audio thread.
+
+1. The oscillator, the table builder, an example with a golden render. Size M.
+2. Generated CC0 tables committed as system samples with their generator, the Wavetable Synth template and presets, the cycle drawn on the node, drop a table on the node. Size M.
+
+**Grains (#537).** `noodle.instrument.grains`: a granular sample player with position, spray, size, density, pitch and scatter as parameters, one cloud per voice.
+
+1. The node, an example with a golden render. Size M to L.
+2. The Grain Pad and Grain Freeze templates, the waveform and grains drawn on the node, the S17 route. Size M.
+
+**Looper (#541).** `noodle.util.looper`: record, loop on the bar, overdub, undo the last layer and clear, driven by gate parameters. The recording is session state and survives a seek, so the node is exempt from the reset-equals-fresh tests.
+
+1. The node. Size L.
+2. The Looper template (Buttons, Launch Quantise, Mono Note for the gate), the state display, the S27 route. Size M.
+
+**Preset morph (#543).** "Morph between presets…" on a group adds one Morph node (`noodle.mod.morph`) with an output wired into every parameter that differs between two group presets, and exposes its `position` as a group input. Nothing is modulated without a wire; a parameter that already has a wire or a lane, and all config, stay out.
+
+1. The node, `Edit::MorphPresets`, the menu entry and picker, the rows in the node's panel. Size M.
+2. The XY form for four presets with a pad widget, Set from current, Randomise. Size M.
+
+## Planned: Noodle as a plugin (#544)
+
+Noodle loaded in another DAW: the node editor, properties, library and Sounds panel in the host's window, no arrangement, with Host In, Host Out and Host MIDI nodes already in the graph. CLAP first; VST3 and AU are made from the CLAP with `clap-wrapper`. The issue holds the design and the open questions (whether an instance is a project or a group is the main one).
+
+1. Shell split and host backend: `noodle-app` as a library with a desktop shell, a host audio backend in `noodle-io`, Host devices and ports on the io nodes. Size M.
+2. A headless CLAP (`noodle-plugin`): ports, process, state, latency, default projects, tested by Noodle hosting Noodle. Size L.
+3. Transport and tempo from the host, and a 64-slot bank of host parameters surfaced as Host Parameter nodes. Size M.
+4. The window: the editor-only layout drawn in the host's window, focus, text, drag and drop, scaling. Size L, the main risk.
+5. More than one instance in a process: the UI waker and the other process-wide state. Size M.
+6. VST3 and AU through the wrapper, packaging, and an owed pass in real hosts on the Mac. Size M.
 
 ## Owed: needs a person on real hardware
 

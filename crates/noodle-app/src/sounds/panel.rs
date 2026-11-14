@@ -2,26 +2,17 @@
 
 use egui::{Context, Sense, Ui, text::LayoutJob};
 
-use super::catalogue::{self, Entry, Kind};
+use super::catalogue::{self, Entry};
 use super::{Reach, Sounds, Then};
 use crate::carry::{self, Item, SoundKey};
 
-pub(super) fn show(sounds: &mut Sounds, ctx: &Context) {
-    let mut open = true;
-    egui::Window::new("Sounds")
-        .open(&mut open)
-        .default_width(420.0)
-        .default_height(520.0)
-        .show(ctx, |ui| contents(sounds, ui, ctx));
-    sounds.open = open;
-    confirm(sounds, ctx);
+pub(super) fn show(sounds: &mut Sounds, ui: &mut Ui) {
+    let ctx = ui.ctx().clone();
+    contents(sounds, ui, &ctx);
+    confirm(sounds, &ctx);
 }
 
 fn contents(sounds: &mut Sounds, ui: &mut Ui, ctx: &Context) {
-    // Nodes, Groups and Presets join these as tabs when they are browsable.
-    ui.horizontal(|ui| {
-        let _ = ui.selectable_label(true, Kind::Sound.name());
-    });
     ui.horizontal(|ui| {
         ui.add(
             egui::TextEdit::singleline(&mut sounds.filter.query)

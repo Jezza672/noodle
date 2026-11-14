@@ -5,6 +5,7 @@
 mod acceptance;
 mod app;
 mod autosave;
+mod browser;
 mod cache_panel;
 mod carry;
 mod clip_editor;

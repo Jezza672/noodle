@@ -336,15 +336,29 @@ It has these views:
     point drops the clip selection and vice versa, so Delete only ever
     acts on one.
   - The mixer is still to come.
-- **Sounds panel** (`noodle-app/src/sounds`, ADR 0012): a floating content
-  browser, opened from View > Sounds, File > Browse Sounds…, the palette
+- **Browser** (`noodle-app/src/browser.rs`): one panel at the left of the
+  window, shown from View > Browser (or "Show or Hide Browser" in the palette),
+  that holds everything that can be found and put into the project. Its tabs
+  are Sounds, Nodes, Groups and Presets. The whole panel collapses to a thin
+  strip (the ◀ at its top right, or "Collapse or Expand Browser" in the
+  palette) and opens again from the strip's ▶, so it can stay out of the way of
+  the canvas. Nodes and Groups list what the Add-node search lists
+  (`editor::search_entries`, so they never disagree): a click adds it at the
+  centre of the canvas, a drag adds it where it is dropped
+  (`carry::Item::Node`, `Item::Template`, taken by `EditorState::request_add`,
+  which uses the same `add_choice` as the Shift+A search). Presets lists the
+  presets that fit the selected node or group (`Session::presets_for`) and a
+  click applies one, as one undo step. Asking for sounds from anywhere
+  (File > Browse Sounds…, the Sampler's button) opens the panel on its Sounds
+  tab, out of its strip.
+- **Sounds tab** (`noodle-app/src/sounds`, ADR 0012), opened from the browser,
+  File > Browse Sounds…, the palette
   ("Browse Sounds…", Cmd+K) and the Sampler's "Browse sounds…" button. It
   lists the sounds of every source (the built-in one first; `NOODLE_SOUNDS_URL`
   overrides its address until the first publish), those already on this
   computer first, and greys a source it can't reach while still listing the
   catalogue kept from last time (`<data dir>/sounds/catalogues`). The item
-  model is `catalogue::Entry` with a `Kind`, so Nodes, Groups and Presets can
-  join as tabs. Search covers name, tags, pack and author; filters are source
+  model is `catalogue::Entry` with a `Kind`. Search covers name, tags, pack and author; filters are source
   and licence.
   - **Audition.** A click downloads the one sound and plays it through
     `noodle_io::Preview` straight to the monitor device, outside the project's

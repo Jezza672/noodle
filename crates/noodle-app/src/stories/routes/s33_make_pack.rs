@@ -76,10 +76,10 @@ fn steps(h: &mut Handle, _size: usize) {
     let add = h.find("Add it as a source");
     h.click(add, Modifiers::NONE);
     h.probe().settle_sounds();
-    h.step("open the Sounds panel to see its sounds");
+    h.step("open the Browser to see its sounds");
     let view = h.find("View");
     h.click(view, Modifiers::NONE);
-    let sounds = h.find("Sounds");
+    let sounds = h.find("Browser");
     h.click(sounds, Modifiers::NONE);
     h.probe().settle_sounds();
     LISTED.with(|l| l.set(h.probe().mentions("Kick") && h.probe().mentions("Snare")));
