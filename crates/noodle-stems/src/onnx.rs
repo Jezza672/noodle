@@ -33,7 +33,7 @@ pub struct OnnxSeparator {
     _environment: ort::environment::Environment,
 }
 
-fn failed(error: impl std::fmt::Display) -> SeparateError {
+pub(crate) fn failed(error: impl std::fmt::Display) -> SeparateError {
     SeparateError::Failed(error.to_string())
 }
 
@@ -50,7 +50,7 @@ pub fn runtime_file_name() -> String {
 }
 
 /// Whether `shape` (where -1 is any size) is `want`.
-fn fits(shape: &[i64], want: &[i64]) -> bool {
+pub(crate) fn fits(shape: &[i64], want: &[i64]) -> bool {
     shape.len() == want.len() && shape.iter().zip(want).all(|(&s, &w)| s == w || s < 0)
 }
 
@@ -67,7 +67,7 @@ impl OnnxSeparator {
         Self::environment_builder(runtime).map(|_| ())
     }
 
-    fn environment_builder(
+    pub(crate) fn environment_builder(
         runtime: Option<&Path>,
     ) -> Result<ort::environment::EnvironmentBuilder, SeparateError> {
         let path = match runtime {
