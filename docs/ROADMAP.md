@@ -115,6 +115,21 @@ Noodle loaded in another DAW: the node editor, properties, library and Sounds pa
 5. More than one instance in a process: the UI waker and the other process-wide state. Size M.
 6. VST3 and AU through the wrapper, packaging, and an owed pass in real hosts on the Mac. Size M.
 
+## Planned: feedback regions (#547)
+
+A wired feedback loop as tight as the patch asks for, with no setting. The compiler groups the nodes on a loop into a region and runs only those in chunks as short as the loop's shortest delay, so a long echo costs what it does today and a plucked string above 375 Hz becomes possible as a group. A one-sample Feedback node makes delay-free loops legal.
+
+1. Regions and Delay: the region step in the compiler and the plan, `Node::loop_chunk`, Delay without its one-block floor inside a region, events, silence, meters and parallel processing through a region. Size L.
+2. The Feedback node (`noodle.util.feedback`), and the Plucked String, Comb and Flanger templates with examples and golden renders. Size M.
+
+## Planned: low-latency monitoring (#548)
+
+The least delay the hardware allows while a track is armed or monitored, chosen automatically, and a larger device buffer when nobody is recording. One setting, Monitoring latency (Auto, Always low, Off). The engine block stays 128 so cache entries stay valid; the device buffer is what moves. (So the deferred idea below, of the engine block following the device period, is not part of this.)
+
+1. The monitored path is not held back by other tracks' plugin latency (`plan::compensate` leaves the live cone out), with the readout and the setting. Size M.
+2. The device buffer follows arming: Low (64) while armed or monitored, Normal (256), Relaxed (1024) when idle; the stream reopens only when stopped and never during a take. Owed on the Mac: the gap on arming and a power measurement. Size M.
+3. Only the live cone runs in the device callback. Today a cluster with no entry plays live until the background `Freezing` render finishes and swaps in; this adds a streaming render that keeps just ahead of the playhead and is played while it fills, with an ADR for the change to that rule. Size L, and it may want two PRs (the streaming entry, then the hand-over on edits and shortfalls).
+
 ## Owed: needs a person on real hardware
 
 - **AU on the Mac** after the shared plugin bridge (#242, #241): an Audio Unit
