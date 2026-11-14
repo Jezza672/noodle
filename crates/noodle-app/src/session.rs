@@ -31,7 +31,7 @@ mod to_sample;
 mod transport_tempo;
 pub mod versions;
 pub use export::{ExportChoice, ExportSummary};
-pub use library::LibraryEdit;
+pub use library::{LibraryEdit, PresetStatus};
 
 use crate::freezing::{Badge, Freezing, Look, Polled};
 use noodle_core::{

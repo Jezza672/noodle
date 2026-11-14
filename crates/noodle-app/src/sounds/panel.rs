@@ -52,6 +52,7 @@ fn contents(sounds: &mut Sounds, ui: &mut Ui, ctx: &Context) {
     egui::ScrollArea::vertical()
         .max_height(ui.available_height() - 6.0)
         .auto_shrink([false, false])
+        .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysVisible)
         .show(ui, |ui| {
             for entry in found {
                 let reachable = matches!(sounds.reach.get(&entry.source), Some(Reach::Reachable));

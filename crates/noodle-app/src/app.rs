@@ -658,7 +658,7 @@ impl App {
         self.session.edit(properties_edits);
 
         self.browser
-            .show(ui, &mut self.session, &mut self.editor, &mut self.sounds);
+            .show(ui, &self.session, &mut self.editor, &mut self.sounds);
 
         let arrangement = egui::Panel::top("arrangement")
             .resizable(true)
@@ -814,6 +814,12 @@ impl App {
                 self.switch_strip(ui, &mut actions);
                 let edits = editor::show(ui, &mut self.editor, &self.session);
                 self.session.edit(edits);
+                // What the browser added with a preset: it exists now.
+                for (id, entry) in self.editor.take_preset_requests() {
+                    if let Some(apply) = self.session.apply_preset(id, &entry) {
+                        self.session.edit([apply]);
+                    }
+                }
                 self.open_requested_view();
             });
         self.track_focus(
@@ -2868,6 +2874,16 @@ impl App {
         clip_editor::linked_lanes(&project, open, |member| self.clip_source(ctx, member))
     }
 
+    /// The library entry (a template or a preset) a carried item named.
+    fn library_entry(&self, key: u64) -> Option<String> {
+        self.session
+            .library()
+            .all()
+            .map(|stored| stored.id.as_str())
+            .find(|id| crate::carry::entry_key(id) == key)
+            .map(str::to_owned)
+    }
+
     /// Where something dropped on the canvas goes, in graph coordinates: at the
     /// pointer, or by a node it was dropped on.
     fn drop_point(&self, on: editor::DropOn) -> egui::Pos2 {
@@ -2931,20 +2947,27 @@ impl App {
             Item::Node(type_id) => {
                 let at = self.drop_point(dropped.on);
                 self.editor
-                    .request_add(editor::Choice::Node(type_id), Some(at));
+                    .request_add(editor::Choice::Node(type_id), Some(at), None);
+            }
+            Item::NodePreset(type_id, key) => {
+                let at = self.drop_point(dropped.on);
+                let preset = self.library_entry(key);
+                self.editor
+                    .request_add(editor::Choice::Node(type_id), Some(at), preset);
+            }
+            Item::TemplatePreset(template, key) => {
+                if let Some(entry) = self.library_entry(template) {
+                    let at = self.drop_point(dropped.on);
+                    let preset = self.library_entry(key);
+                    self.editor
+                        .request_add(editor::Choice::Template(entry), Some(at), preset);
+                }
             }
             Item::Template(key) => {
-                let entry = self
-                    .session
-                    .library()
-                    .templates()
-                    .map(|(id, _)| id)
-                    .find(|id| crate::carry::template_key(id) == key)
-                    .map(str::to_owned);
-                if let Some(entry) = entry {
+                if let Some(entry) = self.library_entry(key) {
                     let at = self.drop_point(dropped.on);
                     self.editor
-                        .request_add(editor::Choice::Template(entry), Some(at));
+                        .request_add(editor::Choice::Template(entry), Some(at), None);
                 }
             }
             Item::Track(group) => {
@@ -5566,7 +5589,7 @@ mod tests {
         h.run();
         h.get_by_label("Browser").click();
         h.run();
-        for tab in ["Sounds", "Nodes", "Groups", "Presets"] {
+        for tab in ["Sounds", "Nodes"] {
             h.get_by_label(tab);
         }
         h.get_by_label("◀").click();
@@ -5585,7 +5608,7 @@ mod tests {
         // keeps repainting for a moment.
         h.run_steps(3);
         assert!(!h.state().browser.is_collapsed());
-        h.get_by_label("Groups");
+        h.get_by_label("Nodes");
     }
 
     #[test]
@@ -5625,12 +5648,13 @@ mod tests {
     }
 
     #[test]
-    fn a_click_in_the_groups_tab_adds_the_template() {
+    fn a_click_on_a_group_in_the_nodes_tab_adds_the_template() {
         let mut app = empty();
-        app.browser.open_tab(crate::browser::Tab::Groups);
+        app.browser.open_tab(crate::browser::Tab::Nodes);
+        app.browser.search_nodes("banjo");
         let mut h = harness(app);
         h.run();
-        h.get_by_label("Banjo").click();
+        h.get_by_label_contains("Banjo").click();
         h.run();
         let graph = h.state().session.project().graph();
         assert!(
@@ -5641,38 +5665,144 @@ mod tests {
         );
     }
 
+    /// A group with presets unfolds in the Nodes tab, and clicking a preset
+    /// adds the group with that preset applied.
     #[test]
-    fn the_presets_tab_applies_a_preset_to_the_selected_group() {
+    fn a_preset_unfolded_from_a_group_adds_it_with_the_preset() {
         let mut app = empty();
-        let (group, command) = app
-            .session
-            .library()
-            .template("system:template:kick")
-            .unwrap()
-            .instantiate(
-                "system:template:kick",
-                None,
-                noodle_core::Position::default(),
-                || app.session.new_node_id(),
-            );
-        app.session.edit([Edit::Apply(command)]);
-        app.editor.select_only([group]);
-        app.browser.open_tab(crate::browser::Tab::Presets);
+        app.browser.open_tab(crate::browser::Tab::Nodes);
+        app.browser.search_nodes("kick");
         let mut h = harness(app);
         h.run();
-        h.get_by_label("Deep Kick").click();
+        assert!(
+            h.query_by_label("Deep Kick").is_none(),
+            "folded until asked for"
+        );
+        h.get_by_label("▸").click();
         h.run();
-        let session = &h.state().session;
-        let node = session.project().graph().node(group).unwrap();
+        h.get_by_label("Deep Kick").click();
+        h.run_steps(3);
+        let graph = h.state().session.project().graph();
+        let group = graph
+            .nodes()
+            .find(|(_, n)| n.template.as_deref() == Some("system:template:kick"))
+            .map(|(id, _)| id)
+            .expect("the Kick group was added");
+        let node = graph.node(group).unwrap();
         assert_eq!(node.preset.as_deref(), Some("system:group:kick-deep-kick"));
     }
 
+    /// The same for a node: a Sampler has no presets, a Filter-like node with
+    /// system presets would; any node type that has some unfolds.
     #[test]
-    fn the_presets_tab_asks_for_a_selection() {
-        let mut app = empty();
-        app.browser.open_tab(crate::browser::Tab::Presets);
+    fn a_node_with_presets_unfolds_in_the_nodes_tab() {
+        let session = Session::new(crate::session::Nodes::all());
+        let (entry, type_id) = {
+            let library = session.library();
+            let (entry, p) = library.node_presets().next().expect("a system node preset");
+            (entry.to_owned(), p.node_type.clone())
+        };
+        let name = session
+            .registry()
+            .get(&type_id)
+            .map(|t| t.info().name.to_owned())
+            .expect("the type exists");
+        let mut app = App::new(session);
+        app.browser.open_tab(crate::browser::Tab::Nodes);
+        app.browser.search_nodes(&name);
         let mut h = harness(app);
         h.run();
-        h.get_by_label_contains("Select a node or group");
+        h.get_all_by_label("▸")
+            .next()
+            .expect("a row with presets")
+            .click();
+        h.run();
+        let preset = h
+            .state()
+            .session
+            .library()
+            .node_preset(&entry)
+            .unwrap()
+            .name
+            .clone();
+        h.get_by_label(&preset).click();
+        h.run_steps(3);
+        let graph = h.state().session.project().graph();
+        assert!(
+            graph
+                .nodes()
+                .any(|(_, n)| n.type_id == type_id && n.preset.as_deref() == Some(entry.as_str())),
+            "a {name} with its preset applied was added"
+        );
+    }
+
+    #[test]
+    fn the_browser_lists_scroll_with_the_wheel() {
+        let mut app = empty();
+        app.browser.open_tab(crate::browser::Tab::Nodes);
+        let mut h = harness(app);
+        h.run();
+        let first = h
+            .get_all_by_label_contains("Gain")
+            .next()
+            .map(|n| n.rect().min.y);
+        for _ in 0..6 {
+            crate::testkit::wheel(
+                &mut h,
+                egui::pos2(150.0, 300.0),
+                egui::MouseWheelUnit::Point,
+                egui::vec2(0.0, -80.0),
+            );
+        }
+        h.run_steps(10);
+        let later = h
+            .get_all_by_label_contains("Gain")
+            .next()
+            .map(|n| n.rect().min.y);
+        assert!(later.is_none_or(|y| first.is_some_and(|f| y < f - 20.0)));
+    }
+
+    #[test]
+    fn the_sounds_tab_scrolls_and_opens_the_sources_page() {
+        let dir = tempfile::tempdir().unwrap();
+        let served = dir.path().join("served");
+        std::fs::create_dir_all(&served).unwrap();
+        let tones: Vec<f32> = (0..40).map(|n| 100.0 + n as f32 * 10.0).collect();
+        let (site, _) = crate::sounds::source::fake::site(&served, &tones);
+        let mut app = empty();
+        app.use_sounds(crate::sounds::Sounds::with(
+            crate::sounds::source::Net::new(site),
+            Some(dir.path().join("sounds-data")),
+            vec![crate::sounds::source::fake::source()],
+        ));
+        app.browser.open_tab(crate::browser::Tab::Sounds);
+        let mut h = harness(app);
+        for _ in 0..60 {
+            h.run_steps(2);
+            if !h.state().sounds_busy() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        h.run_steps(5);
+        let first = h
+            .query_by_label_contains("Tone 100")
+            .map(|n| n.rect().min.y);
+        for _ in 0..8 {
+            crate::testkit::wheel(
+                &mut h,
+                egui::pos2(150.0, 300.0),
+                egui::MouseWheelUnit::Point,
+                egui::vec2(0.0, -80.0),
+            );
+        }
+        h.run_steps(10);
+        let later = h
+            .query_by_label_contains("Tone 100")
+            .map(|n| n.rect().min.y);
+        assert!(later.is_none_or(|y| first.is_some_and(|f| y < f - 20.0)));
+        h.get_by_label("Sources…").click();
+        h.run_steps(5);
+        h.get_by_label("Settings");
     }
 }

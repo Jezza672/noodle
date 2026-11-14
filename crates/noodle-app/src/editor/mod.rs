@@ -131,7 +131,10 @@ pub struct EditorState {
     clip_requested: Option<crate::timeline::ClipAction>,
     /// Nodes or groups chosen in the browser, to add on the next frame: at
     /// the point given (graph coordinates), or at the centre of the view.
-    add_requested: Vec<(Choice, Option<Pos2>)>,
+    add_requested: Vec<(Choice, Option<Pos2>, Option<String>)>,
+    /// Presets to apply to what was just added, by node and library entry,
+    /// until the app takes them.
+    preset_requests: Vec<(NodeId, String)>,
     /// Something carried out of the timeline and let go of over the canvas,
     /// until the app takes it.
     dropped: Option<Dropped>,
@@ -234,6 +237,7 @@ impl Default for EditorState {
             arrange_requested: false,
             clip_requested: None,
             add_requested: Vec::new(),
+            preset_requests: Vec::new(),
             dropped: None,
             dropped_files: None,
             refused: None,
@@ -326,8 +330,15 @@ impl EditorState {
 
     /// Asks for a node or group from the browser to be added on the next
     /// frame, at `at` in graph coordinates or else at the centre of the view.
-    pub fn request_add(&mut self, choice: Choice, at: Option<Pos2>) {
-        self.add_requested.push((choice, at));
+    /// With `preset` (a library entry ID), the preset is applied to what was
+    /// added once it is in the project: see [`take_preset_requests`](Self::take_preset_requests).
+    pub fn request_add(&mut self, choice: Choice, at: Option<Pos2>, preset: Option<String>) {
+        self.add_requested.push((choice, at, preset));
+    }
+
+    /// The presets to apply to nodes the browser added, now that they exist.
+    pub fn take_preset_requests(&mut self) -> Vec<(NodeId, String)> {
+        std::mem::take(&mut self.preset_requests)
     }
 
     /// Asks for the nodes to be auto-arranged (see [`arrange`]) on the next
@@ -895,9 +906,16 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
         }
     }
 
-    for (choice, at) in std::mem::take(&mut state.add_requested) {
+    for (choice, at, preset) in std::mem::take(&mut state.add_requested) {
         let at = at.unwrap_or_else(|| f.t.to_graph(canvas.center()));
+        let before = state.selected.clone();
         add_choice(state, &f, &mut inputs, &mut edits, choice, at);
+        // The node that was added is the one now selected.
+        if let (Some(preset), true) = (preset, state.selected != before)
+            && let Some(&id) = state.selected.iter().next()
+        {
+            state.preset_requests.push((id, preset));
+        }
     }
 
     let painter = ui.painter_at(canvas);

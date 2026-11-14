@@ -22,15 +22,20 @@ pub enum Item {
     Sound(SoundKey),
     /// A node type carried out of the browser's Nodes tab, by its type ID.
     Node(&'static str),
-    /// A group template carried out of the browser's Groups tab, by
-    /// [`template_key`] of its library entry ID.
+    /// A group template carried out of the browser's Nodes tab, by
+    /// [`entry_key`] of its library entry ID.
     Template(u64),
+    /// A node type with one of its presets: the type ID and the preset's
+    /// [`entry_key`].
+    NodePreset(&'static str, u64),
+    /// A group template with one of its presets: both entries' [`entry_key`].
+    TemplatePreset(u64, u64),
 }
 
-/// What a carried group template is called: a hash of its library entry ID, so
-/// that what is carried stays `Copy`. The app finds the entry again by hashing
-/// the IDs the library lists.
-pub fn template_key(entry: &str) -> u64 {
+/// What a carried library entry is called: a hash of its ID, so that what is
+/// carried stays `Copy`. The app finds the entry again by hashing the IDs the
+/// library lists.
+pub fn entry_key(entry: &str) -> u64 {
     use std::hash::{Hash, Hasher};
     let mut hasher = std::collections::hash_map::DefaultHasher::new();
     entry.hash(&mut hasher);

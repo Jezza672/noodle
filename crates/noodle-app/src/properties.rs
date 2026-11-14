@@ -106,9 +106,10 @@ fn spectrum_views(ui: &mut Ui, session: &Session, trace: Option<&crate::editor::
     ui.add_space(4.0);
 }
 
-/// The Presets control: pick a preset that fits, save the values as a user
-/// preset, or overwrite the user preset applied (when it has been edited).
-/// For a group the presets are for everything inside it.
+/// The Presets section: the presets that fit this node or group, to pick one
+/// (the one applied is ticked, and says when it has been edited since), and
+/// buttons to save the values as a user preset or overwrite the user preset
+/// applied. For a group the presets are for everything inside it.
 fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut Vec<Edit>) {
     let is_group = node.type_id == GROUP;
     if !is_group && session.registry().get(&node.type_id).is_none() {
@@ -119,35 +120,74 @@ fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut 
     let current = match &status {
         Some(s) if s.modified => format!("{} (modified)", s.name),
         Some(s) => s.name.clone(),
-        None => "None".to_string(),
+        None => "none applied".to_string(),
     };
-    ui.horizontal(|ui| {
-        ui.label("Presets");
-        crate::widgets::Dropdown::from_id_salt(("presets", id))
-            .selected_text(current)
-            .show_ui(ui, |ui| {
-                for (heading, store) in [("System", SYSTEM), ("User", USER)] {
-                    let mut listed = available
-                        .iter()
-                        .filter(|(entry, _)| entry.starts_with(store))
-                        .peekable();
-                    if listed.peek().is_none() {
-                        continue;
-                    }
-                    ui.weak(heading);
-                    for (entry, name) in listed {
-                        let applied = status.as_ref().is_some_and(|s| s.id == *entry);
-                        if ui.selectable_label(applied, *name).clicked() {
-                            edits.extend(session.apply_preset(id, entry));
+    egui::CollapsingHeader::new("Presets")
+        .id_salt(("presets section", id))
+        .default_open(true)
+        .show(ui, |ui| {
+            ui.weak(current);
+            // A long list is worth searching; a short one is just shown.
+            let search = ui.id().with(("preset search", id));
+            let mut query: String = ui.data(|d| d.get_temp(search)).unwrap_or_default();
+            if available.len() > 6 {
+                ui.add(
+                    egui::TextEdit::singleline(&mut query)
+                        .hint_text("Search presets")
+                        .desired_width(ui.available_width()),
+                );
+            } else {
+                query.clear();
+            }
+            let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
+            ui.data_mut(|d| d.insert_temp(search, query));
+            for (heading, store) in [("System", SYSTEM), ("User", USER)] {
+                let mut listed = available
+                    .iter()
+                    .filter(|(entry, name)| {
+                        entry.starts_with(store) && {
+                            let name = name.to_lowercase();
+                            words.iter().all(|w| name.contains(w))
                         }
+                    })
+                    .peekable();
+                if listed.peek().is_none() {
+                    continue;
+                }
+                ui.weak(heading);
+                for (entry, name) in listed {
+                    let applied = status.as_ref().is_some_and(|s| s.id == *entry);
+                    let label = match (applied, status.as_ref().is_some_and(|s| s.modified)) {
+                        (true, true) => format!("{name}  ✓ modified"),
+                        (true, false) => format!("{name}  ✓"),
+                        _ => (*name).to_owned(),
+                    };
+                    if ui
+                        .selectable_label(applied, label)
+                        .on_hover_text("Apply to this one, as one undo step")
+                        .clicked()
+                    {
+                        edits.extend(session.apply_preset(id, entry));
                     }
                 }
-                if available.is_empty() {
-                    ui.weak("None fit yet");
-                }
-            });
-    });
+            }
+            if available.is_empty() {
+                ui.weak("None fit yet. Save its values below.");
+            }
+            save_preset(ui, id, is_group, &status, edits);
+        });
+    ui.separator();
+}
 
+/// The Save and Save as… buttons of the Presets section, and the box that
+/// names a new preset.
+fn save_preset(
+    ui: &mut Ui,
+    id: NodeId,
+    is_group: bool,
+    status: &Option<crate::session::PresetStatus>,
+    edits: &mut Vec<Edit>,
+) {
     let naming = ui.id().with(("naming-preset", id));
     let mut name: Option<String> = ui.data(|d| d.get_temp(naming));
     let mut just_opened = false;
@@ -209,7 +249,6 @@ fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut 
         }),
         None => ui.data_mut(|d| d.remove::<String>(naming)),
     }
-    ui.separator();
 }
 
 /// What a group's controls are: its inputs that feed a parameter inside, with
@@ -2751,12 +2790,10 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_node_preset_is_applied_from_the_presets_control_in_one_undo_step() {
+    fn a_saved_node_preset_is_applied_from_the_presets_section_in_one_undo_step() {
         let mut h = harness([Node::new("noodle.filter.svf").with_param("cutoff", 900.0)]);
         saved(&mut h.state_mut().session, NodeId(1), "Mellow");
         set_cutoff(&mut h, 4000.0);
-        h.run();
-        h.get_by_role(egui::accesskit::Role::ComboBox).click();
         h.run();
         h.get_by_label("User");
         h.get_by_label("Mellow").click();
@@ -2764,16 +2801,14 @@ mod tests {
         assert_eq!(param(&h, "cutoff"), Some(900.0));
         let node = h.state().session.project().graph().node(NodeId(1)).unwrap();
         assert_eq!(node.preset.as_deref(), Some("user:node:mellow"));
-        let shown = |h: &Harness<'_, State>| {
-            let combo = h.get_by_role(egui::accesskit::Role::ComboBox);
-            let node = combo.accesskit_node();
-            node.value().unwrap_or_default()
-        };
-        assert_eq!(shown(&h), "Mellow");
+        // The section says which is applied, with a tick on it in the list.
+        h.get_by_label("Mellow");
+        h.get_by_label("Mellow  ✓");
         // Edited since: it says so.
         set_cutoff(&mut h, 1000.0);
         h.run();
-        assert_eq!(shown(&h), "Mellow (modified)");
+        h.get_by_label("Mellow (modified)");
+        h.get_by_label("Mellow  ✓ modified");
         // One undo step undid the apply, not part of it.
         h.state_mut().session.undo();
         assert_eq!(param(&h, "cutoff"), Some(900.0));
@@ -2890,8 +2925,6 @@ mod tests {
             state.session.edit(edits);
         });
         h.run();
-        h.get_by_role(egui::accesskit::Role::ComboBox).click();
-        h.run();
         h.get_by_label("System");
         h.get_by_label("Deep Kick").click();
         h.run();
@@ -2911,9 +2944,7 @@ mod tests {
 
     #[test]
     fn nothing_fits_a_node_no_preset_was_made_for() {
-        let mut h = harness([Node::new("noodle.noise.white")]);
-        h.get_by_role(egui::accesskit::Role::ComboBox).click();
-        h.run();
-        h.get_by_label("None fit yet");
+        let h = harness([Node::new("noodle.noise.white")]);
+        h.get_by_label_contains("None fit yet");
     }
 }

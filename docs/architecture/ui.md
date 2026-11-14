@@ -339,16 +339,18 @@ It has these views:
 - **Browser** (`noodle-app/src/browser.rs`): one panel at the left of the
   window, shown from View > Browser (or "Show or Hide Browser" in the palette),
   that holds everything that can be found and put into the project. Its tabs
-  are Sounds, Nodes, Groups and Presets. The whole panel collapses to a thin
+  are Sounds and Nodes. The whole panel collapses to a thin
   strip (the ◀ at its top right, or "Collapse or Expand Browser" in the
   palette) and opens again from the strip's ▶, so it can stay out of the way of
-  the canvas. Nodes and Groups list what the Add-node search lists
-  (`editor::search_entries`, so they never disagree): a click adds it at the
-  centre of the canvas, a drag adds it where it is dropped
-  (`carry::Item::Node`, `Item::Template`, taken by `EditorState::request_add`,
-  which uses the same `add_choice` as the Shift+A search). Presets lists the
-  presets that fit the selected node or group (`Session::presets_for`) and a
-  click applies one, as one undo step. Asking for sounds from anywhere
+  the canvas. Nodes lists, in one list, what the Add-node search lists
+  (`editor::search_entries`, so they never disagree): nodes by category, then
+  saved groups. A click adds it at the centre of the canvas, a drag adds it
+  where it is dropped (`carry::Item::Node`, `Item::Template`, taken by
+  `EditorState::request_add`, which uses the same `add_choice` as the Shift+A
+  search). A row with presets unfolds them, and a preset is added the same way
+  (`Item::NodePreset`, `Item::TemplatePreset`), applied once the node exists.
+  Applying a preset to a node already in the project is the Presets section of
+  the properties panel. Asking for sounds from anywhere
   (File > Browse Sounds…, the Sampler's button) opens the panel on its Sounds
   tab, out of its strip.
 - **Sounds tab** (`noodle-app/src/sounds`, ADR 0012), opened from the browser,
