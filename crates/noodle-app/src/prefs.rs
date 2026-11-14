@@ -52,6 +52,14 @@ pub struct Prefs {
     /// first-use popup). About this machine's downloads, so not exported.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub drum_models: std::collections::BTreeMap<String, bool>,
+    /// The sources of sounds the user added (the built-in one is not listed).
+    /// About this machine's folders and logins, so not exported.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub sources: Vec<crate::sounds::source::SourceSpec>,
+    /// The tokens and passwords of those sources, by source id, for a machine
+    /// with no keychain to keep them in. Never exported.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub source_secrets: std::collections::BTreeMap<String, String>,
     /// The keys the user changed, by command (see `app::commands`).
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub keymap: std::collections::BTreeMap<String, String>,
@@ -72,6 +80,8 @@ impl Default for Prefs {
             snap: crate::snap::DEFAULT,
             record_quantise: Default::default(),
             drum_models: Default::default(),
+            sources: Default::default(),
+            source_secrets: Default::default(),
             keymap: Default::default(),
         }
     }
@@ -87,6 +97,8 @@ impl Prefs {
             monitor_device: String::new(),
             sandbox_plugins: false,
             drum_models: Default::default(),
+            sources: Default::default(),
+            source_secrets: Default::default(),
             ..self.clone()
         }
     }
@@ -267,6 +279,55 @@ pub fn remember_drum_model(id: &str, enabled: bool) {
     });
 }
 
+/// The sources of sounds the user added.
+pub fn sources() -> Vec<crate::sounds::source::SourceSpec> {
+    CURRENT.with_borrow(|current| {
+        current
+            .as_ref()
+            .map(|(_, prefs)| prefs.sources.clone())
+            .unwrap_or_default()
+    })
+}
+
+/// Saves the sources of sounds the user added, with the other preferences, if
+/// [`init`] has been called.
+pub fn remember_sources(sources: &[crate::sounds::source::SourceSpec]) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.sources = sources.to_vec();
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
+/// The secret kept in the preferences for a source, if any.
+pub fn source_secret(id: &str) -> Option<String> {
+    CURRENT.with_borrow(|current| current.as_ref()?.1.source_secrets.get(id).cloned())
+}
+
+/// Keeps (or with `None` forgets) a source's secret in the preferences.
+pub fn remember_source_secret(id: &str, secret: Option<&str>) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        let changed = match secret {
+            Some(secret) => prefs
+                .source_secrets
+                .insert(id.to_owned(), secret.to_owned())
+                .as_deref()
+                != Some(secret),
+            None => prefs.source_secrets.remove(id).is_some(),
+        };
+        if changed && let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
 /// The keys the user changed, as [`init`] read them or [`remember_keymap`]
 /// last saved them.
 pub fn keymap() -> std::collections::BTreeMap<String, String> {
@@ -344,6 +405,8 @@ pub fn adopt(imported: &Prefs) -> Prefs {
             monitor_device: prefs.monitor_device.clone(),
             sandbox_plugins: prefs.sandbox_plugins,
             drum_models: prefs.drum_models.clone(),
+            sources: prefs.sources.clone(),
+            source_secrets: prefs.source_secrets.clone(),
             ..imported.portable()
         };
         if let Err(error) = save(path, prefs) {
@@ -475,6 +538,8 @@ mod tests {
             snap: crate::snap::DEFAULT,
             record_quantise: Default::default(),
             drum_models: Default::default(),
+            sources: Default::default(),
+            source_secrets: Default::default(),
             keymap: Default::default(),
         }
     }

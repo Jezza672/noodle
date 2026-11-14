@@ -829,6 +829,9 @@ impl App {
         let edits = self.plugin_browser.show(ui.ctx(), &mut self.session);
         self.session.edit(edits);
         self.sounds.show(ui.ctx());
+        if self.sounds.take_wants_sources() {
+            self.open_settings(crate::settings::Tab::Sources);
+        }
         for done in self.sounds.poll(&self.session) {
             crate::sounds::apply::apply(&mut self.session, done);
         }
@@ -850,6 +853,7 @@ impl App {
             &mut self.display,
             &mut self.session,
             &mut self.models,
+            &mut self.sounds,
         );
         if let Some(config) = settings.audio {
             self.session.set_audio_config(config);

@@ -24,6 +24,10 @@ pub enum Licence {
     /// Free text supplied by the author, shown as is.
     #[serde(rename = "custom")]
     Custom(String),
+    /// Nobody has said. What a folder on disk is until its owner sets one;
+    /// treated as the most cautious case. Not valid in a published pack.
+    #[serde(rename = "unknown")]
+    Unknown,
 }
 
 impl Licence {
@@ -31,7 +35,7 @@ impl Licence {
     pub fn requires_credit(&self) -> bool {
         match self {
             Licence::Spdx(id) => id.starts_with("CC-BY") || id == "MIT",
-            Licence::Default | Licence::Custom(_) => false,
+            Licence::Default | Licence::Custom(_) | Licence::Unknown => false,
         }
     }
 
@@ -40,7 +44,7 @@ impl Licence {
     pub fn allows_redistribution(&self) -> bool {
         match self {
             Licence::Spdx(_) => true,
-            Licence::Default | Licence::Custom(_) => false,
+            Licence::Default | Licence::Custom(_) | Licence::Unknown => false,
         }
     }
 
@@ -50,6 +54,7 @@ impl Licence {
             Licence::Default => "Default".into(),
             Licence::Spdx(id) => id.clone(),
             Licence::Custom(_) => "Custom".into(),
+            Licence::Unknown => "Unknown".into(),
         }
     }
 }

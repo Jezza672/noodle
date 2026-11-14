@@ -98,6 +98,7 @@ fn check_licence(
             push(sample, ProblemKind::UnknownSpdx { id: id.clone() })
         }
         Licence::Custom(t) if t.trim().is_empty() => push(sample, ProblemKind::EmptyCustomLicence),
+        Licence::Unknown => push(sample, ProblemKind::UnknownLicence),
         _ => {}
     }
 }

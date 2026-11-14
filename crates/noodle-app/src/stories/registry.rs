@@ -36,7 +36,7 @@ pub struct Story {
     pub missing: &'static str,
 }
 
-pub const STORIES: [Story; 29] = [
+pub const STORIES: [Story; 30] = [
     Story {
         id: "S01",
         title: "Comp a vocal from multiple takes",
@@ -210,6 +210,12 @@ pub const STORIES: [Story; 29] = [
         title: "Find a sound and use it",
         status: Status::Full,
         missing: "",
+    },
+    Story {
+        id: "S32",
+        title: "Add a source of sounds",
+        status: Status::Partial,
+        missing: "Stops before the native folder dialog: adding a folder is tested, not routed.",
     },
 ];
 

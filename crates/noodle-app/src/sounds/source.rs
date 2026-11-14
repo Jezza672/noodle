@@ -5,14 +5,17 @@
 //! a [`Net`], so tests serve a fake site and the app serves HTTP.
 
 use std::io::Read;
+use std::path::PathBuf;
 use std::sync::Arc;
 
 use noodle_download::{Auth, Cache, Downloader, Error, Request, Response, Transport};
 use noodle_io::decode_file;
 use noodle_nodes::Sample;
-use noodle_packs::{Index, Manifest};
+use noodle_packs::{Index, Licence, Manifest};
+use serde::{Deserialize, Serialize};
 
 use super::catalogue::{Entry, SourceId, entries_of};
+use super::folder;
 
 /// The id of the source Noodle ships with.
 pub const BUILT_IN_ID: &str = "built-in";
@@ -24,23 +27,148 @@ pub const BUILT_IN_URL: &str = "https://sounds.noodledaw.com";
 /// The most an index or a manifest may be. A source is not trusted.
 const MAX_TEXT: u64 = 16 * 1024 * 1024;
 
-/// A static site of packs.
+/// A place sounds come from: a static site of packs, or a folder on disk.
 #[derive(Clone)]
 pub struct Source {
     pub id: SourceId,
     pub name: String,
+    /// Where the site is. Empty for a folder.
     pub url: String,
     pub auth: Option<Auth>,
+    /// Set when the source is a folder, which is read in place.
+    pub folder: Option<Folder>,
+}
+
+/// A folder on this computer, used as a source. Nothing in it is copied or
+/// uploaded: the files are scanned, hashed and played from where they are.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Folder {
+    pub path: PathBuf,
+    /// What its sounds are licensed under, [`Licence::Unknown`] until set.
+    pub licence: Licence,
+}
+
+/// How a source's credentials are sent. The secret itself (the token or the
+/// password) is not here: it is in the keychain, or the preferences file where
+/// there is none.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Login {
+    None,
+    Bearer,
+    Basic(String),
+}
+
+/// A source the user added, as it is kept in the preferences.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct SourceSpec {
+    pub id: SourceId,
+    pub name: String,
+    pub place: Place,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub enum Place {
+    Url { url: String, login: Login },
+    Folder { path: PathBuf, licence: Licence },
 }
 
 impl Source {
     /// The source Noodle ships with.
     pub fn built_in() -> Self {
+        Self::remote(
+            BUILT_IN_ID,
+            "Noodle sounds",
+            std::env::var("NOODLE_SOUNDS_URL").unwrap_or_else(|_| BUILT_IN_URL.into()),
+            None,
+        )
+    }
+
+    /// A static site at `url`.
+    pub fn remote(
+        id: impl Into<SourceId>,
+        name: impl Into<String>,
+        url: impl Into<String>,
+        auth: Option<Auth>,
+    ) -> Self {
         Self {
-            id: BUILT_IN_ID.into(),
-            name: "Noodle sounds".into(),
-            url: std::env::var("NOODLE_SOUNDS_URL").unwrap_or_else(|_| BUILT_IN_URL.into()),
+            id: id.into(),
+            name: name.into(),
+            url: url.into(),
+            auth,
+            folder: None,
+        }
+    }
+
+    /// The folder at `path`.
+    pub fn local(
+        id: impl Into<SourceId>,
+        name: impl Into<String>,
+        path: PathBuf,
+        licence: Licence,
+    ) -> Self {
+        Self {
+            id: id.into(),
+            name: name.into(),
+            url: String::new(),
             auth: None,
+            folder: Some(Folder { path, licence }),
+        }
+    }
+
+    /// Whether Noodle ships it. The rest are the user's, and can be removed.
+    pub fn is_built_in(&self) -> bool {
+        self.id == BUILT_IN_ID
+    }
+
+    /// Whether the user pointed Noodle at a host it knows nothing about.
+    pub fn is_self_hosted(&self) -> bool {
+        !self.is_built_in() && self.folder.is_none()
+    }
+
+    /// What is kept of it in the preferences. The secret is not.
+    pub fn spec(&self) -> SourceSpec {
+        let place = match &self.folder {
+            Some(folder) => Place::Folder {
+                path: folder.path.clone(),
+                licence: folder.licence.clone(),
+            },
+            None => Place::Url {
+                url: self.url.clone(),
+                login: match &self.auth {
+                    None => Login::None,
+                    Some(Auth::Bearer(_)) => Login::Bearer,
+                    Some(Auth::Basic { user, .. }) => Login::Basic(user.clone()),
+                },
+            },
+        };
+        SourceSpec {
+            id: self.id.clone(),
+            name: self.name.clone(),
+            place,
+        }
+    }
+
+    /// The source a spec describes, with its `secret` (the token or password)
+    /// if it has credentials.
+    pub fn from_spec(spec: SourceSpec, secret: Option<String>) -> Self {
+        match spec.place {
+            Place::Folder { path, licence } => Self::local(spec.id, spec.name, path, licence),
+            Place::Url { url, login } => {
+                let auth = match (login, secret) {
+                    (Login::Bearer, Some(token)) => Some(Auth::Bearer(token)),
+                    (Login::Basic(user), Some(password)) => Some(Auth::Basic { user, password }),
+                    _ => None,
+                };
+                Self::remote(spec.id, spec.name, url, auth)
+            }
+        }
+    }
+
+    /// The token or password, which is what goes in the keychain.
+    pub fn secret(&self) -> Option<&str> {
+        match self.auth.as_ref()? {
+            Auth::Bearer(token) => Some(token),
+            Auth::Basic { password, .. } => Some(password),
         }
     }
 
@@ -65,6 +193,42 @@ impl Source {
             None => request,
         }
     }
+}
+
+/// The address of a source's site, tidied: the scheme checked, a pasted
+/// `index.json` and trailing slash dropped. A login is only ever sent over
+/// https (or to this computer), and never goes in the address, where it would
+/// be saved in plain text and shown.
+pub fn clean_url(raw: &str, with_login: bool) -> Result<String, String> {
+    let raw = raw.trim();
+    let (scheme, rest) = raw
+        .split_once("://")
+        .ok_or("The address should start with https://")?;
+    let scheme = scheme.to_ascii_lowercase();
+    if scheme != "https" && scheme != "http" {
+        return Err("The address should start with https://".into());
+    }
+    let rest = rest.split(['?', '#']).next().unwrap_or_default();
+    let authority = rest.split('/').next().unwrap_or_default();
+    if authority.is_empty() {
+        return Err("There is no host in that address".into());
+    }
+    if authority.contains('@') {
+        return Err("Enter the login in its own fields, not in the address".into());
+    }
+    let host = match authority.strip_prefix('[') {
+        Some(v6) => v6.split(']').next().map(|h| format!("[{h}]")),
+        None => authority.split(':').next().map(str::to_owned),
+    }
+    .unwrap_or_default()
+    .to_ascii_lowercase();
+    let local = matches!(host.as_str(), "localhost" | "127.0.0.1" | "[::1]");
+    if scheme == "http" && with_login && !local {
+        return Err("A login is only sent over https. Use an https address".into());
+    }
+    let rest = rest.trim_end_matches('/');
+    let rest = rest.strip_suffix("/index.json").unwrap_or(rest);
+    Ok(format!("{scheme}://{}", rest.trim_end_matches('/')))
 }
 
 /// How bytes reach the app. Clones share the transport.
@@ -104,7 +268,10 @@ fn read_text(net: &Net, request: &Request) -> Result<String, String> {
 /// The catalogue of `source`: every pack the index lists. A pack whose
 /// manifest can't be read is left out and doesn't hide the others; an index
 /// that can't be read is the source being unreachable.
-pub fn fetch_catalogue(net: &Net, source: &Source) -> Result<Vec<Entry>, String> {
+pub fn fetch_catalogue(net: &Net, source: &Source, known: &[Entry]) -> Result<Vec<Entry>, String> {
+    if let Some(local) = &source.folder {
+        return folder::scan(source, local, known);
+    }
     let index_url = source.join("index.json");
     let index = Index::from_json(&read_text(net, &source.request(index_url))?)
         .map_err(|e| format!("the index isn't one Noodle can read: {e}"))?;
@@ -122,9 +289,26 @@ pub fn fetch_catalogue(net: &Net, source: &Source) -> Result<Vec<Entry>, String>
 }
 
 /// The hash of the audio in the file at `path`, which is what names a sound.
-fn audio_hash(path: &std::path::Path) -> Result<String, String> {
+pub(super) fn audio_hash(path: &std::path::Path) -> Result<String, String> {
     let audio = decode_file(path).map_err(|e| e.to_string())?;
     Ok(Sample::from_audio(&audio).hash())
+}
+
+/// The file of a sound in a folder source, which is played where it is.
+/// Checked first: a file that has changed since the scan is not the sound that
+/// was listed, and the sound's hash is what the project keeps.
+pub fn open_local(entry: &Entry) -> Result<std::path::PathBuf, String> {
+    let file = entry
+        .file
+        .as_ref()
+        .ok_or("that sound has no file on this computer")?;
+    if !file.path.is_file() {
+        return Err("the file isn't there any more. Refresh the source".into());
+    }
+    if audio_hash(&file.path)? != entry.key {
+        return Err("the file has changed since it was scanned. Refresh the source".into());
+    }
+    Ok(file.path.clone())
 }
 
 /// Brings the sound `hash` into `cache` from `source` and returns where it
@@ -174,6 +358,8 @@ pub(crate) mod fake {
         pub files: Arc<Mutex<HashMap<String, Vec<u8>>>>,
         pub asked: Arc<Mutex<Vec<String>>>,
         pub offline: Arc<std::sync::atomic::AtomicBool>,
+        /// The `Authorization` header every request must carry, if set.
+        pub require: Arc<Mutex<Option<String>>>,
     }
 
     impl Site {
@@ -196,6 +382,10 @@ pub(crate) mod fake {
             self.asked.lock().unwrap().push(request.url.clone());
             if self.offline.load(std::sync::atomic::Ordering::Relaxed) {
                 return Err(Error::Network("no connection".into()));
+            }
+            let want = self.require.lock().unwrap().clone();
+            if want.is_some_and(|w| request.auth.as_ref().map(|a| a.header()) != Some(w)) {
+                return Err(Error::Network("401".into()));
             }
             match self.files.lock().unwrap().get(&request.url) {
                 Some(body) => Ok(Response {
@@ -264,11 +454,31 @@ pub(crate) mod fake {
     }
 
     pub fn source() -> super::Source {
-        super::Source {
-            id: "fake".into(),
-            name: "Fake".into(),
-            url: BASE.into(),
-            auth: None,
-        }
+        super::Source::remote("fake", "Fake", BASE, None)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn an_address_is_tidied_and_a_login_is_kept_off_plain_http() {
+        let ok = |raw, login| clean_url(raw, login);
+        assert_eq!(
+            ok(" https://Packs.example.com/sounds/index.json ", false).unwrap(),
+            "https://Packs.example.com/sounds"
+        );
+        assert_eq!(ok("https://x.test/", true).unwrap(), "https://x.test");
+        assert_eq!(ok("https://x.test/p/?a=1#b", false).unwrap(), "https://x.test/p");
+        assert!(ok("x.test", false).is_err(), "no scheme");
+        assert!(ok("ftp://x.test", false).is_err());
+        assert!(ok("https://", false).is_err());
+        assert!(ok("https://me:pw@x.test", false).is_err(), "login in the address");
+        assert!(ok("http://x.test", true).is_err(), "a login over plain http");
+        assert!(ok("http://x.test", false).is_ok());
+        assert!(ok("http://localhost:8080", true).is_ok());
+        assert!(ok("http://127.0.0.1:9", true).is_ok());
+        assert!(ok("http://[::1]:9", true).is_ok());
     }
 }
