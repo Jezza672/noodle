@@ -598,10 +598,32 @@ fn sample_picker(
             }
         }
     }
+    if ui
+        .button("Browse sounds…")
+        .on_hover_text("Find a sound in the packs, and drag it here")
+        .clicked()
+    {
+        crate::sounds::ask(ui.ctx(), crate::sounds::Ask::Open);
+    }
+    // A sound carried here from the Sounds panel sets the sample.
+    let sound_area = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
+    if let Some(drop) = crate::carry::drop_in(ui.ctx(), sound_area)
+        && let crate::carry::Item::Sound(key) = drop.item
+    {
+        crate::carry::take_drop(ui.ctx());
+        crate::sounds::ask(
+            ui.ctx(),
+            crate::sounds::Ask::Use(key, crate::sounds::Then::Sampler(id)),
+        );
+    }
     // A clip carried here from the timeline sets the sample.
     let area = egui::Rect::from_x_y_ranges(ui.max_rect().x_range(), top..=ui.cursor().top());
-    let over = crate::carry::carried(ui.ctx())
-        .is_some_and(|(item, at)| matches!(item, crate::carry::Item::Clip(_)) && area.contains(at));
+    let over = crate::carry::carried(ui.ctx()).is_some_and(|(item, at)| {
+        matches!(
+            item,
+            crate::carry::Item::Clip(_) | crate::carry::Item::Sound(_)
+        ) && area.contains(at)
+    });
     if over {
         ui.painter().rect_stroke(
             area,
