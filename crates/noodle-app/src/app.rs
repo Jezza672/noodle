@@ -2822,9 +2822,9 @@ impl App {
         ctx: &egui::Context,
         id: noodle_core::ClipId,
     ) -> Option<timeline::Loaded> {
-        let name = self.session.project().clip(id)?.as_audio()?.source.clone();
+        let audio = self.session.project().clip(id)?.as_audio()?.clone();
         let directory = self.session.directory().map(std::path::Path::to_path_buf);
-        self.timeline.source(ctx, directory.as_deref(), &name)
+        self.timeline.source_of(ctx, directory.as_deref(), &audio)
     }
 
     /// The transients of the clips linked to the open one (see

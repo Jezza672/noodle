@@ -20,7 +20,6 @@ deliberately deferred items.
 4. **`noodle-publish`:** build the static site, `noodle-cli packs build`, and the CI workflow that publishes from main to R2. The first real publish needs R2 credentials as repo secrets.
 6. **Sources:** the settings page (URL, credentials, remove, storage use, Clean up), self-hosted sources, and folders added in place from the browser.
 7. **Make shareable pack:** the wizard and its usability stories and routes (find a sample, add a source, make a pack).
-8. **Clips use the hash store**, so a dragged clip needs no copy.
 
 Later: Nodes, Groups and Presets as tabs of the same browser.
 
