@@ -1,5 +1,6 @@
 //! The Settings window: one place, with a tab each for the General
-//! preferences, the Audio devices and the Display switches. Everything in it
+//! preferences, the Audio devices, the Display switches and the separation
+//! Models. Everything in it
 //! is saved in the user's settings file (see [`crate::prefs`]); the audio
 //! devices and the plugin sandbox belong to this machine and are left out of
 //! exported and project-embedded settings.
@@ -16,16 +17,18 @@ pub enum Tab {
     General,
     Audio,
     Display,
+    Models,
 }
 
 impl Tab {
-    const ALL: [Tab; 3] = [Tab::General, Tab::Audio, Tab::Display];
+    const ALL: [Tab; 4] = [Tab::General, Tab::Audio, Tab::Display, Tab::Models];
 
     fn label(self) -> &'static str {
         match self {
             Tab::General => "General",
             Tab::Audio => "Audio",
             Tab::Display => "Display",
+            Tab::Models => "Models",
         }
     }
 }
@@ -68,6 +71,7 @@ impl Settings {
         latency: Option<LatencyReport>,
         display: &mut Display,
         session: &mut Session,
+        models: &mut crate::models::Models,
     ) -> Outcome {
         let mut out = Outcome::default();
         if !self.open {
@@ -85,6 +89,7 @@ impl Settings {
                 Tab::General => general(ui, session, &mut out),
                 Tab::Audio => out.audio = devices.body(ui, latency),
                 Tab::Display => out.display_changed = crate::display::body(ui, display),
+                Tab::Models => models.body(ui),
             }
             ui.add_space(8.0);
             ui.separator();

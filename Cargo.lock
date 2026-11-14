@@ -2606,6 +2606,7 @@ dependencies = [
  "egui",
  "egui_kittest",
  "noodle-core",
+ "noodle-download",
  "noodle-engine",
  "noodle-io",
  "noodle-nodes",

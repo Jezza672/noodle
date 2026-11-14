@@ -18,6 +18,7 @@ use noodle_io::{
     split_bin,
 };
 
+use crate::models::Models;
 use crate::session::drum_rack::{DrumAnalysis, DrumRackPlan, PadAssignment, PlannedBin, pad_name};
 use crate::session::{Edit, Session};
 
@@ -86,6 +87,9 @@ struct State {
     show_all: bool,
     /// Also add the groove as a MIDI clip.
     groove: bool,
+    /// The separation model chosen in the drop-down: the id of an enabled,
+    /// downloaded one, or `None` when there is none.
+    model: Option<&'static str>,
     /// The bins and pads before each manual edit (move, split, merge), newest
     /// last. The slider throws them away with the edits.
     undo: Vec<(Binning, BTreeMap<u8, Placed>)>,
@@ -100,6 +104,7 @@ impl State {
             pads: BTreeMap::new(),
             show_all: false,
             groove: false,
+            model: None,
             undo: Vec::new(),
         };
         state.guess_pads();
@@ -386,7 +391,14 @@ pub struct DrumRackDialog {
 }
 
 impl DrumRackDialog {
-    pub fn show(&mut self, ctx: &egui::Context, session: &mut Session) {
+    pub fn show(&mut self, ctx: &egui::Context, session: &mut Session, models: &mut Models) {
+        let active = session.drum_progress().is_some() || session.drum_analysis().is_some();
+        // The first time the dialog is wanted, offer the model downloads. The
+        // dialog follows once that is answered.
+        if active && models.first_use_due() {
+            models.show_first_use(ctx);
+            return;
+        }
         if let Some(fraction) = session.drum_progress() {
             self.state = None;
             let mut cancel = false;
@@ -418,10 +430,17 @@ impl DrumRackDialog {
             self.state = Some(State::new(&analysis));
         }
         let state = self.state.as_mut().expect("just made");
+        let ready = models.ready();
+        if state
+            .model
+            .is_none_or(|id| !ready.iter().any(|m| m.id == id))
+        {
+            state.model = ready.first().map(|m| m.id);
+        }
         let mut answer = None;
         let modal = crate::dialog::modal(ctx, "drum rack", |ui| {
             ui.set_width(640.0);
-            answer = body(ui, session, &analysis, state);
+            answer = body(ui, session, &analysis, state, models);
         });
         if modal.should_close() {
             answer.get_or_insert(false);
@@ -443,12 +462,49 @@ impl DrumRackDialog {
     }
 }
 
+/// The drop-down of separation models: only the enabled, downloaded ones. With
+/// none, it says where to switch one on.
+fn model_choice(ui: &mut Ui, state: &mut State, models: &Models) {
+    let ready = models.ready();
+    ui.horizontal(|ui| {
+        ui.label("Separation model");
+        let name = |id: Option<&str>| {
+            ready
+                .iter()
+                .find(|m| Some(m.id) == id)
+                .map_or("None enabled", |m| m.name)
+        };
+        egui::ComboBox::from_id_salt("drum model")
+            .selected_text(name(state.model))
+            .show_ui(ui, |ui| {
+                for m in &ready {
+                    ui.selectable_value(&mut state.model, Some(m.id), m.name);
+                }
+            })
+            .response
+            .widget_info(|| {
+                egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "Separation model")
+            });
+        if ready.is_empty() {
+            let downloading = noodle_stems::drum::ALL_MODELS
+                .iter()
+                .any(|m| models.is_downloading(m));
+            ui.weak(if downloading {
+                "Downloading… (Settings, Models)"
+            } else {
+                "Enable and download one in Settings, on the Models tab"
+            });
+        }
+    });
+}
+
 /// Draws the dialog; returns true for Create, false for Cancel.
 fn body(
     ui: &mut Ui,
     session: &mut Session,
     analysis: &DrumAnalysis,
     state: &mut State,
+    models: &Models,
 ) -> Option<bool> {
     let mut answer = None;
     let mut actions: Vec<Action> = Vec::new();
@@ -462,6 +518,7 @@ fn body(
         .weak(),
     );
     ui.add_space(4.0);
+    model_choice(ui, state, models);
     ui.horizontal(|ui| {
         ui.label("Merge more");
         let slider = ui.add(egui::Slider::new(&mut state.merge, 0.0..=1.0).show_value(false));
