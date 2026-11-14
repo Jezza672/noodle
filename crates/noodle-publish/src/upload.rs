@@ -18,8 +18,6 @@ pub use noodle_network::s3::Put;
 
 /// Where a site is published.
 pub trait Store {
-    /// The size of the object at `key`, or `None` if there is none.
-    fn size(&self, key: &str) -> Result<Option<u64>, String>;
     /// The object at `key`, or `None` if there is none.
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String>;
     /// Writes `body` at `key`. With `only_new`, leaves an existing key alone.
@@ -180,14 +178,6 @@ impl Store for DirStore {
         }
     }
 
-    fn size(&self, key: &str) -> Result<Option<u64>, String> {
-        match fs::metadata(self.0.join(key)) {
-            Ok(m) => Ok(Some(m.len())),
-            Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(e) => Err(e.to_string()),
-        }
-    }
-
     fn put(
         &self,
         key: &str,
@@ -216,10 +206,6 @@ pub struct R2(pub noodle_network::s3::Bucket);
 impl Store for R2 {
     fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
         self.0.get(key)
-    }
-
-    fn size(&self, key: &str) -> Result<Option<u64>, String> {
-        self.0.size(key)
     }
 
     fn put(

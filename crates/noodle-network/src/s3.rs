@@ -1,5 +1,4 @@
-//! A client for an S3-compatible bucket, as far as publishing needs it: HEAD,
-//! GET and a conditional PUT, signed with Signature V4. Written against R2 (region
+//! A client for an S3-compatible bucket, as far as publishing needs it: GET and a conditional PUT, signed with Signature V4. Written against R2 (region
 //! `auto`, path-style URLs).
 
 use std::time::Duration;
@@ -90,25 +89,6 @@ impl Bucket {
 }
 
 impl Bucket {
-    /// The size of the object at `key`, or `None` if there is none.
-    pub fn size(&self, key: &str) -> Result<Option<u64>, String> {
-        let path = self.path(key);
-        let (auth, date, hash) = self.sign("HEAD", &path, b"");
-        let response = self
-            .agent
-            .head(format!("https://{}{path}", self.host))
-            .header("x-amz-date", date)
-            .header("x-amz-content-sha256", hash)
-            .header("Authorization", auth)
-            .call()
-            .map_err(|e| e.to_string())?;
-        match response.status().as_u16() {
-            200 => Ok(response.body().content_length()),
-            404 => Ok(None),
-            other => Err(format!("HEAD {key}: status {other}")),
-        }
-    }
-
     /// The object at `key`, or `None` if there is none.
     pub fn get(&self, key: &str) -> Result<Option<Vec<u8>>, String> {
         let path = self.path(key);
