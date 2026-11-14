@@ -76,9 +76,8 @@ fn real_weights_separate_a_click_track() {
 }
 
 /// A synthetic kit (kicks, snares, hats) through real weights: prints each
-/// part's RMS, and checks that the kick part holds the low end and the hat
-/// part the high end. A smoke check of layouts, not a quality test; listen on
-/// real kits too.
+/// part's RMS, and checks that the kick part is the loudest. A smoke check of
+/// layouts, not a quality test; listen on real kits too.
 #[test]
 fn real_weights_put_a_synthetic_kit_in_the_right_parts() {
     use noodle_stems::drum::DrumPart;
