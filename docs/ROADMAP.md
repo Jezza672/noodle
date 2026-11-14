@@ -6,8 +6,8 @@ is recorded in [features/](features/README.md); the design as it stands is in
 its record to a file in `features/` and delete it from this page.
 
 All milestones M0 to M11 are built in code. What is left is the feature
-items below that make Noodle usable in place of another DAW, checks that need a
-person and hardware, and a few
+items below that make Noodle usable in place of another DAW, six planned
+features with issues, checks that need a person and hardware, and a few
 deliberately deferred items.
 
 ## Sample packs
@@ -68,6 +68,38 @@ Later: Nodes, Groups and Presets as tabs of the same browser.
 
 **Then:** routes for the 24 stories that have a status but no route (U10, #316, #368), more naive-agent runs (#319), grades and thresholds once there is data for every story (#323), and the cross-DAW baseline (#325, optional).
 
+
+## Planned: new nodes and MIDI files
+
+Six features picked from a shortlist in November 2026. Each issue holds the design, the tests and the open questions; the chunks below are one PR each. Every instrument here ships as a group template built from the new primitive, never as a synth node. They are independent of each other, so the order is only a suggestion: quick wins first, then the two sound primitives.
+
+**MIDI file import and export (#540).** Drop a .mid on the timeline or use File > Import MIDI; export a clip, a track or the arrangement.
+
+1. Reader and writer in `noodle-io` (`smf.rs`, on `midly`), the mapping to `MidiClip` and `TempoMap`, timeline drop and menu import as one undo step, export, and `noodle midi-export`. Size L.
+
+**Microtuning (#539).** A Tuning node on the events wire retunes notes from a Scala file by adding a per-note pitch expression, so Voices, Mono Note, the Sampler and plugins that honour tuning follow it.
+
+1. The node, the `.scl` and `.kbm` parser, the loader in the properties panel, an example with a golden render. Size M.
+
+**Harmony and chance nodes (#538).** Scale Quantise, Chord, Transpose, Euclidean and Chance on the events wire, and a Key source node that puts the timeline's key on a wire (the pattern of ADR 0008).
+
+1. Scale Quantise, Chord, Transpose, the Key node and `Transport::key`. Size M.
+2. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M.
+
+**Wavetable oscillator (#536).** `noodle.osc.wavetable`: a table is a sample in the store, `position` is a parameter, band-limited copies are built off the audio thread.
+
+1. The oscillator, the table builder, an example with a golden render. Size M.
+2. Generated CC0 tables as system samples, the Wavetable Synth template and presets, the cycle drawn on the node, drop a table on the node. Size M.
+
+**Grains (#537).** `noodle.instrument.grains`: a granular sample player with position, spray, size, density, pitch and scatter as parameters, one cloud per voice.
+
+1. The node, an example with a golden render. Size M to L.
+2. The Grain Pad and Grain Freeze templates, the waveform and grains drawn on the node, the S17 route. Size M.
+
+**Looper (#541).** `noodle.util.looper`: record, loop on the bar, overdub, undo the last layer and clear, driven by gate parameters. The recording is session state.
+
+1. The node. Size L.
+2. The Looper template (Buttons, Launch Quantise, Mono Note for the gate), the state display, the S27 route. Size M.
 
 ## Owed: needs a person on real hardware
 
