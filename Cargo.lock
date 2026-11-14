@@ -2785,6 +2785,7 @@ dependencies = [
  "noodle-io",
  "noodle-network",
  "ort",
+ "realfft",
  "sha2",
  "tar",
  "tempfile",
