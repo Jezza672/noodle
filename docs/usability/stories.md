@@ -1,8 +1,8 @@
 # DAW user stories: advanced user
 
-Thirty goals an experienced user would expect to reach in a serious DAW. Each is a moderately complex, end-to-end task, written from the user's side and not tailored to Noodle's current features. Twenty came from a writer with no knowledge of Noodle; ten were kept from a first draft where they covered ground the other list did not. Difficulty is not assessed yet; the method is in [usability.md](../architecture/usability.md).
+Thirty-one goals an experienced user would expect to reach in a serious DAW. Each is a moderately complex, end-to-end task, written from the user's side and not tailored to Noodle's current features. Twenty came from a writer with no knowledge of Noodle; ten were kept from a first draft where they covered ground the other list did not. Difficulty is not assessed yet; the method is in [usability.md](../architecture/usability.md).
 
-Each story has a stable ID so scores, scripts and issues can refer to it. Never renumber: retire a story by marking it retired (S25 and S26 are, so thirty are live), and give a new one the next free ID.
+Each story has a stable ID so scores, scripts and issues can refer to it. Never renumber: retire a story by marking it retired (S25 and S26 are, so thirty-one are live), and give a new one the next free ID.
 
 Under each story are its **late changes**: edits to an early decision, made after the story is finished. Each one measures how costly and how destructive it is to change your mind. They were written before anyone checked how Noodle handles them, on purpose.
 
@@ -144,3 +144,5 @@ Under each story are its **late changes**: edits to an early decision, made afte
   - *Late change:* Use one from a source I added myself.
 - **S32** **Add a source of sounds.** As a producer, I want to point Noodle at a sample library that a friend or I host, or at a folder on my disk, so that I can use sounds that are not in the built-in packs without copying them anywhere.
   - *Late change:* Give the folder a licence.
+- **S33** **Make a shareable pack.** As a sample-library maker, I want to turn a folder of my sounds into a pack with my name, a licence and tags on it, check that it is valid, and export it as something I can host, so that other people can add my sounds as a source without me uploading anything to anyone.
+  - *Late change:* Leave one sound out and give another its own licence.

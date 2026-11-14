@@ -659,6 +659,20 @@ impl Probe<'_> {
         panic!("the Sounds panel never finished");
     }
 
+    /// Lets menus and animations run, without input, until something labelled
+    /// like `word` is on screen. A submenu opens after a short delay, so a
+    /// fixed settle is sometimes too early on a slow machine.
+    pub fn settle_until_like(&mut self, word: &str) {
+        for _ in 0..200 {
+            self.h.run_steps(5);
+            if self.h.get_all_by_label_contains(word).next().is_some() {
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        panic!("nothing labelled like {word:?} ever appeared");
+    }
+
     /// Lets scrolling and animations finish; no input.
     pub fn settle(&mut self) {
         self.h.run_steps(30);

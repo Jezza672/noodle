@@ -18,6 +18,7 @@ mod page;
 mod panel;
 pub mod source;
 mod vault;
+mod wizard;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -156,6 +157,8 @@ pub struct Sounds {
     form: page::Form,
     /// What the Sources page last did, for the user to read.
     note: Option<String>,
+    /// The Make a shareable pack wizard, while it is open.
+    wizard: Option<wizard::Wizard>,
 }
 
 impl Default for Sounds {
@@ -211,6 +214,7 @@ impl Sounds {
             wants_sources: false,
             form: Default::default(),
             note: None,
+            wizard: None,
         };
         sounds.load_saved();
         sounds
@@ -230,11 +234,25 @@ impl Sounds {
     /// Whether a worker is still fetching a list or a sound.
     #[cfg(test)]
     pub fn busy(&self) -> bool {
-        self.refreshing.is_some() || !self.fetching.is_empty()
+        self.refreshing.is_some()
+            || !self.fetching.is_empty()
+            || self.wizard.as_ref().is_some_and(wizard::Wizard::busy)
     }
 
     pub fn open(&mut self) {
         self.open = true;
+    }
+
+    /// Opens the Make a shareable pack wizard on the folder at `dir`.
+    pub fn make_pack(&mut self, dir: PathBuf) {
+        self.wizard = Some(wizard::Wizard::start(dir));
+    }
+
+    /// Asks which folder to make a pack from, then opens the wizard on it.
+    pub fn choose_pack_folder(&mut self) {
+        if let Some(dir) = crate::picker::pick_folder_in("of sounds to make a pack from", None) {
+            self.make_pack(dir);
+        }
     }
 
     /// What the panel lists, before the search.
@@ -542,6 +560,7 @@ impl Sounds {
         if self.open {
             panel::show(self, ctx);
         }
+        wizard::show(self, ctx);
     }
 }
 

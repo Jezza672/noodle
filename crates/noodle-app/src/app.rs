@@ -235,6 +235,8 @@ pub(crate) enum Action {
     TogglePlugins,
     /// Shows the Sounds panel.
     OpenSounds,
+    /// Choose a folder of sounds and open the pack wizard on it.
+    MakePack,
     ToggleCache,
     ToggleCpu,
     ImportAudio,
@@ -1057,6 +1059,7 @@ impl App {
             ui.separator();
             item(ui, "Import Audio…", None, true, Action::ImportAudio);
             item(ui, "Browse Sounds…", None, true, Action::OpenSounds);
+            item(ui, "Make Shareable Pack…", None, true, Action::MakePack);
             item(ui, "Export Audio…", None, true, Action::ExportAudio);
             ui.separator();
             item(ui, "Settings…", Some(&SETTINGS), true, Action::Settings);
@@ -2597,6 +2600,7 @@ impl App {
             Action::ToggleScope => self.scope_open = !self.scope_open,
             Action::TogglePlugins => self.plugin_browser.toggle(),
             Action::OpenSounds => self.sounds.open(),
+            Action::MakePack => self.sounds.choose_pack_folder(),
             Action::ToggleCache => self.cache_panel.toggle(),
             Action::SetTempo { centi_bpm, drag } => {
                 let project = self.session.project();

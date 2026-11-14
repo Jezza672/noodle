@@ -240,14 +240,38 @@ impl Net {
         Self(Arc::new(transport))
     }
 
+    /// HTTP, and the `file://` sites the wizard exports to this computer.
     pub fn http() -> Self {
-        Self::new(noodle_network::Http)
+        Self::new(Hosted)
     }
 }
 
 impl Transport for Net {
     fn open(&self, request: &Request) -> Result<Response, Error> {
         self.0.open(request)
+    }
+}
+
+/// The address of a site on this computer, which is how a pack the wizard
+/// exported is added as a source.
+pub fn file_url(dir: &std::path::Path) -> String {
+    format!("file://{}", dir.to_string_lossy().replace('\\', "/"))
+}
+
+/// Http for a site on the internet, the disk for a `file://` one.
+struct Hosted;
+
+impl Transport for Hosted {
+    fn open(&self, request: &Request) -> Result<Response, Error> {
+        let Some(path) = request.url.strip_prefix("file://") else {
+            return noodle_network::Http.open(request);
+        };
+        let file = std::fs::File::open(path).map_err(|e| Error::Network(e.to_string()))?;
+        let length = file.metadata().ok().map(|m| m.len());
+        Ok(Response {
+            length,
+            body: Box::new(file),
+        })
     }
 }
 

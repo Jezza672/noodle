@@ -413,3 +413,38 @@ fn a_folder_is_a_source_read_in_place_with_an_unknown_licence() {
     assert!(matches!(s.reach(&id), Some(Reach::Unreachable(_))));
     assert!(!s.is_cached(&entry(&s, "Boom").key));
 }
+
+#[test]
+fn an_exported_site_is_added_as_a_source_and_read_from_disk() {
+    let dir = tempfile::tempdir().unwrap();
+    let scratch = tempfile::tempdir().unwrap();
+    let src = dir.path().join("Kit");
+    std::fs::create_dir_all(&src).unwrap();
+    for (name, hz) in [("Deep", 110.0), ("High", 330.0)] {
+        let (bytes, _) = tone(scratch.path(), hz);
+        std::fs::write(src.join(format!("{name}.flac")), bytes).unwrap();
+    }
+    let (found, _) = wizard::scan(&src).unwrap();
+    let mut draft = wizard::Draft::new(src, found);
+    draft.author = "Jo".into();
+    let out = dir.path().join("site");
+    wizard::export(&draft, wizard::Format::Folder, &out).unwrap();
+
+    let mut s = Sounds::with(Net::http(), Some(dir.path().join("data")), Vec::new());
+    assert!(s.add_site(&dir.path().join("nothing"), "x").is_err());
+    let id = s.add_site(&out, "Kit").unwrap();
+    settle(&mut s, &session());
+    let names: Vec<&str> = s
+        .entries()
+        .iter()
+        .filter(|e| e.source == id)
+        .map(|e| e.name.as_str())
+        .collect();
+    assert_eq!(names.len(), 2, "{names:?}");
+    // And a sound is fetched from it like from any source.
+    let deep = entry(&s, "Deep").clone();
+    s.request(deep, Then::Sampler(noodle_core::NodeId(1)));
+    let arrived = settle(&mut s, &session());
+    assert!(arrived[0].result.is_ok(), "{:?}", arrived[0].result);
+    assert!(s.add_site(&out, "Kit").is_err(), "twice is refused");
+}

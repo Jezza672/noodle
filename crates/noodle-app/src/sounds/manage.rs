@@ -135,6 +135,28 @@ impl Sounds {
         Ok(self.adopt(Source::local(id, name, path, Licence::Unknown)))
     }
 
+    /// Adds a site the wizard exported to `dir` as a source, read from disk.
+    pub fn add_site(&mut self, dir: &std::path::Path, name: &str) -> Result<SourceId, String> {
+        if !dir.join("index.json").is_file() {
+            return Err("That folder has no index.json".into());
+        }
+        let dir = std::fs::canonicalize(dir).unwrap_or_else(|_| dir.to_owned());
+        let url = super::source::file_url(&dir);
+        if self.sources.iter().any(|s| s.url == url) {
+            return Err("That source is already added".into());
+        }
+        let name = match name.trim() {
+            "" => "My pack",
+            name => name,
+        };
+        let id = self.next_id();
+        self.note = Some(format!(
+            "Added {name}. It is read from {}, so move it to a host when you share it.",
+            dir.display()
+        ));
+        Ok(self.adopt(Source::remote(id, name, url, None)))
+    }
+
     /// Sets the licence every sound in a folder source is listed under.
     pub fn set_folder_licence(&mut self, id: &str, licence: Licence) {
         let Some(folder) = self

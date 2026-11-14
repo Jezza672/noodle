@@ -354,3 +354,49 @@ fn definitions_can_be_checked_without_the_audio() {
     check_defs(root.path()).unwrap();
     assert!(check(root.path()).is_err());
 }
+
+#[test]
+fn packs_in_hand_build_without_a_pack_ron_and_zip_into_a_site() {
+    let (dir, a, _) = fixture();
+    // The audio folder holds no pack.ron: the wizard publishes it in place.
+    let audio = dir.path().join("sounds");
+    fs::create_dir_all(&audio).unwrap();
+    write_wav(&audio.join("a.wav"), &a.samples, a.channels, a.sample_rate).unwrap();
+    let pack = FoundPack {
+        def: noodle_packs::PackDef {
+            format: noodle_packs::FORMAT_VERSION,
+            id: "mine".into(),
+            name: "Mine".into(),
+            version: 1,
+            description: String::new(),
+            author: "Me".into(),
+            licence: noodle_packs::Licence::Default,
+            samples: vec![noodle_packs::SampleDef {
+                hash: hash_of(&a),
+                name: "A".into(),
+                file: Some("a.wav".into()),
+                author: None,
+                licence: None,
+                tags: vec![],
+                credit: None,
+            }],
+        },
+        dir: audio,
+    };
+    let packs = [pack];
+    let site = dir.path().join("site");
+    let report = build_packs(&packs, &site).unwrap();
+    assert_eq!((report.packs, report.written), (1, 1));
+    assert_eq!(verify(&site).unwrap(), 1);
+
+    let zip = dir.path().join("mine.zip");
+    build_zip(&packs, &zip).unwrap();
+    let mut archive = zip::ZipArchive::new(fs::File::open(&zip).unwrap()).unwrap();
+    let mut names: Vec<String> = (0..archive.len())
+        .map(|i| archive.by_index(i).unwrap().name().unwrap().into_owned())
+        .collect();
+    names.sort();
+    assert!(names.contains(&"index.json".to_owned()), "{names:?}");
+    assert!(names.contains(&"packs/mine/manifest.json".to_owned()));
+    assert!(names.iter().any(|n| n.starts_with("objects/")));
+}
