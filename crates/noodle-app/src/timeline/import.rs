@@ -121,7 +121,7 @@ mod tests {
         let tone: Vec<f32> = (0..4_410).map(|i| (i as f32 * 0.05).sin() * 0.5).collect();
         noodle_io::write_wav(&file, &tone, 1, 44_100).unwrap();
         let session = Session::new(Nodes::all());
-        let added = import(&session, &[file.clone()], NodeId(1), Tick::ZERO);
+        let added = import(&session, std::slice::from_ref(&file), NodeId(1), Tick::ZERO);
         let Some(Command::AddClip { clip, .. }) = added.command else {
             panic!("no clip: {:?}", added.notice);
         };
