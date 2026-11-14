@@ -2637,6 +2637,7 @@ dependencies = [
  "noodle-nodes",
  "noodle-packs",
  "noodle-plugins",
+ "noodle-publish",
  "noodle-stems",
  "rfd",
  "ron",
@@ -2792,6 +2793,7 @@ dependencies = [
  "noodle-packs",
  "tempfile",
  "thiserror 2.0.21",
+ "zip",
 ]
 
 [[package]]

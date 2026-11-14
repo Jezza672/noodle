@@ -96,8 +96,17 @@ fn filters(sounds: &mut Sounds, ui: &mut Ui) {
             } else {
                 source.name.clone()
             };
-            if ui.selectable_label(on, label).on_hover_text(tip).clicked() {
+            let chip = ui.selectable_label(on, label).on_hover_text(tip);
+            if chip.clicked() {
                 sounds.filter.source = (!on).then(|| source.id.clone());
+            }
+            if let Some(folder) = &source.folder {
+                chip.context_menu(|ui| {
+                    if ui.button("Make shareable pack…").clicked() {
+                        sounds.make_pack(folder.path.clone());
+                        ui.close();
+                    }
+                });
             }
         }
         let add = ui
@@ -107,6 +116,10 @@ fn filters(sounds: &mut Sounds, ui: &mut Ui) {
             sounds.wants_sources = true;
         }
         add.context_menu(|ui| {
+            if ui.button("Make shareable pack…").clicked() {
+                sounds.choose_pack_folder();
+                ui.close();
+            }
             if ui.button("Add a folder as a source…").clicked() {
                 if let Some(path) = crate::picker::pick_folder()
                     && let Err(why) = sounds.add_folder(path)

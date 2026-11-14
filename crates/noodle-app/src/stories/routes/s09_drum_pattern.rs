@@ -489,7 +489,7 @@ fn rack_steps(h: &mut Handle, _size: usize) {
     h.step("place the group on the kick pad from its menu");
     let place = h.find_first("Place on…");
     h.click(place, Modifiers::NONE);
-    h.probe().settle();
+    h.probe().settle_until_like("Place on Bass Drum");
     let pad = h.find_like("Place on Bass Drum");
     h.click(pad, Modifiers::NONE);
     h.probe().settle();

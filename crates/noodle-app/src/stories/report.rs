@@ -514,8 +514,8 @@ mod tests {
             score("S00", "default", 5),
         ]);
         let lines: Vec<&str> = md.lines().collect();
-        // Header, rule, 30 stories, the framework row.
-        assert_eq!(lines.len(), 2 + 30 + 1);
+        // Header, rule, 31 stories, the framework row.
+        assert_eq!(lines.len(), 2 + 31 + 1);
         let s12 = lines.iter().find(|l| l.contains("| S12 ")).unwrap();
         assert!(s12.contains("default / expert"), "{s12}");
         assert!(s12.contains("| 7 | 12.3 |"), "{s12}");

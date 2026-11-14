@@ -257,8 +257,14 @@ pub struct Report {
 /// already in `out` is left as it is, so building into a copy of the live
 /// site writes only what is new; `index.json` is written last.
 pub fn build(packs_dir: &Path, out: &Path) -> Result<Report, PublishError> {
-    let packs = find_packs(packs_dir)?;
-    for pack in &packs {
+    build_packs(&find_packs(packs_dir)?, out)
+}
+
+/// [`build`] for packs already in hand. A pack's `dir` is where its audio is;
+/// it need not hold a `pack.ron`, so the GUI wizard can publish a folder of
+/// sounds without writing anything into it.
+pub fn build_packs(packs: &[FoundPack], out: &Path) -> Result<Report, PublishError> {
+    for pack in packs {
         let problems = validate_dir(&pack.def, &pack.dir);
         if !problems.is_empty() {
             return Err(PublishError::Invalid {
@@ -272,7 +278,7 @@ pub fn build(packs_dir: &Path, out: &Path) -> Result<Report, PublishError> {
 
     let mut report = Report::default();
     let mut entries = Vec::new();
-    for pack in &packs {
+    for pack in packs {
         let mut manifest = pack.def.manifest();
         for i in 0..pack.def.samples.len() {
             let hash = &pack.def.samples[i].hash;
@@ -295,6 +301,66 @@ pub fn build(packs_dir: &Path, out: &Path) -> Result<Report, PublishError> {
     let index = out.join(INDEX);
     write_text(&index, &json(Index::new(entries).to_json(), &index)?)?;
     Ok(report)
+}
+
+/// Builds the site for `packs` and writes it as one zip at `zip_path`, the
+/// way a host that takes an upload wants it. The site is built in a scratch
+/// folder that is removed afterwards.
+pub fn build_zip(packs: &[FoundPack], zip_path: &Path) -> Result<Report, PublishError> {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static N: AtomicUsize = AtomicUsize::new(0);
+    let scratch = std::env::temp_dir().join(format!(
+        "noodle-site-{}-{}",
+        std::process::id(),
+        N.fetch_add(1, Ordering::Relaxed)
+    ));
+    let result = build_packs(packs, &scratch).and_then(|report| {
+        zip_site(&scratch, zip_path)?;
+        Ok(report)
+    });
+    let _ = fs::remove_dir_all(&scratch);
+    result
+}
+
+/// Writes every file under `site` into a zip, by its path relative to `site`.
+pub fn zip_site(site: &Path, zip_path: &Path) -> Result<(), PublishError> {
+    let zip_err = |message: String| PublishError::Encode {
+        path: zip_path.to_owned(),
+        message,
+    };
+    let mut files = Vec::new();
+    let mut stack = vec![site.to_owned()];
+    while let Some(dir) = stack.pop() {
+        for entry in fs::read_dir(&dir).map_err(io(&dir))? {
+            let path = entry.map_err(io(&dir))?.path();
+            if path.is_dir() {
+                stack.push(path);
+            } else {
+                files.push(path);
+            }
+        }
+    }
+    // Objects first and `index.json` last, like an upload.
+    files.sort_by_key(|p| (p.file_name().is_some_and(|n| n == INDEX), p.clone()));
+    let partial = zip_path.with_extension("partial");
+    let file = fs::File::create(&partial).map_err(io(&partial))?;
+    let mut zip = zip::ZipWriter::new(file);
+    let options = zip::write::SimpleFileOptions::default();
+    for path in files {
+        let name = path
+            .strip_prefix(site)
+            .unwrap_or(&path)
+            .components()
+            .map(|c| c.as_os_str().to_string_lossy().into_owned())
+            .collect::<Vec<_>>()
+            .join("/");
+        zip.start_file(name, options)
+            .map_err(|e| zip_err(e.to_string()))?;
+        let mut source = fs::File::open(&path).map_err(io(&path))?;
+        std::io::copy(&mut source, &mut zip).map_err(io(zip_path))?;
+    }
+    zip.finish().map_err(|e| zip_err(e.to_string()))?;
+    fs::rename(&partial, zip_path).map_err(io(zip_path))
 }
 
 fn json(r: Result<String, PackError>, path: &Path) -> Result<String, PublishError> {
