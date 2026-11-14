@@ -79,6 +79,30 @@ fn find(node: NodeId) -> Result<Found, HostError> {
         .ok_or_else(|| HostError("that plugin isn't running (is the graph playing?)".into()))
 }
 
+/// The latency, in samples, the node's running plugin reports now, which a
+/// CLAP plugin can change after it is loaded. `None` when none runs here (not
+/// built yet, or in a host process).
+pub fn node_latency(node: NodeId) -> Option<u32> {
+    match find(node) {
+        Ok(Found::Local(_, flags)) => {
+            Some(flags.latency.load(std::sync::atomic::Ordering::Acquire))
+        }
+        _ => None,
+    }
+}
+
+/// Behaves as if the node's plugin had said its latency changed (CLAP
+/// `latency.changed`), for tests: the plugin thread asks it again.
+#[doc(hidden)]
+pub fn simulate_latency_changed(node: NodeId) {
+    if let Ok(Found::Local(_, flags)) = find(node) {
+        flags
+            .latency_changed
+            .store(true, std::sync::atomic::Ordering::Release);
+        crate::thread::ring();
+    }
+}
+
 /// Whether the node has a running plugin that can be opened or captured.
 pub fn is_running(node: NodeId) -> bool {
     find(node).is_ok()

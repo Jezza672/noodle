@@ -35,4 +35,4 @@ in the last one; the earlier batches are in the PRs the issues name.
 
 Left over: a zero-wake sandbox
 monitor (it needs a way to wait on the child process that does not take the
-`Child`), and a single retry policy for files that fail to open.
+`Child`). The single retry policy is in `deferred-items-2.md`.

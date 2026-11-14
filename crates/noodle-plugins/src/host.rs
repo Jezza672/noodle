@@ -48,6 +48,11 @@ pub(crate) struct Flags {
     /// A size the plugin asked for (width in the high half, height in the
     /// low), or 0.
     pub resize: AtomicU64,
+    /// The plugin's latency in samples, as last asked for.
+    pub latency: std::sync::atomic::AtomicU32,
+    /// The plugin said its latency changed (CLAP `latency.changed`): the
+    /// plugin thread asks it again.
+    pub latency_changed: AtomicBool,
     timers: Mutex<Timers>,
 }
 
@@ -155,6 +160,15 @@ pub(crate) struct HostMain<'a> {
 
 impl<'a> MainThreadHandler<'a> for HostMain<'a> {}
 
+impl clack_extensions::latency::HostLatencyImpl for HostMain<'_> {
+    fn changed(&self) {
+        self.shared
+            .flags
+            .latency_changed
+            .store(true, Ordering::Release);
+    }
+}
+
 impl HostParamsImplMainThread for HostMain<'_> {
     fn rescan(&self, _flags: ParamRescanFlags) {}
     fn clear(&self, _param_id: ClapId, _flags: ParamClearFlags) {}
@@ -203,7 +217,8 @@ impl HostHandlers for Host {
         builder
             .register::<HostGui>()
             .register::<HostParams>()
-            .register::<HostTimer>();
+            .register::<HostTimer>()
+            .register::<clack_extensions::latency::HostLatency>();
     }
 }
 

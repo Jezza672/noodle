@@ -196,15 +196,9 @@ Noodle loaded in another DAW: the node editor, properties, library and Sounds pa
   frames, spectral compressor, convolution reverb from an impulse response,
   noise-profile denoiser) and a choice of frame size (a config on Analyze that
   every spectral node on the wire adopts).
-- **Piano roll and recording:** keeping the raw take so a recorded MIDI clip
-  can be re-quantised afterwards (quantise on record and several MIDI
-  ports are built; overdub and count-in are in the items above). The 128-frame engine block is fixed;
-  it could follow the device period.
+- **Piano roll and recording:** the 128-frame engine block is fixed; it could
+  follow the device period.
 - **VST3:** an editor window on Linux (the app makes none).
-- **Plugin editor keeps its plugin running:** a plugin nothing listens to no
-  longer runs, so its editor's meters freeze. `always_runs` is per node type;
-  true-only-while-the-editor-is-open needs it to be per instance.
-- **Plugin latency changes:** a plugin's reported latency change (CLAP `changed`) is not followed until the node is rebuilt.
-- **Cleanup leftovers** (see `features/code-cleanup.md`): a sandbox monitor that
-  sleeps with no tick, and one retry policy for files that fail to open.
+- **Sandbox monitor with no tick** (see `features/code-cleanup.md` and
+  `features/deferred-items-2.md`): it wakes every 250 ms while a host is healthy.
 - **Flaky test** #138 stays open (no recurrence).

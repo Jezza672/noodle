@@ -15,6 +15,7 @@ mod lanes;
 mod live;
 mod looping;
 mod notes;
+mod requantise;
 
 use std::collections::BTreeSet;
 
@@ -45,15 +46,17 @@ const LANES: usize = 2;
 const STATUS: usize = 3;
 const HUMANISE: usize = 4;
 const ARTICULATION: usize = 5;
-const SNAP: usize = 6;
-const HELP: usize = 7;
-const SLOTS: [crate::toolbar::Slot; 8] = [
+const REQUANTISE: usize = 6;
+const SNAP: usize = 7;
+const HELP: usize = 8;
+const SLOTS: [crate::toolbar::Slot; 9] = [
     crate::toolbar::Slot::left(crate::toolbar::segment_width(3), 3),
     crate::toolbar::Slot::left(88.0, 2),
     crate::toolbar::Slot::left(84.0, 4),
     crate::toolbar::Slot::left(112.0, 6).after_divider(),
     crate::toolbar::Slot::left(114.0, 5),
     crate::toolbar::Slot::left(122.0, 5),
+    crate::toolbar::Slot::left(126.0, 6),
     crate::toolbar::Slot::right(112.0, 7),
     crate::toolbar::Slot::right(crate::toolbar::SQUARE, 8),
 ];
@@ -418,6 +421,7 @@ pub fn show(
                 clip,
                 midi,
             ),
+            REQUANTISE => requantise::controls(ui, mode, &mut out, id, clip, midi),
             SNAP => crate::toolbar::chip(
                 ui,
                 mode,
