@@ -112,6 +112,10 @@ Later: Nodes, Groups and Presets as tabs of the same browser.
   matching is built). Also listen to velocity layers and the groove clip on the
   Mac, and listen to the dialog's new audition (it plays straight to the
   monitor device) on the Mac: ask before making sound.
+- **Drum separation models on real weights** (`docs/features/drum-separation-models.md`):
+  fill in each model's address, SHA-256 and size, host the LarsNet ONNX conversion,
+  check the tensor layouts with `tests/drum_runtime.rs`, and listen on real kits.
+  Then the Models tab, first-use popup and dialog drop-down.
 - **Recording with a real microphone**, to check the latency compensation, and
   that the Audio Settings round-trip estimate matches what you hear.
 - **Stem separation on the real HT-Demucs weights** (M10), and listening to the
