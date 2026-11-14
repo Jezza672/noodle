@@ -117,6 +117,7 @@ pub struct App {
     outputs_open: bool,
     plugin_browser: PluginBrowser,
     sounds: crate::sounds::Sounds,
+    browser: crate::browser::Browser,
     cache_panel: CachePanel,
     drum_rack_dialog: crate::drum_rack_dialog::DrumRackDialog,
     models: crate::models::Models,
@@ -235,6 +236,8 @@ pub(crate) enum Action {
     TogglePlugins,
     /// Shows the Sounds panel.
     OpenSounds,
+    ToggleBrowser,
+    CollapseBrowser,
     /// Choose a folder of sounds and open the pack wizard on it.
     MakePack,
     ToggleCache,
@@ -348,6 +351,7 @@ impl App {
             outputs_open: false,
             plugin_browser: PluginBrowser::default(),
             sounds: crate::sounds::Sounds::default(),
+            browser: crate::browser::Browser::default(),
             cache_panel: CachePanel::default(),
             drum_rack_dialog: Default::default(),
             models: Default::default(),
@@ -653,6 +657,9 @@ impl App {
             .inner;
         self.session.edit(properties_edits);
 
+        self.browser
+            .show(ui, &mut self.session, &mut self.editor, &mut self.sounds);
+
         let arrangement = egui::Panel::top("arrangement")
             .resizable(true)
             .default_size(theme::timeline::DEFAULT_HEIGHT)
@@ -830,7 +837,13 @@ impl App {
         self.autosave_tick(ui.ctx());
         let edits = self.plugin_browser.show(ui.ctx(), &mut self.session);
         self.session.edit(edits);
-        self.sounds.show(ui.ctx());
+        if self.sounds.take_open_request() {
+            self.browser.open_tab(crate::browser::Tab::Sounds);
+        }
+        self.sounds.tick(
+            ui.ctx(),
+            self.browser.visible_tab() == Some(crate::browser::Tab::Sounds),
+        );
         if self.sounds.take_wants_sources() {
             self.open_settings(crate::settings::Tab::Sources);
         }
@@ -1214,11 +1227,14 @@ impl App {
                 actions.push(Action::TogglePlugins);
             }
             if ui
-                .selectable_label(self.sounds.is_open(), "Sounds")
-                .on_hover_text("Browse, hear and drag in sounds from packs")
+                .selectable_label(self.browser.is_shown(), "Browser")
+                .on_hover_text(
+                    "Sounds, nodes, groups and presets in a panel at the side. \
+                     It collapses to a strip",
+                )
                 .clicked()
             {
-                actions.push(Action::OpenSounds);
+                actions.push(Action::ToggleBrowser);
             }
             if ui
                 .selectable_label(self.cache_panel.is_open(), "Playback cache")
@@ -2600,6 +2616,8 @@ impl App {
             Action::ToggleScope => self.scope_open = !self.scope_open,
             Action::TogglePlugins => self.plugin_browser.toggle(),
             Action::OpenSounds => self.sounds.open(),
+            Action::ToggleBrowser => self.browser.toggle(),
+            Action::CollapseBrowser => self.browser.toggle_collapsed(),
             Action::MakePack => self.sounds.choose_pack_folder(),
             Action::ToggleCache => self.cache_panel.toggle(),
             Action::SetTempo { centi_bpm, drag } => {
@@ -2853,6 +2871,22 @@ impl App {
     /// graph. A clip dropped on a Sampler gives it the clip's part of the
     /// file; on the canvas it becomes a Sample node holding the same.
     /// A track is placed where it lands, if it is at the level being edited.
+    /// Where something dropped on the canvas goes, in graph coordinates: at the
+    /// pointer, or by a node it was dropped on.
+    fn drop_point(&self, on: editor::DropOn) -> egui::Pos2 {
+        match on {
+            editor::DropOn::Canvas(at) => at,
+            editor::DropOn::Sampler(node) => self
+                .session
+                .project()
+                .graph()
+                .node(node)
+                .map_or(egui::Pos2::ZERO, |n| {
+                    egui::pos2(n.position.x + 40.0, n.position.y + 40.0)
+                }),
+        }
+    }
+
     fn dropped_on_graph(&mut self, dropped: editor::Dropped) {
         use crate::carry::Item;
         use noodle_core::{Command, Config, Node, Position, Value};
@@ -2892,6 +2926,25 @@ impl App {
                     },
                 };
                 self.sounds.use_key(key, then);
+            }
+            Item::Node(type_id) => {
+                let at = self.drop_point(dropped.on);
+                self.editor
+                    .request_add(editor::Choice::Node(type_id), Some(at));
+            }
+            Item::Template(key) => {
+                let entry = self
+                    .session
+                    .library()
+                    .templates()
+                    .map(|(id, _)| id)
+                    .find(|id| crate::carry::template_key(id) == key)
+                    .map(str::to_owned);
+                if let Some(entry) = entry {
+                    let at = self.drop_point(dropped.on);
+                    self.editor
+                        .request_add(editor::Choice::Template(entry), Some(at));
+                }
             }
             Item::Track(group) => {
                 let at = match dropped.on {
@@ -5480,5 +5533,145 @@ mod tests {
             "{:?}",
             node.params
         );
+    }
+
+    /// The browser panel at the side: shown from View, with a tab for Sounds,
+    /// Nodes, Groups and Presets, and collapsible to a strip and back.
+    /// An app whose Sounds tab reads a fake source, never the network.
+    fn app_with_fake_sounds(dir: &std::path::Path) -> App {
+        use crate::sounds::source::{Net, fake};
+        let served = dir.join("served");
+        std::fs::create_dir_all(&served).unwrap();
+        let (site, _) = fake::site(&served, &[220.0]);
+        let mut app = empty();
+        app.use_sounds(crate::sounds::Sounds::with(
+            Net::new(site),
+            Some(dir.join("sounds-data")),
+            vec![fake::source()],
+        ));
+        app
+    }
+
+    #[test]
+    fn the_browser_shows_its_tabs_and_collapses_to_a_strip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut h = harness(app_with_fake_sounds(dir.path()));
+        h.run();
+        assert!(
+            h.query_by_label("Nodes").is_none(),
+            "hidden until asked for"
+        );
+        h.get_by_label("View").click();
+        h.run();
+        h.get_by_label("Browser").click();
+        h.run();
+        for tab in ["Sounds", "Nodes", "Groups", "Presets"] {
+            h.get_by_label(tab);
+        }
+        h.get_by_label("◀").click();
+        h.run();
+        assert!(h.state().browser.is_collapsed());
+        assert!(
+            h.query_by_label("Nodes").is_none(),
+            "only the strip is left"
+        );
+        // The transport's Play is a ▶ too: the strip's is the leftmost.
+        h.get_all_by_label("▶")
+            .min_by(|a, b| a.rect().min.x.total_cmp(&b.rect().min.x))
+            .unwrap()
+            .click();
+        // The Sounds tab is back on screen and asks its source again, which
+        // keeps repainting for a moment.
+        h.run_steps(3);
+        assert!(!h.state().browser.is_collapsed());
+        h.get_by_label("Groups");
+    }
+
+    #[test]
+    fn asking_for_sounds_opens_the_browser_out_of_its_strip() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut app = app_with_fake_sounds(dir.path());
+        app.browser.open_tab(crate::browser::Tab::Nodes);
+        app.browser.toggle_collapsed();
+        app.sounds.open();
+        let mut h = harness(app);
+        h.run();
+        assert!(!h.state().browser.is_collapsed());
+        assert_eq!(
+            h.state().browser.visible_tab(),
+            Some(crate::browser::Tab::Sounds)
+        );
+    }
+
+    #[test]
+    fn a_click_in_the_nodes_tab_adds_the_node() {
+        let mut app = empty();
+        app.browser.open_tab(crate::browser::Tab::Nodes);
+        // Searched for, so the row is on screen and not scrolled out of view.
+        app.browser.search_nodes("white noise");
+        let mut h = harness(app);
+        h.run();
+        let before = h.state().session.project().graph().nodes().count();
+        h.get_by_label("White Noise").click();
+        h.run();
+        let graph = h.state().session.project().graph();
+        assert_eq!(graph.nodes().count(), before + 1);
+        assert!(
+            graph
+                .nodes()
+                .any(|(_, n)| n.type_id == "noodle.noise.white")
+        );
+    }
+
+    #[test]
+    fn a_click_in_the_groups_tab_adds_the_template() {
+        let mut app = empty();
+        app.browser.open_tab(crate::browser::Tab::Groups);
+        let mut h = harness(app);
+        h.run();
+        h.get_by_label("Banjo").click();
+        h.run();
+        let graph = h.state().session.project().graph();
+        assert!(
+            graph
+                .nodes()
+                .any(|(_, n)| n.template.as_deref() == Some("system:template:banjo")),
+            "the Banjo template is in the project"
+        );
+    }
+
+    #[test]
+    fn the_presets_tab_applies_a_preset_to_the_selected_group() {
+        let mut app = empty();
+        let (group, command) = app
+            .session
+            .library()
+            .template("system:template:kick")
+            .unwrap()
+            .instantiate(
+                "system:template:kick",
+                None,
+                noodle_core::Position::default(),
+                || app.session.new_node_id(),
+            );
+        app.session.edit([Edit::Apply(command)]);
+        app.editor.select_only([group]);
+        app.browser.open_tab(crate::browser::Tab::Presets);
+        let mut h = harness(app);
+        h.run();
+        h.get_by_label("Deep Kick").click();
+        h.run();
+        let session = &h.state().session;
+        let node = session.project().graph().node(group).unwrap();
+        assert_eq!(node.preset.as_deref(), Some("system:group:kick-deep-kick"));
+    }
+
+    #[test]
+    fn the_presets_tab_asks_for_a_selection() {
+        let mut app = empty();
+        app.browser.open_tab(crate::browser::Tab::Presets);
+        let mut h = harness(app);
+        h.run();
+        h.get_by_label_contains("Select a node or group");
     }
 }

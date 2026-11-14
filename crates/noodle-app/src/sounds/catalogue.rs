@@ -22,14 +22,6 @@ pub enum Kind {
     Sound,
 }
 
-impl Kind {
-    pub fn name(self) -> &'static str {
-        match self {
-            Kind::Sound => "Sounds",
-        }
-    }
-}
-
 /// One item a source offers.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Entry {

@@ -40,9 +40,9 @@ mod layout;
 mod params;
 mod search;
 
-/// The add-node search, for the usability scorecard to type vocabulary into.
-#[cfg(test)]
-pub(crate) use search::entries as search_entries;
+/// The add-node search, for the usability scorecard to type vocabulary into
+/// and for the browser's Nodes and Groups tabs, which list the same things.
+pub(crate) use search::{Choice, Entry as SearchEntry, entries as search_entries};
 mod view;
 mod wire;
 
@@ -61,7 +61,7 @@ use crate::session::{Edit, Session};
 use crate::theme::{self, editor as colors};
 use layout::{FRAME_HEADER_HEIGHT, PortKind, REROUTE_SIZE, Scene, Side};
 pub use layout::{friendly_type_name, group_title};
-use search::{Choice, Search};
+use search::Search;
 use view::Transform;
 pub use view::View;
 
@@ -129,6 +129,9 @@ pub struct EditorState {
     arrange_requested: bool,
     /// Copy, cut, paste or duplicate, asked for by the Edit menu.
     clip_requested: Option<crate::timeline::ClipAction>,
+    /// Nodes or groups chosen in the browser, to add on the next frame: at
+    /// the point given (graph coordinates), or at the centre of the view.
+    add_requested: Vec<(Choice, Option<Pos2>)>,
     /// Something carried out of the timeline and let go of over the canvas,
     /// until the app takes it.
     dropped: Option<Dropped>,
@@ -230,6 +233,7 @@ impl Default for EditorState {
             scene_cache: None,
             arrange_requested: false,
             clip_requested: None,
+            add_requested: Vec::new(),
             dropped: None,
             dropped_files: None,
             refused: None,
@@ -318,6 +322,12 @@ impl EditorState {
     /// What was dropped on the canvas since the last call, if anything.
     pub fn take_dropped(&mut self) -> Option<Dropped> {
         self.dropped.take()
+    }
+
+    /// Asks for a node or group from the browser to be added on the next
+    /// frame, at `at` in graph coordinates or else at the centre of the view.
+    pub fn request_add(&mut self, choice: Choice, at: Option<Pos2>) {
+        self.add_requested.push((choice, at));
     }
 
     /// Asks for the nodes to be auto-arranged (see [`arrange`]) on the next
@@ -883,6 +893,11 @@ fn show_project(ui: &mut egui::Ui, state: &mut EditorState, mut inputs: Inputs<'
             ClipAction::Duplicate => duplicate(state, &f, &mut inputs, &mut edits),
             ClipAction::InsertTime | ClipAction::DeleteTime => {}
         }
+    }
+
+    for (choice, at) in std::mem::take(&mut state.add_requested) {
+        let at = at.unwrap_or_else(|| f.t.to_graph(canvas.center()));
+        add_choice(state, &f, &mut inputs, &mut edits, choice, at);
     }
 
     let painter = ui.painter_at(canvas);
@@ -3142,80 +3157,7 @@ fn popups(
                     }
                     return;
                 }
-                match choice {
-                    Choice::Node(type_id) => {
-                        let id = (inputs.new_node_id)();
-                        let mut node = Node::new(type_id).at(at.x, at.y);
-                        node.parent = state.group;
-                        if let Some(node_type) = inputs.registry.get(type_id) {
-                            node.config = node_type.initial_config();
-                        }
-                        if matches!(type_id, GROUP_INPUT | GROUP_OUTPUT) {
-                            // A group has one of each, holding all its ports:
-                            // asking for another selects the one it has.
-                            let existing = state.group.and_then(|group| {
-                                f.project
-                                    .graph()
-                                    .children(Some(group))
-                                    .find(|(_, n)| n.type_id == type_id)
-                                    .map(|(id, _)| id)
-                            });
-                            if let Some(existing) = existing {
-                                state.select_only([existing]);
-                                return;
-                            }
-                            node.config = group::ports_config(&[]);
-                        }
-                        // An Automation node gets its track in the sequencer
-                        // in the same undo step.
-                        let add = Command::AddNode { id, node };
-                        edits.push(Edit::Apply(
-                            if type_id == noodle_nodes::AUTOMATION_NODE_ID {
-                                Command::Batch(vec![
-                                    add,
-                                    crate::timeline::add_track::automation_lane(
-                                        id,
-                                        f.project.next_lane_id(),
-                                    ),
-                                ])
-                            } else {
-                                add
-                            },
-                        ));
-                        if type_id == noodle_nodes::TRACK_INPUT_ID {
-                            state.notice = Some(
-                                "A Track Input is a track of its own: it shows in the timeline as a new track".into(),
-                            );
-                        }
-                        state.select_only([id]);
-                    }
-                    Choice::Template(entry) => {
-                        if let Some(template) = inputs.library.template(&entry) {
-                            let (id, command) = template.instantiate(
-                                &entry,
-                                state.group,
-                                position(at),
-                                &mut *inputs.new_node_id,
-                            );
-                            edits.push(Edit::Apply(command));
-                            state.select_only([id]);
-                        }
-                    }
-                    Choice::Frame => {
-                        let id = (inputs.new_frame_id)();
-                        edits.push(Edit::Apply(Command::AddFrame {
-                            id,
-                            frame: Frame {
-                                label: "Frame".into(),
-                                position: position(at),
-                                width: 300.0,
-                                height: 200.0,
-                            },
-                        }));
-                        state.clear_selection();
-                        state.selected_frames.insert(id);
-                    }
-                }
+                add_choice(state, f, inputs, edits, choice, at);
             }
         }
     }
@@ -3396,6 +3338,89 @@ fn hover_problem(f: &Frame_<'_>, problems: &Problems, p: Pos2) -> Option<String>
             .collect();
         (wire::distance_to_polyline(p, &line) <= WIRE_REACH).then(|| texts.join("\n"))
     })
+}
+
+/// Adds what the search or the browser chose, at `at` (graph coordinates).
+fn add_choice(
+    state: &mut EditorState,
+    f: &Frame_<'_>,
+    inputs: &mut Inputs<'_>,
+    edits: &mut Vec<Edit>,
+    choice: Choice,
+    at: Pos2,
+) {
+    match choice {
+        Choice::Node(type_id) => {
+            let id = (inputs.new_node_id)();
+            let mut node = Node::new(type_id).at(at.x, at.y);
+            node.parent = state.group;
+            if let Some(node_type) = inputs.registry.get(type_id) {
+                node.config = node_type.initial_config();
+            }
+            if matches!(type_id, GROUP_INPUT | GROUP_OUTPUT) {
+                // A group has one of each, holding all its ports:
+                // asking for another selects the one it has.
+                let existing = state.group.and_then(|group| {
+                    f.project
+                        .graph()
+                        .children(Some(group))
+                        .find(|(_, n)| n.type_id == type_id)
+                        .map(|(id, _)| id)
+                });
+                if let Some(existing) = existing {
+                    state.select_only([existing]);
+                    return;
+                }
+                node.config = group::ports_config(&[]);
+            }
+            // An Automation node gets its track in the sequencer
+            // in the same undo step.
+            let add = Command::AddNode { id, node };
+            edits.push(Edit::Apply(
+                if type_id == noodle_nodes::AUTOMATION_NODE_ID {
+                    Command::Batch(vec![
+                        add,
+                        crate::timeline::add_track::automation_lane(id, f.project.next_lane_id()),
+                    ])
+                } else {
+                    add
+                },
+            ));
+            if type_id == noodle_nodes::TRACK_INPUT_ID {
+                state.notice = Some(
+                    "A Track Input is a track of its own: it shows in the timeline as a new track"
+                        .into(),
+                );
+            }
+            state.select_only([id]);
+        }
+        Choice::Template(entry) => {
+            if let Some(template) = inputs.library.template(&entry) {
+                let (id, command) = template.instantiate(
+                    &entry,
+                    state.group,
+                    position(at),
+                    &mut *inputs.new_node_id,
+                );
+                edits.push(Edit::Apply(command));
+                state.select_only([id]);
+            }
+        }
+        Choice::Frame => {
+            let id = (inputs.new_frame_id)();
+            edits.push(Edit::Apply(Command::AddFrame {
+                id,
+                frame: Frame {
+                    label: "Frame".into(),
+                    position: position(at),
+                    width: 300.0,
+                    height: 200.0,
+                },
+            }));
+            state.clear_selection();
+            state.selected_frames.insert(id);
+        }
+    }
 }
 
 fn position(p: Pos2) -> Position {

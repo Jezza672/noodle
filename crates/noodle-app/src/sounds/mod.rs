@@ -122,7 +122,8 @@ struct Playing {
 type Catalogues = Vec<(SourceId, Result<Vec<Entry>, String>)>;
 
 pub struct Sounds {
-    open: bool,
+    /// The Sounds tab was asked for, and the browser has not shown it yet.
+    wants_open: bool,
     net: Net,
     cache: Option<Cache>,
     /// Where each source's last catalogue is kept, so a source that can't be
@@ -188,7 +189,7 @@ impl Sounds {
         let cache = dir.as_ref().map(|d| Cache::new(d.join("objects")));
         let catalogues = dir.map(|d| d.join("catalogues"));
         let mut sounds = Self {
-            open: false,
+            wants_open: false,
             net,
             cache,
             catalogues,
@@ -227,10 +228,6 @@ impl Sounds {
         self
     }
 
-    pub fn is_open(&self) -> bool {
-        self.open
-    }
-
     /// Whether a worker is still fetching a list or a sound.
     #[cfg(test)]
     pub fn busy(&self) -> bool {
@@ -239,8 +236,15 @@ impl Sounds {
             || self.wizard.as_ref().is_some_and(wizard::Wizard::busy)
     }
 
+    /// Asks for the browser to show the Sounds tab. The app takes the request
+    /// with [`take_open_request`](Self::take_open_request).
     pub fn open(&mut self) {
-        self.open = true;
+        self.wants_open = true;
+    }
+
+    /// Whether the Sounds tab was asked for since the last call.
+    pub fn take_open_request(&mut self) -> bool {
+        std::mem::take(&mut self.wants_open)
     }
 
     /// Opens the Make a shareable pack wizard on the folder at `dir`.
@@ -542,25 +546,29 @@ impl Sounds {
         self.scan_cache();
     }
 
-    /// Shows the panel, if it is open, and answers what the views asked.
-    pub fn show(&mut self, ctx: &Context) {
+    /// Answers what the views asked, and keeps the work going. `visible` is
+    /// whether the Sounds tab is on screen: the sources are first asked what
+    /// they have when it is.
+    pub fn tick(&mut self, ctx: &Context, visible: bool) {
         for ask in take_asks(ctx) {
             match ask {
-                Ask::Open => self.open = true,
+                Ask::Open => self.wants_open = true,
                 Ask::Use(key, then) => self.use_key(key, then),
             }
         }
-        if self.open && !self.asked {
+        if visible && !self.asked {
             self.refresh();
         }
         let busy = self.refreshing.is_some() || !self.fetching.is_empty() || self.playing.is_some();
         if busy {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
-        if self.open {
-            panel::show(self, ctx);
-        }
         wizard::show(self, ctx);
+    }
+
+    /// Draws the Sounds tab into the browser panel.
+    pub fn show(&mut self, ui: &mut egui::Ui) {
+        panel::show(self, ui);
     }
 }
 
