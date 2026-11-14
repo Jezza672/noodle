@@ -145,6 +145,16 @@ impl NodeType for PluginNodeType {
         self.info
     }
 
+    /// A plugin runs even when nothing listens to it while its editor is
+    /// open, so the editor's meters and displays keep moving.
+    fn always_runs_for(&self, node: NodeId) -> bool {
+        crate::editor_is_open(node)
+    }
+
+    fn current_latency(&self, node: NodeId) -> Option<u32> {
+        crate::node_latency(node)
+    }
+
     fn config(&self) -> &[ConfigInfo] {
         &CONFIG
     }
@@ -377,6 +387,12 @@ pub(crate) struct Shared(pub Arc<PluginNodeType>, pub bool);
 impl NodeType for Shared {
     fn info(&self) -> &NodeInfo {
         self.0.info()
+    }
+    fn always_runs_for(&self, node: NodeId) -> bool {
+        self.0.always_runs_for(node)
+    }
+    fn current_latency(&self, node: NodeId) -> Option<u32> {
+        self.0.current_latency(node)
     }
     fn config(&self) -> &[ConfigInfo] {
         self.0.config()

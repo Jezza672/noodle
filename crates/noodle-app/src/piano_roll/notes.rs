@@ -117,6 +117,7 @@ pub fn added(
         expressions: Vec::new(),
         articulation: None,
         humanise: None,
+        played: None,
     });
     Some((notes, id))
 }

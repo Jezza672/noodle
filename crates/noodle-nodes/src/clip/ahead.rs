@@ -32,9 +32,10 @@ use noodle_io::{
 };
 use rtrb::{Consumer, Producer, RingBuffer};
 
-use super::hub::{LOOKAHEAD, MAX_CHANNELS, RETRY, Shared, wanted};
+use super::hub::{LOOKAHEAD, MAX_CHANNELS, Shared, wanted};
 use super::pitch::Pitcher;
 use super::read_frames;
+use super::retry::Retry;
 use super::schedule::ScheduledClip;
 use super::stretch::{Source, Stretcher};
 
@@ -232,7 +233,8 @@ pub(super) fn spawn(shared: Arc<Shared>, rate: u32) -> AheadLinks {
         from_node,
         jobs: Vec::new(),
         next_serial: 0,
-        failed: HashMap::new(),
+        failed: Retry::new(),
+        seen_version: 0,
         onsets: HashMap::new(),
         outstanding: 0,
         lookahead: (f64::from(rate) * LOOKAHEAD) as u64,
@@ -588,7 +590,9 @@ struct Ahead {
     from_node: Consumer<Box<Lane>>,
     jobs: Vec<Job>,
     next_serial: u64,
-    failed: HashMap<(ClipId, u64), Instant>,
+    failed: Retry<(ClipId, u64)>,
+    /// The schedule version `failed` was last cleared for.
+    seen_version: u64,
     onsets: HashMap<u64, Onsets>,
     /// Lanes handed to the node and not yet taken back.
     outstanding: usize,
@@ -602,11 +606,11 @@ impl Task for Ahead {
         }
         if self.pass() {
             Next::Again
-        } else if self.failed.is_empty() {
-            Next::Idle
-        } else {
+        } else if let Some(wait) = self.failed.next_wait(Instant::now()) {
             // A file that failed may turn up later.
-            Next::After(RETRY)
+            Next::After(wait)
+        } else {
+            Next::Idle
         }
     }
 }
@@ -624,6 +628,7 @@ impl Ahead {
             jobs,
             next_serial,
             failed,
+            seen_version,
             onsets,
             outstanding,
             lookahead,
@@ -636,6 +641,12 @@ impl Ahead {
             jobs.retain(|j| j.serial != lane.serial);
             // Dropped here, not on the audio thread.
             drop(lane);
+        }
+        let version = shared.version();
+        if version != *seen_version {
+            // A new schedule: a restored file is tried at once.
+            *seen_version = version;
+            failed.clear();
         }
         let (schedule, preview) = (shared.schedule(), shared.preview.load(Ordering::Relaxed));
         let position = shared.position.load(Ordering::Relaxed);
@@ -655,7 +666,7 @@ impl Ahead {
                 if jobs.iter().any(|j| (j.id, j.key) == key && j.head == head) {
                     continue;
                 }
-                if failed.get(&key).is_some_and(|at| at.elapsed() < RETRY)
+                if failed.backing_off(&key, Instant::now())
                     || *outstanding >= MAX_LANES
                     || to_node.slots() == 0
                 {
@@ -674,12 +685,12 @@ impl Ahead {
                         if to_node.push(lane).is_ok() {
                             jobs.push(job);
                             *outstanding += 1;
-                            failed.remove(&key);
+                            failed.opened(&key);
                             busy = true;
                         }
                     }
                     Err(message) => {
-                        failed.insert(key, Instant::now());
+                        failed.failed(key, Instant::now());
                         shared.fail(
                             clip.stream_key(),
                             super::schedule::FileError {

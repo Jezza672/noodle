@@ -64,4 +64,41 @@ fn plugins_report_their_latency_to_the_engine() {
     let vst3 = vst3_catalog();
     let id = vst3_node_type(&vst3).info().id;
     assert_eq!(output_latency(&vst3, id), LATENCY as usize);
+    a_clap_latency_change_is_followed_by_the_plan();
+}
+
+/// A CLAP plugin that says its latency changed is asked again, and the next
+/// plan compensates for the new figure. Runs after the first check, in the
+/// same test, because both set the environment variable.
+fn a_clap_latency_change_is_followed_by_the_plan() {
+    use noodle_core::NodeId;
+    // SAFETY: the one test in this file runs alone.
+    let catalog = catalog();
+    let mut registry = Registry::with_builtins();
+    let _telemetry = noodle_nodes::register_all(&mut registry);
+    catalog.register(&mut registry);
+    let (mut controller, _processor) = engine(SETTINGS).unwrap();
+    let project = project("clap.noodle.test.gain-sine");
+    unsafe { std::env::set_var("NOODLE_TEST_PLUGIN_LATENCY", "100") };
+    assert!(controller.update_project(&project, &registry).is_empty());
+    assert_eq!(controller.output_latency(), 100);
+    let node = project
+        .graph()
+        .nodes()
+        .find(|(_, n)| n.type_id == "clap.noodle.test.gain-sine")
+        .map(|(id, _)| id)
+        .unwrap();
+    let _: NodeId = node;
+    unsafe { std::env::set_var("NOODLE_TEST_PLUGIN_LATENCY", "250") };
+    noodle_plugins::simulate_latency_changed(node);
+    for _ in 0..200 {
+        if noodle_plugins::node_latency(node) == Some(250) {
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(10));
+    }
+    assert_eq!(noodle_plugins::node_latency(node), Some(250));
+    // Building the plan again keeps the instance and takes the new figure.
+    assert!(controller.update_project(&project, &registry).is_empty());
+    assert_eq!(controller.output_latency(), 250);
 }

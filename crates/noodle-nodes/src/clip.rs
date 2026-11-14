@@ -18,6 +18,7 @@ mod ahead;
 mod formant;
 mod hub;
 mod pitch;
+mod retry;
 mod schedule;
 mod stretch;
 mod warp;

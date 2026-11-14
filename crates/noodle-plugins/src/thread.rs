@@ -448,6 +448,15 @@ fn housekeeping(live: &mut Live, now: Instant) {
     if live.flags.callback.swap(false, Ordering::AcqRel) {
         live.instance.call_on_main_thread_callback();
     }
+    if live.flags.latency_changed.swap(false, Ordering::AcqRel) {
+        // The plugin said its latency changed: ask again, and the session
+        // builds the plan again with it (see `node_latency`).
+        let handle = live.instance.plugin_handle();
+        if let Some(ext) = handle.get_extension::<PluginLatency>() {
+            live.latency = ext.get(&handle);
+            live.flags.latency.store(live.latency, Ordering::Release);
+        }
+    }
     let due = live.flags.take_due(now);
     if !due.is_empty() {
         let handle = live.instance.plugin_handle();
@@ -654,6 +663,7 @@ fn load(
             .get_extension::<PluginLatency>()
             .map_or(0, |ext| ext.get(&handle))
     };
+    flags.latency.store(latency, Ordering::Release);
     Ok((
         Live {
             instance,
