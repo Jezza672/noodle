@@ -15,9 +15,9 @@ deliberately deferred items.
 **What it is.** A browsable, downloadable library of sounds, with sources the user adds (ADR 0012). Samples are stored by content hash as FLAC, one immutable object each. Pack definitions live in git and publish from main to R2. A source is a URL plus optional credentials, or a folder on disk. Chunks, in order:
 
 1. **Design** (this ADR, the roadmap and the glossary).
-2. **`noodle-download`:** the shared downloader (consent, streaming, SHA-256, content-keyed cache), with the stem separator moved onto it.
+2. **`noodle-network`:** the shared downloader and S3 client (renamed from `noodle-download`; consent, streaming, SHA-256, content-keyed cache), with the stem separator moved onto it.
 3. **`noodle-packs`:** pack definitions, manifests, licence and credit fields, validation.
-4. **`noodle-publish`:** build the static site, `noodle-cli packs build`, and the CI workflow that publishes from main to R2. The first real publish needs R2 credentials as repo secrets.
+4. **`noodle-publish`:** built (docs/architecture/packs.md). Owed: add the repo secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` for the first real publish, and decide how contributors other than Jeremy get an upload credential.
 6. **Sources:** the settings page (URL, credentials, remove, storage use, Clean up), self-hosted sources, and folders added in place from the browser.
 7. **Make shareable pack:** the wizard and its usability stories and routes (find a sample, add a source, make a pack).
 

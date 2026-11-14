@@ -7,7 +7,7 @@ drags it into the project, with a usability story (S31) and route.
 
 - `noodle-app/src/sounds`: `catalogue` (the item model, search, filters,
   credit lines), `source` (reading a source's `index.json` and manifests,
-  downloading an object with a decode-and-hash check, over `noodle-download`),
+  downloading an object with a decode-and-hash check, over `noodle-network`),
   `apply` (what a dropped sound does to the project) and the panel itself.
 - Opened from View, File > Browse Sounds…, the palette and the Sampler's
   "Browse sounds…" button.
