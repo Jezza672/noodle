@@ -508,7 +508,14 @@ pub fn save(path: &Path, prefs: &Prefs) -> io::Result<()> {
         fs::create_dir_all(dir)?;
     }
     let text = to_text(prefs).map_err(io::Error::other)?;
-    write_atomically(path, &text)
+    write_atomically(path, &text)?;
+    // A login kept here for want of a keychain is for this user only.
+    #[cfg(unix)]
+    if !prefs.source_secrets.is_empty() {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(path, fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -569,6 +576,19 @@ mod tests {
         remember_display(chosen);
         assert_eq!(load(&path).unwrap().display, chosen);
         assert_eq!(display(), chosen);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn preferences_holding_a_secret_are_owner_only() {
+        use std::os::unix::fs::PermissionsExt;
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.ron");
+        let mut prefs = Prefs::default();
+        prefs.source_secrets.insert("source-1".into(), "tok".into());
+        save(&path, &prefs).unwrap();
+        let mode = fs::metadata(&path).unwrap().permissions().mode();
+        assert_eq!(mode & 0o777, 0o600);
     }
 
     #[test]
