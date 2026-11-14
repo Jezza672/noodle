@@ -524,3 +524,36 @@ fn denoise_with_nothing_learned_passes_the_sound() {
         .fold(0.0, f32::max);
     assert!(worst < 1e-6, "worst {worst}");
 }
+
+/// The smallest frame has 129 bins, fewer than the 256 bands a node accepts.
+#[test]
+fn more_bands_than_bins_at_the_smallest_frame_size_do_not_panic() {
+    let graph = Graph::from_parts(
+        vec![
+            (NodeId(1), sine(1000.0)),
+            (NodeId(2), analyze(256)),
+            (
+                NodeId(3),
+                Node::new("noodle.spectral.compress").with_param("bands", 256.0),
+            ),
+            (
+                NodeId(4),
+                Node::new("noodle.spectral.cross").with_param("bands", 256.0),
+            ),
+            (NodeId(5), Node::new("noodle.spectral.synthesize")),
+            (NodeId(6), Node::new("noodle.io.output")),
+        ],
+        vec![
+            wire((1, "out"), (2, "in")),
+            wire((2, "spectrum"), (3, "spectrum")),
+            wire((3, "out"), (4, "carrier")),
+            wire((2, "spectrum"), (4, "modulator")),
+            wire((4, "out"), (5, "spectrum")),
+            wire((5, "out"), (6, "in")),
+        ],
+    )
+    .unwrap();
+    let out = samples(&graph, 8_000);
+    assert!(out.iter().all(|x| x.is_finite()));
+    assert!(rms(&out[4_000..]) > 0.01);
+}

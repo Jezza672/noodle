@@ -3055,8 +3055,10 @@ fn the_new_spectral_nodes_and_the_convolver_never_allocate_through_edits_and_a_s
     );
     let compress = s.add(Node::new("noodle.spectral.compress").with_param("threshold", -60.0));
     let denoise = s.add(Node::new("noodle.spectral.denoise"));
+    let freeze = s.add(Node::new("noodle.spectral.freeze"));
     let synth = s.add(Node::new("noodle.spectral.synthesize"));
     let output = s.add(Node::new(OUTPUT_ID));
+    let transport = s.controller.transport();
     s.wire(response, "sample", convolver, "ir");
     s.wire(noise, "out", convolver, "in");
     s.wire(convolver, "out", a, "in");
@@ -3066,11 +3068,14 @@ fn the_new_spectral_nodes_and_the_convolver_never_allocate_through_edits_and_a_s
     s.wire(stretch, "out", compress, "spectrum");
     s.wire(compress, "out", denoise, "spectrum");
     s.wire(b, "spectrum", denoise, "noise");
-    s.wire(denoise, "out", synth, "spectrum");
+    s.wire(denoise, "out", freeze, "spectrum");
+    s.wire(freeze, "out", synth, "spectrum");
     s.wire(synth, "out", output, "in");
     s.update();
     let mut out = vec![0.0; 1000 * SETTINGS.channels];
     for round in 0..10 {
+        // A jump resets every node: none may allocate doing it.
+        transport.seek(noodle_core::Tick(480 * round as i64));
         for (node, key, value) in [
             (pitch, "shift", round as f32 - 5.0),
             (stretch, "rate", 0.3 + 0.2 * round as f32),

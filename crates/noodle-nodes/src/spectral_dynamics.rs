@@ -186,7 +186,7 @@ impl Node for CompressNode {
             let upward = param(inputs, CompressPorts::MODE, voice, time) >= 0.5;
             let bands = param(inputs, CompressPorts::BANDS, voice, time)
                 .round()
-                .clamp(0.0, MAX_BANDS as f32) as usize;
+                .clamp(0.0, MAX_BANDS.min(self.bins - 1) as f32) as usize;
             let bands = if bands < 2 { 0 } else { bands };
             let up = (-seconds / attack).exp();
             let down = (-seconds / release).exp();
@@ -316,7 +316,6 @@ impl NodeType for SpectralDenoise {
         let bins = fft_bins(setup.spectral_size);
         let frames_per_second = setup.sample_rate / fft_hop(setup.spectral_size) as f32;
         Ok(Instance::realtime(DenoiseNode {
-            bins,
             wire_frames: (WIRE_SECONDS * frames_per_second).max(8.0) as u32,
             lanes: (0..lanes).map(|_| DenoiseLane::new(bins)).collect(),
         }))
@@ -363,7 +362,6 @@ impl DenoiseLane {
 }
 
 struct DenoiseNode {
-    bins: usize,
     wire_frames: u32,
     lanes: Vec<DenoiseLane>,
 }
@@ -424,7 +422,12 @@ impl Node for DenoiseNode {
 
     fn reset(&mut self) {
         for lane in &mut self.lanes {
-            *lane = DenoiseLane::new(self.bins);
+            lane.profile.fill(0.0);
+            lane.learned = 0;
+            lane.learning = false;
+            lane.from_wire = false;
+            lane.gain.fill(1.0);
+            lane.raw.fill(1.0);
         }
     }
 }

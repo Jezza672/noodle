@@ -596,7 +596,6 @@ impl NodeType for SpectralFreeze {
         let lanes = spectral_shape(setup, FreezePorts::OUTPUTS).lanes();
         let bins = fft_bins(setup.spectral_size);
         Ok(Instance::realtime(FreezeNode {
-            bins,
             lanes: (0..lanes).map(|_| FreezeLane::new(bins)).collect(),
         }))
     }
@@ -624,7 +623,6 @@ impl FreezeLane {
 }
 
 struct FreezeNode {
-    bins: usize,
     lanes: Vec<FreezeLane>,
 }
 
@@ -661,7 +659,10 @@ impl Node for FreezeNode {
 
     fn reset(&mut self) {
         for lane in &mut self.lanes {
-            *lane = FreezeLane::new(self.bins);
+            lane.magnitude.fill(0.0);
+            lane.previous.fill(0.0);
+            lane.advance.fill(0.0);
+            lane.phase.fill(0.0);
         }
     }
 }
@@ -869,7 +870,8 @@ impl Node for CrossNode {
                 let mix = param(inputs, CrossPorts::MIX, voice, time).clamp(0.0, 1.0);
                 let bands = param(inputs, CrossPorts::BANDS, voice, time)
                     .round()
-                    .clamp(0.0, MAX_BANDS as f32) as usize;
+                    .clamp(0.0, MAX_BANDS.min(self.bins - 1) as f32)
+                    as usize;
                 let bands = if bands < 2 { 0 } else { bands };
                 if bands != 0 && bands != self.edges_for {
                     band_edges(bands, self.bins, &mut self.edges);
