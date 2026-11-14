@@ -560,7 +560,7 @@ fn model_choice(
             let run = ui
                 .button("Find overlapping drums")
                 .on_hover_text(
-                    "Separates the clip into kick, snare, hats and so on, and marks hits                      where two sound together. Slow on a long clip.",
+                    "Separates the clip into kick, snare, hats and so on, and marks hits where two sound together. Slow on a long clip.",
                 );
             if run.clicked() {
                 actions.push(Action::Separate(id));
@@ -840,7 +840,7 @@ fn hit_row(
             .separation
             .as_ref()
             .and_then(|s| s.hits.get(hit))
-            .filter(|h| h.is_mixed())
+            .filter(|h| h.is_mixed() || analysis.is_taken(hit))
         {
             ui.menu_button("Use part…", |ui| {
                 for &part in &found.active {
