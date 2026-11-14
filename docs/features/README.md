@@ -49,3 +49,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [default-instruments.md](default-instruments.md) | Playable default instruments: ten synths, three sampled instruments with shipped CC0 audio |
 | [live-feedback.md](live-feedback.md) | Live visual feedback: wires that light, output meters, faded silent nodes, voice lights, beat pulse, heat tint, the Display tab of Settings |
 | [user-settings.md](user-settings.md) | Snap and take quantise saved as user settings; export, import, saved in the project, Open with Settings |
+| [drum-separation-models.md](drum-separation-models.md) | Drum separation runtimes: manifests, N-part separator trait, LarsNet, Timbrica and drumsep, pad mapping (#518) |

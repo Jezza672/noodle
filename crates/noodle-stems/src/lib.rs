@@ -6,6 +6,7 @@
 //! residual as WAV files; [`ModelStore`] keeps the downloaded weights. Nothing
 //! here runs in the audio path: separating is slow and done once per clip.
 
+pub mod drum;
 mod fake;
 mod model;
 #[cfg(feature = "onnx")]
