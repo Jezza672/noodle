@@ -6,7 +6,7 @@
 //! canvas (a Sample node) or onto the timeline (a clip carrying its credit).
 //!
 //! Nothing here touches the audio thread. Lists and sounds are fetched on
-//! worker jobs through `noodle-download`; a sound that is not on this computer
+//! worker jobs through `noodle-network`; a sound that is not on this computer
 //! is downloaded first and used when it arrives, and `SampleStore` is only
 //! ever given a file that is already here.
 
@@ -22,8 +22,8 @@ use std::time::{Duration, Instant};
 
 use egui::{Context, Id};
 use noodle_core::{NodeId, Tick};
-use noodle_download::Cache;
 use noodle_engine::Job;
+use noodle_network::Cache;
 use noodle_nodes::Sample;
 
 use crate::carry::SoundKey;

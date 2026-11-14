@@ -351,7 +351,7 @@ It has these views:
     graph (silent on the virtual output). A sound over 8 MB, not yet cached,
     asks first (`dialog::modal`).
   - **No I/O off the workers.** Lists and downloads run on `Job`s through
-    `noodle-download` (`sounds/source.rs` is the only file that names it), the
+    `noodle-network` (`sounds/source.rs` is the only file that names it), the
     audio is decoded and hashed by the downloader's verify hook, and objects
     land in a content-keyed cache (`<data dir>/sounds/objects/<hash>`).
     `SampleStore` is only given a file that is already there, so it stays

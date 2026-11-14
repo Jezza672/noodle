@@ -1,6 +1,6 @@
 [package]
 name = "noodle-cli"
-description = "Command-line tools: render a project to WAV, or play it."
+description = "Command-line tools: render a project to WAV, play it, or build sample packs."
 version.workspace = true
 edition.workspace = true
 license.workspace = true
@@ -15,4 +15,5 @@ noodle-engine.workspace = true
 noodle-nodes.workspace = true
 noodle-io.workspace = true
 noodle-plugins.workspace = true
+noodle-publish.workspace = true
 clap = { version = "4.6.7", features = ["derive"] }

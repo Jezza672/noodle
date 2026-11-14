@@ -114,6 +114,7 @@ Each file below is one part of the design and the rules that part follows.
 | [midi-and-recording.md](architecture/midi-and-recording.md) | MIDI input (1.0 and 2.0), MIDI clips, recording into the arrangement |
 | [time-warping.md](architecture/time-warping.md) | Clip warps, Repitch, Grain, Beats |
 | [stems.md](architecture/stems.md) | Stem separation and Split to stems |
+| [packs.md](architecture/packs.md) | Sample packs: pack layout, the published site, `noodle packs`, the R2 publish workflow |
 | [automation.md](architecture/automation.md) | Lanes and Automation nodes |
 | [caching.md](architecture/caching.md) | Cache keys, freeze, offline nodes, export |
 | [plugins.md](architecture/plugins.md) | CLAP, AU and VST3 hosting, sandboxing |
