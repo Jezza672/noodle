@@ -18,6 +18,32 @@ pub enum Item {
     Clip(ClipId),
     /// A track, by its group.
     Track(NodeId),
+    /// A sound carried out of the Sounds panel, by the hash of its audio.
+    Sound(SoundKey),
+}
+
+/// The hash of a sound's audio (64 hex digits) as 32 bytes, so that what is
+/// carried stays `Copy`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct SoundKey([u8; 32]);
+
+impl SoundKey {
+    /// The key for `hash`, or `None` if it is not 64 hex digits.
+    pub fn from_hash(hash: &str) -> Option<Self> {
+        if hash.len() != 64 || !hash.is_ascii() {
+            return None;
+        }
+        let mut bytes = [0u8; 32];
+        for (byte, pair) in bytes.iter_mut().zip(hash.as_bytes().chunks(2)) {
+            *byte = u8::from_str_radix(std::str::from_utf8(pair).ok()?, 16).ok()?;
+        }
+        Some(Self(bytes))
+    }
+
+    /// The hash, as lowercase hex.
+    pub fn hash(&self) -> String {
+        self.0.iter().map(|b| format!("{b:02x}")).collect()
+    }
 }
 
 /// An item let go of at `at` (screen points).

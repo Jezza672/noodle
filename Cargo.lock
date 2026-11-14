@@ -2610,11 +2610,13 @@ dependencies = [
  "noodle-engine",
  "noodle-io",
  "noodle-nodes",
+ "noodle-packs",
  "noodle-plugins",
  "noodle-stems",
  "rfd",
  "ron",
  "serde",
+ "serde_json",
  "tempfile",
 ]
 

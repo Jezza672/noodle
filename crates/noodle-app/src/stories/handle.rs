@@ -626,6 +626,20 @@ impl Probe<'_> {
         self.h.state().session().automation_mode()
     }
 
+    /// Waits, without input, until the Sounds panel has no list or download
+    /// in flight. Time spent here is the app's, not the user's.
+    pub fn settle_sounds(&mut self) {
+        for _ in 0..1000 {
+            self.h.run_steps(2);
+            if !self.h.state().sounds_busy() {
+                self.h.run_steps(5);
+                return;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(5));
+        }
+        panic!("the Sounds panel never finished");
+    }
+
     /// Lets scrolling and animations finish; no input.
     pub fn settle(&mut self) {
         self.h.run_steps(30);
