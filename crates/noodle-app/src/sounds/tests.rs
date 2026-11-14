@@ -178,7 +178,11 @@ fn a_sound_dropped_on_the_timeline_is_copied_in_with_its_credit() {
     assert_eq!(clips.len(), 1);
     let audio = clips[0].1.as_audio().unwrap();
     assert!(
-        audio.source.starts_with("sounds/Tone_440-"),
+        // Windows writes the separator its own way.
+        audio
+            .source
+            .replace('\\', "/")
+            .starts_with("sounds/Tone_440-"),
         "{}",
         audio.source
     );
