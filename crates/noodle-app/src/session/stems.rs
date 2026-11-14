@@ -267,6 +267,38 @@ impl Session {
         self.stems.quality = quality;
     }
 
+    /// The models Split to stems can use and are switched on in Settings (the
+    /// Models tab), in the order the app lists them.
+    pub fn stems_models(&self) -> Vec<ModelSpec> {
+        let off = crate::prefs::stem_models_off();
+        ModelSpec::all()
+            .into_iter()
+            .filter(|m| !off.contains(m.id))
+            .collect()
+    }
+
+    /// The model the next split uses, if the splitting is done by a model.
+    pub fn stems_model(&self) -> Option<&ModelSpec> {
+        match &self.stems.source {
+            Source::Model { spec, .. } => Some(spec),
+            #[cfg(test)]
+            Source::Custom(_) => None,
+        }
+    }
+
+    /// Chooses the model the next split uses, by id. An id that is not a known
+    /// model changes nothing.
+    pub fn set_stems_model(&mut self, id: &str) {
+        let Some(chosen) = ModelSpec::all().into_iter().find(|m| m.id == id) else {
+            return;
+        };
+        match &mut self.stems.source {
+            Source::Model { spec, .. } => *spec = chosen,
+            #[cfg(test)]
+            Source::Custom(_) => {}
+        }
+    }
+
     /// The clip a Re-separate of `clip` would split again: the muted clip its
     /// stems came from, in the same link group, when `clip` is in a group that
     /// holds stems.
@@ -311,6 +343,15 @@ impl Session {
         if self.directory().is_none() {
             self.message =
                 Some("Save the project first: the stems are written next to its file".into());
+            return;
+        }
+        if let Some(model) = self.stems_model()
+            && crate::prefs::stem_models_off().contains(model.id)
+        {
+            self.message = Some(format!(
+                "{} is switched off: turn it on in Settings, on the Models tab",
+                model.info().name
+            ));
             return;
         }
         if self.stems.needs_download() {
@@ -1116,6 +1157,35 @@ mod tests {
         assert_eq!(*session.project(), before);
         let left = std::fs::read_dir(dir.path().join("stems")).unwrap().count();
         assert_eq!(left, 0);
+    }
+
+    #[test]
+    fn a_switched_off_model_is_not_offered_or_used_until_it_is_on_again() {
+        let dir = tempfile::tempdir().unwrap();
+        crate::prefs::init(dir.path().join("prefs.ron"));
+        let (mut session, id, _) = rig(dir.path(), 0, 20_000);
+        session.stems.source = Source::Model {
+            store: Some(ModelStore::new(dir.path().join("models"))),
+            spec: ModelSpec::htdemucs(),
+            runtime: None,
+        };
+        assert_eq!(session.stems_models().len(), 1);
+        crate::prefs::remember_stem_model("htdemucs", false);
+        assert!(session.stems_models().is_empty());
+        session.split_to_stems(id);
+        assert_eq!(session.stems_consent(), None, "not asked to download");
+        assert!(
+            session
+                .message
+                .as_deref()
+                .is_some_and(|m| m.contains("switched off")),
+            "{:?}",
+            session.message
+        );
+        crate::prefs::remember_stem_model("htdemucs", true);
+        assert_eq!(session.stems_models().len(), 1);
+        session.set_stems_model("no such model");
+        assert_eq!(session.stems_model().map(|m| m.id), Some("htdemucs"));
     }
 
     #[test]

@@ -17,6 +17,7 @@ use std::sync::Arc;
 use egui::{RichText, Ui};
 use noodle_engine::Job;
 use noodle_stems::drum::{ALL_MODELS, DrumModelManifest, DrumModelStore, StoreError};
+use noodle_stems::{DownloadError, ModelSpec, ModelStore, RuntimeSpec};
 
 /// Fetches a model's weights into a store, reporting progress (0 to 1) and
 /// answering whether to go on. Tests swap in one that needs no network.
@@ -32,6 +33,34 @@ type Fetch = Arc<
 
 type Download = Job<Result<(), StoreError>>;
 
+/// Fetches a Split to stems model: ONNX Runtime first when the machine has
+/// none, then the weights. Tests swap in one that needs no network.
+type StemFetch = Arc<
+    dyn Fn(&ModelStore, &ModelSpec, &mut dyn FnMut(f32) -> bool) -> Result<(), DownloadError>
+        + Send
+        + Sync,
+>;
+
+fn fetch_stem_model(
+    store: &ModelStore,
+    spec: &ModelSpec,
+    progress: &mut dyn FnMut(f32) -> bool,
+) -> Result<(), DownloadError> {
+    // The runtime is a few to 70 MB; the weights are over 300.
+    let share = 0.05;
+    let mut base = 0.0;
+    if let Some(runtime) = RuntimeSpec::current()
+        && !store.has_runtime(&runtime)
+        && std::env::var("ORT_DYLIB_PATH").map_or(true, |p| p.is_empty())
+    {
+        store.download_runtime(&runtime, &mut |f| progress(f * share))?;
+        base = share;
+    }
+    store
+        .download(spec, &mut |f| progress(base + f * (1.0 - base)))
+        .map(|_| ())
+}
+
 pub struct Models {
     manifests: Vec<&'static DrumModelManifest>,
     store: Option<DrumModelStore>,
@@ -41,6 +70,13 @@ pub struct Models {
     problems: BTreeMap<&'static str, String>,
     /// The first-use popup's toggles, while it is open.
     popup: Option<BTreeMap<&'static str, bool>>,
+    /// Split to stems: its models, where their weights are kept, and the
+    /// downloads under way and what went wrong with them.
+    stem_specs: Vec<ModelSpec>,
+    stem_store: Option<ModelStore>,
+    stem_fetch: StemFetch,
+    stem_running: BTreeMap<&'static str, Job<Result<(), DownloadError>>>,
+    stem_problems: BTreeMap<&'static str, String>,
 }
 
 /// Where the drum separation weights are kept, for the Models tab and for the
@@ -74,6 +110,61 @@ impl Models {
             running: BTreeMap::new(),
             problems: BTreeMap::new(),
             popup: None,
+            stem_specs: ModelSpec::all(),
+            stem_store: directories::ProjectDirs::from("", "", "Noodle")
+                .map(|dirs| ModelStore::new(dirs.data_dir().join("models"))),
+            stem_fetch: Arc::new(fetch_stem_model),
+            stem_running: BTreeMap::new(),
+            stem_problems: BTreeMap::new(),
+        }
+    }
+
+    /// Whether a Split to stems model is switched on (the default).
+    pub fn stem_enabled(&self, model: &ModelSpec) -> bool {
+        !crate::prefs::stem_models_off().contains(model.id)
+    }
+
+    pub fn set_stem_enabled(&self, model: &ModelSpec, on: bool) {
+        crate::prefs::remember_stem_model(model.id, on);
+    }
+
+    pub fn stem_downloaded(&self, model: &ModelSpec) -> bool {
+        self.stem_store
+            .as_ref()
+            .is_some_and(|s| s.is_present(model))
+    }
+
+    /// Starts downloading a Split to stems model, unless it is here or under way.
+    pub fn download_stem(&mut self, model: &ModelSpec) {
+        let Some(store) = self.stem_store.clone() else {
+            self.stem_problems.insert(
+                model.id,
+                "There is nowhere to keep the model on this machine".into(),
+            );
+            return;
+        };
+        if self.stem_running.contains_key(model.id) || store.is_present(model) {
+            return;
+        }
+        self.stem_problems.remove(model.id);
+        let (fetch, spec) = (Arc::clone(&self.stem_fetch), model.clone());
+        self.stem_running.insert(
+            model.id,
+            Job::spawn(move |progress| fetch(&store, &spec, &mut |f| progress.report(f).is_ok())),
+        );
+    }
+
+    pub fn remove_stem(&mut self, model: &ModelSpec) {
+        let Some(store) = &self.stem_store else {
+            return;
+        };
+        match store.remove(model) {
+            Ok(()) => {
+                self.stem_problems.remove(model.id);
+            }
+            Err(e) => {
+                self.stem_problems.insert(model.id, e.to_string());
+            }
         }
     }
 
@@ -182,7 +273,27 @@ impl Models {
                 }
             }
         }
-        if !self.running.is_empty() {
+        let mut stem_done = Vec::new();
+        for (id, job) in &mut self.stem_running {
+            if let Some(result) = job.poll() {
+                stem_done.push((*id, result));
+            }
+        }
+        for (id, result) in stem_done {
+            self.stem_running.remove(id);
+            match result {
+                Ok(Ok(())) | Ok(Err(DownloadError::Cancelled)) => {
+                    self.stem_problems.remove(id);
+                }
+                Ok(Err(e)) => {
+                    self.stem_problems.insert(id, e.to_string());
+                }
+                Err(e) => {
+                    self.stem_problems.insert(id, e.to_string());
+                }
+            }
+        }
+        if !self.running.is_empty() || !self.stem_running.is_empty() {
             ctx.request_repaint_after(std::time::Duration::from_millis(100));
         }
     }
@@ -315,6 +426,83 @@ impl Models {
             ui.separator();
             self.block(ui, model);
         }
+        ui.add_space(10.0);
+        ui.heading("Split to stems");
+        ui.weak(
+            "The model that splits a clip into drums, bass, vocals and the rest. It runs on \
+             ONNX Runtime, which is downloaded with it. Not included with Noodle.",
+        );
+        if let Some(store) = &self.stem_store {
+            ui.horizontal(|ui| {
+                ui.label("Stored in");
+                ui.label(
+                    RichText::new(store.dir().display().to_string())
+                        .monospace()
+                        .small(),
+                );
+            });
+        }
+        for model in self.stem_specs.clone() {
+            ui.add_space(6.0);
+            ui.separator();
+            self.stem_block(ui, &model);
+        }
+    }
+
+    fn stem_block(&mut self, ui: &mut Ui, model: &ModelSpec) {
+        let info = model.info();
+        let downloaded = self.stem_downloaded(model);
+        let mut enabled = self.stem_enabled(model);
+        if ui
+            .checkbox(&mut enabled, RichText::new(info.name).strong())
+            .on_hover_text("Offered in Split to stems when on")
+            .changed()
+        {
+            self.set_stem_enabled(model, enabled);
+        }
+        ui.indent(model.id, |ui| {
+            ui.label(format!("Separates: {}", info.separates));
+            ui.label(format!("Size: about {}", human_size(info.bytes)));
+            ui.label(format!("Licence: {}", info.licence));
+            ui.weak(format!("By {}", info.credit));
+            if !info.source_url.is_empty() {
+                ui.hyperlink_to("Source", info.source_url);
+            }
+            if let Some(job) = self.stem_running.get(model.id) {
+                let fraction = job.fraction();
+                ui.horizontal(|ui| {
+                    ui.add(
+                        egui::ProgressBar::new(fraction)
+                            .desired_width(200.0)
+                            .show_percentage(),
+                    );
+                    if ui.button("Cancel").clicked() {
+                        job.cancel();
+                    }
+                });
+            } else if downloaded {
+                let on_disk = self
+                    .stem_store
+                    .as_ref()
+                    .map_or(0, |s| s.size_on_disk(model));
+                ui.horizontal(|ui| {
+                    ui.label(format!("Downloaded, {} on disk", human_size(on_disk)));
+                    if ui.button("Remove").clicked() {
+                        self.remove_stem(model);
+                    }
+                });
+            } else {
+                ui.horizontal(|ui| {
+                    ui.label("Not downloaded");
+                    if ui.button("Download").clicked() {
+                        self.download_stem(model);
+                    }
+                });
+            }
+            if let Some(problem) = self.stem_problems.get(model.id) {
+                ui.colored_label(ui.visuals().error_fg_color, problem);
+            }
+        });
     }
 
     fn block(&mut self, ui: &mut Ui, model: &'static DrumModelManifest) {
@@ -602,6 +790,41 @@ mod tests {
     fn the_models_are_listed_in_the_agreed_order() {
         let ids: Vec<_> = Models::default().manifests.iter().map(|m| m.id).collect();
         assert_eq!(ids, ["larsnet", "timbrica", "drumsep"]);
+    }
+
+    #[test]
+    fn a_stem_model_is_on_by_default_and_can_be_downloaded_and_removed() {
+        let dir = tempfile::tempdir().unwrap();
+        prefs_in(dir.path());
+        let mut m = models(vec![], &dir.path().join("w"));
+        m.stem_store = Some(ModelStore::new(dir.path().join("s")));
+        m.stem_fetch = Arc::new(|store, spec, progress| {
+            std::fs::create_dir_all(store.dir()).unwrap();
+            std::fs::write(store.path(spec), b"weights").unwrap();
+            progress(1.0);
+            Ok(())
+        });
+        let model = m.stem_specs[0].clone();
+        let ctx = egui::Context::default();
+        assert!(m.stem_enabled(&model));
+        m.set_stem_enabled(&model, false);
+        assert!(!m.stem_enabled(&model));
+        let saved = crate::prefs::load(&dir.path().join("prefs.ron")).unwrap();
+        assert!(saved.stem_models_off.contains(model.id));
+        assert!(saved.portable().stem_models_off.is_empty());
+        m.set_stem_enabled(&model, true);
+        assert!(!m.stem_downloaded(&model));
+        m.download_stem(&model);
+        for _ in 0..200 {
+            m.poll(&ctx);
+            if m.stem_running.is_empty() {
+                break;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        assert!(m.stem_downloaded(&model));
+        m.remove_stem(&model);
+        assert!(!m.stem_downloaded(&model));
     }
 
     #[test]

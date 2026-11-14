@@ -412,7 +412,13 @@ pub fn click<S>(h: &mut Harness<'_, S>, pos: Pos2, modifiers: Modifiers) {
 
 /// Two primary clicks at `at`, each in its own frame, as a person's are.
 pub fn double_click<S>(h: &mut Harness<'_, S>, at: Pos2) {
-    push(h, ActionKind::DoubleClick, Modifiers::NONE, Some(at), None);
+    double_click_with(h, at, Modifiers::NONE);
+}
+
+/// [`double_click`] holding `modifiers`.
+pub fn double_click_with<S>(h: &mut Harness<'_, S>, at: Pos2, modifiers: Modifiers) {
+    push(h, ActionKind::DoubleClick, modifiers, Some(at), None);
+    h.event(Event::ModifiersChanged(modifiers));
     h.event(Event::PointerMoved(at));
     h.step();
     for _ in 0..2 {
@@ -421,11 +427,12 @@ pub fn double_click<S>(h: &mut Harness<'_, S>, at: Pos2) {
                 pos: at,
                 button: PointerButton::Primary,
                 pressed,
-                modifiers: Modifiers::NONE,
+                modifiers,
             });
         }
         h.step();
     }
+    h.event(Event::ModifiersChanged(Modifiers::NONE));
     settle(h);
 }
 

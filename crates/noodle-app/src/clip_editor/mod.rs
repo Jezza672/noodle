@@ -24,8 +24,8 @@ use std::collections::BTreeSet;
 
 use egui::{Align2, Color32, CursorIcon, FontId, Key, Pos2, Rect, Sense, Stroke, StrokeKind, vec2};
 use noodle_core::{
-    ClipId, ClipWarp, Command, LoopRegion, MAX_GRID_OFFSET, MIN_LOOP_BEATS, NodeId, Project,
-    TICKS_PER_QUARTER, Tick, WarpAxis, WarpMarker,
+    ClipId, ClipWarp, Command, GainPoint, LoopRegion, MAX_GRID_OFFSET, MIN_LOOP_BEATS, NodeId,
+    Project, TICKS_PER_QUARTER, Tick, WarpAxis, WarpMarker,
 };
 
 mod curve;
@@ -37,6 +37,7 @@ pub(crate) mod subject;
 use crate::clip_panel;
 use crate::session::{Edit, Session};
 use crate::theme::{self, timeline as colors};
+use crate::time_axis::TimeAxis;
 use crate::timeline::Loaded;
 use crate::toolbar::{Icon, Mode, Pill, Slot};
 use subject::Subject;
@@ -52,7 +53,7 @@ enum Control {
     Help,
 }
 const HINT_PLAIN: &str = "Drag the waveform to slide the audio under the clip · Shift+drag picks a region to convert to a sample node · Warp gives it beats to pin";
-const HINT: &str = "Double-click to add a marker · drag a flag to move it (Shift picks several) · drag the waveform to line the beats up · Shift+drag picks a region · click a hit's handle to pick it, then right-click to convert to a sampler · Delete removes · Alt: no snap";
+const HINT: &str = "Double-click to add a marker · drag a flag to move it (Shift picks several) · drag the waveform to line the beats up · Shift+drag picks a region · Cmd-double-click adds a gain point · click a hit's handle to pick it, then right-click to convert to a sampler · Delete removes · Alt: no snap";
 const RULER: f32 = 18.0;
 const FLAGS: f32 = 22.0;
 const BRACE: f32 = 14.0;
@@ -178,7 +179,7 @@ pub struct Geometry {
 #[cfg(test)]
 impl Geometry {
     pub fn x(&self, beat: f64) -> f32 {
-        self.origin + (beat - self.shift) as f32 * self.ppb
+        TimeAxis::new(self.origin, self.ppb).x(beat - self.shift)
     }
 }
 
@@ -383,11 +384,11 @@ struct Axis {
 
 impl Axis {
     fn x(self, beat: f64) -> f32 {
-        self.origin + (beat - self.shift) as f32 * self.ppb
+        TimeAxis::new(self.origin, self.ppb).x(beat - self.shift)
     }
 
     fn beat(self, x: f32) -> f64 {
-        f64::from((x - self.origin) / self.ppb) + self.shift
+        TimeAxis::new(self.origin, self.ppb).at(x) + self.shift
     }
 
     /// This axis as it was drawn when the grid offset was `shift`.
@@ -875,8 +876,16 @@ pub fn show(
             None => state.selected.clear(),
         }
     }
+    // The gain envelope. Cmd or Ctrl with a double-click adds a point; a plain
+    // double-click is for markers.
+    let adding = ui.input(|i| i.modifiers.command);
+    out.edits.extend(beat_gain(
+        ui, &painter, project, subject, &section, warp, axis, wave, rate, file_secs, &response,
+        adding,
+    ));
     // Double-click adds a marker, or makes a transient's handle one.
     if response.double_clicked()
+        && !adding
         && let Some(pos) = response.interact_pointer_pos()
         && !matches!(hit(pos), Some(Gesture::Marker(_)))
     {
@@ -1354,6 +1363,81 @@ fn draw_waveform(
 }
 
 /// Dims the audio the section doesn't show.
+/// The gain envelope over the beat view. A clip's points are ticks from its
+/// start, which are beats on this axis (as the playhead has it); a Sampler's
+/// are millionths of the sample.
+#[allow(clippy::too_many_arguments)]
+fn beat_gain(
+    ui: &mut egui::Ui,
+    painter: &egui::Painter,
+    project: &Project,
+    subject: Subject,
+    section: &subject::Section,
+    warp: &ClipWarp,
+    axis: Axis,
+    wave: Rect,
+    rate: f64,
+    file_secs: f64,
+    response: &egui::Response,
+    adding: bool,
+) -> Vec<Edit> {
+    let audio = &section.audio;
+    let set = |points: Vec<GainPoint>| subject.set_gain_points(project, points);
+    let painter = painter.with_clip_rect(wave);
+    match subject {
+        Subject::Clip(_) => {
+            let curve = warp.curve();
+            if curve.axis != WarpAxis::Beats {
+                return Vec::new();
+            }
+            let from = curve.at(audio.offset as f64 / rate);
+            let per = TICKS_PER_QUARTER as f64;
+            let x_of = |tick: Tick| axis.x(from + tick.0 as f64 / per);
+            let tick_at = |x: f32| Tick((((axis.beat(x) - from) * per).round() as i64).max(0));
+            let to = curve.at((audio.offset + audio.length) as f64 / rate);
+            let length = Tick(((to - from) * per).round() as i64);
+            gain_line::show(
+                ui,
+                &painter,
+                &gain_line::Frame {
+                    wave,
+                    length,
+                    x_of: &x_of,
+                    tick_at: &tick_at,
+                    adding,
+                },
+                subject,
+                &audio.gain_points,
+                &set,
+                response,
+            )
+        }
+        Subject::Sampler(_) => {
+            let scale = subject::ENVELOPE_LENGTH.0 as f64;
+            let x_of = |tick: Tick| axis.x(warp.beat_at(tick.0 as f64 / scale * file_secs));
+            let tick_at = |x: f32| {
+                let seconds = warp.seconds_at_beat(axis.beat(x)).clamp(0.0, file_secs);
+                Tick((seconds / file_secs.max(1e-9) * scale).round() as i64)
+            };
+            gain_line::show(
+                ui,
+                &painter,
+                &gain_line::Frame {
+                    wave,
+                    length: subject::ENVELOPE_LENGTH,
+                    x_of: &x_of,
+                    tick_at: &tick_at,
+                    adding,
+                },
+                subject,
+                &audio.gain_points,
+                &set,
+                response,
+            )
+        }
+    }
+}
+
 fn draw_window(
     painter: &egui::Painter,
     wave: Rect,

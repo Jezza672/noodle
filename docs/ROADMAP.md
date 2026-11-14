@@ -146,9 +146,6 @@ Later: Nodes, Groups and Presets as tabs of the same browser.
   for the drum rack. Needs a stable, fairly universal interface definition (parts,
   STFT front end, chunking), so it waits until the three built-in models show what
   that has to cover. The MDX23C DrumSep is not supported (no licence, gone upstream).
-- **Model controls for Split to stems:** the same enable/disable, download and
-  storage controls in the Models settings tab, and a model choice in the stems
-  dialog, as the drum rack gets. Not part of the drum rack batch.
 - **M11 follow-ups:** more spectral nodes (pitch shift and time stretch on
   frames, spectral compressor, convolution reverb from an impulse response,
   noise-profile denoiser) and a choice of frame size (a config on Analyze that
@@ -157,17 +154,11 @@ Later: Nodes, Groups and Presets as tabs of the same browser.
   can be re-quantised afterwards (quantise on record and several MIDI
   ports are built; overdub and count-in are in the items above). The 128-frame engine block is fixed;
   it could follow the device period.
-- **Virtual output:** remember the live-monitoring toggle between launches and
-  retry the saved device when it returns.
 - **VST3:** an editor window on Linux (the app makes none).
 - **Plugin editor keeps its plugin running:** a plugin nothing listens to no
   longer runs, so its editor's meters freeze. `always_runs` is per node type;
   true-only-while-the-editor-is-open needs it to be per instance.
 - **Plugin latency changes:** a plugin's reported latency change (CLAP `changed`) is not followed until the node is rebuilt.
-- **Beat view gain envelope.** The beat view draws no gain envelope (clip or
-  sample).
-- **Cleanup leftovers** (see `features/code-cleanup.md`): one `TimeAxis` for the
-  arrangement, piano roll and clip editor (only the piano roll's snap is done), a
-  sandbox monitor that sleeps with no tick, and one retry policy for files that
-  fail to open.
+- **Cleanup leftovers** (see `features/code-cleanup.md`): a sandbox monitor that
+  sleeps with no tick, and one retry policy for files that fail to open.
 - **Flaky test** #138 stays open (no recurrence).

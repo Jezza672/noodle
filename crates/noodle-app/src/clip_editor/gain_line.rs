@@ -19,6 +19,9 @@ pub(super) struct Frame<'a> {
     pub length: Tick,
     pub x_of: &'a dyn Fn(Tick) -> f32,
     pub tick_at: &'a dyn Fn(f32) -> Tick,
+    /// Whether a double-click on the waveform adds a point. The beat view
+    /// keeps a plain double-click for markers.
+    pub adding: bool,
 }
 
 /// The screen height of `db` in `wave`: the bottom of the range at the
@@ -107,6 +110,7 @@ pub(super) fn show(
         }
     }
     if !handled
+        && frame.adding
         && waveform.double_clicked()
         && let Some(pos) = waveform.interact_pointer_pos()
     {

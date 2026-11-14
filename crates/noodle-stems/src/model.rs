@@ -73,6 +73,45 @@ impl ModelSpec {
             version: self.version.into(),
         }
     }
+
+    /// Every model Split to stems can use, in the order the app lists them.
+    pub fn all() -> Vec<Self> {
+        vec![Self::htdemucs()]
+    }
+
+    /// What the user should know about this model before downloading it.
+    pub fn info(&self) -> ModelInfo {
+        match self.id {
+            "htdemucs" => ModelInfo {
+                name: "HT-Demucs",
+                separates: "drums, bass, other and vocals",
+                licence: "MIT",
+                credit: "Meta AI (Demucs); ONNX export by adowu",
+                source_url: "https://huggingface.co/adowu/htdemucs-onnx",
+                bytes: 300_000_000,
+            },
+            _ => ModelInfo {
+                name: self.id,
+                separates: "stems",
+                licence: "unknown",
+                credit: "unknown",
+                source_url: "",
+                bytes: 0,
+            },
+        }
+    }
+}
+
+/// What a model is, for the Models tab and the stems dialog.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct ModelInfo {
+    pub name: &'static str,
+    pub separates: &'static str,
+    pub licence: &'static str,
+    pub credit: &'static str,
+    pub source_url: &'static str,
+    /// About how big the download is.
+    pub bytes: u64,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -211,6 +250,19 @@ impl ModelStore {
     /// Whether the weights are here already.
     pub fn is_present(&self, spec: &ModelSpec) -> bool {
         self.path(spec).is_file()
+    }
+
+    /// The bytes the weights take on disk (0 when they are not here).
+    pub fn size_on_disk(&self, spec: &ModelSpec) -> u64 {
+        std::fs::metadata(self.path(spec)).map_or(0, |m| m.len())
+    }
+
+    /// Deletes the weights. Succeeds when they were not here.
+    pub fn remove(&self, spec: &ModelSpec) -> std::io::Result<()> {
+        match std::fs::remove_file(self.path(spec)) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => Err(e),
+            _ => Ok(()),
+        }
     }
 
     /// Where the runtime library is kept: in a folder named for its version,

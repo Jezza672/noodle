@@ -1566,3 +1566,32 @@ fn the_sampler_cuts_are_the_picked_hits_with_the_next_one_when_there_is_only_one
     assert_eq!(sampler_cuts(&picked(&[2]), &onsets, 4.0), [1.5, 4.0]);
     assert!(sampler_cuts(&picked(&[]), &onsets, 4.0).is_empty());
 }
+
+#[test]
+fn the_beat_view_draws_the_gain_line_and_takes_points_by_cmd_double_click() {
+    let mut h = rig(true);
+    let g = geometry(&h);
+    let at = |beat: f64, db: f32| Pos2::new(g.x(beat), super::gain_line::y_of(g.wave, db));
+    // A plain double-click is still for markers.
+    double_click(&mut h, at(2.0, -12.0));
+    assert!(gain_points(&h).is_empty());
+    assert_eq!(warp(&h).markers.len(), 1);
+    wait_out_double_click(&mut h);
+    crate::testkit::double_click_with(&mut h, at(2.0, -12.0), Modifiers::COMMAND);
+    let points = gain_points(&h);
+    assert_eq!(points.len(), 1, "{points:?}");
+    // Beat 2 of the clip is two quarters from its start.
+    assert!((points[0].0 - 2 * 960).abs() <= 8, "{points:?}");
+    assert!((points[0].1 + 12.0).abs() < 0.5, "{points:?}");
+    assert_eq!(warp(&h).markers.len(), 1, "no second marker");
+    // The point is dragged where it is drawn, and one undo takes the drag back.
+    wait_out_double_click(&mut h);
+    let moved = {
+        drag_between(&mut h, Modifiers::NONE, at(2.0, -12.0), at(3.0, -24.0));
+        gain_points(&h)
+    };
+    assert!((moved[0].0 - 3 * 960).abs() <= 8, "{moved:?}");
+    assert!((moved[0].1 + 24.0).abs() < 0.5, "{moved:?}");
+    h.state_mut().session.undo();
+    assert_eq!(gain_points(&h), points);
+}
