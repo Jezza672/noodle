@@ -147,10 +147,7 @@ impl Session {
         let audio = source
             .as_audio()
             .ok_or("Only audio clips can be converted")?;
-        let path = match self.directory() {
-            Some(dir) => dir.join(&audio.source),
-            None => PathBuf::from(&audio.source),
-        };
+        let path = audio.file(self.directory().unwrap_or(Path::new("")));
         let file =
             decode_file(&path).map_err(|e| format!("Couldn't read {}: {e}", audio.source))?;
         let channels = file.channels.max(1);
@@ -377,10 +374,7 @@ impl Session {
             let Some(audio) = project.clip(member).and_then(|c| c.as_audio()) else {
                 continue;
             };
-            let path = match self.directory() {
-                Some(dir) => dir.join(&audio.source),
-                None => PathBuf::from(&audio.source),
-            };
+            let path = audio.file(self.directory().unwrap_or(Path::new("")));
             let file = decode_file(&path)
                 .map_err(|e| other(format!("Couldn't read {}: {e}", audio.source)))?;
             let channels = file.channels.max(1);

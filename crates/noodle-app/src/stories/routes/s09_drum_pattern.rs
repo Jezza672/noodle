@@ -463,6 +463,15 @@ fn rack_steps(h: &mut Handle, _size: usize) {
     h.right_click(at);
     let entry = h.find_first("Create drum rack from clip…");
     h.click(entry, Modifiers::NONE);
+    // The first time, the app offers to download the separation models; this
+    // route works from the model-free analysis, so it declines.
+    h.probe().settle();
+    if h.probe().mentions("Not now") {
+        h.step("decline the model download offer");
+        let not_now = h.find("Not now");
+        h.click(not_now, Modifiers::NONE);
+        h.probe().settle();
+    }
     // The analysis runs on a background worker.
     h.waited(0.5);
     for _ in 0..1500 {

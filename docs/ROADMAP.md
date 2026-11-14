@@ -19,7 +19,6 @@ deliberately deferred items.
 3. **`noodle-packs`:** pack definitions, manifests, licence and credit fields, validation.
 4. **`noodle-publish`:** built (docs/architecture/packs.md). Owed: add the repo secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` for the first real publish, and decide how contributors other than Jeremy get an upload credential.
 7. **Make shareable pack:** the wizard and its usability stories and routes (find a sample, add a source, make a pack).
-8. **Clips use the hash store**, so a dragged clip needs no copy.
 
 Later: Nodes, Groups and Presets as tabs of the same browser.
 
@@ -111,11 +110,11 @@ Later: Nodes, Groups and Presets as tabs of the same browser.
   matching is built). Also listen to velocity layers and the groove clip on the
   Mac, and listen to the dialog's new audition (it plays straight to the
   monitor device) on the Mac: ask before making sound.
-- **Drum separation models on real weights** (`docs/features/drum-separation-models.md`):
-  fill in each model's address, SHA-256 and size, host the LarsNet ONNX conversion,
-  check the tensor layouts with `tests/drum_runtime.rs`, and listen on real kits.
-  Until the addresses are in, the Models tab shows "not available yet" and the
-  first-use popup does not appear (#523). The analyser that uses the dialog's
+- **Listen to the drum separation models on real kits** (`docs/features/drum-separation-models.md`):
+  dry, loud rock with ringing cymbals, electronic, room-miked live. The tensor
+  layouts are checked against the real files; only the listening is owed. Also
+  consider streaming overlap-add in `MaskSeparator` if long clips run out of memory
+  (about 600 MB for 5 minutes at 4096/1024). The analyser that uses the dialog's
   model choice is not built yet.
 - **Recording with a real microphone**, to check the latency compensation, and
   that the Audio Settings round-trip estimate matches what you hear.

@@ -14,14 +14,13 @@ drags it into the project, with a usability story (S31) and route.
 - Click to audition through a preview player outside the graph; a sound over
   8 MB asks before downloading.
 - Drag onto a Sampler or pad (the hash), the canvas (a Sample node) or the
-  timeline (copied into the project folder, a path-referenced clip with the
-  credit in the new `AudioClip::credit`).
+  timeline (a clip that names the sound by hash, with the credit in
+  `AudioClip::credit`; no copy, see chunk 8 below).
 - Unreachable sources are greyed and keep the catalogue saved last time.
 - Tests use a fake source (`source::fake`); no test touches the network.
   The S31 route searches, auditions and drops a sound on a Sampler.
 
-**Owed.** The built-in address is a placeholder until the first publish; dragging
-onto the timeline needs a saved project.
+**Owed.** The built-in address is a placeholder until the first publish.
 
 ## Chunk 6: Sources settings (#513)
 
@@ -55,3 +54,17 @@ story S32 and its route.
 folder there; "Add folder…" is on the Sources page. The macOS and Windows
 keychain code is untested here (CI builds it) and needs a hand check on the
 Mac.
+
+## Chunk 8: clips use the hash store (#515)
+
+- `AudioClip::hash` names a clip's audio by content; `source` is its display
+  name. `AudioClip::file(base)` finds it: `<project>/samples/<hash>.wav`, else
+  the file registered for the hash (`register_audio_file`), else by path for a
+  clip without a hash. Project format 5.
+- A sound dropped on the timeline, or a file imported there, makes a hashed
+  clip with no copy and no saved project needed. Saving writes every hash a
+  clip or sampler names into `samples/` (`SampleStore::save_file`).
+- The Sounds panel's `sounds/` copy step is gone. Clips from recording, stems,
+  bounce and take merge still point at the files they wrote, by path; the
+  engine plays both.
+- ADR 0004 records where the store sits.

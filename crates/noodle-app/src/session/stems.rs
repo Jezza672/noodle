@@ -368,7 +368,7 @@ impl Session {
         }
         let request = SplitRequest {
             quality: self.stems.quality,
-            source: dir.join(&audio.source),
+            source: audio.file(&dir),
             frames,
             out_dir: dir.join(STEMS_DIR),
             name: name.clone(),
@@ -506,6 +506,7 @@ impl Session {
             let mut changed = clip.clone();
             if let ClipContent::Audio(a) = &mut changed.content {
                 a.source = new.clone();
+                a.hash = None;
             }
             commands.push(Command::SetClip {
                 id: clip_id,
@@ -575,6 +576,7 @@ impl Session {
 
             let mut part = audio.clone();
             part.source = format!("{STEMS_DIR}/{}", file.file);
+            part.hash = None;
             part.muted = false;
             commands.push(Command::AddClip {
                 id: next_clip,

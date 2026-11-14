@@ -1359,7 +1359,7 @@ impl ClipFeeds {
             if audio.muted {
                 continue;
             }
-            let path = base.join(&audio.source);
+            let path = audio.file(base);
             let info = match self.file_info(&path) {
                 Ok(info) => info,
                 Err(message) => {
@@ -1562,7 +1562,7 @@ impl ClipFeeds {
                         table.sample_at_tick(Tick(clip.start.0 + midi.length.0))
                     }
                     ClipContent::Audio(audio) => {
-                        let path = base.join(&audio.source);
+                        let path = audio.file(base);
                         self.file_info(&path).map_or(start, |info| {
                             let (pieces, _) = lay_out(project, clip, audio, &info, table, rate);
                             start + pieces.last().map_or(0, |p| p.from + p.len)

@@ -1519,7 +1519,7 @@ impl Session {
             .project
             .clips()
             .filter_map(|(_, clip)| match &clip.content {
-                noodle_core::ClipContent::Audio(audio) => Some(base.join(&audio.source)),
+                noodle_core::ClipContent::Audio(audio) => Some(audio.file(&base)),
                 noodle_core::ClipContent::Midi(_) => None,
             });
         // Reads what the watcher thread last saw: no I/O here, and the
@@ -2015,8 +2015,14 @@ impl Session {
 
     /// Writes every sample the project names into the store's folder.
     fn write_samples(&mut self) {
-        for hash in self.sample_hashes() {
-            if let Err(error) = self.samples.save(&hash) {
+        let clips = self
+            .project
+            .clips()
+            .filter_map(|(_, clip)| clip.as_audio()?.hash.clone());
+        let hashes: std::collections::BTreeSet<String> =
+            self.sample_hashes().into_iter().chain(clips).collect();
+        for hash in hashes {
+            if let Err(error) = self.samples.save_file(&hash) {
                 self.message = Some(format!(
                     "Couldn't save sample {}: {error}",
                     &hash[..8.min(hash.len())]
