@@ -336,6 +336,35 @@ It has these views:
     point drops the clip selection and vice versa, so Delete only ever
     acts on one.
   - The mixer is still to come.
+- **Sounds panel** (`noodle-app/src/sounds`, ADR 0012): a floating content
+  browser, opened from View > Sounds, File > Browse Sounds…, the palette
+  ("Browse Sounds…", Cmd+K) and the Sampler's "Browse sounds…" button. It
+  lists the sounds of every source (the built-in one first; `NOODLE_SOUNDS_URL`
+  overrides its address until the first publish), those already on this
+  computer first, and greys a source it can't reach while still listing the
+  catalogue kept from last time (`<data dir>/sounds/catalogues`). The item
+  model is `catalogue::Entry` with a `Kind`, so Nodes, Groups and Presets can
+  join as tabs. Search covers name, tags, pack and author; filters are source
+  and licence.
+  - **Audition.** A click downloads the one sound and plays it through
+    `noodle_io::Preview` straight to the monitor device, outside the project's
+    graph (silent on the virtual output). A sound over 8 MB, not yet cached,
+    asks first (`dialog::modal`).
+  - **No I/O off the workers.** Lists and downloads run on `Job`s through
+    `noodle-download` (`sounds/source.rs` is the only file that names it), the
+    audio is decoded and hashed by the downloader's verify hook, and objects
+    land in a content-keyed cache (`<data dir>/sounds/objects/<hash>`).
+    `SampleStore` is only given a file that is already there, so it stays
+    offline, and the CLI and renders never download.
+  - **Drag.** A row is carried like a clip (`carry::Item::Sound`). Dropped on a
+    Sampler or a drum pad it sets the hash (`sample_drop::choose`); on the
+    canvas it becomes a Sample node; on the timeline it is copied to
+    `<project>/sounds/` and laid as a path-referenced clip whose
+    `AudioClip::credit` carries the attribution (shown in the clip panel). A
+    sound not yet downloaded is fetched first and used when it arrives. Views
+    that only hold `&Session` leave their request in the egui context
+    (`sounds::ask`), and the app takes it each frame.
+
 - **Mixer:** a view over the track groups.
 - **Properties panel:** the selected node's config settings, parameters
   and compile problems. The panel is as tall as the window, so its body

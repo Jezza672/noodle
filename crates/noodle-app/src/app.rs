@@ -116,6 +116,7 @@ pub struct App {
     /// Whether the outputs view is showing.
     outputs_open: bool,
     plugin_browser: PluginBrowser,
+    sounds: crate::sounds::Sounds,
     cache_panel: CachePanel,
     drum_rack_dialog: crate::drum_rack_dialog::DrumRackDialog,
     outputs: OutputsView,
@@ -231,6 +232,8 @@ pub(crate) enum Action {
     ToggleOutputs,
     ToggleMidiPorts,
     TogglePlugins,
+    /// Shows the Sounds panel.
+    OpenSounds,
     ToggleCache,
     ToggleCpu,
     ImportAudio,
@@ -341,6 +344,7 @@ impl App {
             scope_view: None,
             outputs_open: false,
             plugin_browser: PluginBrowser::default(),
+            sounds: crate::sounds::Sounds::default(),
             cache_panel: CachePanel::default(),
             drum_rack_dialog: Default::default(),
             outputs: OutputsView::default(),
@@ -822,6 +826,10 @@ impl App {
         self.autosave_tick(ui.ctx());
         let edits = self.plugin_browser.show(ui.ctx(), &mut self.session);
         self.session.edit(edits);
+        self.sounds.show(ui.ctx());
+        for done in self.sounds.poll(&self.session) {
+            crate::sounds::apply::apply(&mut self.session, done);
+        }
         self.cache_panel.show(ui.ctx(), &mut self.session);
         self.export.show(ui.ctx(), &mut self.session);
         self.palette_and_templates(ui.ctx(), &mut actions);
@@ -1039,6 +1047,7 @@ impl App {
             });
             ui.separator();
             item(ui, "Import Audio…", None, true, Action::ImportAudio);
+            item(ui, "Browse Sounds…", None, true, Action::OpenSounds);
             item(ui, "Export Audio…", None, true, Action::ExportAudio);
             ui.separator();
             item(ui, "Settings…", Some(&SETTINGS), true, Action::Settings);
@@ -1191,6 +1200,13 @@ impl App {
                 .clicked()
             {
                 actions.push(Action::TogglePlugins);
+            }
+            if ui
+                .selectable_label(self.sounds.is_open(), "Sounds")
+                .on_hover_text("Browse, hear and drag in sounds from packs")
+                .clicked()
+            {
+                actions.push(Action::OpenSounds);
             }
             if ui
                 .selectable_label(self.cache_panel.is_open(), "Playback cache")
@@ -2571,6 +2587,7 @@ impl App {
             }
             Action::ToggleScope => self.scope_open = !self.scope_open,
             Action::TogglePlugins => self.plugin_browser.toggle(),
+            Action::OpenSounds => self.sounds.open(),
             Action::ToggleCache => self.cache_panel.toggle(),
             Action::SetTempo { centi_bpm, drag } => {
                 let project = self.session.project();
@@ -2852,6 +2869,17 @@ impl App {
                     }
                 }
             }
+            Item::Sound(key) => {
+                use crate::sounds::Then;
+                let then = match dropped.on {
+                    editor::DropOn::Sampler(node) => Then::Sampler(node),
+                    editor::DropOn::Canvas(at) => Then::Canvas {
+                        at,
+                        group: dropped.group,
+                    },
+                };
+                self.sounds.use_key(key, then);
+            }
             Item::Track(group) => {
                 let at = match dropped.on {
                     editor::DropOn::Canvas(at) => at,
@@ -2933,6 +2961,18 @@ impl App {
             self.session.notify(error);
         }
         self.editor.select_only([node]);
+    }
+
+    /// Swaps the Sounds panel's sources and network, for tests and routes.
+    #[cfg(test)]
+    pub(crate) fn use_sounds(&mut self, sounds: crate::sounds::Sounds) {
+        self.sounds = sounds;
+    }
+
+    /// Whether the Sounds panel is waiting on a worker.
+    #[cfg(test)]
+    pub(crate) fn sounds_busy(&self) -> bool {
+        self.sounds.busy()
     }
 
     /// Asks which audio files to add, and adds them as clips at `target`.

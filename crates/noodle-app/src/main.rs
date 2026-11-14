@@ -38,6 +38,7 @@ mod sample_view;
 mod session;
 mod settings;
 mod snap;
+mod sounds;
 mod stems_dialog;
 #[cfg(test)]
 mod stories;

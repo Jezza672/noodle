@@ -815,6 +815,12 @@ pub struct AudioClip {
     /// every take is cut to, in the coordinates of the first take.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub takes: Option<TakeFolder>,
+    /// The attribution line that travels with the audio, set when a clip
+    /// comes from a sample under a licence that asks for credit (ADR 0012).
+    /// Shown in the clip's panel; it follows the clip through splits and
+    /// copies.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit: Option<String>,
 }
 
 fn is_false(value: &bool) -> bool {
@@ -1067,6 +1073,7 @@ impl AudioClip {
             extent: None,
             muted: false,
             takes: None,
+            credit: None,
         }
     }
 }
