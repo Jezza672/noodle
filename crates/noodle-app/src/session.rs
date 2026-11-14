@@ -171,6 +171,15 @@ pub enum Edit {
     AnalyseDrumClip(noodle_core::ClipId),
     /// Stops the drum analysis under way.
     CancelDrumAnalysis,
+    /// Runs a separation model (by manifest id) over the held drum analysis
+    /// (see [`Session::separate_drum_hits`]). Not an edit.
+    SeparateDrumHits(String),
+    /// Stops the separation under way.
+    CancelDrumSeparation,
+    /// Makes a hit of the held analysis play a part of its separation (see
+    /// [`Session::take_separated_part`]), or its own audio again with `None`.
+    /// Not an edit.
+    TakeSeparatedPart(usize, Option<noodle_stems::drum::DrumPart>),
     /// Makes a Drum Rack track from the held analysis of a clip (see
     /// [`Session::create_drum_rack`]). One undo step.
     CreateDrumRack(noodle_core::ClipId, drum_rack::DrumRackPlan),
@@ -1749,6 +1758,21 @@ impl Session {
                     self.analyse_drum_clip(clip);
                     continue;
                 }
+                Edit::SeparateDrumHits(model) => {
+                    self.separate_drum_hits(&model);
+                    continue;
+                }
+                Edit::CancelDrumSeparation => {
+                    self.cancel_drum_separation();
+                    continue;
+                }
+                Edit::TakeSeparatedPart(hit, part) => {
+                    match part {
+                        Some(part) => self.take_separated_part(hit, part),
+                        None => self.release_separated_part(hit),
+                    }
+                    continue;
+                }
                 Edit::CancelDrumAnalysis => {
                     self.cancel_drum_analysis();
                     continue;
@@ -2674,6 +2698,7 @@ impl Session {
         self.poll_render();
         self.poll_split();
         self.poll_drum_analysis();
+        self.poll_drum_separation();
         self.poll_plugin_scan();
         self.poll_plugin_editors();
         self.poll_param_learn();

@@ -46,7 +46,7 @@ fn ort_path_set() -> bool {
 
 /// The runtime in `store`: the pinned download, else a library put in the
 /// folder by hand.
-fn runtime_in(store: &ModelStore, spec: Option<&RuntimeSpec>) -> Option<PathBuf> {
+pub(super) fn runtime_in(store: &ModelStore, spec: Option<&RuntimeSpec>) -> Option<PathBuf> {
     let pinned = spec.map(|r| store.runtime_path(r));
     pinned.filter(|p| p.is_file()).or_else(|| {
         [
@@ -199,6 +199,20 @@ impl Stems {
             Source::Model { .. } => None,
             #[cfg(test)]
             Source::Custom(_) => None,
+        }
+    }
+
+    /// ONNX Runtime for another job that runs a model (the drum rack's
+    /// separation): the store and pinned build to fetch it from, and whether
+    /// it still has to be downloaded. `None` leaves it to `ORT_DYLIB_PATH`.
+    pub(super) fn onnx_runtime(&self) -> Option<(ModelStore, RuntimeSpec, bool)> {
+        match &self.source {
+            Source::Model {
+                store: Some(store),
+                runtime: Some(runtime),
+                ..
+            } => Some((store.clone(), runtime.clone(), self.runtime_to_download())),
+            _ => None,
         }
     }
 

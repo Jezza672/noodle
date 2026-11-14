@@ -24,6 +24,11 @@ use noodle_core::{
 use noodle_engine::{Job, JobPanicked};
 use noodle_io::{DrumCancelled as Cancelled, Hit, HitCache, HitKey, analyse_hits};
 use noodle_nodes::{NOTE_SPLIT_ID, SAMPLE_KEY, SAMPLE_SET_ID, SampleRef, SetEntry};
+use noodle_stems::drum::{
+    DrumModelManifest, DrumPart, HitWindow, PartSeparator, Separation, manifest_by_id,
+    separate_hits,
+};
+use noodle_stems::{ModelId, SeparateError, Stereo};
 
 use super::*;
 use crate::timeline::add_track;
@@ -188,6 +193,11 @@ pub struct DrumAnalysis {
     /// The hash of the clip's source file.
     pub hash: String,
     pub hits: Arc<[Hit]>,
+    /// What the separation analyser found in each hit, once it has run (see
+    /// [`Session::separate_drum_hits`]).
+    pub separation: Option<Arc<Separation>>,
+    /// Hits whose audio the user replaced with a separated part, by hit index.
+    taken: std::collections::BTreeMap<usize, SampleRef>,
     /// Frames of the file before the first analysed frame (the clip's window
     /// starts there) and in the whole file: hits are counted from the former.
     origin: u64,
@@ -195,6 +205,19 @@ pub struct DrumAnalysis {
 }
 
 impl DrumAnalysis {
+    /// Whether the separation found another drum sounding in hit `index`.
+    pub fn separated_mixed(&self, index: usize) -> bool {
+        self.separation
+            .as_ref()
+            .and_then(|s| s.hits.get(index))
+            .is_some_and(|h| h.is_mixed())
+    }
+
+    /// Whether hit `index` plays a separated part instead of its own audio.
+    pub fn is_taken(&self, index: usize) -> bool {
+        self.taken.contains_key(&index)
+    }
+
     /// An analysis of `hits` that was not made from a clip, for tests of what
     /// the dialog does with one.
     #[cfg(test)]
@@ -203,6 +226,8 @@ impl DrumAnalysis {
             clip,
             hash: "synthetic".into(),
             hits: hits.into(),
+            separation: None,
+            taken: Default::default(),
             origin: 0,
             file_frames: 1_000_000,
         }
@@ -211,6 +236,9 @@ impl DrumAnalysis {
     /// The window of the clip's file that hit `index` is cut from.
     pub fn window(&self, index: usize) -> Option<SampleRef> {
         let hit = self.hits.get(index)?;
+        if let Some(taken) = self.taken.get(&index) {
+            return Some(taken.clone());
+        }
         let total = self.file_frames.max(1) as f64;
         let at = |frame: u64| ((self.origin + frame) as f64 / total).clamp(0.0, 1.0) as f32;
         Some(SampleRef {
@@ -230,8 +258,33 @@ struct Run {
     file_frames: u64,
 }
 
+/// What the separation of one clip window by one model is of.
+type SeparationKey = (HitKey, ModelId);
+
+/// Opens a separator for a model, given ONNX Runtime's library if there is one.
+pub(crate) type PartOpener = Arc<
+    dyn Fn(
+            &'static DrumModelManifest,
+            Option<&std::path::Path>,
+        ) -> Result<Box<dyn PartSeparator>, String>
+        + Send
+        + Sync,
+>;
+
+/// A separation under way.
+struct SeparationRun {
+    job: Job<Result<Arc<Separation>, SeparateError>>,
+    /// The analysis it is for.
+    clip: ClipId,
+    model: &'static str,
+}
+
 #[derive(Default)]
 pub(super) struct DrumRack {
+    separating: Option<SeparationRun>,
+    separations: Arc<std::sync::Mutex<std::collections::HashMap<SeparationKey, Arc<Separation>>>>,
+    /// Instead of the real model, in tests.
+    opener: Option<PartOpener>,
     run: Option<Run>,
     result: Option<DrumAnalysis>,
     cache: Arc<HitCache>,
@@ -293,6 +346,204 @@ impl Session {
         });
     }
 
+    /// Runs the separation model `model` (a [`DrumModelManifest`] id) over the
+    /// clip of the held analysis, as an optional extra analyser: each hit then
+    /// knows which drum parts sound in it ([`DrumAnalysis::separation`]). The
+    /// result is kept by clip window, file and model id and version, so asking
+    /// again is instant. Cancellable, with progress, like the analysis.
+    pub fn separate_drum_hits(&mut self, model: &str) {
+        if self.drum_rack.separating.is_some() {
+            self.message = Some("A separation is already running".into());
+            return;
+        }
+        let Some(manifest) = manifest_by_id(model) else {
+            self.message = Some(format!("Unknown separation model {model}"));
+            return;
+        };
+        let Some(analysis) = self.drum_rack.result.as_ref() else {
+            return;
+        };
+        let (clip, hash, origin) = (analysis.clip, analysis.hash.clone(), analysis.origin);
+        let windows: Vec<HitWindow> = analysis
+            .hits
+            .iter()
+            .map(|h| HitWindow {
+                onset: h.onset,
+                start: h.start,
+                end: h.end,
+            })
+            .collect();
+        let Some(sample) = self.samples().get(&hash) else {
+            self.message = Some("The clip's file can't be read".into());
+            return;
+        };
+        let Some(length) = self
+            .project
+            .clip(clip)
+            .and_then(|c| c.as_audio())
+            .map(|a| a.length)
+        else {
+            return;
+        };
+        let end = (origin + length).min(sample.frames() as u64);
+        let key: SeparationKey = (
+            HitKey::new(hash, origin, end),
+            ModelId {
+                id: manifest.id.into(),
+                version: manifest.version.into(),
+            },
+        );
+        let cache = self.drum_rack.separations.clone();
+        let (opener, runtime) = match &self.drum_rack.opener {
+            Some(opener) => (opener.clone(), None),
+            None => {
+                let Some(store) = crate::models::default_drum_store() else {
+                    self.message =
+                        Some("There is nowhere to keep the models on this computer".into());
+                    return;
+                };
+                let opener: PartOpener = Arc::new(move |m, runtime| {
+                    noodle_stems::drum::open_separator(m, &store, runtime)
+                        .map_err(|e| e.to_string())
+                });
+                (opener, self.stems.onnx_runtime())
+            }
+        };
+        let job = Job::spawn(move |progress| {
+            if let Some(found) = cache.lock().unwrap().get(&key).cloned() {
+                return Ok(found);
+            }
+            // ONNX Runtime is fetched here when the machine has none, as Split
+            // to stems does.
+            let mut share = 0.0;
+            let mut runtime_path = None;
+            if let Some((store, spec, needs)) = runtime {
+                if needs {
+                    share = 0.03;
+                    store
+                        .download_runtime(&spec, &mut |f| progress.report(f * share).is_ok())
+                        .map_err(|e| match e {
+                            noodle_stems::DownloadError::Cancelled => SeparateError::Cancelled,
+                            other => SeparateError::Failed(other.to_string()),
+                        })?;
+                }
+                runtime_path = super::stems::runtime_in(&store, Some(&spec));
+            }
+            let mut separator =
+                opener(manifest, runtime_path.as_deref()).map_err(SeparateError::Failed)?;
+            let (a, b) = (origin as usize, end as usize);
+            let audio = Stereo {
+                left: sample.left[a..b].to_vec(),
+                right: sample.right[a..b].to_vec(),
+            };
+            let separation = Arc::new(separate_hits(
+                &mut *separator,
+                &audio,
+                sample.sample_rate,
+                &windows,
+                &mut |f| progress.report(share + (1.0 - share) * f).is_ok(),
+            )?);
+            cache.lock().unwrap().insert(key, separation.clone());
+            Ok(separation)
+        });
+        self.drum_rack.separating = Some(SeparationRun {
+            job,
+            clip,
+            model: manifest.id,
+        });
+    }
+
+    /// How far the separation under way has got, from 0 to 1.
+    pub fn drum_separation_progress(&self) -> Option<f32> {
+        self.drum_rack.separating.as_ref().map(|r| r.job.fraction())
+    }
+
+    /// Stops the separation under way. The analysis stays as it was.
+    pub fn cancel_drum_separation(&mut self) {
+        if let Some(run) = &self.drum_rack.separating {
+            run.job.cancel();
+        }
+    }
+
+    /// Makes hit `index` of the held analysis play `part` of its separation
+    /// instead of its own audio, for a hit that is mixed with no clean
+    /// example. The part's audio goes into the project's samples.
+    pub fn take_separated_part(&mut self, index: usize, part: DrumPart) {
+        let Some(analysis) = self.drum_rack.result.as_ref() else {
+            return;
+        };
+        let Some(audio) = analysis
+            .separation
+            .as_ref()
+            .and_then(|s| s.hits.get(index))
+            .and_then(|h| h.part_audio(part))
+        else {
+            self.message = Some(format!("That hit has no {part} part"));
+            return;
+        };
+        let rate = match self.samples().get(&analysis.hash) {
+            Some(sample) => sample.sample_rate,
+            None => return,
+        };
+        let hash = self.samples().insert(&noodle_io::Audio {
+            samples: audio.to_interleaved(),
+            channels: 2,
+            sample_rate: rate,
+        });
+        if let Some(analysis) = self.drum_rack.result.as_mut() {
+            analysis.taken.insert(index, SampleRef::whole(&hash));
+        }
+    }
+
+    /// Makes hit `index` play its own audio again.
+    pub fn release_separated_part(&mut self, index: usize) {
+        if let Some(analysis) = self.drum_rack.result.as_mut() {
+            analysis.taken.remove(&index);
+        }
+    }
+
+    /// Takes in a finished separation.
+    pub(super) fn poll_drum_separation(&mut self) {
+        let Some(run) = &mut self.drum_rack.separating else {
+            return;
+        };
+        let Some(done) = run.job.poll() else {
+            return;
+        };
+        let run = self.drum_rack.separating.take().expect("just polled");
+        match done {
+            Ok(Ok(separation)) => {
+                if let Some(analysis) = self
+                    .drum_rack
+                    .result
+                    .as_mut()
+                    .filter(|a| a.clip == run.clip)
+                {
+                    analysis.separation = Some(separation);
+                }
+            }
+            Ok(Err(SeparateError::Cancelled)) => {
+                self.message = Some("Separation cancelled".into());
+            }
+            Ok(Err(error)) => {
+                self.message = Some(format!(
+                    "Couldn't separate the drums with {}: {error}",
+                    run.model
+                ));
+            }
+            Err(JobPanicked) => {
+                self.message = Some(format!("Couldn't separate the drums: {JobPanicked}"));
+            }
+        }
+    }
+
+    /// Makes `open` the way a separator is got, instead of the model, so a test
+    /// needs no weights.
+    #[cfg(test)]
+    pub(crate) fn use_part_opener(&mut self, open: PartOpener) {
+        self.drum_rack.opener = Some(open);
+    }
+
     /// How far the analysis under way has got, from 0 to 1.
     pub fn drum_progress(&self) -> Option<f32> {
         self.drum_rack.run.as_ref().map(|r| r.job.fraction())
@@ -312,6 +563,7 @@ impl Session {
 
     /// Lets go of the analysis (the dialog was closed).
     pub fn close_drum_analysis(&mut self) {
+        self.cancel_drum_separation();
         self.drum_rack.preview = None;
         self.drum_rack.result = None;
     }
@@ -374,6 +626,8 @@ impl Session {
                     clip: run.clip,
                     hash: run.hash,
                     hits,
+                    separation: None,
+                    taken: Default::default(),
                     origin: run.origin,
                     file_frames: run.file_frames,
                 });
@@ -853,6 +1107,11 @@ mod tests {
 
     /// A saved project with a clip of kicks and hats, four seconds long.
     fn rig(dir: &std::path::Path) -> (Session, ClipId) {
+        rig_with(dir, false)
+    }
+
+    /// `rig`, and with `overlap` the hit on beat 4 is a kick with a hat over it.
+    fn rig_with(dir: &std::path::Path, overlap: bool) -> (Session, ClipId) {
         let mut session = Session::new(crate::session::Nodes::all());
         let (track, input) =
             add_track::with_input(session.project().graph(), || session.new_node_id());
@@ -860,6 +1119,15 @@ mod tests {
         let mut audio = vec![0.0f32; 4 * RATE as usize];
         for beat in 0..8 {
             let at = (0.2 + beat as f32 * 0.5) * RATE as f32;
+            if overlap && beat == 4 {
+                for (i, v) in kick().iter().enumerate() {
+                    audio[at as usize + i] += v;
+                }
+                for (i, v) in hat().iter().enumerate() {
+                    audio[at as usize + i] += 1.5 * v;
+                }
+                continue;
+            }
             let (hit, gain) = if beat % 2 == 0 {
                 (kick(), 1.0)
             } else {
@@ -1284,5 +1552,220 @@ mod tests {
         assert_eq!(gm_drum_name(34), None);
         assert_eq!(gm_drum_name(82), None);
         assert_eq!(pad_name(34), "A#1");
+    }
+    /// Splits the mix at 300 Hz into a kick (below) and a hat (the rest), and
+    /// counts how often it was opened and run. `gate` holds a run until false.
+    struct Bands {
+        gate: Arc<std::sync::atomic::AtomicBool>,
+    }
+
+    impl PartSeparator for Bands {
+        fn model(&self) -> ModelId {
+            ModelId {
+                id: "larsnet".into(),
+                version: "1".into(),
+            }
+        }
+        fn sample_rate(&self) -> u32 {
+            RATE
+        }
+        fn parts(&self) -> Vec<DrumPart> {
+            vec![DrumPart::Kick, DrumPart::HiHat]
+        }
+        fn separate(
+            &mut self,
+            mix: &Stereo,
+            progress: &mut dyn FnMut(f32) -> bool,
+        ) -> Result<Vec<(DrumPart, Stereo)>, SeparateError> {
+            while self.gate.load(std::sync::atomic::Ordering::SeqCst) {
+                if !progress(0.3) {
+                    return Err(SeparateError::Cancelled);
+                }
+                std::thread::sleep(Duration::from_millis(2));
+            }
+            let k = 1.0 - (-TAU * 300.0 / RATE as f32).exp();
+            let mut low = Stereo::silent(mix.len());
+            let mut high = Stereo::silent(mix.len());
+            // Four poles, so the kick's upper harmonics stay out of the hat.
+            let kh = 1.0 - (-TAU * 2000.0 / RATE as f32).exp();
+            let mut state = [0.0f32; 4];
+            let mut hp = [0.0f32; 2];
+            for i in 0..mix.len() {
+                let mut x = mix.left[i];
+                for pole in &mut state {
+                    *pole += k * (x - *pole);
+                    x = *pole;
+                }
+                low.left[i] = x;
+                low.right[i] = x;
+                let mut y = mix.left[i];
+                for pole in &mut hp {
+                    *pole += kh * (y - *pole);
+                    y -= *pole;
+                }
+                high.left[i] = y;
+                high.right[i] = y;
+            }
+            Ok(vec![(DrumPart::Kick, low), (DrumPart::HiHat, high)])
+        }
+    }
+
+    /// Makes the session separate with `Bands`; returns how many times it was
+    /// opened and the gate.
+    fn with_bands(
+        session: &mut Session,
+        held: bool,
+    ) -> (
+        Arc<std::sync::atomic::AtomicUsize>,
+        Arc<std::sync::atomic::AtomicBool>,
+    ) {
+        let opened = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let gate = Arc::new(std::sync::atomic::AtomicBool::new(held));
+        let (o, g) = (opened.clone(), gate.clone());
+        session.use_part_opener(Arc::new(move |_, _| {
+            o.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Ok(Box::new(Bands { gate: g.clone() }) as Box<dyn PartSeparator>)
+        }));
+        (opened, gate)
+    }
+
+    fn separated(session: &mut Session) {
+        session.edit([Edit::SeparateDrumHits("larsnet".into())]);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while session.drum_separation_progress().is_some() {
+            assert!(Instant::now() < deadline, "the separation never finished");
+            std::thread::sleep(Duration::from_millis(5));
+            session.maintain();
+        }
+    }
+
+    #[test]
+    fn the_separation_marks_the_hit_with_two_parts_sounding_as_mixed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, clip) = rig_with(dir.path(), true);
+        with_bands(&mut session, false);
+        analysed(&mut session, clip);
+        assert!(session.drum_analysis().unwrap().separation.is_none());
+        separated(&mut session);
+        let analysis = session.drum_analysis().unwrap();
+        let separation = analysis.separation.as_ref().expect("a separation");
+        assert_eq!(separation.hits.len(), analysis.hits.len());
+        let mixed: Vec<usize> = (0..analysis.hits.len())
+            .filter(|&h| analysis.separated_mixed(h))
+            .collect();
+        // The kick over hat is the fifth hit, and the only mixed one.
+        assert_eq!(
+            mixed,
+            vec![4],
+            "{:?}",
+            separation
+                .hits
+                .iter()
+                .map(|h| &h.levels)
+                .collect::<Vec<_>>()
+        );
+        assert_eq!(
+            separation.hits[4].active.len(),
+            2,
+            "a kick and a hat sound there"
+        );
+        assert_eq!(separation.hits[0].active, vec![DrumPart::Kick]);
+        assert_eq!(separation.hits[1].active, vec![DrumPart::HiHat]);
+    }
+
+    #[test]
+    fn asking_again_for_the_same_clip_and_model_reuses_the_separation() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, clip) = rig_with(dir.path(), true);
+        let (opened, _) = with_bands(&mut session, false);
+        analysed(&mut session, clip);
+        separated(&mut session);
+        session.close_drum_analysis();
+        analysed(&mut session, clip);
+        separated(&mut session);
+        assert!(session.drum_analysis().unwrap().separation.is_some());
+        assert_eq!(opened.load(std::sync::atomic::Ordering::SeqCst), 1);
+    }
+
+    #[test]
+    fn cancelling_a_separation_leaves_the_analysis_as_it_was() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, clip) = rig_with(dir.path(), true);
+        let (_, gate) = with_bands(&mut session, true);
+        analysed(&mut session, clip);
+        session.edit([Edit::SeparateDrumHits("larsnet".into())]);
+        assert!(session.drum_separation_progress().is_some());
+        session.edit([Edit::CancelDrumSeparation]);
+        let deadline = Instant::now() + Duration::from_secs(60);
+        while session.drum_separation_progress().is_some() {
+            assert!(Instant::now() < deadline, "the cancel never took");
+            std::thread::sleep(Duration::from_millis(5));
+            session.maintain();
+        }
+        gate.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert_eq!(session.message(), Some("Separation cancelled"));
+        let analysis = session.drum_analysis().expect("the analysis is kept");
+        assert!(analysis.separation.is_none());
+        assert_eq!(analysis.hits.len(), 8);
+    }
+
+    #[test]
+    fn a_model_that_cannot_open_says_so_and_changes_nothing() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, clip) = rig_with(dir.path(), true);
+        session.use_part_opener(Arc::new(|_, _| Err("not downloaded".into())));
+        analysed(&mut session, clip);
+        separated(&mut session);
+        assert_eq!(
+            session.message(),
+            Some("Couldn't separate the drums with larsnet: not downloaded")
+        );
+        assert!(session.drum_analysis().unwrap().separation.is_none());
+    }
+
+    #[test]
+    fn taking_a_part_swaps_the_hits_audio_and_leaving_it_swaps_back() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, clip) = rig_with(dir.path(), true);
+        with_bands(&mut session, false);
+        analysed(&mut session, clip);
+        separated(&mut session);
+        let own = session.drum_analysis().unwrap().window(4).unwrap();
+        session.edit([Edit::TakeSeparatedPart(4, Some(DrumPart::Kick))]);
+        let analysis = session.drum_analysis().unwrap();
+        assert!(analysis.is_taken(4));
+        let taken = analysis.window(4).unwrap();
+        assert_ne!(taken.hash, own.hash, "the part is its own sample");
+        assert_eq!((taken.start, taken.end), (0.0, 1.0));
+        let hit = &analysis.hits[4];
+        let sample = session.samples().get(&taken.hash).unwrap();
+        assert_eq!(sample.frames() as u64, hit.end - hit.start);
+        // The rack plays the part.
+        let plan = DrumRackPlan {
+            bins: vec![PlannedBin {
+                name: "Kick".into(),
+                hits: vec![4],
+                layers: Vec::new(),
+            }],
+            pads: vec![PadAssignment {
+                key: 36,
+                bin: 0,
+                pick: 1,
+            }],
+            groove: false,
+        };
+        session.edit([Edit::CreateDrumRack(clip, plan)]);
+        let sets = of_type(&session, SAMPLE_SET_ID);
+        let Some(Value::Text(entries)) = sets[0].1.config.get(SAMPLE_KEY) else {
+            panic!("no entries");
+        };
+        assert_eq!(
+            noodle_nodes::parse_set(entries)[0].reference.hash,
+            taken.hash
+        );
+        session.edit([Edit::TakeSeparatedPart(4, None)]);
+        let analysis = session.drum_analysis().unwrap();
+        assert!(!analysis.is_taken(4));
+        assert_eq!(analysis.window(4).unwrap(), own);
     }
 }
