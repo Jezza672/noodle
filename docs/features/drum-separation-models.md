@@ -8,7 +8,7 @@ the app side (Models tab, first-use popup, dialog drop-down) is at the end.
   drumsep: parts and their order, the parts it lacks, licence and non-commercial
   flag, credit, source, sample rate, chunking (segment, STFT size, hop), layout and
   files (address, SHA-256, size). A file with no address or checksum cannot be
-  downloaded (`StoreError::NotPublished`); **none of the three has them yet** (see below).
+  downloaded (`StoreError::NotPublished`); all three have them (see below).
 - **`PartSeparator`** (`mod.rs`): N named `DrumPart`s (kick, snare, toms, hi-hat,
   cymbals, and `Rest` for Timbrica's hat and cymbals together), cancellable, at the
   model's rate. The four-stem `Separator` of Split to stems is left as it is.
@@ -30,16 +30,30 @@ the app side (Models tab, first-use popup, dialog drop-down) is at the end.
 - **Store** (`store.rs`): `DrumModelStore` keeps files by SHA-256 in the shared
   download cache, with consent, progress, cancel, size on disk and remove.
 
-## Not verified against real weights
+## Real weights (#523)
 
-The cloud session cannot reach Hugging Face, so the tensor layouts (bins, frames,
-output kind, input order) are written from the papers and cards and are **unchecked
-against real files**. Opening refuses a mismatch with the shapes it found. Before
-release: put the real files in a folder and run `tests/drum_runtime.rs` (header
-explains), fix `Chunking`/`Layout` in the manifest if the shapes differ, fill in each
-file's `url`, `sha256` and `size`, and listen on real kits.
-LarsNet needs our own ONNX conversion hosted as a separate credited CC BY-NC 4.0
-download (never in the repo or binary).
+Checked with `tests/drum_runtime.rs` against the real files (set `NOODLE_DRUM_MODEL`
+and `NOODLE_DRUM_WEIGHTS`; its synthetic-kit test also checks the kick part
+dominates a kick-and-hat mix). Not listened to on real kits yet.
+
+- **Timbrica** (`Faridzar/timbrica-drum-separator`, pinned to a commit): input `mag`
+  `[1, 2, 2048, 512]`, output `mask` of the same shape, a 0 to 1 gain, so the layout is
+  `MaskOutput::Mask` (it was written as magnitude). fp16 inside with float32 at the
+  edges. The snare is the "r2" retrain; the first snare file is superseded.
+- **LarsNet:** the authors' `UNet` is the same network. Our ONNX conversion exports
+  `produce_mask` (input `mag`, output `mask`, 2048 bins, 512 frames, the Nyquist bin
+  dropped on the way in and zero on the way out), so it is `MaskOutput::Mask` too.
+  Hosted as a separate credited CC BY-NC 4.0 download at
+  `huggingface.co/jezza672/larsnet-onnx` (five 39,346,035-byte files), never in the
+  repository or the binary. It matches PyTorch to about 1e-5.
+- **drumsep:** `waveform [b, 2, 1764000]` and `magnitude [b, 4, 2048, 1723]` in,
+  `freq_output [b, 4, 4, 2048, 1723]` and `time_output [b, 4, 2, 1764000]` out, stems in
+  the manifest's order. splitzo's file does not load in ONNX Runtime (four `EyeLike`
+  nodes on a boolean input have no CPU kernel), so we host a copy with those constants
+  changed to float, same result, at `huggingface.co/jezza672/drumsep-onnx` (MIT).
+  The model is fixed at 40 s segments.
+- Downloads are pinned to commit hashes, and the Hugging Face CDN redirect needs
+  `us.aws.cdn.hf.co` reachable.
 
 ## The app side (#520): Models tab, first-use popup, drop-down
 

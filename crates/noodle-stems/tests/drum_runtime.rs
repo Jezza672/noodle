@@ -74,3 +74,73 @@ fn real_weights_separate_a_click_track() {
     assert_eq!(parts.len(), manifest.parts.len());
     assert!(parts.iter().all(|(_, p)| p.len() == frames));
 }
+
+/// A synthetic kit (kicks, snares, hats) through real weights: prints each
+/// part's RMS, and checks that the kick part is the loudest. A smoke check of
+/// layouts, not a quality test; listen on real kits too.
+#[test]
+fn real_weights_put_a_synthetic_kit_in_the_right_parts() {
+    use noodle_stems::drum::DrumPart;
+    let Some((_, lib)) = runtime() else { return };
+    let (Ok(id), Some(folder)) = (
+        std::env::var("NOODLE_DRUM_MODEL"),
+        std::env::var_os("NOODLE_DRUM_WEIGHTS"),
+    ) else {
+        return;
+    };
+    let manifest = manifest_by_id(&id).expect("a known model id");
+    let files: Vec<_> = manifest
+        .files
+        .iter()
+        .map(|f| PathBuf::from(&folder).join(f.name))
+        .collect();
+    let mut separator = open_files(manifest, &files, Some(&lib)).unwrap();
+    let sr = 44_100usize;
+    let frames = sr * 6;
+    let mut noise = 12_345u32;
+    let mut rand = move || {
+        noise = noise.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+        (noise >> 8) as f32 / (1u32 << 24) as f32 * 2.0 - 1.0
+    };
+    let mut mono = vec![0.0f32; frames];
+    for (i, v) in mono.iter_mut().enumerate() {
+        let beat = i % (sr / 2);
+        // Kick on every beat: a falling sine.
+        if beat < sr / 4 {
+            let t = beat as f32 / sr as f32;
+            let phase =
+                2.0 * std::f32::consts::PI * (50.0 * t + 40.0 * (1.0 - (-t * 30.0).exp()) / 30.0);
+            *v += 0.8 * phase.sin() * (-t * 12.0).exp();
+        }
+        // Hat on the off-beat: short high noise.
+        let off = (i + sr / 4) % (sr / 2);
+        if off < sr / 20 {
+            let t = off as f32 / sr as f32;
+            *v += 0.3 * rand() * (-t * 80.0).exp();
+        }
+    }
+    let mix = Stereo {
+        left: mono.clone(),
+        right: mono,
+    };
+    let parts = separator.separate(&mix, &mut |_| true).unwrap();
+    let rms = |p: &Stereo| (p.left.iter().map(|x| x * x).sum::<f32>() / p.left.len() as f32).sqrt();
+    for (part, audio) in &parts {
+        eprintln!("{id}: {part:?} rms {:.4}", rms(audio));
+    }
+    let of = |wanted: DrumPart| {
+        parts
+            .iter()
+            .find(|(p, _)| *p == wanted)
+            .map(|(_, a)| rms(a))
+    };
+    let kick = of(DrumPart::Kick).unwrap();
+    for (part, audio) in &parts {
+        if *part != DrumPart::Kick {
+            assert!(
+                kick > rms(audio),
+                "{id}: kick should dominate, {part:?} is louder"
+            );
+        }
+    }
+}

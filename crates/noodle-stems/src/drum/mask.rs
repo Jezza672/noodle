@@ -222,7 +222,7 @@ mod tests {
     fn nets(scales: &[f32]) -> Vec<Box<dyn MaskNet>> {
         scales
             .iter()
-            .map(|&s| Box::new(Scale(s)) as Box<dyn MaskNet>)
+            .map(|&s| Box::new(Constant(s)) as Box<dyn MaskNet>)
             .collect()
     }
 
@@ -250,10 +250,26 @@ mod tests {
     }
 
     #[test]
-    fn a_mask_output_is_a_gain_on_the_mix() {
+    fn a_magnitude_output_is_an_estimate_of_the_part() {
         let mut manifest = LARSNET;
-        manifest.layout = Layout::PerPartSpectrogram(MaskOutput::Mask);
+        manifest.layout = Layout::PerPartSpectrogram(MaskOutput::Magnitude);
         let manifest: &'static DrumModelManifest = Box::leak(Box::new(manifest));
+        let mix = signal(30_000);
+        let nets: Vec<Box<dyn MaskNet>> = [0.1, 0.2, 0.3, 0.4, 0.5]
+            .into_iter()
+            .map(|k| Box::new(Scale(k)) as _)
+            .collect();
+        let mut separator = MaskSeparator::new(manifest, nets).unwrap();
+        let parts = separator.separate(&mix, &mut |_| true).unwrap();
+        for ((_, audio), k) in parts.iter().zip([0.1f32, 0.2, 0.3, 0.4, 0.5]) {
+            let want: Vec<f32> = mix.left.iter().map(|x| x * k).collect();
+            assert!(max_diff(&audio.left, &want) < 2e-3, "scale {k}");
+        }
+    }
+
+    #[test]
+    fn a_mask_output_is_a_gain_on_the_mix() {
+        let manifest = &LARSNET;
         let mix = signal(30_000);
         let nets: Vec<Box<dyn MaskNet>> = [1.0, 0.5, 0.0, 0.25, 0.75]
             .into_iter()

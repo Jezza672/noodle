@@ -111,17 +111,16 @@ Later: Nodes, Groups and Presets as tabs of the same browser.
   classifier of our own, (the model-free template matching and the separation analyser are built). Also listen to velocity layers and the groove clip on the
   Mac, and listen to the dialog's new audition (it plays straight to the
   monitor device) on the Mac: ask before making sound.
-- **Drum separation models on real weights** (`docs/features/drum-separation-models.md`):
-  fill in each model's address, SHA-256 and size, host the LarsNet ONNX conversion,
-  check the tensor layouts with `tests/drum_runtime.rs`, and listen on real kits.
-  Until the addresses are in, the Models tab shows "not available yet" and the
-  first-use popup does not appear (#523).
+- **Listen to the drum separation models on real kits** (`docs/features/drum-separation-models.md`):
+  dry, loud rock with ringing cymbals, electronic, room-miked live. The tensor
+  layouts are checked against the real files; only the listening is owed. Also
+  consider streaming overlap-add in `MaskSeparator` if long clips run out of memory
+  (about 600 MB for 5 minutes at 4096/1024).
 - **Drum separation analyser, listening on real kits** (#501, built;
-  `docs/features/drum-separation-analyser.md`): with real weights, run Find overlapping
-  drums on a dry kit, loud rock with ringing cymbals, an electronic kit and a
-  room-miked live kit. Check that hits with two drums are marked and clean ones are
-  not, and that Use part… sounds like the one drum. The 20 dB `ACTIVE_WITHIN_DB`
-  margin was set on synthetic parts and may need tuning. Ask before making sound.
+  `docs/features/drum-separation-analyser.md`): run Find overlapping drums on the same
+  kits. Check that hits with two drums are marked and clean ones are not, and that
+  Use part… sounds like the one drum. The 20 dB `ACTIVE_WITHIN_DB` margin was set on
+  synthetic parts and may need tuning. Ask before making sound.
 - **Recording with a real microphone**, to check the latency compensation, and
   that the Audio Settings round-trip estimate matches what you hear.
 - **Stem separation on the real HT-Demucs weights** (M10), and listening to the
