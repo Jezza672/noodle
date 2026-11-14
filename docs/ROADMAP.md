@@ -6,7 +6,7 @@ is recorded in [features/](features/README.md); the design as it stands is in
 its record to a file in `features/` and delete it from this page.
 
 All milestones M0 to M11 are built in code. What is left is the feature
-items below that make Noodle usable in place of another DAW, six planned
+items below that make Noodle usable in place of another DAW, planned
 features with issues, checks that need a person and hardware, and a few
 deliberately deferred items.
 
@@ -69,7 +69,7 @@ deliberately deferred items.
 
 ## Planned: new nodes and MIDI files
 
-Six features picked from a shortlist in November 2026. Each issue holds the design, the tests and the open questions; the chunks below are one PR each. Every instrument here ships as a group template built from the new primitive, never as a synth node. They are independent of each other, so the order is only a suggestion: quick wins first, then the two sound primitives.
+Seven features picked from a shortlist in November 2026. Each issue holds the design, the tests and the open questions; the chunks below are one PR each. Every instrument here ships as a group template built from the new primitive, never as a synth node. They are independent of each other, so the order is only a suggestion: quick wins first, then the two sound primitives.
 
 **MIDI file import and export (#540).** Drop a .mid on the timeline or use File > Import MIDI; export a clip, a track or the arrangement.
 
@@ -98,6 +98,22 @@ Six features picked from a shortlist in November 2026. Each issue holds the desi
 
 1. The node. Size L.
 2. The Looper template (Buttons, Launch Quantise, Mono Note for the gate), the state display, the S27 route. Size M.
+
+**Preset morph (#543).** "Morph between presets…" on a group adds one Morph node (`noodle.mod.morph`) with an output wired into every parameter that differs between two group presets, and exposes its `position` as a group input. Nothing is modulated without a wire; a parameter that already has a wire or a lane, and all config, stay out.
+
+1. The node, `Edit::MorphPresets`, the menu entry and picker, the rows in the node's panel. Size M.
+2. The XY form for four presets with a pad widget, Set from current, Randomise. Size M.
+
+## Planned: Noodle as a plugin (#544)
+
+Noodle loaded in another DAW: the node editor, properties, library and Sounds panel in the host's window, no arrangement, with Host In, Host Out and Host MIDI nodes already in the graph. CLAP first; VST3 and AU are made from the CLAP with `clap-wrapper`. The issue holds the design and the open questions (whether an instance is a project or a group is the main one).
+
+1. Shell split and host backend: `noodle-app` as a library with a desktop shell, a host audio backend in `noodle-io`, Host devices and ports on the io nodes. Size M.
+2. A headless CLAP (`noodle-plugin`): ports, process, state, latency, default projects, tested by Noodle hosting Noodle. Size L.
+3. Transport and tempo from the host, and a 64-slot bank of host parameters surfaced as Host Parameter nodes. Size M.
+4. The window: the editor-only layout drawn in the host's window, focus, text, drag and drop, scaling. Size L, the main risk.
+5. More than one instance in a process: the UI waker and the other process-wide state. Size M.
+6. VST3 and AU through the wrapper, packaging, and an owed pass in real hosts on the Mac. Size M.
 
 ## Owed: needs a person on real hardware
 
