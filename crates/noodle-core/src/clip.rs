@@ -775,8 +775,17 @@ impl MidiClip {
 /// it sounds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct AudioClip {
-    /// The audio file, as a path relative to the project file.
+    /// What the clip's audio is called: the name of the sound or file it came
+    /// from. When [`hash`](Self::hash) is `None` it is also where the audio is,
+    /// a path relative to the project file.
     pub source: String,
+    /// The audio by the hash of its contents, the way a Sampler names a sample
+    /// (ADR 0004). The audio is found in the project's `samples` folder or, for
+    /// a sound that has not been saved there yet, wherever it was registered
+    /// (see [`register_audio_file`]); see [`AudioClip::file`]. `None` for a
+    /// clip that points at a file by path.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hash: Option<String>,
     /// Where in the file the clip starts, in the file's sample frames.
     pub offset: u64,
     /// How much of the file plays, in the file's sample frames.
@@ -1056,12 +1065,75 @@ impl Crossfade {
     }
 }
 
+/// The folder of a project's sample store, beside the project file.
+pub const SAMPLE_STORE_DIR: &str = "samples";
+
+type Registry = std::sync::Mutex<std::collections::HashMap<String, std::path::PathBuf>>;
+
+fn registered_files() -> &'static Registry {
+    static FILES: std::sync::OnceLock<Registry> = std::sync::OnceLock::new();
+    FILES.get_or_init(Default::default)
+}
+
+/// Says that `path` holds the audio with this hash, so a clip that names the
+/// hash can play it before the project is saved and the audio copied into the
+/// store. Content addressing makes this safe to share across projects: any
+/// file with that content is as good as any other.
+pub fn register_audio_file(hash: &str, path: &std::path::Path) {
+    registered_files()
+        .lock()
+        .expect("registry lock")
+        .insert(hash.to_owned(), path.to_owned());
+}
+
+/// The file [`register_audio_file`] last gave for `hash`.
+pub fn registered_audio_file(hash: &str) -> Option<std::path::PathBuf> {
+    registered_files()
+        .lock()
+        .expect("registry lock")
+        .get(hash)
+        .cloned()
+}
+
+/// Where the store keeps the audio with this hash, for a project in `base`.
+pub fn stored_audio_path(base: &std::path::Path, hash: &str) -> std::path::PathBuf {
+    base.join(SAMPLE_STORE_DIR).join(format!("{hash}.wav"))
+}
+
 impl AudioClip {
+    /// The file the clip's audio is in, for a project in `base`. A clip with
+    /// a hash looks in the project's store first (it is the copy that travels
+    /// with the project), then at the file registered for the hash; a clip
+    /// without one is `source` relative to `base`.
+    pub fn file(&self, base: &std::path::Path) -> std::path::PathBuf {
+        let Some(hash) = &self.hash else {
+            return base.join(&self.source);
+        };
+        let stored = stored_audio_path(base, hash);
+        if stored.is_file() {
+            return stored;
+        }
+        registered_audio_file(hash).unwrap_or(stored)
+    }
+
+    /// What identifies the clip's audio: its hash, or the path when it has
+    /// none. Two clips with the same key play the same audio.
+    pub fn key(&self) -> &str {
+        self.hash.as_deref().unwrap_or(&self.source)
+    }
+
+    /// The same clip naming its audio by `hash`.
+    pub fn with_hash(mut self, hash: impl Into<String>) -> Self {
+        self.hash = Some(hash.into());
+        self
+    }
+
     /// `length` frames of `source` from its start, at unit gain and without
     /// fades.
     pub fn new(source: impl Into<String>, length: u64) -> Self {
         Self {
             source: source.into(),
+            hash: None,
             offset: 0,
             length,
             gain: 1.0,
@@ -1228,6 +1300,39 @@ mod tests {
     }
 
     use super::*;
+
+    #[test]
+    fn a_hashed_clip_is_found_in_the_store_then_where_it_was_registered_and_a_path_clip_by_path() {
+        let base = std::path::Path::new("/song");
+        let path_clip = AudioClip::new("a/b.wav", 10);
+        assert_eq!(path_clip.file(base), base.join("a/b.wav"));
+        assert_eq!(path_clip.key(), "a/b.wav");
+
+        let hash = "cd".repeat(32);
+        let clip = AudioClip::new("Kick", 10).with_hash(hash.clone());
+        assert_eq!(clip.key(), hash);
+        assert_eq!(clip.file(base), stored_audio_path(base, &hash));
+        register_audio_file(&hash, std::path::Path::new("/cache/kick.flac"));
+        assert_eq!(
+            clip.file(base),
+            std::path::PathBuf::from("/cache/kick.flac")
+        );
+        // The project's own copy wins once it exists.
+        let dir = std::env::temp_dir().join(format!("noodle-clip-{}", std::process::id()));
+        std::fs::create_dir_all(dir.join(SAMPLE_STORE_DIR)).unwrap();
+        std::fs::write(stored_audio_path(&dir, &hash), b"x").unwrap();
+        assert_eq!(clip.file(&dir), stored_audio_path(&dir, &hash));
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_hash_is_saved_with_the_clip_and_a_path_clip_has_none() {
+        let hashed = AudioClip::new("Kick", 10).with_hash("ab".repeat(32));
+        let text = ron::to_string(&hashed).unwrap();
+        assert_eq!(ron::from_str::<AudioClip>(&text).unwrap(), hashed);
+        let plain = AudioClip::new("a.wav", 10);
+        assert!(!ron::to_string(&plain).unwrap().contains("hash"));
+    }
 
     fn clip_with(points: &[(i64, f32)]) -> AudioClip {
         let mut audio = AudioClip::new("a.wav", 1000);

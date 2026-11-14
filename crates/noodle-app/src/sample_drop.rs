@@ -21,10 +21,7 @@ pub fn from_clip(session: &Session, clip: ClipId) -> Result<Dropped, String> {
         .clip(clip)
         .and_then(|c| c.as_audio())
         .ok_or("Only audio clips can be used as a sample.")?;
-    let path = match session.directory() {
-        Some(dir) => dir.join(&audio.source),
-        None => std::path::PathBuf::from(&audio.source),
-    };
+    let path = audio.file(session.directory().unwrap_or(std::path::Path::new("")));
     let store = session.samples();
     let hash = store
         .import(&path)

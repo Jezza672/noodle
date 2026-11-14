@@ -56,16 +56,6 @@ pub fn apply(session: &mut Session, done: Done) {
             session.edit([Edit::Apply(Command::AddNode { id, node })]);
         }
         Then::Timeline { track, at } => {
-            let Some(dir) = session.directory().map(std::path::Path::to_path_buf) else {
-                return session.notify(
-                    "Save the project first: a sound dropped on the timeline is copied into its folder"
-                        .into(),
-                );
-            };
-            let copy = match copy_into(&dir, &path, &entry.name, &entry.key) {
-                Ok(copy) => copy,
-                Err(e) => return session.notify(format!("Couldn't copy {}: {e}", entry.name)),
-            };
             let credit = entry.credit_line();
             let (new_track, track) = match track {
                 Some(track) => (None, track),
@@ -75,7 +65,8 @@ pub fn apply(session: &mut Session, done: Done) {
                     (Some(create), track)
                 }
             };
-            let added = import::import_credited(session, &copy, track, at, credit);
+            let added =
+                import::import_stored(session, &path, &entry.name, &entry.key, track, at, credit);
             let command = match (new_track, added.command) {
                 (Some(create), Some(clip)) => Some(Command::Batch(vec![create, clip])),
                 (None, clip) => clip,
@@ -90,32 +81,4 @@ pub fn apply(session: &mut Session, done: Done) {
             }
         }
     }
-}
-
-/// Copies the downloaded `file` into `<dir>/sounds/`, named for the sound and
-/// the start of its hash so two sounds with one name don't meet. A copy that is
-/// already there is kept.
-fn copy_into(
-    dir: &std::path::Path,
-    file: &std::path::Path,
-    name: &str,
-    hash: &str,
-) -> std::io::Result<std::path::PathBuf> {
-    let stem: String = name
-        .chars()
-        .map(|c| {
-            if c.is_alphanumeric() || c == '-' {
-                c
-            } else {
-                '_'
-            }
-        })
-        .collect();
-    let folder = dir.join("sounds");
-    std::fs::create_dir_all(&folder)?;
-    let dest = folder.join(format!("{stem}-{}.flac", &hash[..8.min(hash.len())]));
-    if !dest.is_file() {
-        std::fs::copy(file, &dest)?;
-    }
-    Ok(dest)
 }

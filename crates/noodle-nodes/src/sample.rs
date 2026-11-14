@@ -257,6 +257,42 @@ impl SampleStore {
         Ok(self.insert(&decode_file(path)?))
     }
 
+    /// Names the hash of an audio file, so a clip can play it, without keeping
+    /// its audio in memory: clips stream from disk, and a long recording is
+    /// not a thing to hold. The file is remembered (see
+    /// [`noodle_core::register_audio_file`]) until [`save_file`](Self::save_file)
+    /// copies it into the folder. Returns the hash.
+    pub fn register_file(&self, path: &Path) -> Result<String, SampleError> {
+        let hash = Sample::from_audio(&decode_file(path)?).hash();
+        noodle_core::register_audio_file(&hash, path);
+        Ok(hash)
+    }
+
+    /// Writes the audio registered for `hash` (or held in memory) to the
+    /// folder as `<hash>.wav`, kept if already there. The file's own hash is
+    /// checked, so a file changed since it was registered is not stored under
+    /// the old name.
+    pub fn save_file(&self, hash: &str) -> Result<PathBuf, SampleError> {
+        if self.inner.lock().unwrap().samples.contains_key(hash) {
+            return self.save(hash);
+        }
+        let dir = self.dir().ok_or(SampleError::NoDirectory)?;
+        let path = dir.join(format!("{hash}.wav"));
+        if path.exists() {
+            return Ok(path);
+        }
+        let from = noodle_core::registered_audio_file(hash)
+            .ok_or_else(|| SampleError::NotFound(hash.to_owned()))?;
+        let sample = Sample::from_audio(&decode_file(&from)?);
+        if sample.hash() != hash {
+            return Err(SampleError::NotFound(hash.to_owned()));
+        }
+        std::fs::create_dir_all(&dir).map_err(|e| SampleError::Decode(e.into()))?;
+        let audio = sample.to_audio();
+        write_wav(&path, &audio.samples, audio.channels, audio.sample_rate)?;
+        Ok(path)
+    }
+
     /// The sample with this hash, from memory or else the folder.
     pub fn get(&self, hash: &str) -> Option<Arc<Sample>> {
         let dir = {
@@ -493,5 +529,25 @@ mod tests {
         store.set_dir(dir.path());
         assert!(store.get(&fake).is_none());
         assert!(store.get("../escape").is_none());
+    }
+
+    #[test]
+    fn a_registered_file_is_stored_under_its_hash_without_being_held_in_memory() {
+        let dir = std::env::temp_dir().join(format!("noodle-reg-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let file = dir.join("tone.wav");
+        write_wav(&file, &[0.1, -0.2, 0.3, 0.4], 1, 44_100).unwrap();
+        let store = SampleStore::new();
+        store.set_dir(dir.join("samples"));
+        let hash = store.register_file(&file).unwrap();
+        assert!(store.inner.lock().unwrap().samples.is_empty());
+        assert_eq!(
+            noodle_core::registered_audio_file(&hash),
+            Some(file.clone())
+        );
+        let saved = store.save_file(&hash).unwrap();
+        assert_eq!(saved, dir.join("samples").join(format!("{hash}.wav")));
+        assert_eq!(store.get(&hash).unwrap().hash(), hash);
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 }

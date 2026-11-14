@@ -71,16 +71,15 @@ fn source_rates(
     ctx: &egui::Context,
     directory: Option<&std::path::Path>,
 ) -> std::collections::HashMap<String, u32> {
-    project
-        .clips()
-        .filter_map(|(_, clip)| Some(clip.as_audio()?.source.clone()))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .map(|source| {
-            let rate = sources.rate(ctx, directory, &source);
-            (source, rate)
-        })
-        .collect()
+    let mut rates = std::collections::HashMap::new();
+    for (_, clip) in project.clips() {
+        if let Some(audio) = clip.as_audio() {
+            rates
+                .entry(audio.key().to_owned())
+                .or_insert_with(|| sources.audio_rate(ctx, directory, audio));
+        }
+    }
+    rates
 }
 
 fn warp_of<'a>(project: &'a Project, clip: &Clip) -> Option<&'a noodle_core::ClipWarp> {
@@ -337,6 +336,7 @@ impl TimelineState {
 
     /// What is known about the audio file `name` (relative to `directory`),
     /// reading it in the background if this is the first time it's asked for.
+    #[cfg(test)]
     pub fn source(
         &mut self,
         ctx: &egui::Context,
@@ -344,6 +344,16 @@ impl TimelineState {
         name: &str,
     ) -> Option<Loaded> {
         self.sources.get(ctx, directory, name)
+    }
+
+    /// [`Self::source`] for the audio a clip plays.
+    pub fn source_of(
+        &mut self,
+        ctx: &egui::Context,
+        directory: Option<&std::path::Path>,
+        audio: &noodle_core::AudioClip,
+    ) -> Option<Loaded> {
+        self.sources.get_clip(ctx, directory, audio)
     }
 
     #[cfg(test)]
@@ -923,7 +933,7 @@ pub fn show(
                     let loaded = audio.and_then(|audio| {
                         state
                             .sources
-                            .get(ui.ctx(), directory.as_deref(), &audio.source)
+                            .get_clip(ui.ctx(), directory.as_deref(), audio)
                     });
                     let source = loaded.as_ref().map(|loaded| loaded.source);
                     let rate = source.map_or(FALLBACK_RATE, |s| s.sample_rate);
@@ -1003,10 +1013,10 @@ pub fn show(
                             .iter()
                             .filter_map(|(member, original)| {
                                 let audio = original.as_audio()?;
-                                let loaded = state.sources.get(
+                                let loaded = state.sources.get_clip(
                                     ui.ctx(),
                                     directory.as_deref(),
-                                    &audio.source,
+                                    audio,
                                 )?;
                                 Some((*member, loaded.source))
                             })
@@ -1188,10 +1198,11 @@ pub fn show(
                                             .and_then(|warp| {
                                                 let request = warped_waves::Request {
                                                     clip: id,
-                                                    path: directory
-                                                        .as_deref()
-                                                        .unwrap_or(std::path::Path::new(""))
-                                                        .join(&audio.source),
+                                                    path: audio.file(
+                                                        directory
+                                                            .as_deref()
+                                                            .unwrap_or(std::path::Path::new("")),
+                                                    ),
                                                     tempo: map.clone(),
                                                     start: clip.start,
                                                     warp: warp.clone(),
@@ -1343,10 +1354,9 @@ pub fn show(
                 .clips()
                 .filter_map(|(id, clip)| {
                     let audio = clip.as_audio()?;
-                    let loaded =
-                        state
-                            .sources
-                            .get(ui.ctx(), directory.as_deref(), &audio.source)?;
+                    let loaded = state
+                        .sources
+                        .get_clip(ui.ctx(), directory.as_deref(), audio)?;
                     Some((id, (loaded.source.sample_rate, loaded.source.frames)))
                 })
                 .collect();
@@ -1872,7 +1882,7 @@ pub fn show(
                         );
                         let rate = |clip: &Clip| {
                             clip.as_audio()
-                                .and_then(|audio| rates.get(&audio.source).copied())
+                                .and_then(|audio| rates.get(audio.key()).copied())
                                 .unwrap_or(FALLBACK_RATE)
                         };
                         if let Some(range) = sections::between_markers(project, i, &rate) {
@@ -2640,7 +2650,7 @@ fn run_clip_action(
         let rates = source_rates(project, &mut state.sources, ctx, directory);
         let rate = |clip: &Clip| {
             clip.as_audio()
-                .and_then(|audio| rates.get(&audio.source).copied())
+                .and_then(|audio| rates.get(audio.key()).copied())
                 .unwrap_or(FALLBACK_RATE)
         };
         match (action, ranged) {

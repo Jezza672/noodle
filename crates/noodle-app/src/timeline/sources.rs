@@ -169,14 +169,30 @@ impl Sources {
     /// The file `name`, which is relative to `directory` (the folder of the
     /// project file; the working directory if it has none). `None` if it
     /// can't be read.
+    #[cfg(test)]
     pub fn get(
         &mut self,
         ctx: &egui::Context,
         directory: Option<&Path>,
         name: &str,
     ) -> Option<Loaded> {
+        self.get_path(ctx, directory.unwrap_or(Path::new("")).join(name))
+    }
+
+    /// [`Self::get`] for the audio a clip plays, wherever its hash or path
+    /// puts it.
+    pub fn get_clip(
+        &mut self,
+        ctx: &egui::Context,
+        directory: Option<&Path>,
+        audio: &noodle_core::AudioClip,
+    ) -> Option<Loaded> {
+        self.get_path(ctx, audio.file(directory.unwrap_or(Path::new(""))))
+    }
+
+    /// The file at `path`, which can't be read if `None`.
+    pub fn get_path(&mut self, ctx: &egui::Context, path: PathBuf) -> Option<Loaded> {
         self.collect();
-        let path = directory.unwrap_or(Path::new("")).join(name);
         let stamp = self.files.stamp(&path);
         match self.entries.get(&path) {
             Some(Entry::Found(found)) if found.stamp == stamp => {
@@ -217,10 +233,14 @@ impl Sources {
         Some(loaded)
     }
 
-    /// The sample rate of the file `name`, or [`FALLBACK_RATE`] when it
-    /// can't be read.
-    pub fn rate(&mut self, ctx: &egui::Context, directory: Option<&Path>, name: &str) -> u32 {
-        self.get(ctx, directory, name)
+    /// The sample rate of the audio `audio` plays, or [`FALLBACK_RATE`].
+    pub fn audio_rate(
+        &mut self,
+        ctx: &egui::Context,
+        directory: Option<&Path>,
+        audio: &noodle_core::AudioClip,
+    ) -> u32 {
+        self.get_clip(ctx, directory, audio)
             .map_or(FALLBACK_RATE, |loaded| loaded.source.sample_rate)
     }
 
@@ -232,7 +252,7 @@ impl Sources {
         clip: &noodle_core::Clip,
     ) -> u32 {
         clip.as_audio().map_or(FALLBACK_RATE, |audio| {
-            self.rate(ctx, directory, &audio.source)
+            self.audio_rate(ctx, directory, audio)
         })
     }
 
