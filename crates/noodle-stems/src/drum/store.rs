@@ -33,6 +33,16 @@ impl fmt::Display for StoreError {
     }
 }
 
+impl StoreError {
+    /// Whether the download was stopped by the user, which is not a failure.
+    pub fn is_cancelled(&self) -> bool {
+        matches!(
+            self,
+            StoreError::Download(noodle_download::Error::Cancelled)
+        )
+    }
+}
+
 impl std::error::Error for StoreError {}
 
 impl From<noodle_network::Error> for StoreError {
@@ -117,6 +127,17 @@ impl DrumModelStore {
         }
         progress(1.0);
         Ok(())
+    }
+
+    /// [`download`](Self::download) over the real network, for the app. The
+    /// consent was the user's own choice in the Models tab or the first-use
+    /// popup, which show the licence, so nothing is asked again.
+    pub fn fetch(
+        &self,
+        model: &DrumModelManifest,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<(), StoreError> {
+        self.download(model, &Downloader::default(), None, progress)
     }
 
     /// Deletes the weights of `model`. Nothing else shares them, since the
