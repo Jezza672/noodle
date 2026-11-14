@@ -34,5 +34,5 @@ drags it into the project, with a usability story (S31) and route.
   clip or sampler names into `samples/` (`SampleStore::save_file`).
 - The Sounds panel's `sounds/` copy step is gone. Clips from recording, stems,
   bounce and take merge still point at the files they wrote, by path; the
-  engine plays both. Old projects load unchanged.
+  engine plays both.
 - ADR 0004 records where the store sits.
