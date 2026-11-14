@@ -52,6 +52,23 @@ pub fn import(session: &Session, files: &[PathBuf], track: NodeId, at: Tick) -> 
     Import { command, notice }
 }
 
+/// [`import`] of one file, with the attribution that goes with it on the clip.
+pub fn import_credited(
+    session: &Session,
+    file: &Path,
+    track: NodeId,
+    at: Tick,
+    credit: Option<String>,
+) -> Import {
+    let mut added = import(session, &[file.to_path_buf()], track, at);
+    if let Some(Command::AddClip { clip, .. }) = &mut added.command
+        && let noodle_core::ClipContent::Audio(audio) = &mut clip.content
+    {
+        audio.credit = credit;
+    }
+    added
+}
+
 /// How a clip refers to `path`: relative to the project's folder when it is
 /// inside it, so the project moves with its audio, and absolute otherwise.
 fn source_name(directory: Option<&Path>, path: &Path) -> String {

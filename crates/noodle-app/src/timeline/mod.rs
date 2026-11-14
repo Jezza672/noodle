@@ -2215,6 +2215,26 @@ pub fn show(
         }
     }
 
+    // A sound carried out of the Sounds panel and let go of over the lanes:
+    // the panel gets it, copies it into the project and lays it here.
+    if let Some(drop) = crate::carry::drop_in(ui.ctx(), content)
+        && let crate::carry::Item::Sound(key) = drop.item
+    {
+        crate::carry::take_drop(ui.ctx());
+        let y = drop.at.y - content.top() + state.scroll_y;
+        let tick = axis.tick(drop.at.x).max(Tick::ZERO);
+        let at = if ui.input(|i| i.modifiers.alt) {
+            tick
+        } else {
+            axis.snap(tick)
+        };
+        let track = (!tracks.is_empty() && y < rows.total()).then(|| tracks[rows.track_at(y)]);
+        crate::sounds::ask(
+            ui.ctx(),
+            crate::sounds::Ask::Use(key, crate::sounds::Then::Timeline { track, at }),
+        );
+    }
+
     let corner = Rect::from_min_size(
         rect.min + vec2(6.0, 3.0),
         vec2(colors::HEADER_WIDTH - 12.0, colors::RULER_HEIGHT - 6.0),

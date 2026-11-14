@@ -18,7 +18,6 @@ deliberately deferred items.
 2. **`noodle-network`:** the shared downloader and S3 client (renamed from `noodle-download`; consent, streaming, SHA-256, content-keyed cache), with the stem separator moved onto it.
 3. **`noodle-packs`:** pack definitions, manifests, licence and credit fields, validation.
 4. **`noodle-publish`:** built (docs/architecture/packs.md). Owed: add the repo secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` for the first real publish, and decide how contributors other than Jeremy get an upload credential.
-5. **Sounds panel:** the content browser, audition, drag to a Sampler or pad, drag to the timeline (copied into the project with its credit), search and licence filters.
 6. **Sources:** the settings page (URL, credentials, remove, storage use, Clean up), self-hosted sources, and folders added in place from the browser.
 7. **Make shareable pack:** the wizard and its usability stories and routes (find a sample, add a source, make a pack).
 8. **Clips use the hash store**, so a dragged clip needs no copy.

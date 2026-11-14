@@ -316,6 +316,31 @@ impl Session {
         self.drum_rack.result = None;
     }
 
+    /// Plays `sample` once, straight to the monitor's output device (the main
+    /// output when none is chosen), outside the graph and the project. `None`
+    /// on the virtual output, which plays nothing.
+    pub fn play_preview(
+        &self,
+        sample: &noodle_nodes::Sample,
+    ) -> Result<Option<noodle_io::Preview>, String> {
+        let device = match self.monitor_device() {
+            "" => self.audio_config.output.clone(),
+            chosen => Some(chosen.to_owned()),
+        };
+        if device.as_deref() == Some(noodle_io::VIRTUAL_OUTPUT) {
+            return Ok(None);
+        }
+        noodle_io::Preview::play(
+            self.audio_config.host.as_deref(),
+            device.as_deref(),
+            &sample.left,
+            &sample.right,
+            sample.sample_rate,
+        )
+        .map(Some)
+        .map_err(|e| e.to_string())
+    }
+
     /// Plays hit `index` of the held analysis once, straight to the monitor's
     /// output device (the main output when none is chosen). It bypasses the
     /// graph and the project entirely: it is only for trying a hit, and a new
