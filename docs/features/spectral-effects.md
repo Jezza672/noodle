@@ -24,7 +24,7 @@ The groups in the library (generated from `noodle-eval/src/song/spectral_effects
 - `noodle-eval/tests/spectral_templates.rs`: each group template does what its name says (octave up, down by the control, stretch keeps pitch, compressor cuts a loud tone, denoiser removes shown noise, reverb rings after a click).
 - The convolver has unit tests against direct convolution in `convolver.rs`.
 - `noodle-nodes/tests/realtime.rs`: the counting-allocator test runs the new nodes and switches frame size between plans.
-- Goldens: `spectral-pitch`, `spectral-stretch`, `spectral-compress`, `spectral-denoise`, `convolution-reverb` (examples of the same names).
+- Goldens: `spectral-pitch`, `spectral-stretch`, `spectral-compress`, `spectral-denoise`, `convolution-reverb` (examples of the same names). The pitch and stretch goldens are compared by the level of each 1000-sample block, not sample by sample: the vocoder locks each partial's phase to a peak picked in the first, noisy frames of a note, so the exact waveform differs between processors (macOS CI differed from Linux) while the sound, pitch and level do not. The other three compare sample by sample.
 
 ## Still open
 

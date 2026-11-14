@@ -44,6 +44,10 @@ struct PhaseLock {
 
 /// Peaks quieter than this (about -140 dB) are silence, not partials.
 const PEAK_FLOOR: f32 = 1e-7;
+/// Peaks this far under the frame's loudest bin (-90 dB) are rounding noise
+/// of the transform, not partials. Their phases are arbitrary and differ
+/// between processors, so following them would make the sound depend on them.
+const PEAK_RELATIVE_FLOOR: f32 = 3e-5;
 
 impl PhaseLock {
     fn new(bins: usize) -> Self {
@@ -68,9 +72,10 @@ impl PhaseLock {
             *m = bin.magnitude();
         }
         let m = &self.magnitude;
+        let floor = PEAK_FLOOR.max(m.iter().fold(0.0f32, |a, &b| a.max(b)) * PEAK_RELATIVE_FLOOR);
         self.peaks.clear();
         for k in 0..bins {
-            if m[k] <= PEAK_FLOOR {
+            if m[k] <= floor {
                 continue;
             }
             let lo = k.saturating_sub(2);
