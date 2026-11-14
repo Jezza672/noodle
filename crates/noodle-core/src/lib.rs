@@ -25,8 +25,9 @@ pub use clip::{
     AudioClip, BUTT_SECONDS, Clip, ClipContent, ClipGroup, ClipGroupId, ClipId, CompSpan,
     ControlKind, ControlPoint, Crossfade, DEFAULT_COMP_FADE_SECONDS, ExpressionKind,
     GAIN_POINT_MAX_DB, GAIN_POINT_MIN_DB, GainPoint, MIN_LOOP_LEN, MidiClip, MidiNote, MidiTakes,
-    NoteExpression, Take, TakeContent, TakeFolder, controls_from, gain_points_from_text,
-    gain_points_to_text,
+    NoteExpression, SAMPLE_STORE_DIR, Take, TakeContent, TakeFolder, controls_from,
+    gain_points_from_text, gain_points_to_text, register_audio_file, registered_audio_file,
+    stored_audio_path,
 };
 pub use config::{Config, Value};
 pub use edit::{Command, EditError, History};

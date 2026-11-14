@@ -67,20 +67,16 @@ impl Session {
         let audio = clip.as_audio()?;
         let base = self.path.as_deref()?;
         let dir = base.parent()?;
-        let (name, old_frames) = if let Some(done) = combined.get(&audio.source) {
+        let (name, old_frames) = if let Some(done) = combined.get(audio.key()) {
             done.clone()
         } else {
             let (out, relative) = next_take_path(base).ok()?;
-            let frames = combine(
-                &dir.join(&audio.source),
-                &dir.join(recording.relative),
-                &out,
-            )
-            .inspect_err(|_| {
-                let _ = std::fs::remove_file(&out);
-            })
-            .ok()?;
-            combined.insert(audio.source.clone(), (relative.clone(), frames));
+            let frames = combine(&audio.file(dir), &dir.join(recording.relative), &out)
+                .inspect_err(|_| {
+                    let _ = std::fs::remove_file(&out);
+                })
+                .ok()?;
+            combined.insert(audio.key().to_owned(), (relative.clone(), frames));
             (relative, frames)
         };
         let mut changed: Clip = clip.clone();
@@ -88,6 +84,7 @@ impl Session {
             return None;
         };
         joined.source = name;
+        joined.hash = None;
         let folder = joined.takes.as_mut()?;
         // The new file's frame `old_frames + skip` plays what the old file's
         // frame `audio.offset` does, so a take's delta from there is this.

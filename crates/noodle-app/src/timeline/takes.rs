@@ -169,7 +169,7 @@ pub fn show(
         let Some(n) = count(clip) else { continue };
         let audio = clip.as_audio();
         let loaded =
-            audio.and_then(|audio| state.sources.get(ui.ctx(), view.directory, &audio.source));
+            audio.and_then(|audio| state.sources.get_clip(ui.ctx(), view.directory, audio));
         let rate = loaded
             .as_ref()
             .map_or(FALLBACK_RATE, |l| l.source.sample_rate);
@@ -303,7 +303,7 @@ pub fn show(
                     };
                     let range = (at(a), at(b));
                     let mut rate_of = |audio: &AudioClip| {
-                        state.sources.rate(ui.ctx(), view.directory, &audio.source)
+                        state.sources.audio_rate(ui.ctx(), view.directory, audio)
                     };
                     out.edits.extend(
                         comp::swipe(project, map, id, range, k, &mut rate_of).map(Edit::Apply),

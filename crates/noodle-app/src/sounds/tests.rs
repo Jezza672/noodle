@@ -154,7 +154,7 @@ fn a_sound_dropped_on_a_sampler_becomes_its_sample() {
 }
 
 #[test]
-fn a_sound_dropped_on_the_timeline_is_copied_in_with_its_credit() {
+fn a_sound_dropped_on_the_timeline_plays_by_hash_with_its_credit_and_is_stored_on_save() {
     let dir = tempfile::tempdir().unwrap();
     let (site, _) = site(dir.path(), &[440.0]);
     let mut s = sounds(&site, dir.path());
@@ -164,6 +164,7 @@ fn a_sound_dropped_on_the_timeline_is_copied_in_with_its_credit() {
     s.refresh();
     settle(&mut s, &session);
     let e = entry(&s, "Tone 440").clone();
+    let e_key = e.key.clone();
     s.request(
         e,
         Then::Timeline {
@@ -177,17 +178,14 @@ fn a_sound_dropped_on_the_timeline_is_copied_in_with_its_credit() {
     let clips: Vec<_> = session.project().clips().collect();
     assert_eq!(clips.len(), 1);
     let audio = clips[0].1.as_audio().unwrap();
-    assert!(
-        // Windows writes the separator its own way.
-        audio
-            .source
-            .replace('\\', "/")
-            .starts_with("sounds/Tone_440-"),
-        "{}",
-        audio.source
-    );
-    assert!(dir.path().join("song").join(&audio.source).is_file());
+    // No copy: the clip names the sound by its hash and plays the downloaded file.
+    assert_eq!(audio.hash.as_deref(), Some(e_key.as_str()));
+    assert!(!dir.path().join("song/sounds").exists());
+    assert!(audio.file(&dir.path().join("song")).is_file());
     assert_eq!(audio.credit.as_deref(), Some("Tone 440 by Ada (CC-BY-4.0)"));
+    // Saving puts the audio in the project's store.
+    assert!(session.save_as(&dir.path().join("song/project.ron")));
+    assert!(noodle_core::stored_audio_path(&dir.path().join("song"), &e_key).is_file());
 }
 
 #[test]

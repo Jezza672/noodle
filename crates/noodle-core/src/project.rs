@@ -287,7 +287,7 @@ impl PunchRange {
 impl Project {
     /// The current file format version. Bump it when the format changes in a
     /// way older versions can't read.
-    pub const FORMAT: u32 = 4;
+    pub const FORMAT: u32 = 5;
 
     pub fn new() -> Self {
         Self::default()
