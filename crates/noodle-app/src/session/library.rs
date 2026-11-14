@@ -85,6 +85,38 @@ impl Session {
         }
     }
 
+    /// The node presets made for node type `type_id`, with their IDs: system
+    /// ones first. They fit a node of that type with its default ports.
+    pub fn presets_for_type(&self, type_id: &str) -> Vec<(&str, &str)> {
+        self.library
+            .node_presets()
+            .filter(|(_, p)| p.node_type == type_id)
+            .map(|(entry, p)| (entry, p.name.as_str()))
+            .collect()
+    }
+
+    /// The group presets made for the group that library template `entry`
+    /// makes: those with its topology.
+    pub fn presets_for_template(&self, entry: &str) -> Vec<(&str, &str)> {
+        let Some(template) = self.library.template(entry) else {
+            return Vec::new();
+        };
+        let graph = template.graph();
+        let Some(root) = graph
+            .nodes()
+            .find(|(_, n)| n.parent.is_none())
+            .map(|(id, _)| id)
+        else {
+            return Vec::new();
+        };
+        let key = noodle_core::library::topology::topology(&graph, root).key;
+        self.library
+            .group_presets()
+            .filter(|(_, p)| p.topology == key)
+            .map(|(entry, p)| (entry, p.name.as_str()))
+            .collect()
+    }
+
     /// The command that applies library preset `entry` to `id`, if it fits.
     pub fn apply_preset(&self, id: NodeId, entry: &str) -> Option<Edit> {
         let graph = self.project.graph();

@@ -347,7 +347,7 @@ _Avoid_: Library (that means saved nodes, groups and presets), repository
 A named set of samples with a manifest of hashes, authors, licences and tags. Defined in a RON file in git, published as a static site.
 
 **Browser**:
-The side panel, collapsible to a strip, with a tab each for Sounds, Nodes, Groups and Presets.
+The side panel, collapsible to a strip, with a tab for Sounds and one for Nodes (nodes and saved groups, each unfolding its presets).
 
 **Sounds**:
 The browser's tab for the samples of all sources.

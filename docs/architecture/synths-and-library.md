@@ -128,8 +128,8 @@ Terms are in `CONTEXT.md`; the decisions are ADRs 0004 and 0005.
   `SampleStore::get` looks there after memory and before the project's folder,
   so no `samples` folder is needed; saving a project that uses one copies it
   there like any other sample. Each has three group presets.
-- **UI.** The properties panel's header has a Presets control (System and
-  User sections, Save to overwrite the user preset applied, Save as...); the
+- **UI.** The properties panel has a Presets section (System and
+  User lists, a search box past six presets, a tick on the one applied, Save to overwrite the user preset applied, Save as...); the
   Add menu (Shift+A) lists templates under Groups; right-click a group for
   "Save group to library...". `Edit::Library` saves to the user store and is
   not an undo step.

@@ -1,19 +1,22 @@
 //! The browser: one side panel holding everything that can be found and put
-//! into the project. Its tabs are Sounds (the sample packs, ADR 0012), Nodes,
-//! Groups (the library's group templates) and Presets (for the selected node
-//! or group).
+//! into the project. Its tabs are Sounds (the sample packs, ADR 0012) and
+//! Nodes (every node type and the library's group templates, in one list).
 //!
 //! The whole panel collapses to a thin strip, so it can stay out of the way
-//! of the canvas and still be one click from open. Nodes and Groups are
-//! added by a click (at the centre of the canvas) or by dragging them onto
-//! it, as a sound is; a click on a preset applies it to the selected node.
+//! of the canvas and still be one click from open. A node or group is added by
+//! a click (at the centre of the canvas) or by dragging it onto the canvas, as
+//! a sound is. One that has presets unfolds to list them, and a preset is added
+//! the same way, with its values. Applying a preset to a node already in the
+//! project is in the properties panel.
+
+use std::collections::HashSet;
 
 use egui::{Context, Sense, Ui, text::LayoutJob};
 use noodle_core::group::GROUP;
 
 use crate::carry::{self, Item};
 use crate::editor::{self, Choice, EditorState, SearchEntry};
-use crate::session::{Edit, Session};
+use crate::session::Session;
 use crate::sounds::Sounds;
 use crate::theme;
 
@@ -27,28 +30,22 @@ const STRIP: f32 = 28.0;
 pub enum Tab {
     Sounds,
     Nodes,
-    Groups,
-    Presets,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Sounds, Tab::Nodes, Tab::Groups, Tab::Presets];
+    pub const ALL: [Tab; 2] = [Tab::Sounds, Tab::Nodes];
 
     pub fn name(self) -> &'static str {
         match self {
             Tab::Sounds => "Sounds",
             Tab::Nodes => "Nodes",
-            Tab::Groups => "Groups",
-            Tab::Presets => "Presets",
         }
     }
 
     fn hint(self) -> &'static str {
         match self {
             Tab::Sounds => "Sounds from packs and folders",
-            Tab::Nodes => "Every node type, to click or drag onto the canvas",
-            Tab::Groups => "Saved groups and instruments, to click or drag onto the canvas",
-            Tab::Presets => "Presets for the selected node or group",
+            Tab::Nodes => "Every node and saved group, with their presets, to add to the canvas",
         }
     }
 }
@@ -60,8 +57,8 @@ pub struct Browser {
     collapsed: bool,
     tab: Tab,
     nodes: String,
-    groups: String,
-    presets: String,
+    /// The entries (a node type or a template) unfolded to show their presets.
+    unfolded: HashSet<String>,
 }
 
 impl Default for Browser {
@@ -71,8 +68,7 @@ impl Default for Browser {
             collapsed: false,
             tab: Tab::Sounds,
             nodes: String::new(),
-            groups: String::new(),
-            presets: String::new(),
+            unfolded: HashSet::new(),
         }
     }
 }
@@ -123,7 +119,7 @@ impl Browser {
     pub fn show(
         &mut self,
         ui: &mut Ui,
-        session: &mut Session,
+        session: &Session,
         editor: &mut EditorState,
         sounds: &mut Sounds,
     ) {
@@ -140,7 +136,7 @@ impl Browser {
                     crate::testkit::mark_view(ui, "browser strip");
                     if ui
                         .button("▶")
-                        .on_hover_text("Open the browser: sounds, nodes, groups and presets")
+                        .on_hover_text("Open the browser: sounds, nodes and groups")
                         .clicked()
                     {
                         self.collapsed = false;
@@ -180,9 +176,7 @@ impl Browser {
                 ui.separator();
                 match self.tab {
                     Tab::Sounds => sounds.show(ui),
-                    Tab::Nodes => nodes(ui, &mut self.nodes, session, editor),
-                    Tab::Groups => groups(ui, &mut self.groups, session, editor),
-                    Tab::Presets => presets(ui, &mut self.presets, session, editor),
+                    Tab::Nodes => nodes(ui, &mut self.nodes, &mut self.unfolded, session, editor),
                 }
             });
     }
@@ -198,7 +192,7 @@ fn search_box(ui: &mut Ui, query: &mut String, hint: &str) {
 
 /// One row that can be clicked to add what it names, or dragged onto the
 /// canvas. Returns whether it was clicked.
-fn row(ctx: &Context, ui: &mut Ui, name: &str, detail: &str, item: Item) -> bool {
+fn row(ctx: &Context, ui: &mut Ui, name: &str, detail: &str, item: Item, tip: &str) -> bool {
     let mut job = LayoutJob::default();
     let font = egui::TextStyle::Body.resolve(ui.style());
     job.append(
@@ -223,7 +217,7 @@ fn row(ctx: &Context, ui: &mut Ui, name: &str, detail: &str, item: Item) -> bool
                 .min_size(egui::vec2(ui.available_width(), 0.0))
                 .sense(Sense::click_and_drag()),
         )
-        .on_hover_text("Click to add it at the centre of the canvas, or drag it onto the canvas");
+        .on_hover_text(tip);
     if let (true, Some(pointer)) = (response.dragged(), ctx.pointer_latest_pos()) {
         carry::carrying(ctx, item, pointer, name);
     }
@@ -235,24 +229,34 @@ fn row(ctx: &Context, ui: &mut Ui, name: &str, detail: &str, item: Item) -> bool
     response.clicked()
 }
 
-fn entries(session: &Session, query: &str) -> Vec<SearchEntry> {
-    editor::search_entries(session.registry(), session.library(), query, false)
-}
+const ADD_TIP: &str = "Click to add it at the centre of the canvas, or drag it onto the canvas";
+const PRESET_TIP: &str =
+    "Click to add it at the centre of the canvas with this preset, or drag it onto the canvas";
 
-fn is_group(entry: &SearchEntry) -> bool {
-    matches!(&entry.choice, Choice::Template(_) | Choice::Node(GROUP))
-}
+/// The width of the arrow that unfolds a row, which a row without one keeps
+/// free so the names line up.
+const ARROW: f32 = 18.0;
 
-fn nodes(ui: &mut Ui, query: &mut String, session: &Session, editor: &mut EditorState) {
-    search_box(ui, query, "Search nodes");
-    let found: Vec<SearchEntry> = entries(session, query)
-        .into_iter()
-        .filter(|e| matches!(e.choice, Choice::Node(_)) && !is_group(e))
-        .collect();
-    ui.weak(format!("{} nodes", found.len()));
+/// Everything that can be added, as one list by category: the nodes, then the
+/// saved groups. A row with presets has an arrow that unfolds them.
+fn nodes(
+    ui: &mut Ui,
+    query: &mut String,
+    unfolded: &mut HashSet<String>,
+    session: &Session,
+    editor: &mut EditorState,
+) {
+    search_box(ui, query, "Search nodes and groups");
+    let found: Vec<SearchEntry> =
+        editor::search_entries(session.registry(), session.library(), query, false)
+            .into_iter()
+            .filter(|e| !matches!(e.choice, Choice::Frame))
+            .collect();
+    ui.weak(format!("{} found", found.len()));
     let ctx = ui.ctx().clone();
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
+        .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysVisible)
         .show(ui, |ui| {
             let mut category = "";
             for entry in &found {
@@ -261,102 +265,95 @@ fn nodes(ui: &mut Ui, query: &mut String, session: &Session, editor: &mut Editor
                     ui.add_space(4.0);
                     ui.strong(category);
                 }
-                if let Choice::Node(id) = entry.choice
-                    && row(&ctx, ui, &entry.name, "", Item::Node(id))
-                {
-                    editor.request_add(Choice::Node(id), None);
-                }
+                entry_row(ui, &ctx, entry, unfolded, session, editor);
             }
         });
 }
 
-fn groups(ui: &mut Ui, query: &mut String, session: &Session, editor: &mut EditorState) {
-    search_box(ui, query, "Search groups");
-    let found: Vec<SearchEntry> = entries(session, query)
-        .into_iter()
-        .filter(is_group)
-        .collect();
-    ui.weak(format!("{} groups", found.len()));
-    let ctx = ui.ctx().clone();
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for entry in &found {
-                let (item, detail) = match &entry.choice {
-                    Choice::Template(id) => (Item::Template(carry::template_key(id)), ""),
-                    _ => (Item::Node(GROUP), "empty"),
-                };
-                if row(&ctx, ui, &entry.name, detail, item) {
-                    editor.request_add(entry.choice.clone(), None);
-                }
+fn entry_row(
+    ui: &mut Ui,
+    ctx: &Context,
+    entry: &SearchEntry,
+    unfolded: &mut HashSet<String>,
+    session: &Session,
+    editor: &mut EditorState,
+) {
+    let (key, item, presets) = match &entry.choice {
+        Choice::Node(GROUP) => (GROUP.to_owned(), Item::Node(GROUP), Vec::new()),
+        Choice::Node(id) => (
+            (*id).to_owned(),
+            Item::Node(id),
+            session.presets_for_type(id),
+        ),
+        Choice::Template(id) => (
+            id.clone(),
+            Item::Template(carry::entry_key(id)),
+            session.presets_for_template(id),
+        ),
+        Choice::Frame => return,
+    };
+    let open = unfolded.contains(&key);
+    let mut clicked = false;
+    ui.horizontal(|ui| {
+        ui.spacing_mut().item_spacing.x = 0.0;
+        if presets.is_empty() {
+            ui.add_space(ARROW);
+        } else if ui
+            .add_sized(
+                [ARROW, ui.spacing().interact_size.y],
+                egui::Button::new(if open { "▾" } else { "▸" }).frame(false),
+            )
+            .on_hover_text(if open {
+                "Hide its presets"
+            } else {
+                "Show its presets"
+            })
+            .clicked()
+        {
+            if open {
+                unfolded.remove(&key);
+            } else {
+                unfolded.insert(key.clone());
             }
+        }
+        let detail = if presets.is_empty() {
+            String::new()
+        } else {
+            format!("{} presets", presets.len())
+        };
+        clicked = row(ctx, ui, &entry.name, &detail, item, ADD_TIP);
+    });
+    if clicked {
+        editor.request_add(entry.choice.clone(), None, None);
+    }
+    if !open {
+        return;
+    }
+    for (preset, name) in presets {
+        let item = match (&entry.choice, carry::entry_key(preset)) {
+            (Choice::Node(id), key) => Item::NodePreset(id, key),
+            (Choice::Template(template), key) => {
+                Item::TemplatePreset(carry::entry_key(template), key)
+            }
+            (Choice::Frame, _) => continue,
+        };
+        let label = if is_user(preset) {
+            format!("{name} (yours)")
+        } else {
+            name.to_owned()
+        };
+        let mut clicked = false;
+        ui.horizontal(|ui| {
+            ui.add_space(ARROW * 2.0);
+            clicked = row(ctx, ui, &label, "", item, PRESET_TIP);
         });
+        if clicked {
+            editor.request_add(entry.choice.clone(), None, Some(preset.to_owned()));
+        }
+    }
 }
 
-/// What a library entry ID says about where it came from.
+/// Whether a library entry is the user's own.
 fn is_user(entry: &str) -> bool {
     entry.starts_with(noodle_core::library::USER)
-}
-
-fn presets(ui: &mut Ui, query: &mut String, session: &mut Session, editor: &EditorState) {
-    let Some(id) = editor.active else {
-        ui.label("Select a node or group to see the presets that fit it.");
-        return;
-    };
-    let Some(node) = session.project().graph().node(id) else {
-        ui.label("Select a node or group to see the presets that fit it.");
-        return;
-    };
-    let heading = if node.type_id == GROUP {
-        "Group presets"
-    } else {
-        "Node presets"
-    };
-    ui.strong(heading);
-    search_box(ui, query, "Search presets");
-    let words: Vec<String> = query.split_whitespace().map(str::to_lowercase).collect();
-    let applied = session.preset_status(id);
-    let available: Vec<(String, String)> = session
-        .presets_for(id)
-        .into_iter()
-        .filter(|(_, name)| {
-            let name = name.to_lowercase();
-            words.iter().all(|w| name.contains(w))
-        })
-        .map(|(entry, name)| (entry.to_owned(), name.to_owned()))
-        .collect();
-    if available.is_empty() {
-        ui.weak("No presets fit this one yet. Save its values from the properties panel.");
-        return;
-    }
-    let mut edit: Option<Edit> = None;
-    egui::ScrollArea::vertical()
-        .auto_shrink([false, false])
-        .show(ui, |ui| {
-            for (entry, name) in &available {
-                let on = applied.as_ref().is_some_and(|a| &a.id == entry);
-                let mut label = if is_user(entry) {
-                    format!("{name} (yours)")
-                } else {
-                    name.clone()
-                };
-                if on {
-                    label.push_str(if applied.as_ref().is_some_and(|a| a.modified) {
-                        "  ✓ modified"
-                    } else {
-                        "  ✓"
-                    });
-                }
-                if ui
-                    .selectable_label(on, label)
-                    .on_hover_text("Apply to the selected node, as one undo step")
-                    .clicked()
-                {
-                    edit = session.apply_preset(id, entry);
-                }
-            }
-        });
-    if let Some(edit) = edit {
-        session.edit([edit]);
-    }
 }
