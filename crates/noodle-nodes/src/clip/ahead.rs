@@ -234,6 +234,7 @@ pub(super) fn spawn(shared: Arc<Shared>, rate: u32) -> AheadLinks {
         jobs: Vec::new(),
         next_serial: 0,
         failed: Retry::new(),
+        seen_version: 0,
         onsets: HashMap::new(),
         outstanding: 0,
         lookahead: (f64::from(rate) * LOOKAHEAD) as u64,
@@ -590,6 +591,8 @@ struct Ahead {
     jobs: Vec<Job>,
     next_serial: u64,
     failed: Retry<(ClipId, u64)>,
+    /// The schedule version `failed` was last cleared for.
+    seen_version: u64,
     onsets: HashMap<u64, Onsets>,
     /// Lanes handed to the node and not yet taken back.
     outstanding: usize,
@@ -625,6 +628,7 @@ impl Ahead {
             jobs,
             next_serial,
             failed,
+            seen_version,
             onsets,
             outstanding,
             lookahead,
@@ -637,6 +641,12 @@ impl Ahead {
             jobs.retain(|j| j.serial != lane.serial);
             // Dropped here, not on the audio thread.
             drop(lane);
+        }
+        let version = shared.version();
+        if version != *seen_version {
+            // A new schedule: a restored file is tried at once.
+            *seen_version = version;
+            failed.clear();
         }
         let (schedule, preview) = (shared.schedule(), shared.preview.load(Ordering::Relaxed));
         let position = shared.position.load(Ordering::Relaxed);
