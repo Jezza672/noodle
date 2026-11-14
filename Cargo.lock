@@ -2640,6 +2640,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "noodle-download"
+version = "0.1.0"
+dependencies = [
+ "sha2",
+ "tempfile",
+ "ureq",
+]
+
+[[package]]
 name = "noodle-engine"
 version = "0.1.0"
 dependencies = [
@@ -2761,12 +2770,12 @@ version = "0.1.0"
 dependencies = [
  "flate2",
  "libloading 0.8.9",
+ "noodle-download",
  "noodle-io",
  "ort",
  "sha2",
  "tar",
  "tempfile",
- "ureq",
  "zip",
 ]
 

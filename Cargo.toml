@@ -16,6 +16,7 @@ noodle-macros = { path = "crates/noodle-macros" }
 noodle-plugins = { path = "crates/noodle-plugins" }
 noodle-eval = { path = "crates/noodle-eval" }
 noodle-stems = { path = "crates/noodle-stems" }
+noodle-download = { path = "crates/noodle-download" }
 noodle-packs = { path = "crates/noodle-packs" }
 noodle-publish = { path = "crates/noodle-publish" }
 

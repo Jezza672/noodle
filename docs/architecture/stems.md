@@ -36,7 +36,7 @@ CONTEXT.md ("Stems"). Stem warp, the other use of stems, is not built.
   1 GB for five minutes of stereo.
 - **Weights and runtime.** Neither is bundled; both are downloaded, once, after
   the app asks (a dialog that names both). `ModelStore` keeps them in the `models`
-  folder of the user data directory; a download streams to a `.partial` file,
+  folder of the user data directory; a download goes through the shared `noodle-download` crate: it streams to a `.partial` file,
   checks its SHA-256, and renames, so a cancelled or failed download leaves
   nothing. The weights come from the pinned address above
   (`NOODLE_STEM_MODEL_URL` and `NOODLE_STEM_MODEL_SHA256` point at another export
