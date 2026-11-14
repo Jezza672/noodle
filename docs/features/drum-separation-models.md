@@ -1,8 +1,8 @@
 # Drum separation models (#518)
 
 The runtimes behind the drum rack's model choice (`docs/design/drum-rack-from-clip.md`,
-Decisions 6 to 10). The settings tab, the first-use popup and the dialog's
-drop-down are separate issues; this is the library side, in `noodle-stems/src/drum/`.
+Decisions 6 to 10). This is the library side, in `noodle-stems/src/drum/`;
+the app side (Models tab, first-use popup, dialog drop-down) is at the end.
 
 - **Manifests** (`manifest.rs`): one per model, in the UI order LarsNet, Timbrica,
   drumsep: parts and their order, the parts it lacks, licence and non-commercial
@@ -40,3 +40,25 @@ explains), fix `Chunking`/`Layout` in the manifest if the shapes differ, fill in
 file's `url`, `sha256` and `size`, and listen on real kits.
 LarsNet needs our own ONNX conversion hosted as a separate credited CC BY-NC 4.0
 download (never in the repo or binary).
+
+## The app side (#520): Models tab, first-use popup, drop-down
+
+`noodle-app/src/models.rs` (`Models`, held by the app).
+
+- **Enabled** is a preference (`Prefs::drum_models`, id to bool). A model not in it
+  has not been asked about. It is machine-local, so not exported or embedded.
+- **Ready** means enabled and downloaded; the drum rack dialog's "Separation model"
+  drop-down lists only those, in the app's order (LarsNet, Timbrica, drumsep). With
+  none it says where to switch one on. The choice is held by the dialog; nothing
+  consumes it until the analyser (version 3) is built.
+- **Settings, Models tab:** per model an enable toggle, parts and what it lacks,
+  size, licence (with the non-commercial warning), credit, provenance, a source
+  link, and Download / Cancel (progress bar) / Remove, plus where the weights are
+  stored. Downloads run as a `Job` over `DrumModelStore::fetch`.
+- **First-use popup:** shown the first time Create drum rack is used, while some
+  downloadable model is unasked. One toggle per model, non-commercial ones start
+  off so a download of them is a choice. Download selected enables and fetches the
+  ticked ones; Not now leaves all off; both answer them.
+- **Not published:** a model without an address and checksum shows "Not available
+  yet" with Download disabled, and the popup leaves it unasked until it can be
+  downloaded (all three today, #523).

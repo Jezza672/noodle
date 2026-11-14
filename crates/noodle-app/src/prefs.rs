@@ -47,6 +47,11 @@ pub struct Prefs {
     pub snap: i64,
     /// How the MIDI of the next take is snapped.
     pub record_quantise: crate::midi_take::Quantise,
+    /// Drum separation models the user has answered for, by id: whether each
+    /// is enabled. A model not listed has not been asked about yet (the
+    /// first-use popup). About this machine's downloads, so not exported.
+    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
+    pub drum_models: std::collections::BTreeMap<String, bool>,
     /// The keys the user changed, by command (see `app::commands`).
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub keymap: std::collections::BTreeMap<String, String>,
@@ -66,6 +71,7 @@ impl Default for Prefs {
             display: Default::default(),
             snap: crate::snap::DEFAULT,
             record_quantise: Default::default(),
+            drum_models: Default::default(),
             keymap: Default::default(),
         }
     }
@@ -80,6 +86,7 @@ impl Prefs {
             audio: AudioConfig::default(),
             monitor_device: String::new(),
             sandbox_plugins: false,
+            drum_models: Default::default(),
             ..self.clone()
         }
     }
@@ -235,6 +242,31 @@ pub fn remember_display(display: crate::display::Display) {
     });
 }
 
+/// The drum separation models answered for, and whether each is enabled.
+pub fn drum_models() -> std::collections::BTreeMap<String, bool> {
+    CURRENT.with_borrow(|current| {
+        current
+            .as_ref()
+            .map(|(_, prefs)| prefs.drum_models.clone())
+            .unwrap_or_default()
+    })
+}
+
+/// Saves whether a drum separation model is enabled (which also records that
+/// it has been answered for), with the other preferences, if [`init`] has
+/// been called.
+pub fn remember_drum_model(id: &str, enabled: bool) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.drum_models.insert(id.to_owned(), enabled);
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
 /// The keys the user changed, as [`init`] read them or [`remember_keymap`]
 /// last saved them.
 pub fn keymap() -> std::collections::BTreeMap<String, String> {
@@ -311,6 +343,7 @@ pub fn adopt(imported: &Prefs) -> Prefs {
             audio: prefs.audio.clone(),
             monitor_device: prefs.monitor_device.clone(),
             sandbox_plugins: prefs.sandbox_plugins,
+            drum_models: prefs.drum_models.clone(),
             ..imported.portable()
         };
         if let Err(error) = save(path, prefs) {
@@ -441,6 +474,7 @@ mod tests {
             display: Default::default(),
             snap: crate::snap::DEFAULT,
             record_quantise: Default::default(),
+            drum_models: Default::default(),
             keymap: Default::default(),
         }
     }

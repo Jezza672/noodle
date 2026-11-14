@@ -116,7 +116,9 @@ Later: Nodes, Groups and Presets as tabs of the same browser.
 - **Drum separation models on real weights** (`docs/features/drum-separation-models.md`):
   fill in each model's address, SHA-256 and size, host the LarsNet ONNX conversion,
   check the tensor layouts with `tests/drum_runtime.rs`, and listen on real kits.
-  Then the Models tab, first-use popup and dialog drop-down.
+  Until the addresses are in, the Models tab shows "not available yet" and the
+  first-use popup does not appear (#523). The analyser that uses the dialog's
+  model choice is not built yet.
 - **Recording with a real microphone**, to check the latency compensation, and
   that the Audio Settings round-trip estimate matches what you hear.
 - **Stem separation on the real HT-Demucs weights** (M10), and listening to the

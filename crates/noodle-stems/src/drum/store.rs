@@ -119,6 +119,17 @@ impl DrumModelStore {
         Ok(())
     }
 
+    /// [`download`](Self::download) over the real network, for the app. The
+    /// consent was the user's own choice in the Models tab or the first-use
+    /// popup, which show the licence, so nothing is asked again.
+    pub fn fetch(
+        &self,
+        model: &DrumModelManifest,
+        progress: &mut dyn FnMut(f32) -> bool,
+    ) -> Result<(), StoreError> {
+        self.download(model, &Downloader::default(), None, progress)
+    }
+
     /// Deletes the weights of `model`. Nothing else shares them, since the
     /// names are checksums of this model's own files.
     pub fn remove(&self, model: &DrumModelManifest) -> Result<(), StoreError> {
