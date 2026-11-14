@@ -113,8 +113,9 @@ engine starts with the app and the toolbar's Audio toggle turns it off; Play,
 Stop and rewind only move the transport; an armed track plays live MIDI
 through its own synth (live monitoring); and a failed output falls back to
 the system default and then to the new virtual output, which can also be
-picked in the audio settings as "Virtual (no sound)". Not done: remembering
-the toggle between launches, and retrying the saved device when it returns.
+picked in the audio settings as "Virtual (no sound)". The toggle is
+remembered between launches, and the saved device is retried when it returns
+(see [deferred-items-1.md](deferred-items-1.md)).
 
 ## MIDI clip looping (done)
 

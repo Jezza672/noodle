@@ -1336,6 +1336,25 @@ fn section(ui: &mut Ui, session: &Session, id: ClipId, edits: &mut Vec<Edit>) {
         }
     });
     ui.weak("These are also in the clip's right-click menu, and the command palette.");
+    let models = session.stems_models();
+    if let Some(current) = session.stems_model() {
+        ui.horizontal(|ui| {
+            ui.label("Stem model");
+            crate::widgets::Dropdown::from_id_salt("stems model")
+                .selected_text(current.info().name)
+                .show_ui(ui, |ui| {
+                    for model in &models {
+                        let info = model.info();
+                        let text = format!("{} ({})", info.name, info.separates);
+                        if ui.selectable_label(model.id == current.id, text).clicked() {
+                            edits.push(Edit::SetStemsModel(model.id.to_owned()));
+                        }
+                    }
+                })
+                .response
+                .on_hover_text("Which model splits the clip. Models are switched on and downloaded in Settings, on the Models tab");
+        });
+    }
     ui.horizontal(|ui| {
         ui.label("Stem quality");
         let quality = session.stems_quality();

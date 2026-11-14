@@ -2505,6 +2505,7 @@ impl App {
                 } else {
                     self.session.start_engine();
                 }
+                crate::prefs::remember_engine_on(self.session.engine_running());
             }
             Action::StopMonitor => self.session.stop_monitor(),
             Action::StopLearningMidi => self.session.edit([Edit::CancelLearnMidi]),

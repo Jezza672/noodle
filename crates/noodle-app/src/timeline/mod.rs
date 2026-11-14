@@ -41,6 +41,7 @@ use noodle_core::{
 
 use crate::session::{ArmKind, Edit, Session};
 use crate::theme::timeline as colors;
+use crate::time_axis::{TimeAxis, zoom_about};
 use clips::Source;
 use sources::Sources;
 pub use sources::{Analysis, Loaded};
@@ -691,7 +692,7 @@ struct Axis<'a> {
 
 impl Axis<'_> {
     fn x(self, tick: Tick) -> f32 {
-        self.origin + (self.map.seconds_at(tick) * f64::from(self.pps)) as f32
+        TimeAxis::new(self.origin, self.pps).x(self.map.seconds_at(tick))
     }
 
     /// `tick` on the grid the snap setting asks for.
@@ -700,7 +701,7 @@ impl Axis<'_> {
     }
 
     fn tick(self, x: f32) -> Tick {
-        let seconds = f64::from(x - self.origin) / f64::from(self.pps);
+        let seconds = TimeAxis::new(self.origin, self.pps).at(x);
         Tick(self.map.tick_at_seconds(seconds).round() as i64)
     }
 }
@@ -3037,9 +3038,13 @@ fn navigate(ui: &egui::Ui, state: &mut TimelineState, content: Rect, extent: f32
     } else if zoom != 1.0 {
         // Keep the time under the pointer where it is.
         let anchor_x = pointer.map_or(content.left(), |p| p.x.max(content.left()));
-        let seconds = (anchor_x - content.left() + state.scroll_x) / state.pps;
-        state.pps = (state.pps * zoom).clamp(MIN_PPS, MAX_PPS);
-        state.scroll_x = seconds * state.pps - (anchor_x - content.left());
+        zoom_about(
+            &mut state.pps,
+            &mut state.scroll_x,
+            zoom,
+            anchor_x - content.left(),
+            (MIN_PPS, MAX_PPS),
+        );
     } else {
         // Horizontal scrolling only; the scroll area scrolls vertically.
         state.scroll_x -= scroll.x;
