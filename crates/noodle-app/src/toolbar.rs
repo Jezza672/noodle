@@ -35,6 +35,7 @@ pub enum Icon {
     Cursor,
     Loop,
     Dice,
+    Grid,
     Lanes,
     Tag,
     Wave,
@@ -542,6 +543,14 @@ pub fn paint_icon(painter: &egui::Painter, c: Pos2, icon: Icon, ink: Color32) {
             );
             for (x, y) in [(9.0, 9.0), (15.0, 15.0), (15.0, 9.0), (9.0, 15.0)] {
                 painter.circle_filled(p(x, y), 0.9, ink);
+            }
+        }
+        Icon::Grid => {
+            for x in [8.0, 12.0, 16.0] {
+                line(&[(x, 5.0), (x, 19.0)]);
+            }
+            for y in [8.0, 12.0, 16.0] {
+                line(&[(5.0, y), (19.0, y)]);
             }
         }
         Icon::Lanes => {

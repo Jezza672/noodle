@@ -431,6 +431,13 @@ pub struct Session {
     /// Plugin nodes whose editor was opened from here: when one closes, its
     /// state is stored.
     plugin_editors: std::collections::BTreeMap<NodeId, noodle_plugins::EditorKey>,
+    /// The plugins whose editor was open when the plan was last built: an
+    /// open editor keeps its plugin running (see `NodeType::always_runs_for`),
+    /// so the plan is built again when this changes.
+    editors_running: std::collections::BTreeSet<NodeId>,
+    /// The latency each running plugin reported when the plan was last built,
+    /// to notice one that changed it.
+    plugin_latencies: std::collections::BTreeMap<NodeId, u32>,
     /// What each open plugin editor last showed, to turn changes into edits.
     plugin_live: std::collections::BTreeMap<NodeId, LiveEditor>,
     /// Why a plugin's editor last failed to open, until it opens.
@@ -829,6 +836,8 @@ impl Session {
             plugin_scan,
             plugin_files,
             plugin_editors: Default::default(),
+            editors_running: Default::default(),
+            plugin_latencies: Default::default(),
             plugin_live: Default::default(),
             plugin_editor_errors: Default::default(),
             param_learn: None,
@@ -1394,7 +1403,49 @@ impl Session {
     /// Stores the state of each plugin whose editor has closed. The node
     /// stays on the list until that worked, or its plugin instance is gone
     /// (the graph was built again, which loses what the editor changed).
+    /// Builds the plan again when a running plugin says its latency changed,
+    /// so delay compensation follows it.
+    fn poll_plugin_latency(&mut self) {
+        if self.audio.is_none() {
+            self.plugin_latencies.clear();
+            return;
+        }
+        let mut changed = false;
+        let mut seen = std::collections::BTreeMap::new();
+        for (id, node) in self.project.graph().nodes() {
+            if self.plugins.get(&node.type_id).is_none() {
+                continue;
+            }
+            let Some(now) = noodle_plugins::node_latency(id) else {
+                continue;
+            };
+            if self
+                .plugin_latencies
+                .get(&id)
+                .is_some_and(|&old| old != now)
+            {
+                changed = true;
+            }
+            seen.insert(id, now);
+        }
+        self.plugin_latencies = seen;
+        if changed {
+            self.recompile();
+        }
+    }
+
     fn poll_plugin_editors(&mut self) {
+        self.poll_plugin_latency();
+        let open: std::collections::BTreeSet<NodeId> = self
+            .plugin_editors
+            .keys()
+            .copied()
+            .filter(|n| noodle_plugins::editor_is_open(*n))
+            .collect();
+        if open != self.editors_running {
+            self.editors_running = open;
+            self.recompile();
+        }
         self.sync_open_plugin_editors();
         let closed: Vec<(NodeId, noodle_plugins::EditorKey)> = self
             .plugin_editors

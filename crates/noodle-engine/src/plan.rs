@@ -437,9 +437,11 @@ pub(crate) fn build(
         } else {
             match (&instance, carried) {
                 (Some(node), _) => node.latency(),
-                (None, Some(_)) => previous
-                    .and_then(|p| p.latency.get(&id).copied())
-                    .unwrap_or(0),
+                (None, Some(_)) => scheduled.node_type.current_latency(id).unwrap_or_else(|| {
+                    previous
+                        .and_then(|p| p.latency.get(&id).copied())
+                        .unwrap_or(0)
+                }),
                 (None, None) => 0,
             }
             .min(MAX_LATENCY)
@@ -755,7 +757,7 @@ pub(crate) fn build(
                 .map(|telemetry| telemetry.open_cpu(id)),
             always_runs: is_output
                 || scheduled.node_type.info().id == TAP_ID
-                || scheduled.node_type.always_runs(),
+                || scheduled.node_type.always_runs_for(id),
             constants: vec![None; scheduled.inputs.len()],
             sources: Vec::new(),
             delays: Vec::new(),

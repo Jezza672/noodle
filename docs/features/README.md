@@ -54,3 +54,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [sounds-panel.md](sounds-panel.md) | Sample packs: the Sounds panel |
 | [drum-separation-models.md](drum-separation-models.md) | Drum separation runtimes: manifests, N-part separator trait, LarsNet, Timbrica and drumsep, pad mapping (#518) |
 | [deferred-items-1.md](deferred-items-1.md) | Stem model controls, beat view gain envelope, one TimeAxis, engine toggle remembered, saved device retried |
+| [deferred-items-2.md](deferred-items-2.md) | Plugin editors keep the plugin running, CLAP latency changes, one retry policy for files, re-quantise a recorded MIDI clip |
