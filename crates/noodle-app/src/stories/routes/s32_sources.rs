@@ -1,6 +1,6 @@
 //! S32: add a self-hosted source of sounds and use a sound from it.
 //!
-//! The Sounds panel starts with no sources, so it is empty. Its Sources
+//! The Sounds tab of the browser starts with no sources, so it is empty. Its Sources
 //! button opens Settings on the Sources page, where the address of a site and
 //! a token are typed and the source is added. The fake site refuses requests
 //! without that token, so the sound only arrives if the login was really

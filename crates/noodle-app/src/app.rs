@@ -234,7 +234,7 @@ pub(crate) enum Action {
     ToggleOutputs,
     ToggleMidiPorts,
     TogglePlugins,
-    /// Shows the Sounds panel.
+    /// Shows the browser on its Sounds tab.
     OpenSounds,
     ToggleBrowser,
     CollapseBrowser,
@@ -2867,10 +2867,6 @@ impl App {
         clip_editor::linked_lanes(&project, open, |member| self.clip_source(ctx, member))
     }
 
-    /// A clip or a track carried out of the timeline and let go of over the
-    /// graph. A clip dropped on a Sampler gives it the clip's part of the
-    /// file; on the canvas it becomes a Sample node holding the same.
-    /// A track is placed where it lands, if it is at the level being edited.
     /// Where something dropped on the canvas goes, in graph coordinates: at the
     /// pointer, or by a node it was dropped on.
     fn drop_point(&self, on: editor::DropOn) -> egui::Pos2 {
@@ -2887,6 +2883,10 @@ impl App {
         }
     }
 
+    /// A clip or a track carried out of the timeline and let go of over the
+    /// graph. A clip dropped on a Sampler gives it the clip's part of the
+    /// file; on the canvas it becomes a Sample node holding the same.
+    /// A track is placed where it lands, if it is at the level being edited.
     fn dropped_on_graph(&mut self, dropped: editor::Dropped) {
         use crate::carry::Item;
         use noodle_core::{Command, Config, Node, Position, Value};
@@ -5535,8 +5535,6 @@ mod tests {
         );
     }
 
-    /// The browser panel at the side: shown from View, with a tab for Sounds,
-    /// Nodes, Groups and Presets, and collapsible to a strip and back.
     /// An app whose Sounds tab reads a fake source, never the network.
     fn app_with_fake_sounds(dir: &std::path::Path) -> App {
         use crate::sounds::source::{Net, fake};
@@ -5552,6 +5550,8 @@ mod tests {
         app
     }
 
+    /// The browser panel at the side: shown from View, with a tab for Sounds,
+    /// Nodes, Groups and Presets, and collapsible to a strip and back.
     #[test]
     fn the_browser_shows_its_tabs_and_collapses_to_a_strip() {
         let dir = tempfile::tempdir().unwrap();

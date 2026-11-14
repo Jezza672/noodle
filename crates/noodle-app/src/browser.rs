@@ -9,7 +9,6 @@
 //! it, as a sound is; a click on a preset applies it to the selected node.
 
 use egui::{Context, Sense, Ui, text::LayoutJob};
-use noodle_core::NodeId;
 use noodle_core::group::GROUP;
 
 use crate::carry::{self, Item};
@@ -330,7 +329,6 @@ fn presets(ui: &mut Ui, query: &mut String, session: &mut Session, editor: &Edit
         ui.weak("No presets fit this one yet. Save its values from the properties panel.");
         return;
     }
-    let mut chosen: Option<NodeId> = None;
     let mut edit: Option<Edit> = None;
     egui::ScrollArea::vertical()
         .auto_shrink([false, false])
@@ -355,11 +353,10 @@ fn presets(ui: &mut Ui, query: &mut String, session: &mut Session, editor: &Edit
                     .clicked()
                 {
                     edit = session.apply_preset(id, entry);
-                    chosen = Some(id);
                 }
             }
         });
-    if let (Some(edit), Some(_)) = (edit, chosen) {
+    if let Some(edit) = edit {
         session.edit([edit]);
     }
 }
