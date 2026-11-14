@@ -377,7 +377,12 @@ fn a_folder_is_a_source_read_in_place_with_an_unknown_licence() {
         },
     );
     let done = settle(&mut s, &session);
-    assert_eq!(done[0].result.as_ref().unwrap(), &file);
+    // The folder is kept by its canonical path, which differs from the one
+    // given on macOS (/var is /private/var) and Windows.
+    assert_eq!(
+        done[0].result.as_ref().unwrap(),
+        &std::fs::canonicalize(&file).unwrap()
+    );
     let cache = s.cache.as_ref().unwrap().dir().to_owned();
     assert!(
         std::fs::read_dir(cache).map_or(true, |mut r| r.next().is_none()),
