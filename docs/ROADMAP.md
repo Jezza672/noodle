@@ -149,10 +149,6 @@ Later: Nodes, Groups and Presets as tabs of the same browser.
 - **Model controls for Split to stems:** the same enable/disable, download and
   storage controls in the Models settings tab, and a model choice in the stems
   dialog, as the drum rack gets. Not part of the drum rack batch.
-- **M11 follow-ups:** more spectral nodes (pitch shift and time stretch on
-  frames, spectral compressor, convolution reverb from an impulse response,
-  noise-profile denoiser) and a choice of frame size (a config on Analyze that
-  every spectral node on the wire adopts).
 - **Piano roll and recording:** keeping the raw take so a recorded MIDI clip
   can be re-quantised afterwards (quantise on record and several MIDI
   ports are built; overdub and count-in are in the items above). The 128-frame engine block is fixed;

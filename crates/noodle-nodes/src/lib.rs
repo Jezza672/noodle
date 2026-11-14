@@ -16,6 +16,7 @@ mod clip;
 mod clock;
 mod comparator;
 mod control;
+mod convolver;
 mod curve;
 mod delay;
 mod distortion;
@@ -66,6 +67,8 @@ mod script;
 mod selector;
 mod slice;
 mod spectral;
+mod spectral_dynamics;
+mod spectral_pitch;
 mod spectrum;
 mod stage;
 mod surround;
@@ -113,6 +116,7 @@ pub use control::{
     ENCODER_BINARY_OFFSET, ENCODER_SIGN_MAGNITUDE, ENCODER_TWOS_COMPLEMENT, MIDI_CONTROL_ID,
     MidiControl, PITCH_BEND as CONTROL_PITCH_BEND, PRESSURE as CONTROL_PRESSURE,
 };
+pub use convolver::{CONVOLVER_ID, Convolver};
 pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
 pub use delay::{DELAY_ID, Delay, MAX_TIME as DELAY_MAX_TIME};
 pub use distortion::{DISTORTION_ID, Distortion, SHAPES as DISTORTION_SHAPES, shaper};
@@ -201,6 +205,10 @@ pub use spectral::{
     SPECTRAL_FILTER_ID, SPECTRAL_FREEZE_ID, SPECTRAL_GATE_ID, SPECTRAL_SHIFT_ID, SYNTHESIZE_ID,
     SpectralBlur, SpectralFilter, SpectralFreeze, SpectralGate, SpectralShift, Synthesize,
 };
+pub use spectral_dynamics::{
+    SPECTRAL_COMPRESS_ID, SPECTRAL_DENOISE_ID, SpectralCompress, SpectralDenoise,
+};
+pub use spectral_pitch::{SPECTRAL_PITCH_ID, SPECTRAL_STRETCH_ID, SpectralPitch, SpectralStretch};
 pub use spectrum::{
     FLOOR_DB as SPECTRUM_FLOOR_DB, HIGH_HZ as SPECTRUM_HIGH_HZ, LOW_HZ as SPECTRUM_LOW_HZ,
     SPECTRUM_ID, Spectrum, SpectrumAnalyser, WINDOW as SPECTRUM_WINDOW, column_frequency,
@@ -301,6 +309,10 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(FormantShift);
     registry.register(SpectralFreeze);
     registry.register(SpectralBlur);
+    registry.register(SpectralPitch);
+    registry.register(SpectralStretch);
+    registry.register(SpectralCompress);
+    registry.register(SpectralDenoise);
     registry.register(Cross);
     registry.register(Comparator);
     registry.register(Automation);
@@ -351,6 +363,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
         Sampler::new(&samples, &telemetry)
     });
     registry.register(Slice::new(&samples));
+    registry.register(Convolver::new(&samples));
     Library {
         telemetry,
         clips,

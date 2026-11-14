@@ -3,30 +3,35 @@
 //! between them.
 //!
 //! The frames and their scaling are described in
-//! [`noodle_engine::Analyzer`]; there is one frame size for the whole engine,
-//! so any spectral node feeds any other. A spectral node works on frames, not
+//! [`noodle_engine::Analyzer`]; a wire has one frame size, chosen by the
+//! Analyze at its start (its `size` config, 2048 by default), and every node
+//! downstream adopts it ([`Setup::spectral_size`]). A spectral node works on
+//! frames, not
 //! samples: it pushes one frame out for each frame in, at the same time, so
 //! only the pair of Analyze and Synthesize adds delay
-//! ([`SYNTH_LATENCY`], which the engine compensates where the spectral path
+//! (`size - 1` samples, which the engine compensates where the spectral path
 //! meets a path that doesn't have it).
 
 use crate::level::db_to_gain;
 use noodle_engine::{
-    Analyzer, BINS, Bin, Config, Context, FFT_SIZE, FormantWarp, HOP, Instance, Io, Layout, Node,
-    NodeError, NodeInfo, NodeType, ParamInfo, Ports, SYNTH_LATENCY, Setup, Shape, SignalIn,
-    Synthesizer, Unit, bin_frequency,
+    Analyzer, Bin, Config, ConfigInfo, Context, FFT_SIZE, FormantWarp, Instance, Io, Layout, Node,
+    NodeError, NodeInfo, NodeType, ParamInfo, Ports, Setup, Shape, SignalIn, Synthesizer, Unit,
+    bin_frequency_in, clamp_fft_size, fft_bins, synth_latency,
 };
 
 const CATEGORY: &str = "Spectral";
 
-fn wrap_phase(x: f32) -> f32 {
+/// The hop as a fraction of the frame, for every frame size.
+const HOP_FRACTION: f32 = 0.25;
+
+pub(crate) fn wrap_phase(x: f32) -> f32 {
     let tau = std::f32::consts::TAU;
     x - tau * (x / tau).round()
 }
 
 /// The value a parameter holds at `time`, for a voice (a mono parameter
 /// serves every voice).
-fn param(inputs: &[SignalIn<'_>], port: usize, voice: usize, time: u32) -> f32 {
+pub(crate) fn param(inputs: &[SignalIn<'_>], port: usize, voice: usize, time: u32) -> f32 {
     let lane = inputs[port].lane(voice, 0);
     lane.get(time as usize)
         .or(lane.last())
@@ -38,7 +43,7 @@ fn param(inputs: &[SignalIn<'_>], port: usize, voice: usize, time: u32) -> f32 {
 /// a frame of the first spectral output at the same time. `f` gets the
 /// frame's time, the voice, the lane, the bins in and the bins out (zero to
 /// begin with).
-fn map_frames(io: Io<'_, '_>, mut f: impl FnMut(u32, usize, usize, &[Bin], &mut [Bin])) {
+pub(crate) fn map_frames(io: Io<'_, '_>, mut f: impl FnMut(u32, usize, usize, &[Bin], &mut [Bin])) {
     let Io {
         spectral_inputs,
         spectral_outputs,
@@ -67,7 +72,7 @@ fn map_frames(io: Io<'_, '_>, mut f: impl FnMut(u32, usize, usize, &[Bin], &mut 
 
 /// The shape of the first spectral output, from `Setup`: the signal outputs
 /// come first in `output_shapes`.
-fn spectral_shape(setup: &Setup<'_>, signal_outputs: usize) -> Shape {
+pub(crate) fn spectral_shape(setup: &Setup<'_>, signal_outputs: usize) -> Shape {
     setup
         .output_shapes
         .get(signal_outputs)
@@ -87,6 +92,14 @@ fn spectral_shape(setup: &Setup<'_>, signal_outputs: usize) -> Shape {
 pub struct Analyze;
 
 pub const ANALYZE_ID: &str = "noodle.spectral.analyze";
+
+/// The frame size of the spectrum Analyze makes, in samples: a power of two
+/// from 256 to 8192 (other values are rounded to one). Smaller frames follow
+/// fast changes more closely and blur pitch; larger ones separate close
+/// partials and smear attacks. Every spectral node wired after Analyze uses
+/// the same size, and the Synthesize at the end sounds `size - 1` samples
+/// late.
+pub static SIZE: ConfigInfo = ConfigInfo::int("size", "Frame size", FFT_SIZE as i64);
 
 #[derive(Ports)]
 struct AnalyzePorts {
@@ -108,14 +121,26 @@ impl NodeType for Analyze {
         &ANALYZE_INFO
     }
 
+    fn config(&self) -> &[ConfigInfo] {
+        std::slice::from_ref(&SIZE)
+    }
+
     fn layout(&self, _config: &Config) -> Result<Layout, NodeError> {
         Ok(AnalyzePorts::layout())
+    }
+
+    fn spectral_size(
+        &self,
+        config: &Config,
+        _inputs: &[Option<usize>],
+    ) -> Result<usize, NodeError> {
+        Ok(clamp_fft_size(SIZE.get_int(config)))
     }
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let shape = spectral_shape(setup, AnalyzePorts::OUTPUTS);
         Ok(Instance::realtime(AnalyzeNode {
-            analyzer: Analyzer::new(shape),
+            analyzer: Analyzer::with_size(shape, setup.spectral_size),
         }))
     }
 }
@@ -170,13 +195,15 @@ impl NodeType for Synthesize {
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let shape = setup.output_shapes[SynthesizePorts::OUT];
         Ok(Instance::realtime(SynthesizeNode {
-            synthesizer: Synthesizer::new(shape),
+            synthesizer: Synthesizer::with_size(shape, setup.spectral_size),
+            latency: synth_latency(setup.spectral_size),
         }))
     }
 }
 
 struct SynthesizeNode {
     synthesizer: Synthesizer,
+    latency: u32,
 }
 
 impl Node for SynthesizeNode {
@@ -188,7 +215,7 @@ impl Node for SynthesizeNode {
     }
 
     fn latency(&self) -> u32 {
-        SYNTH_LATENCY
+        self.latency
     }
 
     fn reset(&mut self) {
@@ -335,23 +362,28 @@ impl NodeType for SpectralFilter {
         Ok(FilterPorts::layout())
     }
 
-    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
-        Ok(Instance::realtime(FilterNode))
+    fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
+        Ok(Instance::realtime(FilterNode {
+            size: setup.spectral_size,
+        }))
     }
 }
 
-struct FilterNode;
+struct FilterNode {
+    size: usize,
+}
 
 impl Node for FilterNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let inputs = io.inputs;
         let rate = ctx.sample_rate;
+        let size = self.size;
         map_frames(io, |time, voice, _, input, out| {
             let low = param(inputs, FilterPorts::LOW, voice, time);
             let high = param(inputs, FilterPorts::HIGH, voice, time);
             let stop = param(inputs, FilterPorts::MODE, voice, time) >= 0.5;
             for (j, (out, bin)) in out.iter_mut().zip(input).enumerate() {
-                let f = bin_frequency(j, rate);
+                let f = bin_frequency_in(j, rate, size);
                 if (f >= low && f <= high) != stop {
                     *out = *bin;
                 }
@@ -408,12 +440,14 @@ impl NodeType for SpectralShift {
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let lanes = spectral_shape(setup, ShiftPorts::OUTPUTS).lanes();
         Ok(Instance::realtime(ShiftNode {
+            size: setup.spectral_size,
             turns: vec![0.0; lanes],
         }))
     }
 }
 
 struct ShiftNode {
+    size: usize,
     /// The phase every bin of a lane is turned by, in radians. A partial
     /// moved `k` bins up has to advance `k` bins' worth of phase more each
     /// frame, which is the same turn for all of them.
@@ -423,17 +457,18 @@ struct ShiftNode {
 impl Node for ShiftNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let inputs = io.inputs;
-        let bin_width = bin_frequency(1, ctx.sample_rate);
+        let bin_width = bin_frequency_in(1, ctx.sample_rate, self.size);
         let turns = &mut self.turns;
         map_frames(io, |time, voice, lane, input, out| {
             let bins = (param(inputs, ShiftPorts::SHIFT, voice, time) / bin_width).round() as isize;
-            turns[lane] = wrap_phase(
-                turns[lane] + std::f32::consts::TAU * bins as f32 * HOP as f32 / FFT_SIZE as f32,
-            );
+            // The hop is a quarter of the frame, whatever its size.
+            turns[lane] =
+                wrap_phase(turns[lane] + std::f32::consts::TAU * bins as f32 * HOP_FRACTION);
             let (sin, cos) = turns[lane].sin_cos();
+            let count = input.len() as isize;
             for (j, bin) in input.iter().enumerate() {
                 let to = j as isize + bins;
-                if (0..BINS as isize).contains(&to) {
+                if (0..count).contains(&to) {
                     out[to as usize] =
                         Bin::new(bin.re * cos - bin.im * sin, bin.re * sin + bin.im * cos);
                 }
@@ -495,21 +530,23 @@ impl NodeType for FormantShift {
         Ok(FormantPorts::layout())
     }
 
-    fn instantiate(&self, _setup: &Setup<'_>) -> Result<Instance, NodeError> {
+    fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         Ok(Instance::realtime(FormantNode {
-            warp: FormantWarp::new(),
+            size: setup.spectral_size,
+            warp: FormantWarp::with_size(setup.spectral_size),
         }))
     }
 }
 
 struct FormantNode {
+    size: usize,
     warp: FormantWarp,
 }
 
 impl Node for FormantNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let inputs = io.inputs;
-        let bin_width = bin_frequency(1, ctx.sample_rate);
+        let bin_width = bin_frequency_in(1, ctx.sample_rate, self.size);
         let warp = &mut self.warp;
         map_frames(io, |time, voice, _lane, input, out| {
             let semitones = param(inputs, FormantPorts::SHIFT, voice, time);
@@ -557,8 +594,10 @@ impl NodeType for SpectralFreeze {
 
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let lanes = spectral_shape(setup, FreezePorts::OUTPUTS).lanes();
+        let bins = fft_bins(setup.spectral_size);
         Ok(Instance::realtime(FreezeNode {
-            lanes: (0..lanes).map(|_| FreezeLane::new()).collect(),
+            bins,
+            lanes: (0..lanes).map(|_| FreezeLane::new(bins)).collect(),
         }))
     }
 }
@@ -574,17 +613,18 @@ struct FreezeLane {
 }
 
 impl FreezeLane {
-    fn new() -> Self {
+    fn new(bins: usize) -> Self {
         Self {
-            magnitude: vec![0.0; BINS],
-            previous: vec![0.0; BINS],
-            advance: vec![0.0; BINS],
-            phase: vec![0.0; BINS],
+            magnitude: vec![0.0; bins],
+            previous: vec![0.0; bins],
+            advance: vec![0.0; bins],
+            phase: vec![0.0; bins],
         }
     }
 }
 
 struct FreezeNode {
+    bins: usize,
     lanes: Vec<FreezeLane>,
 }
 
@@ -606,7 +646,7 @@ impl Node for FreezeNode {
             } else {
                 for (j, bin) in input.iter().enumerate() {
                     let phase = bin.phase();
-                    let expected = std::f32::consts::TAU * j as f32 * HOP as f32 / FFT_SIZE as f32;
+                    let expected = std::f32::consts::TAU * j as f32 * HOP_FRACTION;
                     // The partial's real frequency: the phase step beyond
                     // what a bin-centre sine would make, added to it.
                     state.advance[j] = expected + wrap_phase(phase - state.previous[j] - expected);
@@ -621,7 +661,7 @@ impl Node for FreezeNode {
 
     fn reset(&mut self) {
         for lane in &mut self.lanes {
-            *lane = FreezeLane::new();
+            *lane = FreezeLane::new(self.bins);
         }
     }
 }
@@ -664,7 +704,7 @@ impl NodeType for SpectralBlur {
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let lanes = spectral_shape(setup, BlurPorts::OUTPUTS).lanes();
         Ok(Instance::realtime(BlurNode {
-            levels: vec![vec![0.0; BINS]; lanes],
+            levels: vec![vec![0.0; fft_bins(setup.spectral_size)]; lanes],
         }))
     }
 }
@@ -720,22 +760,22 @@ pub struct Cross;
 /// The most bands Cross can smooth into.
 const MAX_BANDS: usize = 256;
 
-/// Bin edges of `n` log-spaced bands over bins 1 to `BINS`, written into
+/// Bin edges of `n` log-spaced bands over bins 1 to `bins`, written into
 /// `edges[..=n]`: band `b` covers `edges[b]..edges[b + 1]`, and every band
 /// holds at least one bin. Bin 0 (DC) joins the first band.
-fn band_edges(n: usize, edges: &mut [usize]) {
-    let top = (BINS - 1) as f32;
+pub(crate) fn band_edges(n: usize, bins: usize, edges: &mut [usize]) {
+    let top = (bins - 1) as f32;
     let mut prev = 0;
     edges[0] = 0;
     #[allow(clippy::needless_range_loop)]
     for b in 1..=n {
         let edge = top.powf(b as f32 / n as f32).round() as usize;
         // At least one bin per band, but leave room for the bands left.
-        let edge = edge.max(prev + 1).min(BINS - (n - b));
+        let edge = edge.max(prev + 1).min(bins - (n - b));
         edges[b] = edge;
         prev = edge;
     }
-    edges[n] = BINS;
+    edges[n] = bins;
 }
 
 pub const CROSS_ID: &str = "noodle.spectral.cross";
@@ -773,7 +813,8 @@ impl NodeType for Cross {
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError> {
         let lanes = spectral_shape(setup, CrossPorts::OUTPUTS).lanes();
         Ok(Instance::realtime(CrossNode {
-            held: vec![vec![0.0; BINS]; lanes],
+            bins: fft_bins(setup.spectral_size),
+            held: vec![vec![0.0; fft_bins(setup.spectral_size)]; lanes],
             edges: vec![0; MAX_BANDS + 1],
             edges_for: 0,
             modulator_bands: vec![0.0; MAX_BANDS],
@@ -783,6 +824,7 @@ impl NodeType for Cross {
 }
 
 struct CrossNode {
+    bins: usize,
     /// The latest modulator magnitudes, per lane.
     held: Vec<Vec<f32>>,
     /// Band edges for `edges_for` bands (zero: none computed yet).
@@ -830,7 +872,7 @@ impl Node for CrossNode {
                     .clamp(0.0, MAX_BANDS as f32) as usize;
                 let bands = if bands < 2 { 0 } else { bands };
                 if bands != 0 && bands != self.edges_for {
-                    band_edges(bands, &mut self.edges);
+                    band_edges(bands, self.bins, &mut self.edges);
                     self.edges_for = bands;
                 }
                 for channel in 0..shape.channels {
@@ -901,7 +943,7 @@ impl Node for CrossNode {
 mod tests {
     use super::*;
     use noodle_engine::testing::Harness;
-    use noodle_engine::{SpectralBuf, SpectralIn};
+    use noodle_engine::{BINS, HOP, SYNTH_LATENCY, SpectralBuf, SpectralIn, bin_frequency};
 
     const RATE: f32 = 48_000.0;
     const BLOCK: usize = 16_384;
@@ -1292,7 +1334,7 @@ mod tests {
         // Bin edges are monotonic and cover every bin.
         let mut edges = vec![0; MAX_BANDS + 1];
         for n in [2, 8, 64, 256] {
-            band_edges(n, &mut edges);
+            band_edges(n, BINS, &mut edges);
             assert_eq!((edges[0], edges[n]), (0, BINS));
             assert!(edges[..=n].windows(2).all(|w| w[0] < w[1]), "{n} bands");
         }
@@ -1308,6 +1350,7 @@ mod tests {
                 max_frames: BLOCK,
                 input_shapes: &[Shape::MONO],
                 output_shapes: &[Shape::MONO],
+                spectral_size: noodle_engine::FFT_SIZE,
                 seed: 0,
                 position: 0,
             })
