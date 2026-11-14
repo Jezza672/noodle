@@ -18,7 +18,6 @@ deliberately deferred items.
 2. **`noodle-download`:** the shared downloader (consent, streaming, SHA-256, content-keyed cache), with the stem separator moved onto it.
 3. **`noodle-packs`:** pack definitions, manifests, licence and credit fields, validation.
 4. **`noodle-publish`:** build the static site, `noodle-cli packs build`, and the CI workflow that publishes from main to R2. The first real publish needs R2 credentials as repo secrets.
-5. **Sounds panel:** the content browser, audition, drag to a Sampler or pad, drag to the timeline (copied into the project with its credit), search and licence filters.
 6. **Sources:** the settings page (URL, credentials, remove, storage use, Clean up), self-hosted sources, and folders added in place from the browser.
 7. **Make shareable pack:** the wizard and its usability stories and routes (find a sample, add a source, make a pack).
 8. **Clips use the hash store**, so a dragged clip needs no copy.

@@ -1372,6 +1372,9 @@ fn section(ui: &mut Ui, session: &Session, id: ClipId, edits: &mut Vec<Edit>) {
 fn gain(ui: &mut Ui, project: &Project, id: ClipId, edits: &mut Vec<Edit>) {
     let Some(clip) = project.clip(id) else { return };
     let Some(audio) = clip.as_audio() else { return };
+    if let Some(credit) = &audio.credit {
+        ui.weak(format!("Credit: {credit}"));
+    }
     ui.horizontal(|ui| {
         ui.label("Gain");
         let mut db = 20.0 * f64::from(audio.gain.max(1e-4)).log10();

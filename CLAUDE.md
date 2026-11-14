@@ -26,7 +26,7 @@ Single-context: `CONTEXT.md` as the glossary, ADRs under `docs/adr/`. See `docs/
 | What is left to do | [docs/ROADMAP.md](docs/ROADMAP.md) (open work only) |
 | What was built, per milestone, with PR numbers | [docs/features/](docs/features/README.md) |
 | What each crate is, where its tests are | [docs/crates.md](docs/crates.md) |
-| Usability scorecard: the 28 live stories and how they are scored | [docs/usability/stories.md](docs/usability/stories.md), [docs/architecture/usability.md](docs/architecture/usability.md) |
+| Usability scorecard: the 29 live stories and how they are scored | [docs/usability/stories.md](docs/usability/stories.md), [docs/architecture/usability.md](docs/architecture/usability.md) |
 | Brand: name, logos, colours, type, textures | [docs/brand.md](docs/brand.md), [assets/brand/](assets/brand/README.md) |
 | The website (landing page, hosted from `site/` on GitHub Pages) | [site/](site/README.md) |
 | Domain terms | `CONTEXT.md`, [docs/agents/domain.md](docs/agents/domain.md) |

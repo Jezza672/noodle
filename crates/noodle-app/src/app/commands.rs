@@ -117,6 +117,13 @@ pub static ENTRIES: &[Entry] = &[
         false,
     ),
     entry(
+        "view.sounds",
+        "Browse Sounds…",
+        Action::OpenSounds,
+        None,
+        false,
+    ),
+    entry(
         "file.export",
         "Export Audio…",
         Action::ExportAudio,

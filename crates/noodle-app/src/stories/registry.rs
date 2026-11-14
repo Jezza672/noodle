@@ -36,7 +36,7 @@ pub struct Story {
     pub missing: &'static str,
 }
 
-pub const STORIES: [Story; 28] = [
+pub const STORIES: [Story; 29] = [
     Story {
         id: "S01",
         title: "Comp a vocal from multiple takes",
@@ -202,6 +202,12 @@ pub const STORIES: [Story; 28] = [
     Story {
         id: "S30",
         title: "Keep a large project responsive",
+        status: Status::Full,
+        missing: "",
+    },
+    Story {
+        id: "S31",
+        title: "Find a sound and use it",
         status: Status::Full,
         missing: "",
     },
