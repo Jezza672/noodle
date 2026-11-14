@@ -323,6 +323,26 @@ pub struct Exported {
     pub written: usize,
 }
 
+/// `path` with symbolic links resolved, as far as it exists: the nearest
+/// existing ancestor is canonicalised and the rest put back, so a folder not
+/// made yet still compares by where it will really be.
+fn resolve(path: &Path) -> PathBuf {
+    let mut rest = Vec::new();
+    let mut at = path;
+    loop {
+        if let Ok(real) = std::fs::canonicalize(at) {
+            return rest.iter().rev().fold(real, |p, part| p.join(part));
+        }
+        match (at.parent(), at.file_name()) {
+            (Some(parent), Some(name)) => {
+                rest.push(name.to_owned());
+                at = parent;
+            }
+            _ => return path.to_owned(),
+        }
+    }
+}
+
 /// Builds the site for `draft` at `out`: into the folder `out`, or as
 /// `<out>/<id>.zip`. The folder being packed can't be where it goes, because
 /// the site would then be read back as sounds.
@@ -333,7 +353,7 @@ pub fn export(draft: &Draft, format: Format, out: &Path) -> Result<Exported, Str
     }
     let (dir, target) = (
         std::fs::canonicalize(&draft.dir).unwrap_or_else(|_| draft.dir.clone()),
-        std::fs::canonicalize(out).unwrap_or_else(|_| out.to_owned()),
+        resolve(out),
     );
     if target.starts_with(&dir) {
         return Err("Choose a folder outside the one you are packing".into());
@@ -839,5 +859,21 @@ mod tests {
         let inside = draft.dir.join("site");
         assert!(export(&draft, Format::Folder, &inside).is_err());
         assert!(!inside.exists());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn an_output_inside_the_folder_is_refused_through_a_symlink_too() {
+        let (dir, mut draft) = folder();
+        draft.author = "Jo".into();
+        let link = dir.path().join("link");
+        std::os::unix::fs::symlink(&draft.dir, &link).unwrap();
+        let inside = link.join("site");
+        assert!(export(&draft, Format::Folder, &inside).is_err());
+        assert!(!draft.dir.join("site").exists());
+        // And a link to the folder given as the folder being packed.
+        let mut via_link = draft.clone();
+        via_link.dir = link;
+        assert!(export(&via_link, Format::Folder, &draft.dir.join("site")).is_err());
     }
 }
