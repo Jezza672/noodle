@@ -44,6 +44,8 @@ pub enum ProblemKind {
     /// The licence requires attribution and the sample has no credit text.
     MissingCredit,
     EmptyCustomLicence,
+    /// A licence of `unknown`, which only a folder on disk may have.
+    UnknownLicence,
     UnknownSpdx {
         id: String,
     },
@@ -83,6 +85,7 @@ impl fmt::Display for Problem {
                 write!(f, "the licence requires a credit and there is none")
             }
             ProblemKind::EmptyCustomLicence => write!(f, "custom licence text is empty"),
+            ProblemKind::UnknownLicence => write!(f, "the licence is unknown, and a pack must say"),
             ProblemKind::UnknownSpdx { id } => write!(f, "unknown SPDX id {id:?}"),
             ProblemKind::UnsafePath { file } => {
                 write!(f, "file {file:?} must be a relative path inside the pack")

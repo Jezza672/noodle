@@ -12,8 +12,12 @@
 
 pub mod apply;
 pub mod catalogue;
+mod folder;
+mod manage;
+mod page;
 mod panel;
 pub mod source;
+mod vault;
 
 use std::collections::HashSet;
 use std::path::PathBuf;
@@ -30,6 +34,7 @@ use crate::carry::SoundKey;
 use crate::session::Session;
 use catalogue::{Entry, Filter, SourceId};
 use source::{Net, Source};
+use vault::Vault;
 
 /// A download bigger than this asks first.
 pub const CONFIRM_BYTES: u64 = 8 * 1024 * 1024;
@@ -137,6 +142,20 @@ pub struct Sounds {
     message: Option<String>,
     /// What has arrived and is not for the panel to use.
     arrived: Vec<Done>,
+    /// Where the tokens and passwords of sources are kept.
+    vault: Box<dyn Vault>,
+    /// The size of each downloaded sound, by hash.
+    sizes: std::collections::HashMap<String, u64>,
+    /// What Clean up would remove, until something changes it.
+    cleanable: Option<page::Cleanable>,
+    /// A source was added while the lists were being fetched: ask again.
+    again: bool,
+    /// The panel asked for the Sources page; the app opens it.
+    wants_sources: bool,
+    /// The Add a source form on the Sources page.
+    form: page::Form,
+    /// What the Sources page last did, for the user to read.
+    note: Option<String>,
 }
 
 impl Default for Sounds {
@@ -145,12 +164,22 @@ impl Default for Sounds {
         Self::with(
             Net::http(),
             dirs.map(|d| d.data_dir().join("sounds")),
-            vec![Source::built_in()],
+            Self::saved_sources(&vault::System),
         )
     }
 }
 
 impl Sounds {
+    /// The built-in source and the ones the user added, with their secrets.
+    fn saved_sources(vault: &dyn Vault) -> Vec<Source> {
+        let mut sources = vec![Source::built_in()];
+        for spec in crate::prefs::sources() {
+            let secret = vault.recall(&spec.id);
+            sources.push(Source::from_spec(spec, secret));
+        }
+        sources
+    }
+
     /// A panel over `net`, keeping sounds and catalogues in `dir`.
     pub fn with(net: Net, dir: Option<PathBuf>, sources: Vec<Source>) -> Self {
         let cache = dir.as_ref().map(|d| Cache::new(d.join("objects")));
@@ -175,9 +204,23 @@ impl Sounds {
             playing: None,
             message: None,
             arrived: Vec::new(),
+            vault: Box::new(vault::System),
+            sizes: Default::default(),
+            cleanable: None,
+            again: false,
+            wants_sources: false,
+            form: Default::default(),
+            note: None,
         };
         sounds.load_saved();
         sounds
+    }
+
+    /// Keeps secrets somewhere else, for tests.
+    #[cfg(test)]
+    fn with_vault(mut self, vault: impl Vault + 'static) -> Self {
+        self.vault = Box::new(vault);
+        self
     }
 
     pub fn is_open(&self) -> bool {
@@ -260,32 +303,57 @@ impl Sounds {
         self.scan_cache();
     }
 
+    /// Works out which sounds are here: downloaded into the cache, or in a
+    /// folder source that was reachable the last time it was scanned.
     fn scan_cache(&mut self) {
-        let Some(cache) = &self.cache else {
-            return;
-        };
-        self.cached = self
-            .entries
-            .iter()
-            .filter(|e| cache.contains(&e.key))
-            .map(|e| e.key.clone())
-            .collect();
+        self.cleanable = None;
+        self.cached.clear();
+        self.sizes.clear();
+        for entry in &self.entries {
+            let in_folder = entry.file.is_some()
+                && matches!(self.reach.get(&entry.source), Some(Reach::Reachable));
+            if in_folder {
+                self.cached.insert(entry.key.clone());
+            } else if let Some(cache) = &self.cache
+                && let Ok(meta) = std::fs::metadata(cache.path(&entry.key))
+            {
+                self.cached.insert(entry.key.clone());
+                self.sizes.insert(entry.key.clone(), meta.len());
+            }
+        }
     }
 
     /// Asks every source for its catalogue, on a worker.
     pub fn refresh(&mut self) {
         if self.refreshing.is_some() {
+            self.again = true;
             return;
         }
         self.asked = true;
         for reach in self.reach.values_mut() {
             *reach = Reach::Asking;
         }
-        let (net, sources) = (self.net.clone(), self.sources.clone());
+        let net = self.net.clone();
+        // A folder's last scan, so a file that hasn't changed isn't decoded again.
+        let work: Vec<(Source, Vec<Entry>)> = self
+            .sources
+            .iter()
+            .map(|s| {
+                let known = if s.folder.is_some() {
+                    self.entries
+                        .iter()
+                        .filter(|e| e.source == s.id)
+                        .cloned()
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                (s.clone(), known)
+            })
+            .collect();
         self.refreshing = Some(Job::spawn(move |_| {
-            sources
-                .iter()
-                .map(|s| (s.id.clone(), source::fetch_catalogue(&net, s)))
+            work.iter()
+                .map(|(s, known)| (s.id.clone(), source::fetch_catalogue(&net, s, known)))
                 .collect()
         }));
     }
@@ -293,7 +361,10 @@ impl Sounds {
     /// Asks for the sound `entry` and says what to do with it. A sound that is
     /// not here and is big asks first.
     pub fn request(&mut self, entry: Entry, then: Then) {
-        if self.cache.is_none() {
+        let in_folder = self
+            .source(&entry.source)
+            .is_some_and(|s| s.folder.is_some());
+        if self.cache.is_none() && !in_folder {
             self.message = Some("There is nowhere to keep sounds on this computer".into());
             return;
         }
@@ -306,18 +377,25 @@ impl Sounds {
     }
 
     fn start(&mut self, entry: Entry, then: Then) {
-        let (Some(cache), Some(source)) = (self.cache.clone(), self.source(&entry.source).cloned())
-        else {
+        let Some(source) = self.source(&entry.source).cloned() else {
             self.message = Some("That sound's source isn't set up".into());
             return;
         };
+        let cache = self.cache.clone();
         let net = self.net.clone();
         let hash = entry.key.clone();
+        let local = entry.clone();
         let audition = then == Then::Audition;
         let job = Job::spawn(move |progress| {
-            let path = source::download(&net, &cache, &source, &hash, &mut |f| {
-                progress.report(f).is_ok()
-            })?;
+            let path = if source.folder.is_some() {
+                // Read where it is: nothing is copied.
+                source::open_local(&local)?
+            } else {
+                let cache = cache.ok_or("There is nowhere to keep sounds on this computer")?;
+                source::download(&net, &cache, &source, &hash, &mut |f| {
+                    progress.report(f).is_ok()
+                })?
+            };
             let sample = if audition {
                 let audio = noodle_io::decode_file(&path).map_err(|e| e.to_string())?;
                 Some(Arc::new(Sample::from_audio(&audio)))
@@ -340,6 +418,9 @@ impl Sounds {
                 Ok(catalogues) => self.take_catalogues(catalogues),
                 Err(panicked) => self.message = Some(panicked.to_string()),
             }
+            if std::mem::take(&mut self.again) {
+                self.refresh();
+            }
         }
         let mut i = 0;
         while i < self.fetching.len() {
@@ -352,6 +433,14 @@ impl Sounds {
             match result {
                 Ok(fetched) => {
                     self.cached.insert(entry.key.clone());
+                    if let Ok(meta) = std::fs::metadata(&fetched.path)
+                        && self
+                            .source(&entry.source)
+                            .is_some_and(|s| s.folder.is_none())
+                    {
+                        self.sizes.insert(entry.key.clone(), meta.len());
+                        self.cleanable = None;
+                    }
                     if then == Then::Audition {
                         self.audition(session, &entry, fetched.sample.as_deref());
                     } else {
@@ -407,6 +496,10 @@ impl Sounds {
     fn take_catalogues(&mut self, catalogues: Catalogues) {
         let mut entries = Vec::new();
         for (id, result) in catalogues {
+            // A source removed while it was being asked is not listed again.
+            if self.source(&id).is_none() {
+                continue;
+            }
             match result {
                 Ok(found) => {
                     if let Some(file) = self.catalogue_file(&id) {

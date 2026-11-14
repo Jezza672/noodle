@@ -1,6 +1,6 @@
 //! The Settings window: one place, with a tab each for the General
-//! preferences, the Audio devices, the Display switches and the separation
-//! Models. Everything in it
+//! preferences, the Audio devices, the Display switches, the separation
+//! Models and the Sources of sounds. Everything in it
 //! is saved in the user's settings file (see [`crate::prefs`]); the audio
 //! devices and the plugin sandbox belong to this machine and are left out of
 //! exported and project-embedded settings.
@@ -18,10 +18,17 @@ pub enum Tab {
     Audio,
     Display,
     Models,
+    Sources,
 }
 
 impl Tab {
-    const ALL: [Tab; 4] = [Tab::General, Tab::Audio, Tab::Display, Tab::Models];
+    const ALL: [Tab; 5] = [
+        Tab::General,
+        Tab::Audio,
+        Tab::Display,
+        Tab::Models,
+        Tab::Sources,
+    ];
 
     fn label(self) -> &'static str {
         match self {
@@ -29,6 +36,7 @@ impl Tab {
             Tab::Audio => "Audio",
             Tab::Display => "Display",
             Tab::Models => "Models",
+            Tab::Sources => "Sources",
         }
     }
 }
@@ -64,6 +72,7 @@ impl Settings {
     }
 
     /// Draws the window while it is open.
+    #[allow(clippy::too_many_arguments)]
     pub fn show(
         &mut self,
         ctx: &egui::Context,
@@ -72,6 +81,7 @@ impl Settings {
         display: &mut Display,
         session: &mut Session,
         models: &mut crate::models::Models,
+        sounds: &mut crate::sounds::Sounds,
     ) -> Outcome {
         let mut out = Outcome::default();
         if !self.open {
@@ -90,6 +100,12 @@ impl Settings {
                 Tab::Audio => out.audio = devices.body(ui, latency),
                 Tab::Display => out.display_changed = crate::display::body(ui, display),
                 Tab::Models => models.body(ui),
+                Tab::Sources => {
+                    egui::ScrollArea::vertical()
+                        .max_height(480.0)
+                        .show(ui, |ui| sounds.body(ui))
+                        .inner
+                }
             }
             ui.add_space(8.0);
             ui.separator();

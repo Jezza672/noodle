@@ -11,6 +11,8 @@ use std::collections::HashSet;
 use noodle_packs::{Licence, Manifest, is_hash};
 use serde::{Deserialize, Serialize};
 
+use super::folder::LocalFile;
+
 /// The name a source is known by in a saved catalogue and in filters.
 pub type SourceId = String;
 
@@ -45,6 +47,9 @@ pub struct Entry {
     /// The size of its object, if the source says.
     pub bytes: Option<u64>,
     pub source: SourceId,
+    /// Where its audio is, for a sound in a folder source.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub file: Option<LocalFile>,
 }
 
 impl Entry {
@@ -85,6 +90,7 @@ pub fn entries_of(source: &str, manifest: &Manifest) -> Vec<Entry> {
             credit: s.credit.clone(),
             bytes: s.bytes,
             source: source.to_owned(),
+            file: None,
         })
         .collect()
 }
@@ -164,6 +170,7 @@ mod tests {
             credit: None,
             bytes: Some(1000),
             source: source.into(),
+            file: None,
         }
     }
 

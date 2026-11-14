@@ -36,6 +36,7 @@ mod s28_setlist;
 mod s29_organise;
 mod s30_freeze;
 mod s31_sounds;
+mod s32_sources;
 pub mod tripwire;
 
 use std::path::Path;
@@ -90,6 +91,7 @@ pub fn all() -> Vec<Route> {
         s29_organise::route(),
         s30_freeze::route(),
         s31_sounds::route(),
+        s32_sources::route(),
     ]
 }
 

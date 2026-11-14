@@ -282,6 +282,10 @@ impl<'h> Handle<'h> {
         self.probe().field_after(label)
     }
 
+    pub fn text_field_after(&mut self, label: &str) -> Pos2 {
+        self.probe().text_field_after(label)
+    }
+
     pub fn arm_button(&mut self, node: NodeId) -> Pos2 {
         self.probe().arm_button(node)
     }
@@ -456,6 +460,21 @@ impl Probe<'_> {
             .filter(|r| (r.center().y - text.center().y).abs() < 8.0 && r.left() >= text.right())
             .min_by(|a, b| a.left().total_cmp(&b.left()))
             .unwrap_or_else(|| panic!("no number field after {label:?}"))
+            .center()
+    }
+
+    /// The centre of the text box (or password box) just to the right of the
+    /// label `label`, on the same row.
+    pub fn text_field_after(&self, label: &str) -> Pos2 {
+        use egui::accesskit::Role;
+        let text = self.h.get_by_label(label).rect();
+        [Role::TextInput, Role::PasswordInput]
+            .into_iter()
+            .flat_map(|role| self.h.query_all_by_role(role))
+            .map(|n| n.rect())
+            .filter(|r| (r.center().y - text.center().y).abs() < 8.0 && r.left() >= text.right())
+            .min_by(|a, b| a.left().total_cmp(&b.left()))
+            .unwrap_or_else(|| panic!("no text box after {label:?}"))
             .center()
     }
 

@@ -76,25 +76,48 @@ fn contents(sounds: &mut Sounds, ui: &mut Ui, ctx: &Context) {
 }
 
 fn filters(sounds: &mut Sounds, ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        let source_name = |id: &Option<String>| {
-            id.as_ref()
-                .and_then(|id| sounds.sources.iter().find(|s| s.id == *id))
-                .map_or("Any source".to_owned(), |s| s.name.clone())
-        };
-        let selected = source_name(&sounds.filter.source);
-        egui::ComboBox::from_id_salt("sounds source")
-            .selected_text(selected)
-            .show_ui(ui, |ui| {
-                ui.selectable_value(&mut sounds.filter.source, None, "Any source");
-                for source in &sounds.sources {
-                    ui.selectable_value(
-                        &mut sounds.filter.source,
-                        Some(source.id.clone()),
-                        &source.name,
-                    );
+    // One chip for each source, and All.
+    ui.horizontal_wrapped(|ui| {
+        if ui
+            .selectable_label(sounds.filter.source.is_none(), "All sources")
+            .clicked()
+        {
+            sounds.filter.source = None;
+        }
+        for source in sounds.sources.clone() {
+            let on = sounds.filter.source.as_deref() == Some(source.id.as_str());
+            let tip = match (&source.folder, source.is_self_hosted()) {
+                (Some(folder), _) => format!("Folder {}", folder.path.display()),
+                (None, true) => format!("{}\nSelf-hosted: Noodle can't vouch for it", source.url),
+                (None, false) => source.url.clone(),
+            };
+            let label = if source.is_self_hosted() {
+                format!("⚠ {}", source.name)
+            } else {
+                source.name.clone()
+            };
+            if ui.selectable_label(on, label).on_hover_text(tip).clicked() {
+                sounds.filter.source = (!on).then(|| source.id.clone());
+            }
+        }
+        let add = ui
+            .small_button("Sources…")
+            .on_hover_text("Add, remove and manage where sounds come from, in Settings");
+        if add.clicked() {
+            sounds.wants_sources = true;
+        }
+        add.context_menu(|ui| {
+            if ui.button("Add a folder as a source…").clicked() {
+                if let Some(path) = crate::picker::pick_folder()
+                    && let Err(why) = sounds.add_folder(path)
+                {
+                    sounds.message = Some(why);
                 }
-            });
+                ui.close();
+            }
+        });
+    });
+    ui.horizontal(|ui| {
         let selected = sounds
             .filter
             .licence
@@ -161,12 +184,21 @@ fn row(ui: &mut Ui, ctx: &Context, entry: &Entry, cached: bool, reachable: bool)
         .bytes
         .map_or(String::new(), |b| format!(" · {}", megabytes(b)));
     let details = format!(
-        "{} · {} · {}{}{}",
-        entry.pack,
-        entry.author,
+        "{} · {}{}{}",
+        [entry.pack.as_str(), entry.author.as_str()]
+            .iter()
+            .filter(|s| !s.is_empty())
+            .map(|s| format!("{s} · "))
+            .collect::<String>(),
         entry.licence.label(),
         size,
-        if cached { " · on this computer" } else { "" }
+        if entry.file.is_some() {
+            " · in a folder"
+        } else if cached {
+            " · on this computer"
+        } else {
+            ""
+        }
     );
     let mut job = LayoutJob::default();
     let font = egui::TextStyle::Body.resolve(ui.style());
