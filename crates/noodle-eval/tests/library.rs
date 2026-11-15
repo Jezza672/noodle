@@ -55,8 +55,8 @@ fn every_system_preset_fits_its_template() {
         assert!(fitting.len() >= 3, "{} has its presets", template.name);
     }
     assert_eq!(
-        templates, 31,
-        "the instruments, the subtractive voice, two synced effects, the rack, the loop pads, the pattern templates the playable instruments and the feedback templates"
+        templates, 39,
+        "the instruments, the subtractive voice, two synced effects, the rack, the loop pads, the pattern templates, the playable instruments the five spectral and convolution effects the wavetable and grain instruments and the feedback templates"
     );
     assert!(
         library
@@ -74,6 +74,9 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.event.control",
     "noodle.group.stage",
     "noodle.input.button",
+    // A recording, and rows made for one group.
+    "noodle.util.looper",
+    "noodle.mod.morph",
     "noodle.internal.automation",
     "noodle.io.input",
     "noodle.util.feedback",
@@ -81,6 +84,7 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.instrument.sample",
     "noodle.instrument.sample_set",
     "noodle.instrument.slice",
+    "noodle.osc.wavetable",
     "noodle.analysis.pitch_track",
     "noodle.event.to_notes",
     "noodle.mod.automation",

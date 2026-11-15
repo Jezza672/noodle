@@ -785,6 +785,45 @@ fn table() -> Vec<Row> {
             &[("timing", 30.0), ("velocity", 0.4)],
         ),
         row(
+            "noodle.event.scale_quantise",
+            "C Major",
+            &[("root", 0.0), ("scale", 0.0)],
+        ),
+        row(
+            "noodle.event.scale_quantise",
+            "A Minor Pentatonic",
+            &[("root", 9.0), ("scale", 10.0)],
+        ),
+        row(
+            "noodle.event.scale_quantise",
+            "D Dorian Up",
+            &[("root", 2.0), ("scale", 2.0), ("direction", 2.0)],
+        ),
+        row("noodle.event.chord", "Triad", &[("type", 0.0)]),
+        row(
+            "noodle.event.chord",
+            "Minor Seventh Strum",
+            &[("type", 9.0), ("strum", 40.0)],
+        ),
+        row(
+            "noodle.event.chord",
+            "Open Fifth",
+            &[("type", 11.0), ("spread", 1.0)],
+        ),
+        row(
+            "noodle.event.transpose",
+            "Octave Up",
+            &[("semitones", 12.0)],
+        ),
+        row(
+            "noodle.event.transpose",
+            "Octave Down",
+            &[("semitones", -12.0)],
+        ),
+        row("noodle.event.transpose", "Fifth Up", &[("semitones", 7.0)]),
+        row("noodle.mod.key", "Written in C Major", &[("from", 0.0)]),
+        row("noodle.mod.key", "Written in A Minor", &[("from", 21.0)]),
+        row(
             "noodle.event.note_split",
             "Keyboard Split at C3",
             &[("high1", 59.0), ("low2", 60.0)],
@@ -908,6 +947,40 @@ fn table() -> Vec<Row> {
             "noodle.instrument.sampler",
             "Fixed Pitch Hit",
             &[("mode", 0.0), ("keytrack", 0.0), ("release", 0.05)],
+        ),
+        row(
+            "noodle.instrument.grains",
+            "Freeze",
+            &[
+                ("spray", 0.0),
+                ("size", 0.3),
+                ("density", 20.0),
+                ("jitter", 0.2),
+            ],
+        ),
+        row(
+            "noodle.instrument.grains",
+            "Texture",
+            &[
+                ("spray", 0.5),
+                ("size", 0.08),
+                ("density", 60.0),
+                ("jitter", 1.0),
+                ("pitch_spray", 4.0),
+                ("spread", 1.0),
+            ],
+        ),
+        row(
+            "noodle.instrument.grains",
+            "Scatter",
+            &[
+                ("spray", 1.0),
+                ("size", 0.04),
+                ("density", 30.0),
+                ("jitter", 1.0),
+                ("reverse", 0.5),
+                ("spread", 0.8),
+            ],
         ),
         // Voices and mixing.
         row(
@@ -1082,6 +1155,79 @@ fn table() -> Vec<Row> {
         row("noodle.spectral.blur", "Soften", &[("amount", 0.5)]),
         row("noodle.spectral.blur", "Haze", &[("amount", 0.9)]),
         row("noodle.spectral.blur", "Wash", &[("amount", 0.98)]),
+        row("noodle.spectral.pitch", "Octave Up", &[("shift", 12.0)]),
+        row("noodle.spectral.pitch", "Octave Down", &[("shift", -12.0)]),
+        row("noodle.spectral.pitch", "Fifth Up", &[("shift", 7.0)]),
+        row("noodle.spectral.pitch", "Fourth Down", &[("shift", -5.0)]),
+        row(
+            "noodle.spectral.stretch",
+            "Half Speed",
+            &[("rate", 0.5), ("length", 4.0)],
+        ),
+        row(
+            "noodle.spectral.stretch",
+            "Quarter Speed",
+            &[("rate", 0.25), ("length", 4.0)],
+        ),
+        row(
+            "noodle.spectral.stretch",
+            "Frozen Wash",
+            &[("rate", 0.05), ("length", 8.0)],
+        ),
+        row(
+            "noodle.spectral.stretch",
+            "Double Time",
+            &[("rate", 2.0), ("length", 1.0)],
+        ),
+        row(
+            "noodle.spectral.compress",
+            "Tame Harshness",
+            &[("threshold", -40.0), ("ratio", 4.0), ("bands", 24.0)],
+        ),
+        row(
+            "noodle.spectral.compress",
+            "Even Out",
+            &[
+                ("threshold", -60.0),
+                ("ratio", 3.0),
+                ("bands", 48.0),
+                ("makeup", 3.0),
+            ],
+        ),
+        row(
+            "noodle.spectral.compress",
+            "Lift Detail",
+            &[("threshold", -50.0), ("ratio", 2.0), ("mode", 1.0)],
+        ),
+        row(
+            "noodle.spectral.compress",
+            "Hard Squash",
+            &[
+                ("threshold", -70.0),
+                ("ratio", 10.0),
+                ("attack", 0.005),
+                ("release", 0.1),
+                ("makeup", 6.0),
+            ],
+        ),
+        row(
+            "noodle.spectral.denoise",
+            "Standard",
+            &[("reduction", 20.0), ("threshold", 6.0), ("smooth", 0.5)],
+        ),
+        row(
+            "noodle.spectral.denoise",
+            "Gentle",
+            &[("reduction", 12.0), ("threshold", 3.0), ("smooth", 0.3)],
+        ),
+        row(
+            "noodle.spectral.denoise",
+            "Heavy Hiss",
+            &[("reduction", 30.0), ("threshold", 9.0), ("smooth", 0.7)],
+        ),
+        row("noodle.effect.convolver", "Unity", &[("gain", 0.0)]),
+        row("noodle.effect.convolver", "Quiet", &[("gain", -6.0)]),
+        row("noodle.effect.convolver", "Boosted", &[("gain", 6.0)]),
         row("noodle.spectral.cross", "Full Vocode", &[("mix", 1.0)]),
         row("noodle.spectral.cross", "Half and Half", &[("mix", 0.5)]),
         // Offline.

@@ -57,6 +57,9 @@ pub struct Schedule {
     /// each a whole number of consecutive steps that the plan can run in chunks
     /// shorter than a block. Two loops that share a node are one region.
     pub regions: Vec<std::ops::Range<usize>>,
+    /// The FFT size of each spectral buffer (a buffer is only reused for a
+    /// wire of the same size).
+    pub spectral_sizes: Vec<usize>,
 }
 
 /// Which part of a node a schedule step runs. Only a node on a feedback loop
@@ -80,6 +83,8 @@ pub struct ScheduledNode {
     pub layout: Layout,
     pub input_shapes: Vec<Shape>,
     pub output_shapes: Vec<Shape>,
+    /// The FFT size of this node's spectral wires.
+    pub spectral_size: usize,
     /// One per signal input, in layout order.
     pub inputs: Vec<InputSource>,
     /// One per signal output, in layout order. Never shared with this node's
@@ -249,6 +254,9 @@ struct Candidate<'a> {
     input_shapes: Vec<Shape>,
     /// `None` until shape inference, and stays `None` if the node can't run.
     output_shapes: Option<Vec<Shape>>,
+    /// The FFT size of the spectral wires at this node; set after shape
+    /// inference.
+    spectral_size: usize,
     /// The position of the input the node reads after writing its outputs,
     /// if it can break loops.
     loop_input: Option<usize>,
@@ -397,6 +405,13 @@ pub(crate) fn compile_with(
         &order,
         &wires,
         &signal_source,
+        &spectral_source,
+        &mut diagnostics,
+    );
+    infer_spectral_sizes(
+        &mut candidates,
+        &order,
+        &wires,
         &spectral_source,
         &mut diagnostics,
     );
@@ -655,6 +670,7 @@ fn resolve_nodes<'a>(
             layout,
             input_shapes: Vec::new(),
             output_shapes: None,
+            spectral_size: crate::FFT_SIZE,
         });
     }
     candidates
@@ -1163,6 +1179,36 @@ fn infer_shapes(
     }
 }
 
+/// Works out the FFT size of the spectral wires at each node: what it reads,
+/// or for a node that makes spectra (Analyze) what its config says
+/// ([`NodeType::spectral_size`]). A node that can't run is left at the default.
+fn infer_spectral_sizes(
+    candidates: &mut [Candidate<'_>],
+    order: &[Step],
+    wires: &[Wire],
+    spectral_source: &[Vec<Option<usize>>],
+    diagnostics: &mut Vec<Diagnostic>,
+) {
+    for step in order {
+        let i = step.node;
+        if step.phase == Phase::Input || candidates[i].output_shapes.is_none() {
+            continue;
+        }
+        let inputs: Vec<Option<usize>> = spectral_source[i]
+            .iter()
+            .map(|source| source.map(|w| candidates[wires[w].from].spectral_size))
+            .collect();
+        let c = &candidates[i];
+        match c.node_type.spectral_size(c.config, &inputs) {
+            Ok(size) => candidates[i].spectral_size = size,
+            Err(error) => {
+                diagnostics.push(Diagnostic::node(c.id, Problem::Node(error)));
+                candidates[i].output_shapes = None;
+            }
+        }
+    }
+}
+
 /// Puts a broadcasting error on the first wire whose shape doesn't fit the
 /// inputs before it, or on the node if no single wire is to blame.
 fn blame_shape(
@@ -1248,6 +1294,7 @@ fn allocate(
     let mut event_buffers = 0;
     let mut free_events = Vec::new();
     let mut spectral_lanes = Vec::new();
+    let mut spectral_sizes: Vec<usize> = Vec::new();
     let mut free_spectral = Vec::new();
     let mut written: HashMap<(Kind, usize, usize), usize> = HashMap::new();
     // For `independent`: the steps before each step in the signal flow (as
@@ -1290,6 +1337,7 @@ fn allocate(
                 layout: c.layout.clone(),
                 input_shapes: c.input_shapes.clone(),
                 output_shapes: c.output_shapes.clone(),
+                spectral_size: c.spectral_size,
                 loop_input: c.loop_input,
                 split: c.split,
             }
@@ -1442,9 +1490,13 @@ fn allocate(
             (0..c.layout.spectral_outputs.len().min(events))
                 .map(|port| {
                     let lanes = output_shapes[c.layout.outputs.len() + port].lanes();
+                    let size = c.spectral_size;
                     let b = take_buffer(&mut spectral_lanes, &mut free_spectral, lanes, |b| {
-                        follows(used(&users[2], b))
+                        spectral_sizes[b] == size && follows(used(&users[2], b))
                     });
+                    if b == spectral_sizes.len() {
+                        spectral_sizes.push(size);
+                    }
                     written.insert((Kind::Spectral, i, port), b);
                     writer_step.insert((Kind::Spectral, i, port), s);
                     if independent {
@@ -1506,6 +1558,7 @@ fn allocate(
             layout: c.layout,
             input_shapes: c.input_shapes,
             output_shapes,
+            spectral_size: c.spectral_size,
             inputs,
             outputs,
             event_inputs,
@@ -1521,6 +1574,7 @@ fn allocate(
         event_buffers,
         spectral_lanes,
         regions,
+        spectral_sizes,
     }
 }
 

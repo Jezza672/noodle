@@ -11,11 +11,13 @@ mod bitcrush;
 mod button;
 mod cached;
 mod choke_gate;
+mod chord;
 mod chorus;
 mod clip;
 mod clock;
 mod comparator;
 mod control;
+mod convolver;
 mod curve;
 mod delay;
 mod distortion;
@@ -29,18 +31,22 @@ mod follower;
 mod freeze;
 mod fundamental;
 mod gain;
+mod grains;
+mod held_notes;
 mod humanise;
 mod ladder;
 mod lag;
 mod launch_quantise;
 mod level;
 mod lfo;
+mod looper;
 mod math;
 mod meter;
 mod metronome;
 mod midi_in;
 mod midi_out;
 mod mix;
+mod morph;
 mod noise;
 mod normalize;
 mod note_split;
@@ -62,11 +68,15 @@ mod sample_input;
 mod sample_set;
 mod sampler;
 mod sampler_stretch;
+mod scale_quantise;
 mod scope;
 mod script;
 mod selector;
 mod slice;
+mod song_key;
 mod spectral;
+mod spectral_dynamics;
+mod spectral_pitch;
 mod spectrum;
 mod stage;
 mod surround;
@@ -75,10 +85,12 @@ mod swing;
 pub mod system_samples;
 mod tempo;
 mod time_stretch;
+mod transpose;
 mod vca;
 mod version_value;
 mod voice_mix;
 mod voices;
+mod wavetable;
 
 pub use adsr::{ADSR_ID, Adsr, AdsrShape};
 pub use arpeggiator::{
@@ -101,6 +113,7 @@ pub use bitcrush::{BITCRUSHER_ID, Bitcrusher, quantise};
 pub use button::{BUTTON_ID, BUTTON_STATE, Button};
 pub use cached::{CACHED_ID, CachedPlayer};
 pub use choke_gate::{CHOKE_GATE_ID, ChokeGate};
+pub use chord::{CHORD_ID, CHORDS, Chord, MAX_STRUM_MS as CHORD_MAX_STRUM_MS};
 pub use chorus::{CHORUS_ID, Chorus};
 pub use clip::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip,
@@ -114,6 +127,7 @@ pub use control::{
     ENCODER_BINARY_OFFSET, ENCODER_SIGN_MAGNITUDE, ENCODER_TWOS_COMPLEMENT, MIDI_CONTROL_ID,
     MidiControl, PITCH_BEND as CONTROL_PITCH_BEND, PRESSURE as CONTROL_PRESSURE,
 };
+pub use convolver::{CONVOLVER_ID, Convolver};
 pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
 pub use delay::{DELAY_ID, Delay, MAX_TIME as DELAY_MAX_TIME};
 pub use distortion::{DISTORTION_ID, Distortion, SHAPES as DISTORTION_SHAPES, shaper};
@@ -141,17 +155,27 @@ pub use freeze::{
 };
 pub use fundamental::{LISTEN_SECONDS, fundamental, key_of};
 pub use gain::{GAIN_ID, Gain};
+pub use grains::{
+    DEFAULT_GRAINS, GRAINS_ID, GRAINS_KEY, Grains, MAX_GRAINS, MIN_GRAINS,
+    SAMPLE_KEY as GRAINS_SAMPLE_KEY,
+};
 pub use humanise::{HUMANISE_ID, Humanise, MAX_TIMING_MS as HUMANISE_MAX_TIMING_MS};
 pub use ladder::{LADDER_ID, LADDER_SELF_OSCILLATES, Ladder, ladder_response};
 pub use lag::{LAG_ID, Lag};
 pub use launch_quantise::{LAUNCH_QUANTISE_ID, LaunchQuantise};
 pub use lfo::{LFO_ID, Lfo, lfo_wave};
+pub use looper::{LOOPER_ID, Looper};
 pub use math::{MATH_ID, Math};
 pub use meter::{METER_ID, Meter};
 pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
 pub use midi_in::{MIDI_IN_ID, MIDI_PORT, MIDI_PORT_KEY, MidiIn};
 pub use midi_out::{MIDI_OUT_ID, MIDI_OUT_PORT, MIDI_OUT_PORT_KEY, MidiOut};
 pub use mix::Mix;
+pub use morph::{
+    MAX_ROWS as MORPH_MAX_ROWS, MORPH_ID, MORPH_POSITION, MORPH_TARGETS, Morph, MorphRow,
+    morph_config, morph_output_key, rows_from_text as morph_rows_from_text,
+    rows_to_text as morph_rows_to_text,
+};
 pub use noise::WhiteNoise;
 pub use normalize::{NORMALIZE_ID, Normalize};
 pub use note_split::{NOTE_SPLIT_ID, NoteSplit, param_index as note_split_param};
@@ -186,6 +210,7 @@ pub use sample_set::{
     velocity_layer,
 };
 pub use sampler::{GAIN_ENV_KEY, GAIN_ENV_SCALE, SAMPLE_KEY, SAMPLER_ID, Sampler, WARP_KEY};
+pub use scale_quantise::{ROOT_NAMES, SCALE_QUANTISE_ID, SCALES, ScaleQuantise};
 pub use scope::{SCOPE_ID, Scope};
 pub use script::{
     DEFAULT_SCRIPT, MAX_INPUTS as SCRIPT_MAX_INPUTS, MAX_OUTPUTS as SCRIPT_MAX_OUTPUTS, SCRIPT_ID,
@@ -198,11 +223,16 @@ pub use slice::{
     MAX_SLICES, SLICE_EDITS_KEY, SLICE_FIRST_KEY, SLICE_ID, SLICE_SENSITIVITY_KEY, Slice,
     cuts as slice_cuts, slice_set,
 };
+pub use song_key::{SONG_KEY_ID, SongKey};
 pub use spectral::{
     ANALYZE_ID, Analyze, CROSS_ID, Cross, FORMANT_SHIFT_ID, FormantShift, SPECTRAL_BLUR_ID,
     SPECTRAL_FILTER_ID, SPECTRAL_FREEZE_ID, SPECTRAL_GATE_ID, SPECTRAL_SHIFT_ID, SYNTHESIZE_ID,
     SpectralBlur, SpectralFilter, SpectralFreeze, SpectralGate, SpectralShift, Synthesize,
 };
+pub use spectral_dynamics::{
+    SPECTRAL_COMPRESS_ID, SPECTRAL_DENOISE_ID, SpectralCompress, SpectralDenoise,
+};
+pub use spectral_pitch::{SPECTRAL_PITCH_ID, SPECTRAL_STRETCH_ID, SpectralPitch, SpectralStretch};
 pub use spectrum::{
     FLOOR_DB as SPECTRUM_FLOOR_DB, HIGH_HZ as SPECTRUM_HIGH_HZ, LOW_HZ as SPECTRUM_LOW_HZ,
     SPECTRUM_ID, Spectrum, SpectrumAnalyser, WINDOW as SPECTRUM_WINDOW, column_frequency,
@@ -217,10 +247,14 @@ pub use svf::{SVF_ID, Svf, svf_response};
 pub use swing::{GRID_NAMES as SWING_GRID_NAMES, GRID_TICKS as SWING_GRID_TICKS, SWING_ID, Swing};
 pub use tempo::{TEMPO_ID, Tempo};
 pub use time_stretch::{TIME_STRETCH_ID, TimeStretch};
+pub use transpose::{TRANSPOSE_ID, Transpose};
 pub use vca::{VCA_ID, Vca};
 pub use version_value::{MAX_VERSION_SLOTS, VERSION_MAX, VERSION_MIN, VERSION_TAPER, VersionValue};
 pub use voice_mix::{VOICE_MIX_ID, VoiceMix};
 pub use voices::{VOICES_ID, Voices};
+pub use wavetable::{
+    CYCLE_KEY, CYCLE_LENGTHS, DEFAULT_CYCLE, TABLE_KEY, Table, WAVETABLE_ID, Wavetable,
+};
 
 use std::path::Path;
 
@@ -286,6 +320,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Script);
     registry.register(Delay);
     registry.register(Feedback);
+    registry.register(Looper);
+    registry.register(Morph);
     registry.register(Dynamics::new(&telemetry));
     registry.register(ParametricEq);
     registry.register(Reverb);
@@ -304,6 +340,10 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(FormantShift);
     registry.register(SpectralFreeze);
     registry.register(SpectralBlur);
+    registry.register(SpectralPitch);
+    registry.register(SpectralStretch);
+    registry.register(SpectralCompress);
+    registry.register(SpectralDenoise);
     registry.register(Cross);
     registry.register(Comparator);
     registry.register(Automation);
@@ -331,6 +371,10 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(ToNotes);
     registry.register(Swing);
     registry.register(Humanise);
+    registry.register(ScaleQuantise);
+    registry.register(Chord);
+    registry.register(Transpose);
+    registry.register(SongKey);
     registry.register(Voices);
     registry.register(VoiceMix::new(&telemetry));
     registry.register(Reverse);
@@ -354,6 +398,9 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
         Sampler::new(&samples, &telemetry)
     });
     registry.register(Slice::new(&samples));
+    registry.register(Wavetable::new(&samples));
+    registry.register(Grains::new(&samples, &telemetry));
+    registry.register(Convolver::new(&samples));
     Library {
         telemetry,
         clips,

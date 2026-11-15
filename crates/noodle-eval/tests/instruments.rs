@@ -26,6 +26,12 @@ fn play(slug: &str, seconds: f32) -> Vec<f32> {
 }
 
 fn play_notes(slug: &str, seconds: f32, keys: &[u8]) -> Vec<f32> {
+    render(slug, seconds, keys, true)
+}
+
+/// Like [`play_notes`]; an instrument with no `notes` input (a drone) isn't
+/// wired to the track's MIDI when `wire_notes` is off.
+fn render(slug: &str, seconds: f32, keys: &[u8], wire_notes: bool) -> Vec<f32> {
     let library = Library::in_memory();
     let template = library
         .template(&format!("system:template:{slug}"))
@@ -52,12 +58,14 @@ fn play_notes(slug: &str, seconds: f32, keys: &[u8]) -> Vec<f32> {
             .apply(project, Command::Connect(Connection { from, to }))
             .unwrap();
     };
-    wire(
-        &mut project,
-        &mut history,
-        Endpoint::new(input, MIDI),
-        Endpoint::new(instrument, "notes"),
-    );
+    if wire_notes {
+        wire(
+            &mut project,
+            &mut history,
+            Endpoint::new(input, MIDI),
+            Endpoint::new(instrument, "notes"),
+        );
+    }
     wire(
         &mut project,
         &mut history,
@@ -130,6 +138,8 @@ const SYNTHS: &[&str] = &[
     "pluck-synth",
     "warm-pad",
     "plucked-string",
+    "wavetable-synth",
+    "grain-pad",
 ];
 
 const SAMPLED: &[&str] = &["steel-drum", "banjo"];
@@ -223,4 +233,25 @@ fn a_plucked_string_dies_away_and_the_voice_is_freed() {
     let samples = play_notes("plucked-string", 8.0, &[60]);
     assert!(peak(&samples, 0.02, 0.4) > 0.02);
     assert!(peak(&samples, 6.0, 8.0) < 0.002);
+}
+
+/// A Grain Freeze has no notes: it drones until it is stopped.
+#[test]
+fn the_grain_freeze_drones() {
+    let samples = render("grain-freeze", 3.0, &[], false);
+    let held = peak(&samples, 0.5, 1.0);
+    assert!(held > 0.02 && held < 1.0, "{held}");
+    let later = peak(&samples, 2.0, 3.0);
+    assert!(later > 0.02, "still droning at 2 s ({later})");
+}
+
+/// A Grain Pad's cloud keeps starting grains through the envelope's release,
+/// so the release is heard (the chord is held for 0.5 s and a grain
+/// is 0.18 s long, so sound after 0.72 s is from grains started after the
+/// note-off).
+#[test]
+fn the_grain_pad_sounds_through_its_release() {
+    let samples = play("grain-pad", 3.0);
+    let release = peak(&samples, 0.72, 0.9);
+    assert!(release > 0.008, "silent in the release ({release})");
 }

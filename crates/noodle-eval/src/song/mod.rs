@@ -20,6 +20,7 @@ pub mod music;
 pub mod node_presets;
 mod patch;
 pub mod samples;
+mod spectral_effects;
 pub mod system;
 
 use crate::tempo::steady;

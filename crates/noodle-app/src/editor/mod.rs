@@ -2971,11 +2971,20 @@ fn start_rename(state: &mut EditorState, project: &Project, id: FrameId) {
     }
 }
 
-/// The Sampler a sample dropped on `id` goes to: `id` if it is one, or the
-/// only Sampler directly inside it if it is a group (a drum pad).
+/// Whether a node of this type plays a sample a user can drop on it.
+fn takes_sample(type_id: &str) -> bool {
+    matches!(
+        type_id,
+        noodle_nodes::SAMPLER_ID | noodle_nodes::GRAINS_ID | noodle_nodes::WAVETABLE_ID
+    )
+}
+
+/// The Sampler, Grains or Wavetable node a sample dropped on `id` goes to:
+/// `id` if it is one, or the only one directly inside it if it is a group (a
+/// drum pad, a Grain Pad).
 fn pad_sampler(graph: &noodle_core::Graph, id: NodeId) -> Option<NodeId> {
     let node = graph.node(id)?;
-    if node.type_id == noodle_nodes::SAMPLER_ID {
+    if takes_sample(&node.type_id) {
         return Some(id);
     }
     if node.type_id != GROUP {
@@ -2983,7 +2992,7 @@ fn pad_sampler(graph: &noodle_core::Graph, id: NodeId) -> Option<NodeId> {
     }
     let mut samplers = graph
         .children(Some(id))
-        .filter(|(_, n)| n.type_id == noodle_nodes::SAMPLER_ID)
+        .filter(|(_, n)| takes_sample(&n.type_id))
         .map(|(id, _)| id);
     let only = samplers.next()?;
     samplers.next().is_none().then_some(only)

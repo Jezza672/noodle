@@ -82,6 +82,7 @@ fn build(node_type: &dyn NodeType, node: NodeId) -> noodle_engine::Instance {
             max_frames: 256,
             input_shapes: &[],
             output_shapes: &[],
+            spectral_size: noodle_engine::FFT_SIZE,
             seed: 0,
             position: 0,
         })

@@ -277,6 +277,37 @@ impl GroupPreset {
             })
     }
 
+    /// For every node inside `group` that presets store values for, its ID
+    /// with this preset's values and `other`'s, in the group's canonical
+    /// order. Empty unless both fit the group's topology (the caller checks
+    /// they apply first).
+    pub fn paired<'a>(
+        &'a self,
+        other: &'a GroupPreset,
+        graph: &Graph,
+        group: NodeId,
+    ) -> Vec<(NodeId, &'a PresetValues, &'a PresetValues)> {
+        let order = topology(graph, group);
+        if order.key != self.topology
+            || order.key != other.topology
+            || order.order.len() != self.nodes.len()
+            || order.order.len() != other.nodes.len()
+        {
+            return Vec::new();
+        }
+        order
+            .order
+            .iter()
+            .zip(self.nodes.iter().zip(&other.nodes))
+            .filter(|(id, _)| {
+                graph
+                    .node(**id)
+                    .is_some_and(|node| stored(group, node).is_some())
+            })
+            .map(|(&id, (a, b))| (id, a, b))
+            .collect()
+    }
+
     /// Whether every node in the group still holds the preset's values.
     pub fn matches(&self, graph: &Graph, group: NodeId) -> bool {
         let order = topology(graph, group);

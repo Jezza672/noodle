@@ -26,3 +26,5 @@ can make music without building a synth first.
 - **Plucked String** joins the playable instruments (Voices, a nested `String`
   group, Voice Mix inside; presets Nylon, Steel and Muted Pluck) with Comb and
   Flanger as effect templates: see [feedback-regions.md](feedback-regions.md).
+- **Later:** the Wavetable Synth, Grain Pad and Grain Freeze templates are in
+  [wavetable-and-grains.md](wavetable-and-grains.md).

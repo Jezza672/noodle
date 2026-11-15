@@ -1333,6 +1333,122 @@
         ),
     )),
     NodePreset((
+        name: "C Major",
+        slug: "scale-quantise-c-major",
+        node_type: "noodle.event.scale_quantise",
+        values: (
+            params: {
+                "root": 0.0,
+                "scale": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "A Minor Pentatonic",
+        slug: "scale-quantise-a-minor-pentatonic",
+        node_type: "noodle.event.scale_quantise",
+        values: (
+            params: {
+                "root": 9.0,
+                "scale": 10.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "D Dorian Up",
+        slug: "scale-quantise-d-dorian-up",
+        node_type: "noodle.event.scale_quantise",
+        values: (
+            params: {
+                "direction": 2.0,
+                "root": 2.0,
+                "scale": 2.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Triad",
+        slug: "chord-triad",
+        node_type: "noodle.event.chord",
+        values: (
+            params: {
+                "type": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Minor Seventh Strum",
+        slug: "chord-minor-seventh-strum",
+        node_type: "noodle.event.chord",
+        values: (
+            params: {
+                "strum": 40.0,
+                "type": 9.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Open Fifth",
+        slug: "chord-open-fifth",
+        node_type: "noodle.event.chord",
+        values: (
+            params: {
+                "spread": 1.0,
+                "type": 11.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Octave Up",
+        slug: "transpose-octave-up",
+        node_type: "noodle.event.transpose",
+        values: (
+            params: {
+                "semitones": 12.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Octave Down",
+        slug: "transpose-octave-down",
+        node_type: "noodle.event.transpose",
+        values: (
+            params: {
+                "semitones": -12.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Fifth Up",
+        slug: "transpose-fifth-up",
+        node_type: "noodle.event.transpose",
+        values: (
+            params: {
+                "semitones": 7.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Written in C Major",
+        slug: "song-key-written-in-c-major",
+        node_type: "noodle.mod.key",
+        values: (
+            params: {
+                "from": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Written in A Minor",
+        slug: "song-key-written-in-a-minor",
+        node_type: "noodle.mod.key",
+        values: (
+            params: {
+                "from": 21.0,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Keyboard Split at C3",
         slug: "note-split-keyboard-split-at-c3",
         node_type: "noodle.event.note_split",
@@ -1633,6 +1749,49 @@
                 "keytrack": 0.0,
                 "mode": 0.0,
                 "release": 0.05,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Freeze",
+        slug: "grains-freeze",
+        node_type: "noodle.instrument.grains",
+        values: (
+            params: {
+                "density": 20.0,
+                "jitter": 0.2,
+                "size": 0.3,
+                "spray": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Texture",
+        slug: "grains-texture",
+        node_type: "noodle.instrument.grains",
+        values: (
+            params: {
+                "density": 60.0,
+                "jitter": 1.0,
+                "pitch_spray": 4.0,
+                "size": 0.08,
+                "spray": 0.5,
+                "spread": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Scatter",
+        slug: "grains-scatter",
+        node_type: "noodle.instrument.grains",
+        values: (
+            params: {
+                "density": 30.0,
+                "jitter": 1.0,
+                "reverse": 0.5,
+                "size": 0.04,
+                "spray": 1.0,
+                "spread": 0.8,
             },
         ),
     )),
@@ -2198,6 +2357,207 @@
         values: (
             params: {
                 "amount": 0.98,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Octave Up",
+        slug: "spectral-pitch-octave-up",
+        node_type: "noodle.spectral.pitch",
+        values: (
+            params: {
+                "shift": 12.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Octave Down",
+        slug: "spectral-pitch-octave-down",
+        node_type: "noodle.spectral.pitch",
+        values: (
+            params: {
+                "shift": -12.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Fifth Up",
+        slug: "spectral-pitch-fifth-up",
+        node_type: "noodle.spectral.pitch",
+        values: (
+            params: {
+                "shift": 7.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Fourth Down",
+        slug: "spectral-pitch-fourth-down",
+        node_type: "noodle.spectral.pitch",
+        values: (
+            params: {
+                "shift": -5.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Half Speed",
+        slug: "spectral-stretch-half-speed",
+        node_type: "noodle.spectral.stretch",
+        values: (
+            params: {
+                "length": 4.0,
+                "rate": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Quarter Speed",
+        slug: "spectral-stretch-quarter-speed",
+        node_type: "noodle.spectral.stretch",
+        values: (
+            params: {
+                "length": 4.0,
+                "rate": 0.25,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Frozen Wash",
+        slug: "spectral-stretch-frozen-wash",
+        node_type: "noodle.spectral.stretch",
+        values: (
+            params: {
+                "length": 8.0,
+                "rate": 0.05,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Double Time",
+        slug: "spectral-stretch-double-time",
+        node_type: "noodle.spectral.stretch",
+        values: (
+            params: {
+                "length": 1.0,
+                "rate": 2.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Tame Harshness",
+        slug: "spectral-compress-tame-harshness",
+        node_type: "noodle.spectral.compress",
+        values: (
+            params: {
+                "bands": 24.0,
+                "ratio": 4.0,
+                "threshold": -40.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Even Out",
+        slug: "spectral-compress-even-out",
+        node_type: "noodle.spectral.compress",
+        values: (
+            params: {
+                "bands": 48.0,
+                "makeup": 3.0,
+                "ratio": 3.0,
+                "threshold": -60.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Lift Detail",
+        slug: "spectral-compress-lift-detail",
+        node_type: "noodle.spectral.compress",
+        values: (
+            params: {
+                "mode": 1.0,
+                "ratio": 2.0,
+                "threshold": -50.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Hard Squash",
+        slug: "spectral-compress-hard-squash",
+        node_type: "noodle.spectral.compress",
+        values: (
+            params: {
+                "attack": 0.005,
+                "makeup": 6.0,
+                "ratio": 10.0,
+                "release": 0.1,
+                "threshold": -70.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Standard",
+        slug: "spectral-denoise-standard",
+        node_type: "noodle.spectral.denoise",
+        values: (
+            params: {
+                "reduction": 20.0,
+                "smooth": 0.5,
+                "threshold": 6.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Gentle",
+        slug: "spectral-denoise-gentle",
+        node_type: "noodle.spectral.denoise",
+        values: (
+            params: {
+                "reduction": 12.0,
+                "smooth": 0.3,
+                "threshold": 3.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Heavy Hiss",
+        slug: "spectral-denoise-heavy-hiss",
+        node_type: "noodle.spectral.denoise",
+        values: (
+            params: {
+                "reduction": 30.0,
+                "smooth": 0.7,
+                "threshold": 9.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Unity",
+        slug: "convolver-unity",
+        node_type: "noodle.effect.convolver",
+        values: (
+            params: {
+                "gain": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Quiet",
+        slug: "convolver-quiet",
+        node_type: "noodle.effect.convolver",
+        values: (
+            params: {
+                "gain": -6.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Boosted",
+        slug: "convolver-boosted",
+        node_type: "noodle.effect.convolver",
+        values: (
+            params: {
+                "gain": 6.0,
             },
         ),
     )),

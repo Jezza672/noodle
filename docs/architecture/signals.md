@@ -37,6 +37,27 @@ reference to a sample instead of signal:
     signal (0 to 1, pitch bend -1 to 1) with a `glide`; MIDI 2.0 values arrive
     at 32 bits (as far as an `f32` signal holds them), a MIDI 1.0 controller
     pair (n and n+32) at 14 bits, a single controller at 7.
+    `Scale Quantise` (`noodle.event.scale_quantise`), `Chord` (`noodle.event.chord`)
+    and `Transpose` (`noodle.event.transpose`) work on pitch. Scale Quantise snaps
+    each note-on to a scale (`root`, `scale`, `direction`: nearest, down or up; a
+    tie goes down) from a fixed table of pitch-class masks; Major is index 0 and
+    Minor index 1. Chord turns a note into up to 8 (`type`, `inversion`, `spread`,
+    `strum`), the lowest keeping the played note's ID and the rest getting IDs
+    derived from it. Transpose shifts by `semitones` (-48 to 48), dropping a note
+    shifted outside 0 to 127. All three read their parameters at the note-on and
+    remember what each note-on became (`held_notes.rs`), so a note-off or
+    expression goes to that and a parameter change never strands a note; a chord
+    that does not fit the node's queue is dropped whole and not recorded. Their
+    `root`, `scale`, `type` and `semitones` are whole-number parameters, so a wire
+    is the value. `Song Key` (`noodle.mod.key`, ADR 0008's pattern for the key)
+    puts the timeline's key on a wire: `root` (0 to 11), `scale` (0 major, 1
+    minor, the index Scale Quantise uses) and `shift` (semitones from its `from`
+    key, a parameter, to the timeline's key, by `Key::shift_to` as clip Transpose
+    does). Wire `root` and `scale` into Scale Quantise and `shift` into
+    Transpose to follow the key at each marker. The key reaches nodes as
+    `Transport::key`, from a `KeyTable` the controller builds beside the
+    `TempoTable` (a change lands at the next block, like tempo); only Song Key
+    reads it, so nothing follows the key without a wire.
     `Voices` (`noodle.poly.voices`) plays many notes at once: its `voices`
     config (1 to 64, default 8; config because it is the outputs' shape) sets
     the lanes of its `pitch`, `gate` and `velocity` outputs, one voice per
@@ -63,11 +84,14 @@ reference to a sample instead of signal:
   - **Testing:** `Harness::send_events` and `Harness::events` feed and read a
     node's event ports.
 - **Spectral:** FFT frames, for processing a sound by its frequencies. Every
-  `HOP` (512) samples a spectral wire carries one frame per lane: `BINS`
-  (1025) complex bins from 0 Hz to Nyquist, an `FFT_SIZE` (2048) Hann window
-  of the last samples (`noodle_engine::spectral`). The frame size is the same
-  for the whole engine, which is what lets any spectral node feed any other
-  (decision in ADR 0007). Bins are scaled so a sine of amplitude `a` has
+  `hop` samples a spectral wire carries one frame per lane: `bins`
+  complex bins from 0 Hz to Nyquist, a Hann window of the last `size` samples,
+  with hop = size / 4 (`noodle_engine::spectral`). The size is per wire: an
+  Analyze's `size` config (256 to 8192, default `FFT_SIZE` 2048, so `HOP` 512
+  and `BINS` 1025) sets it and every spectral node downstream adopts it
+  (`NodeType::spectral_size`, `Setup::spectral_size`; the compiler's
+  `infer_spectral_sizes` reports a node whose spectral inputs differ;
+  ADR 0007). Bins are scaled so a sine of amplitude `a` has
   magnitude `a` on its bin.
   - **In the graph:** spectral ports are their own kind (`Layout::spectral_input`
     and `spectral_output`, drawn as violet squares and wires, and
@@ -120,7 +144,11 @@ reference to a sample instead of signal:
     vocoder's character at any frame size; the modulator's latest frame is used
     for each carrier frame, so the two analysers need not have started
     together) and `Selector` (one of N spectral inputs by `which`, switching
-    at the first frame after a change; see `synths-and-library.md`).
+    at the first frame after a change; see `synths-and-library.md`),
+    `Spectral Pitch`, `Spectral Stretch`, `Spectral Compress` and
+    `Spectral Denoise` (see `features/spectral-effects.md`). The Convolver
+    (`noodle.effect.convolver`, an audio node with an impulse-response sample
+    input) is the library's Convolution Reverb.
   - **Caching:** a node's cache key covers its spectral inputs like its event
     inputs, so a freeze across a spectral chain keys correctly. Offline nodes
     take no spectral input.
