@@ -861,9 +861,14 @@ mod tests {
         let tap = playback.virtual_capture().unwrap();
         tap.start();
         send_project(&mut controller, &library, &project, &registry, &dir);
-        thread::sleep(Duration::from_millis(1500));
-        let heard = tap.take();
-        let peak = heard.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
+        // The clip's file is read in the background, so on a slow machine the
+        // sound can start late: wait for it rather than for a fixed time.
+        let mut peak = 0.0f32;
+        let deadline = std::time::Instant::now() + Duration::from_secs(15);
+        while peak <= 0.2 && std::time::Instant::now() < deadline {
+            thread::sleep(Duration::from_millis(100));
+            peak = tap.take().iter().fold(peak, |peak, s| peak.max(s.abs()));
+        }
         assert!(peak > 0.2, "noodle play is silent on a clip: peak {peak}");
         fs::remove_dir_all(&dir).unwrap();
     }
