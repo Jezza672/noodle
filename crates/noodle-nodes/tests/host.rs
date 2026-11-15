@@ -396,3 +396,22 @@ fn the_playhead_follows_the_hosts_play_stop_and_seeks_to_the_sample() {
     assert_eq!(position(&backend), 3 * 24_000 + 200);
     assert!(backend_link(&rig).playing());
 }
+
+#[test]
+fn a_tempo_ramp_is_not_a_seek() {
+    let rig = tone();
+    let (_controller, mut backend) = rig.start(0);
+    // The host's tempo climbs 2 bpm a block, its position carrying on from the
+    // last block at the tempo it had in the middle of it.
+    let mut beats = 4.0f64;
+    let mut bpm = 100.0f64;
+    run(&mut backend, 480, &[], &[], &[], playing(Some(beats), bpm));
+    let mut position = backend.transport().position();
+    for _ in 0..20 {
+        beats += 480.0 * (bpm + 1.0) / 60.0 / f64::from(RATE);
+        bpm += 2.0;
+        run(&mut backend, 480, &[], &[], &[], playing(Some(beats), bpm));
+        position += 480;
+        assert_eq!(backend.transport().position(), position, "a ramp seeked");
+    }
+}

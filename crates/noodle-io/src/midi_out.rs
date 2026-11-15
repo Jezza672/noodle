@@ -166,7 +166,6 @@ impl MidiOutHub {
         let Ok(mut rings) = self.shared.host.try_lock() else {
             return;
         };
-        rings.retain(|ring| !(ring.is_abandoned() && ring.is_empty()));
         for ring in rings.iter_mut() {
             while let Ok(message) = ring.pop() {
                 take(message);
@@ -181,7 +180,11 @@ impl MidiOutHub {
         let (producer, ring) = RingBuffer::new(RING);
         if port == crate::HOST_MIDI_PORT {
             // Host MIDI Out: a host backend takes these in its callback.
-            self.shared.host.lock().expect("host midi lock").push(ring);
+            let mut rings = self.shared.host.lock().expect("host midi lock");
+            // Pruned here, on the main thread: dropping a ring frees it.
+            rings.retain(|ring| !(ring.is_abandoned() && ring.is_empty()));
+            rings.push(ring);
+            drop(rings);
             return MidiOutSender {
                 producer,
                 enabled: true,

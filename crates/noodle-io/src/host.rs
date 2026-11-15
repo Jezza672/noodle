@@ -42,6 +42,9 @@ pub const HOST_MAX_CHANNELS: usize = 8;
 /// sends more in one block loses the rest.
 const OUT_CAPACITY: usize = 1024;
 
+/// The most notes held for a second try when the bus is busy.
+const RETRY_CAPACITY: usize = 256;
+
 /// What the engine and the host share beyond audio: the parameter bank, which
 /// the host's automation writes and Host Parameter nodes read, and the host's
 /// tempo and play state, which the backend writes and the UI reads. All are
@@ -140,6 +143,11 @@ pub struct HostTransport {
 /// positions, and a jump is anything bigger.
 const JUMP_SAMPLES: f64 = 2.0;
 
+/// A tempo that ramps moves the host's position away from the projection
+/// made with the block's first tempo, by a fraction of the block's length.
+/// Drift up to this fraction is a ramp, not a seek.
+const RAMP_TOLERANCE: f64 = 0.02;
+
 /// What a host-driven engine is built from.
 pub struct HostConfig {
     /// The host's sample rate, from its activation.
@@ -194,6 +202,7 @@ pub fn host_engine(config: HostConfig) -> Result<(Controller, HostBackend), Sett
         frames_done: 0,
         expected_beats: None,
         was_playing: None,
+        retry: Vec::with_capacity(RETRY_CAPACITY),
         outgoing: Vec::with_capacity(OUT_CAPACITY),
     };
     Ok((controller, backend))
@@ -220,6 +229,9 @@ pub struct HostBackend {
     /// carries on, in quarter notes.
     expected_beats: Option<f64>,
     was_playing: Option<bool>,
+    /// Notes the MIDI bus wasn't ready for (its lock was taken), tried again
+    /// at the next block: `(arrival micros, message)`.
+    retry: Vec<(u64, MidiMessage)>,
     /// MIDI out messages waiting for their frame: `(frame, message)`.
     outgoing: Vec<(u64, HostMidi)>,
 }
@@ -268,6 +280,14 @@ impl HostBackend {
         self.follow(&events.transport, frames);
         self.clock.publish_anchor(called, self.transport.position());
 
+        // Notes that found the bus busy last time go first, at the start of
+        // this block (they are late, and in order).
+        let held = std::mem::take(&mut self.retry);
+        let mut held = held;
+        for (_, bytes) in held.drain(..) {
+            self.deliver(bytes, called);
+        }
+        self.retry = held;
         let mut done = 0usize;
         let mut next_midi = 0usize;
         let mut next_param = 0usize;
@@ -298,8 +318,7 @@ impl HostBackend {
                 // The middle of the frame, so reading the frame back out of
                 // the time can't round down to the one before.
                 let arrival = start_micros + ((local as f64 + 0.5) * 1e6 / rate) as u64;
-                self.midi
-                    .send_host(Packet::midi1(0, message.bytes), arrival);
+                self.deliver(message.bytes, arrival);
                 next_midi += 1;
             }
 
@@ -364,6 +383,16 @@ impl HostBackend {
         }
     }
 
+    /// Hands a note to the MIDI bus, or keeps it for the next block if the
+    /// bus is busy (and drops it if even that is full).
+    fn deliver(&mut self, bytes: MidiMessage, arrival: u64) {
+        if !self.midi.send_host(Packet::midi1(0, bytes), arrival)
+            && self.retry.len() < RETRY_CAPACITY
+        {
+            self.retry.push((arrival, bytes));
+        }
+    }
+
     /// Plays and stops with the host, takes its tempo, and moves the playhead
     /// when its song position isn't where it would be if the last block had
     /// carried on: a seek, a loop's wrap or a locate.
@@ -386,7 +415,8 @@ impl HostBackend {
         if let Some(beats) = host.beats {
             let jumped = match self.expected_beats {
                 Some(expected) => {
-                    (beats - expected).abs() * 60.0 * rate / bpm.max(1.0) > JUMP_SAMPLES
+                    (beats - expected).abs() * 60.0 * rate / bpm.max(1.0)
+                        > JUMP_SAMPLES + frames as f64 * RAMP_TOLERANCE
                 }
                 None => true,
             };
