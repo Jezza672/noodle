@@ -92,6 +92,12 @@ impl EventDelay {
         self.now = end;
     }
 
+    /// How many more events fit. A note-off is let in even at zero (see
+    /// [`push`](Self::push)).
+    pub fn room(&self) -> usize {
+        CAPACITY - self.len
+    }
+
     /// Drops what is waiting and what is remembered, as a seek does.
     pub fn clear(&mut self) {
         self.queue.fill(None);

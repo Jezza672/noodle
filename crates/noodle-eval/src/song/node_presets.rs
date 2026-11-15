@@ -785,6 +785,45 @@ fn table() -> Vec<Row> {
             &[("timing", 30.0), ("velocity", 0.4)],
         ),
         row(
+            "noodle.event.scale_quantise",
+            "C Major",
+            &[("root", 0.0), ("scale", 0.0)],
+        ),
+        row(
+            "noodle.event.scale_quantise",
+            "A Minor Pentatonic",
+            &[("root", 9.0), ("scale", 10.0)],
+        ),
+        row(
+            "noodle.event.scale_quantise",
+            "D Dorian Up",
+            &[("root", 2.0), ("scale", 2.0), ("direction", 2.0)],
+        ),
+        row("noodle.event.chord", "Triad", &[("type", 0.0)]),
+        row(
+            "noodle.event.chord",
+            "Minor Seventh Strum",
+            &[("type", 9.0), ("strum", 40.0)],
+        ),
+        row(
+            "noodle.event.chord",
+            "Open Fifth",
+            &[("type", 11.0), ("spread", 1.0)],
+        ),
+        row(
+            "noodle.event.transpose",
+            "Octave Up",
+            &[("semitones", 12.0)],
+        ),
+        row(
+            "noodle.event.transpose",
+            "Octave Down",
+            &[("semitones", -12.0)],
+        ),
+        row("noodle.event.transpose", "Fifth Up", &[("semitones", 7.0)]),
+        row("noodle.mod.key", "Written in C Major", &[("from", 0.0)]),
+        row("noodle.mod.key", "Written in A Minor", &[("from", 21.0)]),
+        row(
             "noodle.event.note_split",
             "Keyboard Split at C3",
             &[("high1", 59.0), ("low2", 60.0)],

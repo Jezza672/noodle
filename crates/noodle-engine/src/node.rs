@@ -815,6 +815,11 @@ pub struct Transport {
     /// (see `noodle_core::versions`). A Version Value node outputs its slot
     /// for it.
     pub version: u32,
+    /// The timeline's key at the block's start: the last marker at or before
+    /// it that sets one, else the project's. Only the Song Key node reads it,
+    /// so nothing follows the key without a wire (ADR 0008). A key change at
+    /// a marker reaches nodes at the next block.
+    pub key: noodle_core::Key,
 }
 
 impl Default for Transport {
@@ -830,6 +835,7 @@ impl Default for Transport {
             signature_start: 0.0,
             count_in: false,
             version: 0,
+            key: noodle_core::Key::default(),
         }
     }
 }

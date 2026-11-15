@@ -287,6 +287,16 @@ the old take in the pre-roll and themselves from the punch-in. Offline renders
 have no tap and play clips only. The cue mix on the headphone channels is a send
 to a second Mix and is not routed.
 
+## The timeline's key
+
+`Transport::key` is the key at the block's start: the project's, or the last
+marker's at or before the playhead that sets one (`Project::key_at`). The
+controller builds a `KeyTable` (`tempo.rs`) from the project beside the
+`TempoTable` and sends it inside the same `Tempos`, so a key edit goes to the
+audio thread the way a tempo edit does, without touching the playhead; the
+processor looks up the key at each block's tick. Only the Song Key node reads
+it. A change at a marker lands at the next block.
+
 ## Tempo source
 
 The transport's tempo is the project's tempo map unless a live tempo stands in

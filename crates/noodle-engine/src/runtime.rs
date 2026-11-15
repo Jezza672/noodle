@@ -19,7 +19,7 @@ use crate::denormals::Flush;
 use crate::parallel::Workers;
 pub use crate::plan::Bus;
 use crate::plan::{self, Cells, Interleaved, Plan, PlanInfo, PlanShape};
-use crate::tempo::TempoTable;
+use crate::tempo::{KeyTable, TempoTable};
 use crate::transport::TransportControl;
 use crate::{
     Context, Diagnostic, Lanes, Monitor, Registry, Replacements, TapSpec, Telemetry, Transport,
@@ -105,6 +105,7 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         control: control.clone(),
         tempo_map: TempoMap::default(),
         project_tempo: TempoMap::default(),
+        project_keys: KeyTable::default(),
         live_bpm: None,
         tempo_out,
         tempo_returned,
@@ -124,6 +125,7 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         control,
         table: Box::new(Tempos::new(
             &TempoMap::default(),
+            KeyTable::default(),
             None,
             settings.sample_rate,
         )),
@@ -178,6 +180,9 @@ pub struct Controller {
     tempo_map: TempoMap,
     /// The project's own tempo map, which the project is compared with.
     project_tempo: TempoMap,
+    /// The project's key and its markers' keys, which the Song Key node reads
+    /// through the transport.
+    project_keys: KeyTable,
     live_bpm: Option<f64>,
     tempo_out: Producer<Box<Tempos>>,
     tempo_returned: Consumer<Box<Tempos>>,
@@ -263,6 +268,20 @@ impl Controller {
         self.live_bpm
     }
 
+    /// Brings the tempo map and the timeline's keys up to the project's,
+    /// sending them to the audio thread only if either changed.
+    fn sync_timeline(&mut self, project: &Project) {
+        let keys = KeyTable::new(project);
+        if self.project_tempo != *project.tempo_map() {
+            // Sent with the keys.
+            self.project_keys = keys;
+            self.set_tempo_map(project.tempo_map());
+        } else if self.project_keys != keys {
+            self.project_keys = keys;
+            self.apply_tempo();
+        }
+    }
+
     fn apply_tempo(&mut self) {
         self.tempo_map = match self.live_bpm {
             Some(bpm) => TempoMap::new(
@@ -277,6 +296,7 @@ impl Controller {
         };
         self.tempo_pending = Some(Box::new(Tempos::new(
             &self.project_tempo,
+            self.project_keys.clone(),
             self.live_bpm,
             self.settings.sample_rate,
         )));
@@ -295,9 +315,7 @@ impl Controller {
     /// drive their parameters, and its tempo map is used if the engine isn't
     /// already using it.
     pub fn update_project(&mut self, project: &Project, registry: &Registry) -> Vec<Diagnostic> {
-        if self.project_tempo != *project.tempo_map() {
-            self.set_tempo_map(project.tempo_map());
-        }
+        self.sync_timeline(project);
         self.transport().set_version(project.active_version());
         let lanes: Vec<_> = project.lanes().collect();
         self.update_with_lanes(project.graph(), &lanes, registry)
@@ -322,9 +340,7 @@ impl Controller {
         registry: &Registry,
         replacements: &Replacements,
     ) -> Vec<Diagnostic> {
-        if self.project_tempo != *project.tempo_map() {
-            self.set_tempo_map(project.tempo_map());
-        }
+        self.sync_timeline(project);
         self.transport().set_version(project.active_version());
         let lanes: Vec<_> = project.lanes().collect();
         let options = Options {
@@ -344,9 +360,7 @@ impl Controller {
         replacements: &Replacements,
         taps: &[TapSpec],
     ) -> Vec<Diagnostic> {
-        if self.project_tempo != *project.tempo_map() {
-            self.set_tempo_map(project.tempo_map());
-        }
+        self.sync_timeline(project);
         self.transport().set_version(project.active_version());
         let lanes: Vec<_> = project.lanes().collect();
         let options = Options {
@@ -502,13 +516,15 @@ impl Controller {
 /// nodes runs at it (see [`LiveClock`]).
 struct Tempos {
     timeline: TempoTable,
+    keys: KeyTable,
     live: Option<f64>,
 }
 
 impl Tempos {
-    fn new(timeline: &TempoMap, live: Option<f64>, sample_rate: f32) -> Self {
+    fn new(timeline: &TempoMap, keys: KeyTable, live: Option<f64>, sample_rate: f32) -> Self {
         Self {
             timeline: TempoTable::new(timeline, sample_rate),
+            keys,
             live,
         }
     }
@@ -704,6 +720,7 @@ impl Processor {
                             signature_start: self.table.timeline.signature_start_at(tick),
                             count_in: self.control.counting_in(),
                             version: self.control.version() as u32,
+                            key: self.table.keys.at(tick),
                         },
                     };
                     plan.run(&ctx, input_chunk, chunk, channels, self.workers.as_ref());
