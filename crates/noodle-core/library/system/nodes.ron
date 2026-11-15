@@ -1429,6 +1429,72 @@
         ),
     )),
     NodePreset((
+        name: "Tresillo",
+        slug: "euclidean-tresillo",
+        node_type: "noodle.event.euclidean",
+        values: (
+            params: {
+                "pulses": 3.0,
+                "rate": 4.0,
+                "steps": 8.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Offbeat Five",
+        slug: "euclidean-offbeat-five",
+        node_type: "noodle.event.euclidean",
+        values: (
+            params: {
+                "pulses": 5.0,
+                "rate": 4.0,
+                "steps": 16.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Triplet Seven",
+        slug: "euclidean-triplet-seven",
+        node_type: "noodle.event.euclidean",
+        values: (
+            params: {
+                "pulses": 7.0,
+                "rate": 8.0,
+                "steps": 12.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Coin Flip",
+        slug: "chance-coin-flip",
+        node_type: "noodle.event.chance",
+        values: (
+            params: {
+                "probability": 0.5,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Mostly Yes",
+        slug: "chance-mostly-yes",
+        node_type: "noodle.event.chance",
+        values: (
+            params: {
+                "probability": 0.8,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Rare",
+        slug: "chance-rare",
+        node_type: "noodle.event.chance",
+        values: (
+            params: {
+                "probability": 0.2,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Written in C Major",
         slug: "song-key-written-in-c-major",
         node_type: "noodle.mod.key",

@@ -525,3 +525,52 @@ fn rack_done(p: &mut Probe, _size: usize) -> Result<(), String> {
         Err("there is no drum rack track".into())
     }
 }
+
+/// The hat that plays itself (`Tag::Expert`): an Euclidean node, Chance dropping some hits, into a Sampler. It sets the rhythm by
+/// `pulses` and the looseness by `probability`; the swing and choke of the
+/// rack are not part of it.
+const HAT_BUILD: &[super::patch::Op] = &[
+    super::patch::Op::Step("add an Euclidean node and Chance"),
+    super::patch::Op::Add(super::patch::Ref("event.euclidean", 0), 300.0, 300.0),
+    super::patch::Op::Add(super::patch::Ref("event.chance", 0), 540.0, 300.0),
+    super::patch::Op::Step("play the hat from them"),
+    super::patch::Op::Wire(
+        super::patch::Ref("event.euclidean", 0),
+        "out",
+        super::patch::Ref("event.chance", 0),
+        "in",
+    ),
+    super::patch::Op::Wire(
+        super::patch::Ref("event.chance", 0),
+        "out",
+        super::patch::Ref("instrument.sampler", 0),
+        "in",
+    ),
+    super::patch::Op::Step("set eleven pulses and a one in four miss"),
+    super::patch::Op::Set(super::patch::Ref("event.euclidean", 0), "pulses", 11.0),
+    super::patch::Op::Set(super::patch::Ref("event.chance", 0), "probability", 0.75),
+];
+
+fn hat_fixture(dir: &Path) -> App {
+    super::patch::seeded(
+        dir,
+        &[
+            ("instrument.sampler", 800.0, 300.0, &[]),
+            ("io.output", 1100.0, 300.0, &[]),
+        ],
+        &[(0, "out", 1, "in")],
+    )
+}
+
+pub fn euclid_route() -> Route {
+    Route {
+        story: "S09",
+        tag: Tag::Expert,
+        name: "a hat that plays an Euclidean rhythm with Chance",
+        fixture: hat_fixture,
+        size: None,
+        steps: |h, _| super::patch::run(h, HAT_BUILD),
+        done: |p, _| super::patch::check(p, HAT_BUILD),
+        late: &[],
+    }
+}

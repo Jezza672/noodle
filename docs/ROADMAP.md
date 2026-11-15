@@ -79,10 +79,6 @@ Seven features picked from a shortlist in November 2026. Each issue holds the de
 
 1. The node, the `.scl` and `.kbm` parser, the loader in the properties panel, an example with a golden render. Size M.
 
-**Harmony and chance nodes (#538).** Scale Quantise, Chord, Transpose, Euclidean and Chance on the events wire, and a Song Key source node (named apart from the existing Key node, which makes notes from a gate) that puts the timeline's key on a wire (the pattern of ADR 0008).
-
-1. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M. (Scale Quantise, Chord, Transpose, Song Key and `Transport::key` are built: [features/harmony-nodes.md](features/harmony-nodes.md).)
-
 **Wavetable oscillator (#536), what is left.** The node, the tables, the template and its presets landed (see [features/wavetable-and-grains.md](features/wavetable-and-grains.md)). Still owed, size S to M:
 
 1. The cycle at the current `position` drawn on the node's body, as the Sampler draws its waveform.

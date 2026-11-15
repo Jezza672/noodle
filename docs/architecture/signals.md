@@ -58,6 +58,19 @@ reference to a sample instead of signal:
     `Transport::key`, from a `KeyTable` the controller builds beside the
     `TempoTable` (a change lands at the next block, like tempo); only Song Key
     reads it, so nothing follows the key without a wire.
+    `Euclidean` (`noodle.event.euclidean`) and `Chance` (`noodle.event.chance`)
+    make and thin rhythms. Euclidean has no input: `steps` (1 to 32) and `pulses`
+    make a Bjorklund pattern (a u64 bitmask; 3 in 8 is `x..x..x.`), `rotation`
+    moves it later, `rate` is one of Clock's divisions, and each hit is a note
+    (`key`, `velocity`, `gate` as a fraction of the step, `accent` on the
+    cycle's first step). Its steps sit on the transport's tick grid counted from
+    the timeline's start, as the Arpeggiator's do, it is silent while stopped,
+    and a note ends at the time it was given, so a parameter change never
+    strands it. Chance draws once per note-on from the xorshift64* generator
+    Humanise uses (the project seed mixed with `seed`, restarted at every reset)
+    and lets the note through if the draw is under `probability`; a note-off and
+    expression follow their note-on through `held_notes.rs`. Both keep the
+    default memory tier (they carry state).
     `Voices` (`noodle.poly.voices`) plays many notes at once: its `voices`
     config (1 to 64, default 8; config because it is the outputs' shape) sets
     the lanes of its `pitch`, `gate` and `velocity` outputs, one voice per

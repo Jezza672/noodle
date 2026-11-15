@@ -1,0 +1,218 @@
+[
+    Template((
+        name: "Harmoniser",
+        slug: "harmoniser",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Harmoniser"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:in\n2:root\n3:scale\n4:type\n5:follow\n6:written in"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.mod.key",
+                position: (x: 220.0, y: 260.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.util.math",
+                params: {"a": 0.0, "c": 0.0},
+                config: {"expr": "a + c * (b - a)"},
+                position: (x: 440.0, y: 130.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.util.math",
+                params: {"a": 0.0, "c": 0.0},
+                config: {"expr": "a + c * (b - a)"},
+                position: (x: 440.0, y: 260.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.util.math",
+                params: {"c": 0.0},
+                config: {"expr": "a * c"},
+                position: (x: 440.0, y: 390.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.event.transpose",
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            8: (
+                type: "noodle.event.scale_quantise",
+                position: (x: 880.0, y: 0.0),
+                parent: Some(1),
+            ),
+            9: (
+                type: "noodle.event.chord",
+                params: {"type": 0.0},
+                position: (x: 1100.0, y: 0.0),
+                parent: Some(1),
+            ),
+            10: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 1350.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p6"),
+                to: (node: 3, port: "from"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 4, port: "a"),
+            ),
+            (
+                from: (node: 3, port: "root"),
+                to: (node: 4, port: "b"),
+            ),
+            (
+                from: (node: 2, port: "p5"),
+                to: (node: 4, port: "c"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 5, port: "a"),
+            ),
+            (
+                from: (node: 3, port: "scale"),
+                to: (node: 5, port: "b"),
+            ),
+            (
+                from: (node: 2, port: "p5"),
+                to: (node: 5, port: "c"),
+            ),
+            (
+                from: (node: 3, port: "shift"),
+                to: (node: 6, port: "a"),
+            ),
+            (
+                from: (node: 2, port: "p5"),
+                to: (node: 6, port: "c"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 7, port: "in"),
+            ),
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 7, port: "semitones"),
+            ),
+            (
+                from: (node: 7, port: "out"),
+                to: (node: 8, port: "in"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 8, port: "root"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 8, port: "scale"),
+            ),
+            (
+                from: (node: 8, port: "out"),
+                to: (node: 9, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 9, port: "type"),
+            ),
+            (
+                from: (node: 9, port: "out"),
+                to: (node: 10, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Major Triads",
+        slug: "harmoniser-major-triads",
+        topology: "e30b4fa1d51a3e2b",
+        nodes: [
+            (),
+            (),
+            (
+                params: {"a": 0.0, "c": 0.0},
+                config: {"expr": "a + c * (b - a)"},
+            ),
+            (),
+            (
+                params: {"a": 0.0, "c": 0.0},
+                config: {"expr": "a + c * (b - a)"},
+            ),
+            (),
+            (
+                params: {"c": 0.0},
+                config: {"expr": "a * c"},
+            ),
+            (
+                params: {"type": 0.0},
+            ),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Minor Sevenths",
+        slug: "harmoniser-minor-sevenths",
+        topology: "e30b4fa1d51a3e2b",
+        nodes: [
+            (),
+            (),
+            (
+                params: {"a": 1.0, "c": 0.0},
+                config: {"expr": "a + c * (b - a)"},
+            ),
+            (),
+            (
+                params: {"a": 0.0, "c": 0.0},
+                config: {"expr": "a + c * (b - a)"},
+            ),
+            (),
+            (
+                params: {"c": 0.0},
+                config: {"expr": "a * c"},
+            ),
+            (
+                params: {"type": 9.0},
+            ),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Follow the Key",
+        slug: "harmoniser-follow-the-key",
+        topology: "e30b4fa1d51a3e2b",
+        nodes: [
+            (),
+            (),
+            (
+                params: {"a": 0.0, "c": 1.0},
+                config: {"expr": "a + c * (b - a)"},
+            ),
+            (),
+            (
+                params: {"a": 0.0, "c": 1.0},
+                config: {"expr": "a + c * (b - a)"},
+            ),
+            (),
+            (
+                params: {"c": 1.0},
+                config: {"expr": "a * c"},
+            ),
+            (
+                params: {"type": 0.0},
+            ),
+            (),
+        ],
+    )),
+]

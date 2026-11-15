@@ -821,6 +821,24 @@ fn table() -> Vec<Row> {
             &[("semitones", -12.0)],
         ),
         row("noodle.event.transpose", "Fifth Up", &[("semitones", 7.0)]),
+        row(
+            "noodle.event.euclidean",
+            "Tresillo",
+            &[("steps", 8.0), ("pulses", 3.0), ("rate", 4.0)],
+        ),
+        row(
+            "noodle.event.euclidean",
+            "Offbeat Five",
+            &[("steps", 16.0), ("pulses", 5.0), ("rate", 4.0)],
+        ),
+        row(
+            "noodle.event.euclidean",
+            "Triplet Seven",
+            &[("steps", 12.0), ("pulses", 7.0), ("rate", 8.0)],
+        ),
+        row("noodle.event.chance", "Coin Flip", &[("probability", 0.5)]),
+        row("noodle.event.chance", "Mostly Yes", &[("probability", 0.8)]),
+        row("noodle.event.chance", "Rare", &[("probability", 0.2)]),
         row("noodle.mod.key", "Written in C Major", &[("from", 0.0)]),
         row("noodle.mod.key", "Written in A Minor", &[("from", 21.0)]),
         row(
