@@ -1,0 +1,173 @@
+[
+    Template((
+        name: "Pitch Shifter",
+        slug: "pitch-shifter",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Pitch Shifter"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:in\n2:semitones\n3:formant"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.spectral.analyze",
+                config: {"size": 2048},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.spectral.pitch",
+                params: {"shift": 12.0},
+                position: (x: 440.0, y: 0.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.spectral.formant",
+                params: {"shift": 0.0},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.spectral.synthesize",
+                position: (x: 880.0, y: 0.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 3, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 4, port: "shift"),
+            ),
+            (
+                from: (node: 3, port: "spectrum"),
+                to: (node: 4, port: "spectrum"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 5, port: "shift"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "spectrum"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 6, port: "spectrum"),
+            ),
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 7, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Octave Up",
+        slug: "pitch-shifter-octave-up",
+        topology: "26dd95d773ef0248",
+        nodes: [
+            (
+                params: {"shift": 0.0},
+            ),
+            (),
+            (
+                config: {"size": 2048},
+            ),
+            (),
+            (),
+            (
+                params: {"shift": 12.0},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Octave Down",
+        slug: "pitch-shifter-octave-down",
+        topology: "26dd95d773ef0248",
+        nodes: [
+            (
+                params: {"shift": 0.0},
+            ),
+            (),
+            (
+                config: {"size": 4096},
+            ),
+            (),
+            (),
+            (
+                params: {"shift": -12.0},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Voice Up a Fifth",
+        slug: "pitch-shifter-voice-up-a-fifth",
+        topology: "26dd95d773ef0248",
+        nodes: [
+            (
+                params: {"shift": -7.0},
+            ),
+            (),
+            (
+                config: {"size": 2048},
+            ),
+            (),
+            (),
+            (
+                params: {"shift": 7.0},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Voice Down a Third",
+        slug: "pitch-shifter-voice-down-a-third",
+        topology: "26dd95d773ef0248",
+        nodes: [
+            (
+                params: {"shift": 4.0},
+            ),
+            (),
+            (
+                config: {"size": 2048},
+            ),
+            (),
+            (),
+            (
+                params: {"shift": -4.0},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Quick Fourth",
+        slug: "pitch-shifter-quick-fourth",
+        topology: "26dd95d773ef0248",
+        nodes: [
+            (
+                params: {"shift": 0.0},
+            ),
+            (),
+            (
+                config: {"size": 1024},
+            ),
+            (),
+            (),
+            (
+                params: {"shift": 5.0},
+            ),
+        ],
+    )),
+]

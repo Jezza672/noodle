@@ -16,6 +16,7 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [m9-library-presets-nodes.md](m9-library-presets-nodes.md) | M9: Library, presets and more nodes |
 | [m10-stems.md](m10-stems.md) | M10: Stems |
 | [m11-spectral-signals.md](m11-spectral-signals.md) | M11: Spectral signals |
+| [spectral-effects.md](spectral-effects.md) | Spectral effects: frame size per wire, pitch, stretch, compress, denoise, convolution reverb |
 | [tempo-sync-and-drum-rack.md](tempo-sync-and-drum-rack.md) | Tempo sync and the drum rack |
 | [tempo-and-meter.md](tempo-and-meter.md) | Ruler tempo and meter changes, Beat Length node |
 | [track-model.md](track-model.md) | Track mute, clip gain envelopes and crossfades |

@@ -15,7 +15,7 @@ spectral nodes), and the spectrum display. The design is the docs/architecture/ 
 2. **A spectrum display (done).** The `Spectrum` view node: an analyser curve
    with held peaks on the node and in the properties panel, with a spectrogram
    there too (the analysis runs on the UI thread, fed by the Scope's
-   telemetry). Still to do in M11: more nodes (pitch shift and time stretch on frames, spectral
+   telemetry). Still to do in M11 (done later, see [spectral-effects.md](spectral-effects.md)): more nodes (pitch shift and time stretch on frames, spectral
    compressor, convolution reverb from an impulse response, a noise-profile
    denoiser) and a choice of frame size (a config on Analyze that every
    spectral node on the wire adopts). Delay compensation across spectral wires

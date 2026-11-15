@@ -125,6 +125,7 @@ fn a_unit_opens_its_editor_in_the_window_and_gives_it_back() {
             max_frames: 256,
             input_shapes: &[],
             output_shapes: &[],
+            spectral_size: noodle_engine::FFT_SIZE,
             seed: 0,
             position: 0,
         })

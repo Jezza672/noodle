@@ -1,0 +1,147 @@
+[
+    Template((
+        name: "Convolution Reverb",
+        slug: "convolution-reverb",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Convolution Reverb"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:in\n2:predelay\n3:dry\n4:wet"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.instrument.sample",
+                config: {"sample": "4e46d2e27783c1817d2f2bdfe92c212b4a77afc6400ae08106c3fdcfd94c4341"},
+                position: (x: 220.0, y: 260.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.util.delay",
+                params: {"time": 0.0},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.effect.convolver",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.util.mix",
+                params: {"gain1": 0.0, "gain2": -9.0},
+                config: {"inputs": 2},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 910.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 4, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 4, port: "time"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "in"),
+            ),
+            (
+                from: (node: 3, port: "sample"),
+                to: (node: 5, port: "ir"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 6, port: "gain1"),
+            ),
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 6, port: "gain2"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 6, port: "in1"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 6, port: "in2"),
+            ),
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 7, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Small Room",
+        slug: "convolution-reverb-small-room",
+        topology: "979243377cf2a60a",
+        nodes: [
+            (),
+            (
+                params: {"gain1": 0.0, "gain2": -9.0},
+                config: {"inputs": 2},
+            ),
+            (),
+            (
+                params: {"time": 0.0},
+            ),
+            (
+                config: {"sample": "4e46d2e27783c1817d2f2bdfe92c212b4a77afc6400ae08106c3fdcfd94c4341"},
+            ),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Concert Hall",
+        slug: "convolution-reverb-concert-hall",
+        topology: "979243377cf2a60a",
+        nodes: [
+            (),
+            (
+                params: {"gain1": -3.0, "gain2": -6.0},
+                config: {"inputs": 2},
+            ),
+            (),
+            (
+                params: {"time": 0.02},
+            ),
+            (
+                config: {"sample": "f87d4d277b041a35981d236d04e930681a1721f6f5726f13f49012ee40d48703"},
+            ),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Bright Plate",
+        slug: "convolution-reverb-bright-plate",
+        topology: "979243377cf2a60a",
+        nodes: [
+            (),
+            (
+                params: {"gain1": 0.0, "gain2": -8.0},
+                config: {"inputs": 2},
+            ),
+            (),
+            (
+                params: {"time": 0.0},
+            ),
+            (
+                config: {"sample": "93f1d8ab617f722346fa03b20a23ffa3b9ba19325f07be628f8623948e46fc75"},
+            ),
+            (),
+        ],
+    )),
+]

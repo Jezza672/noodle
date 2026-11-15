@@ -1,0 +1,39 @@
+// Pitch shifting on frames. A saw plays A2 and goes through an Analyze with a
+// frame size of 1024 (a smaller frame than the default 2048, which keeps the
+// attack tighter), into Spectral Pitch set to a fifth up (7 semitones), and
+// back through Synthesize; the dry saw is mixed in beside it, so you hear a
+// fifth above the note. Every partial moves by the same ratio and keeps its
+// phase, so the harmony is a clean, in-tune saw rather than a smear. Analyze
+// and Synthesize delay the sound by the frame size (1023 samples here); the
+// engine delays the dry saw by the same amount.
+(
+    format: 4,
+    graph: (
+        nodes: {
+            1: (type: "noodle.input.button", params: {"state": 1.0}, position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.event.key", params: {"note": 45.0, "velocity": 0.9}, position: (x: 200.0, y: 0.0)),
+            3: (type: "noodle.event.mono", position: (x: 400.0, y: 0.0)),
+            4: (type: "noodle.osc.saw", position: (x: 600.0, y: 0.0)),
+            5: (type: "noodle.spectral.analyze", config: {"size": 1024}, position: (x: 800.0, y: 0.0)),
+            6: (type: "noodle.spectral.pitch", params: {"shift": 7.0}, position: (x: 1000.0, y: 0.0)),
+            7: (type: "noodle.spectral.synthesize", position: (x: 1200.0, y: 0.0)),
+            8: (type: "noodle.util.mix", position: (x: 1400.0, y: 0.0)),
+            9: (type: "noodle.util.gain", params: {"gain": -6.0}, position: (x: 800.0, y: 200.0)),
+            10: (type: "noodle.util.gain", params: {"gain": -12.0}, position: (x: 1600.0, y: 0.0)),
+            11: (type: "noodle.io.output", position: (x: 1800.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 2, port: "gate")),
+            (from: (node: 2, port: "out"), to: (node: 3, port: "in")),
+            (from: (node: 3, port: "pitch"), to: (node: 4, port: "frequency")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+            (from: (node: 5, port: "spectrum"), to: (node: 6, port: "spectrum")),
+            (from: (node: 6, port: "out"), to: (node: 7, port: "spectrum")),
+            (from: (node: 7, port: "out"), to: (node: 8, port: "in1")),
+            (from: (node: 4, port: "out"), to: (node: 9, port: "in")),
+            (from: (node: 9, port: "out"), to: (node: 8, port: "in2")),
+            (from: (node: 8, port: "out"), to: (node: 10, port: "in")),
+            (from: (node: 10, port: "out"), to: (node: 11, port: "in")),
+        ],
+    )
+)

@@ -107,6 +107,9 @@ struct NodeKey {
     config: noodle_core::Config,
     input_shapes: Vec<Shape>,
     output_shapes: Vec<Shape>,
+    /// The frame size of its spectral wires: a spectral node built for one
+    /// size can't run at another.
+    spectral_size: usize,
 }
 
 pub(crate) struct Plan {
@@ -386,6 +389,7 @@ pub(crate) fn build(
             config: key_config,
             input_shapes: scheduled.input_shapes.clone(),
             output_shapes: scheduled.output_shapes.clone(),
+            spectral_size: scheduled.spectral_size,
         };
 
         let carried = previous
@@ -417,6 +421,7 @@ pub(crate) fn build(
                                 old_key.type_id == key.type_id
                                     && old_key.input_shapes == key.input_shapes
                                     && old_key.output_shapes == key.output_shapes
+                                    && old_key.spectral_size == key.spectral_size
                             })
                         })
                     {
@@ -770,12 +775,14 @@ pub(crate) fn build(
         });
     }
     let mut spectral_lanes = schedule.spectral_lanes;
+    let mut spectral_sizes = schedule.spectral_sizes;
     let (delay_migrations, spectral_delay_migrations) = compensate(
         &mut nodes,
         &slot_info,
         &mut offsets_in,
         &mut pool_len,
         &mut spectral_lanes,
+        &mut spectral_sizes,
         max_frames,
         previous,
         &mut info,
@@ -815,7 +822,8 @@ pub(crate) fn build(
             .collect(),
         spectral: spectral_lanes
             .iter()
-            .map(|&lanes| SpectralBuf::new(lanes, max_frames))
+            .zip(&spectral_sizes)
+            .map(|(&lanes, &size)| SpectralBuf::with_size(lanes, max_frames, size))
             .collect(),
         values,
         offsets: offsets_in,
@@ -902,6 +910,7 @@ fn instantiate(
         max_frames,
         input_shapes: &scheduled.input_shapes,
         output_shapes: &scheduled.output_shapes,
+        spectral_size: scheduled.spectral_size,
         seed: seed_for(scheduled.id),
         position,
     };
@@ -1994,6 +2003,7 @@ fn compensate(
     offsets: &mut [OffsetInput],
     pool_len: &mut usize,
     spectral_lanes: &mut Vec<usize>,
+    spectral_sizes: &mut Vec<usize>,
     max_frames: usize,
     previous: Option<&PlanInfo>,
     info: &mut PlanInfo,
@@ -2080,12 +2090,14 @@ fn compensate(
             };
             let delay = (target - arrived) as usize;
             let dest = spectral_lanes.len();
+            let size = spectral_sizes[source];
             spectral_lanes.push(shape.lanes());
+            spectral_sizes.push(size);
             let line_index = nodes[index].spectral_delays.len();
             nodes[index].spectral_delays.push(SpectralDelayLine {
                 source,
                 dest,
-                line: SpectralDelay::new(shape.lanes(), delay, max_frames),
+                line: SpectralDelay::new(shape.lanes(), delay, max_frames, size),
                 shape,
             });
             nodes[index].spectral_inputs[port] = Some((dest, shape));
