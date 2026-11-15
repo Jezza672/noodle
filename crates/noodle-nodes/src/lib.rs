@@ -383,7 +383,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     });
     registry.register(Slice::new(&samples));
     registry.register(Wavetable::new(&samples));
-    registry.register(Grains::new(&samples));
+    registry.register(Grains::new(&samples, &telemetry));
     registry.register(Convolver::new(&samples));
     Library {
         telemetry,

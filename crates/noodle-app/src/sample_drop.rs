@@ -1,7 +1,8 @@
-//! What a clip dropped on a Sampler or into the graph becomes.
+//! What a clip dropped on a Sampler (or a Grains or Wavetable node) or into the
+//! graph becomes.
 
 use noodle_core::{ClipId, Command, NodeId, Value};
-use noodle_nodes::{SAMPLE_KEY, SampleRef};
+use noodle_nodes::{GRAINS_ID, SAMPLE_KEY, SAMPLER_ID, SampleRef, TABLE_KEY, WAVETABLE_ID};
 
 use crate::session::Session;
 
@@ -49,29 +50,67 @@ fn root_value(key: f32) -> f32 {
     (key * 100.0).round() / 100.0
 }
 
+/// What a node that plays a dropped sample takes it as: the config key that
+/// names the sample, and whether the node has a `root` and the Sampler's
+/// region (a Sampler), only a `root` (Grains) or neither (a Wavetable).
+fn target(session: &Session, node: NodeId) -> (&'static str, bool, bool) {
+    let type_id = session
+        .project()
+        .graph()
+        .node(node)
+        .map(|n| n.type_id.as_str());
+    match type_id {
+        Some(WAVETABLE_ID) => (TABLE_KEY, false, false),
+        Some(GRAINS_ID) => (SAMPLE_KEY, true, false),
+        Some(SAMPLER_ID) | None => (SAMPLE_KEY, true, true),
+        Some(_) => (SAMPLE_KEY, false, false),
+    }
+}
+
 /// The commands that give the Sampler `node` a whole sample: the sample, and
 /// the root from its fundamental when it has one. A sample with no pitch
 /// leaves the root as it was. One undo step.
 pub fn choose(session: &Session, node: NodeId, hash: &str) -> Command {
+    let (key, rooted, _) = target(session, node);
     let mut commands = vec![Command::SetConfig {
         node,
-        key: SAMPLE_KEY.to_owned(),
+        key: key.to_owned(),
         value: Some(Value::Text(hash.to_owned())),
     }];
-    commands.extend(
-        pitch_of(session, &SampleRef::whole(hash)).map(|key| Command::SetParam {
-            node,
-            key: "root".into(),
-            value: Some(root_value(key)),
-        }),
-    );
+    if rooted {
+        commands.extend(
+            pitch_of(session, &SampleRef::whole(hash)).map(|key| Command::SetParam {
+                node,
+                key: "root".into(),
+                value: Some(root_value(key)),
+            }),
+        );
+    }
     Command::Batch(commands)
 }
 
 /// The commands that give the Sampler `node` a clip's part of a sample:
 /// the sample, `start` and `end` from the clip, and the root. One undo step.
-pub fn onto_sampler(node: NodeId, dropped: &Dropped) -> Command {
+pub fn onto_sampler(session: &Session, node: NodeId, dropped: &Dropped) -> Command {
     let r = &dropped.reference;
+    let (key, rooted, regioned) = target(session, node);
+    if !regioned {
+        // A Grains or Wavetable node takes the clip's part of the file as its
+        // sample, the window being part of the reference.
+        let mut commands = vec![Command::SetConfig {
+            node,
+            key: key.to_owned(),
+            value: Some(Value::Text(r.to_text())),
+        }];
+        if rooted {
+            commands.extend(dropped.pitch.map(|key| Command::SetParam {
+                node,
+                key: "root".into(),
+                value: Some(root_value(key)),
+            }));
+        }
+        return Command::Batch(commands);
+    }
     let mut commands = vec![
         Command::SetConfig {
             node,

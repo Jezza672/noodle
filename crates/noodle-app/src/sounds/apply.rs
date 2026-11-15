@@ -27,12 +27,14 @@ pub fn apply(session: &mut Session, done: Done) {
                 Ok(hash) => hash,
                 Err(e) => return session.notify(format!("Couldn't read {}: {e}", entry.name)),
             };
-            let is_sampler = session
+            // Any node that plays a sample (Sampler, Grains, Wavetable) takes it
+            // by `choose`; a Sample node has only the config.
+            let plays = session
                 .project()
                 .graph()
                 .node(node)
-                .is_some_and(|n| n.type_id == noodle_nodes::SAMPLER_ID);
-            let command = if is_sampler {
+                .is_some_and(|n| n.type_id != noodle_nodes::SAMPLE_INPUT_ID);
+            let command = if plays {
                 crate::sample_drop::choose(session, node, &hash)
             } else {
                 Command::SetConfig {
