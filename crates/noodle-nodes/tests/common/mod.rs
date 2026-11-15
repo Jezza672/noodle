@@ -113,6 +113,7 @@ impl Rig {
                 max_frames: BLOCK,
                 input_shapes: &[],
                 output_shapes: &[Shape::STEREO],
+                spectral_size: noodle_engine::FFT_SIZE,
                 seed: 0,
                 position: 0,
             })

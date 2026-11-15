@@ -1,5 +1,7 @@
 //! Audio shipped inside the program, for the system library's sample-based
-//! instruments (the Steel Drum, the Banjo, the Body Percussion kit).
+//! instruments (the Steel Drum, the Banjo, the Body Percussion kit) and the
+//! wavetables of the Wavetable Synth (`wt-*`, made by code: see
+//! `examples/wavetables.rs`) and the Convolution Reverb's impulse responses.
 //!
 //! A system template names its samples by content hash like any other
 //! instrument (ADR 0004), and [`SampleStore`](crate::SampleStore) looks here
@@ -53,6 +55,14 @@ samples![
     "body-chest-thump",
     "body-chest-slap",
     "body-cheek-pop",
+    "wt-basic-shapes",
+    "wt-pulse-width",
+    "wt-harmonic-sweep",
+    "wt-formant-sweep",
+    "wt-digital",
+    "ir-room",
+    "ir-hall",
+    "ir-plate",
 ];
 
 const INDEX: &str = include_str!("../assets/samples/index.txt");

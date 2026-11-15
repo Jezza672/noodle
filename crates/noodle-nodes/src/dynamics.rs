@@ -649,6 +649,7 @@ mod tests {
             max_frames: 64,
             input_shapes: &inputs,
             output_shapes: &outputs,
+            spectral_size: noodle_engine::FFT_SIZE,
             seed: 0,
             position: 0,
         };

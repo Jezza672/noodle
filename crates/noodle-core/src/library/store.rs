@@ -30,6 +30,11 @@ const EMBEDDED: &[&str] = &[
     include_str!("../../library/system/step-gate.ron"),
     include_str!("../../library/system/pattern-pads.ron"),
     include_str!("../../library/system/loop-pads.ron"),
+    include_str!("../../library/system/pitch-shifter.ron"),
+    include_str!("../../library/system/time-stretch.ron"),
+    include_str!("../../library/system/spectral-compressor.ron"),
+    include_str!("../../library/system/denoiser.ron"),
+    include_str!("../../library/system/convolution-reverb.ron"),
     include_str!("../../library/system/lead-synth.ron"),
     include_str!("../../library/system/bass-synth.ron"),
     include_str!("../../library/system/electric-piano.ron"),
@@ -43,6 +48,9 @@ const EMBEDDED: &[&str] = &[
     include_str!("../../library/system/steel-drum.ron"),
     include_str!("../../library/system/banjo.ron"),
     include_str!("../../library/system/body-percussion.ron"),
+    include_str!("../../library/system/wavetable-synth.ron"),
+    include_str!("../../library/system/grain-pad.ron"),
+    include_str!("../../library/system/grain-freeze.ron"),
     include_str!("../../library/system/nodes.ron"),
 ];
 

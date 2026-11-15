@@ -83,24 +83,26 @@ Seven features picked from a shortlist in November 2026. Each issue holds the de
 
 1. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M. (Scale Quantise, Chord, Transpose, Song Key and `Transport::key` are built: [features/harmony-nodes.md](features/harmony-nodes.md).)
 
-**Wavetable oscillator (#536).** `noodle.osc.wavetable`: a table is a sample in the store, `position` is a parameter, band-limited copies are built off the audio thread.
+**Wavetable oscillator (#536), what is left.** The node, the tables, the template and its presets landed (see [features/wavetable-and-grains.md](features/wavetable-and-grains.md)). Still owed, size S to M:
 
-1. The oscillator, the table builder, an example with a golden render. Size M.
-2. Generated CC0 tables committed as system samples with their generator, the Wavetable Synth template and presets, the cycle drawn on the node, drop a table on the node. Size M.
+1. The cycle at the current `position` drawn on the node's body, as the Sampler draws its waveform.
+2. Dropping a table (a file or a Sounds entry) on the node, by the Sampler's path (`editor::pad_sampler`, `sample_drop.rs`), and a `wavetable` tag on the shipped tables so the Sounds panel can filter for them (the Sounds panel does not list system samples yet).
+3. `cycle` guessed from the file (a `clm ` chunk, or a length that is a multiple of 2048), the config overriding it.
 
-**Grains (#537).** `noodle.instrument.grains`: a granular sample player with position, spray, size, density, pitch and scatter as parameters, one cloud per voice.
+**Grains (#537), what is left.** The node, the two templates and their presets landed (see the same file). Still owed, size M:
 
-1. The node, an example with a golden render. Size M to L.
-2. The Grain Pad and Grain Freeze templates, the waveform and grains drawn on the node, the S17 route. Size M.
+1. The sample's waveform drawn on the node with a mark at `position`, the spray as a band and the live grains as ticks (from telemetry, as the voice lights are).
+2. Dropping a sample or a Sounds entry on the node, and the S17 route extended to send a rendered clip into Grains if that makes the route shorter (`stories/registry.rs`).
+3. A grain delay (grains from live input) as a second node.
 
 **Looper (#541).** `noodle.util.looper`: record, loop on the bar, overdub, undo the last layer and clear, driven by gate parameters. The recording is session state and survives a seek, so the node is exempt from the reset-equals-fresh tests.
 
-1. The node. Size L.
+1. ~~The node.~~ Done: see [features/looper.md](features/looper.md).
 2. The Looper template (Buttons, Launch Quantise, Mono Note for the gate), the state display, the S27 route. Size M.
 
 **Preset morph (#543).** "Morph between presets…" on a group adds one Morph node (`noodle.mod.morph`) with an output wired into every parameter that differs between two group presets, and exposes its `position` as a group input. Nothing is modulated without a wire; a parameter that already has a wire or a lane, and all config, stay out.
 
-1. The node, `Edit::MorphPresets`, the menu entry and picker, the rows in the node's panel. Size M.
+1. ~~The node, `Edit::MorphPresets`, the picker.~~ Done: see [features/preset-morph.md](features/preset-morph.md). Still open from this chunk: the node's panel listing the rows with A and B sliders, and the S13 route using the morph.
 2. The XY form for four presets with a pad widget, Set from current, Randomise. Size M.
 
 ## Planned: Noodle as a plugin (#544)
@@ -206,10 +208,6 @@ The least delay the hardware allows while a track is armed or monitored, chosen 
   for the drum rack. Needs a stable, fairly universal interface definition (parts,
   STFT front end, chunking), so it waits until the three built-in models show what
   that has to cover. The MDX23C DrumSep is not supported (no licence, gone upstream).
-- **M11 follow-ups:** more spectral nodes (pitch shift and time stretch on
-  frames, spectral compressor, convolution reverb from an impulse response,
-  noise-profile denoiser) and a choice of frame size (a config on Analyze that
-  every spectral node on the wire adopts).
 - **Piano roll and recording:** the 128-frame engine block is fixed; it could
   follow the device period.
 - **VST3:** an editor window on Linux (the app makes none).

@@ -16,6 +16,7 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [m9-library-presets-nodes.md](m9-library-presets-nodes.md) | M9: Library, presets and more nodes |
 | [m10-stems.md](m10-stems.md) | M10: Stems |
 | [m11-spectral-signals.md](m11-spectral-signals.md) | M11: Spectral signals |
+| [spectral-effects.md](spectral-effects.md) | Spectral effects: frame size per wire, pitch, stretch, compress, denoise, convolution reverb |
 | [tempo-sync-and-drum-rack.md](tempo-sync-and-drum-rack.md) | Tempo sync and the drum rack |
 | [tempo-and-meter.md](tempo-and-meter.md) | Ruler tempo and meter changes, Beat Length node |
 | [track-model.md](track-model.md) | Track mute, clip gain envelopes and crossfades |
@@ -57,3 +58,6 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [deferred-items-1.md](deferred-items-1.md) | Stem model controls, beat view gain envelope, one TimeAxis, engine toggle remembered, saved device retried |
 | [deferred-items-2.md](deferred-items-2.md) | Plugin editors keep the plugin running, CLAP latency changes, one retry policy for files, re-quantise a recorded MIDI clip |
 | [harmony-nodes.md](harmony-nodes.md) | Scale Quantise, Chord, Transpose, Song Key and the key on the transport |
+| [looper.md](looper.md) | The Looper node: record, loop on the bar, overdub, undo, clear |
+| [preset-morph.md](preset-morph.md) | The Morph node and Morph between presets on a group |
+| [wavetable-and-grains.md](wavetable-and-grains.md) | Wavetable oscillator and Grains: nodes, shipped tables, three templates |
