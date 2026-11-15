@@ -1,10 +1,11 @@
 //! Spectral signals: a stream of FFT frames.
 //!
 //! A spectral wire carries what a short-time Fourier transform of audio
-//! produces: every [`HOP`] samples, one frame of [`BINS`] complex bins per
-//! lane, covering the last [`FFT_SIZE`] samples under a Hann window. The size
-//! and hop are the same everywhere (the engine has no per-wire resolution),
-//! which is what lets any spectral node feed any other.
+//! produces: every hop samples, one frame of `size / 2 + 1` complex bins per
+//! lane, covering the last `size` samples under a Hann window. The hop is a
+//! quarter of the size. A wire has one size, which Analyze chooses (its
+//! `size` config) and every node downstream of it adopts; [`FFT_SIZE`],
+//! [`HOP`] and [`BINS`] are the default, 2048 (ADR 0007).
 //!
 //! Frames are timestamped like events: a frame's `time` is the frame offset
 //! within the block of the last sample it covers. A block holds as many
@@ -26,19 +27,50 @@ use realfft::{ComplexToReal, RealFftPlanner, RealToComplex};
 
 use crate::{Shape, SignalIn, SignalOut};
 
-/// Samples per FFT frame.
+/// Samples per FFT frame by default.
 pub const FFT_SIZE: usize = 2048;
-/// Samples between frames: four frames overlap at any moment.
-pub const HOP: usize = 512;
-/// Bins per frame: 0 Hz up to the Nyquist frequency inclusive.
-pub const BINS: usize = FFT_SIZE / 2 + 1;
-/// How many samples later than its input a [`Synthesizer`]'s output sounds
-/// (see [`Node::latency`](crate::Node::latency)).
-pub const SYNTH_LATENCY: u32 = (FFT_SIZE - 1) as u32;
+/// Samples between frames by default: four frames overlap at any moment.
+pub const HOP: usize = fft_hop(FFT_SIZE);
+/// Bins per frame by default: 0 Hz up to the Nyquist frequency inclusive.
+pub const BINS: usize = fft_bins(FFT_SIZE);
+/// How many samples later than its input a default-size [`Synthesizer`]'s
+/// output sounds (see [`Node::latency`](crate::Node::latency)).
+pub const SYNTH_LATENCY: u32 = synth_latency(FFT_SIZE);
+/// The smallest and largest frame sizes a wire can have.
+pub const MIN_FFT_SIZE: usize = 256;
+pub const MAX_FFT_SIZE: usize = 8192;
 
-/// The frequency, in Hz, at the centre of bin `bin`.
+/// Samples between the frames of a wire of `size` samples.
+pub const fn fft_hop(size: usize) -> usize {
+    size / 4
+}
+
+/// Bins in a frame of a wire of `size` samples.
+pub const fn fft_bins(size: usize) -> usize {
+    size / 2 + 1
+}
+
+/// How many samples later than its input a [`Synthesizer`] of `size` sounds.
+pub const fn synth_latency(size: usize) -> u32 {
+    (size - 1) as u32
+}
+
+/// The frame size nearest to `wanted`: a power of two from
+/// [`MIN_FFT_SIZE`] to [`MAX_FFT_SIZE`] (nearest on a log scale).
+pub fn clamp_fft_size(wanted: i64) -> usize {
+    let wanted = wanted.clamp(MIN_FFT_SIZE as i64, MAX_FFT_SIZE as i64) as f64;
+    let power = wanted.log2().round() as u32;
+    1usize << power
+}
+
+/// The frequency, in Hz, at the centre of bin `bin` of a default-size frame.
 pub fn bin_frequency(bin: usize, sample_rate: f32) -> f32 {
-    bin as f32 * sample_rate / FFT_SIZE as f32
+    bin_frequency_in(bin, sample_rate, FFT_SIZE)
+}
+
+/// The frequency, in Hz, at the centre of bin `bin` of a frame of `size`.
+pub fn bin_frequency_in(bin: usize, sample_rate: f32, size: usize) -> f32 {
+    bin as f32 * sample_rate / size as f32
 }
 
 /// One complex bin.
@@ -78,30 +110,52 @@ impl Bin {
     }
 }
 
-/// How many frames a block of `max_frames` samples can hold.
+/// How many default-size frames a block of `max_frames` samples can hold.
 pub fn frame_capacity(max_frames: usize) -> usize {
-    max_frames / HOP + 2
+    frame_capacity_for(max_frames, FFT_SIZE)
+}
+
+/// How many frames of a wire of `size` a block of `max_frames` samples can hold.
+pub fn frame_capacity_for(max_frames: usize, size: usize) -> usize {
+    max_frames / fft_hop(size) + 2
 }
 
 /// Storage for the frames of one block of a spectral signal: room for
-/// `frame_capacity(max_frames)` frames of up to `lanes` lanes, allocated once.
+/// `frame_capacity_for(max_frames, size)` frames of up to `lanes` lanes,
+/// allocated once.
 #[derive(Clone, Debug)]
 pub struct SpectralBuf {
     lanes: usize,
+    size: usize,
+    bins: usize,
     capacity: usize,
     times: Vec<u32>,
     data: Vec<Bin>,
 }
 
 impl SpectralBuf {
+    /// A buffer of default-size frames.
     pub fn new(lanes: usize, max_frames: usize) -> Self {
-        let capacity = frame_capacity(max_frames);
+        Self::with_size(lanes, max_frames, FFT_SIZE)
+    }
+
+    /// A buffer of frames of `size` samples.
+    pub fn with_size(lanes: usize, max_frames: usize, size: usize) -> Self {
+        let capacity = frame_capacity_for(max_frames, size);
+        let bins = fft_bins(size);
         Self {
             lanes,
+            size,
+            bins,
             capacity,
             times: Vec::with_capacity(capacity),
-            data: vec![Bin::ZERO; capacity * lanes * BINS],
+            data: vec![Bin::ZERO; capacity * lanes * bins],
         }
+    }
+
+    /// The FFT size of the frames in this buffer.
+    pub fn size(&self) -> usize {
+        self.size
     }
 
     /// The most lanes a frame in this buffer can have.
@@ -115,9 +169,10 @@ impl SpectralBuf {
 
     pub fn as_in(&self, shape: Shape) -> SpectralIn<'_> {
         debug_assert!(shape.lanes() <= self.lanes);
-        let len = self.times.len() * shape.lanes() * BINS;
+        let len = self.times.len() * shape.lanes() * self.bins;
         SpectralIn {
             shape,
+            bins: self.bins,
             times: &self.times,
             data: &self.data[..len],
         }
@@ -133,6 +188,7 @@ impl SpectralBuf {
 #[derive(Clone, Copy, Debug)]
 pub struct SpectralIn<'a> {
     shape: Shape,
+    bins: usize,
     times: &'a [u32],
     data: &'a [Bin],
 }
@@ -142,6 +198,7 @@ impl<'a> SpectralIn<'a> {
     pub fn empty() -> SpectralIn<'static> {
         SpectralIn {
             shape: Shape::MONO,
+            bins: 0,
             times: &[],
             data: &[],
         }
@@ -149,6 +206,11 @@ impl<'a> SpectralIn<'a> {
 
     pub fn shape(&self) -> Shape {
         self.shape
+    }
+
+    /// Bins in each frame (zero for [`empty`](Self::empty)).
+    pub fn bins(&self) -> usize {
+        self.bins
     }
 
     /// How many frames this block has.
@@ -161,9 +223,9 @@ impl<'a> SpectralIn<'a> {
         self.times[frame]
     }
 
-    /// Every lane of a frame, back to back: `shape().lanes() * BINS` bins.
+    /// Every lane of a frame, back to back: `shape().lanes() * bins()` bins.
     pub(crate) fn frame_lanes(&self, frame: usize) -> &'a [Bin] {
-        let stride = self.shape.lanes() * BINS;
+        let stride = self.shape.lanes() * self.bins;
         &self.data[frame * stride..(frame + 1) * stride]
     }
 
@@ -173,8 +235,8 @@ impl<'a> SpectralIn<'a> {
         let voice = if self.shape.voices == 1 { 0 } else { voice };
         let channel = if self.shape.channels == 1 { 0 } else { channel };
         let lane = voice * self.shape.channels + channel;
-        let start = (frame * self.shape.lanes() + lane) * BINS;
-        &self.data[start..start + BINS]
+        let start = (frame * self.shape.lanes() + lane) * self.bins;
+        &self.data[start..start + self.bins]
     }
 }
 
@@ -200,6 +262,11 @@ impl<'a> SpectralOut<'a> {
         self.shape
     }
 
+    /// Bins in each frame.
+    pub fn bins(&self) -> usize {
+        self.buf.bins
+    }
+
     /// How many frames have been pushed.
     pub fn frames(&self) -> usize {
         self.buf.times.len()
@@ -217,7 +284,7 @@ impl<'a> SpectralOut<'a> {
             return None;
         }
         self.buf.times.push(time);
-        let stride = self.shape.lanes() * BINS;
+        let stride = self.shape.lanes() * self.buf.bins;
         self.buf.data[index * stride..(index + 1) * stride].fill(Bin::ZERO);
         Some(index)
     }
@@ -225,7 +292,7 @@ impl<'a> SpectralOut<'a> {
     /// Every lane of frame `frame`, back to back, which must have been pushed.
     pub(crate) fn frame_lanes_mut(&mut self, frame: usize) -> &mut [Bin] {
         assert!(frame < self.buf.times.len(), "frame not pushed");
-        let stride = self.shape.lanes() * BINS;
+        let stride = self.shape.lanes() * self.buf.bins;
         &mut self.buf.data[frame * stride..(frame + 1) * stride]
     }
 
@@ -233,8 +300,8 @@ impl<'a> SpectralOut<'a> {
     pub fn frame_mut(&mut self, frame: usize, voice: usize, channel: usize) -> &mut [Bin] {
         assert!(frame < self.buf.times.len(), "frame not pushed");
         let lane = voice * self.shape.channels + channel;
-        let start = (frame * self.shape.lanes() + lane) * BINS;
-        &mut self.buf.data[start..start + BINS]
+        let start = (frame * self.shape.lanes() + lane) * self.buf.bins;
+        &mut self.buf.data[start..start + self.buf.bins]
     }
 }
 
@@ -257,11 +324,11 @@ pub struct SpectralDelay {
 }
 
 impl SpectralDelay {
-    /// A delay of `delay` samples for frames of `lanes` lanes, in blocks of
-    /// up to `max_frames` samples.
-    pub fn new(lanes: usize, delay: usize, max_frames: usize) -> Self {
-        let capacity = delay / HOP + frame_capacity(max_frames) + 2;
-        let stride = lanes * BINS;
+    /// A delay of `delay` samples for frames of `lanes` lanes of a wire of
+    /// `size`, in blocks of up to `max_frames` samples.
+    pub fn new(lanes: usize, delay: usize, max_frames: usize, size: usize) -> Self {
+        let capacity = delay / fft_hop(size) + frame_capacity_for(max_frames, size) + 2;
+        let stride = lanes * fft_bins(size);
         Self {
             delay: delay as u64,
             stride,
@@ -299,7 +366,7 @@ impl SpectralDelay {
     /// Takes in this block's frames and writes the ones now due.
     /// `frames` is the block's length in samples.
     pub fn process(&mut self, input: &SpectralIn<'_>, frames: usize, out: &mut SpectralOut<'_>) {
-        debug_assert_eq!(input.shape().lanes() * BINS, self.stride);
+        debug_assert_eq!(input.shape().lanes() * input.bins(), self.stride);
         for frame in 0..input.frames() {
             if self.len == self.capacity {
                 // Can't happen with the room made, but never overwrite
@@ -327,16 +394,18 @@ impl SpectralDelay {
     }
 }
 
-/// The Hann window of [`FFT_SIZE`] samples (periodic).
-fn hann() -> Box<[f32]> {
-    (0..FFT_SIZE)
-        .map(|n| 0.5 - 0.5 * (TAU * n as f32 / FFT_SIZE as f32).cos())
+/// The Hann window of `size` samples (periodic).
+fn hann(size: usize) -> Box<[f32]> {
+    (0..size)
+        .map(|n| 0.5 - 0.5 * (TAU * n as f32 / size as f32).cos())
         .collect()
 }
 
 /// Turns audio into spectral frames, one set of rings per lane.
 pub struct Analyzer {
     shape: Shape,
+    size: usize,
+    hop: usize,
     fft: Arc<dyn RealToComplex<f32>>,
     window: Box<[f32]>,
     /// The last `FFT_SIZE` samples of each lane, as a ring.
@@ -354,13 +423,20 @@ pub struct Analyzer {
 impl Analyzer {
     /// Allocates; call off the audio thread.
     pub fn new(shape: Shape) -> Self {
-        let fft = RealFftPlanner::<f32>::new().plan_fft_forward(FFT_SIZE);
-        let window = hann();
+        Self::with_size(shape, FFT_SIZE)
+    }
+
+    /// An analyzer making frames of `size` samples. Allocates.
+    pub fn with_size(shape: Shape, size: usize) -> Self {
+        let fft = RealFftPlanner::<f32>::new().plan_fft_forward(size);
+        let window = hann(size);
         let scale = 2.0 / window.iter().sum::<f32>();
         Self {
             shape,
+            size,
+            hop: fft_hop(size),
             window,
-            rings: vec![0.0; shape.lanes() * FFT_SIZE],
+            rings: vec![0.0; shape.lanes() * size],
             pos: 0,
             since: 0,
             time: fft.make_input_vec(),
@@ -384,21 +460,21 @@ impl Analyzer {
         let frames = input.frames();
         let mut t = 0;
         while t < frames {
-            let n = (HOP - self.since).min(frames - t);
+            let n = (self.hop - self.since).min(frames - t);
             for voice in 0..self.shape.voices {
                 for channel in 0..self.shape.channels {
                     let lane = voice * self.shape.channels + channel;
-                    let ring = &mut self.rings[lane * FFT_SIZE..(lane + 1) * FFT_SIZE];
+                    let ring = &mut self.rings[lane * self.size..(lane + 1) * self.size];
                     let samples = &input.lane(voice, channel)[t..t + n];
-                    let first = n.min(FFT_SIZE - self.pos);
+                    let first = n.min(self.size - self.pos);
                     ring[self.pos..self.pos + first].copy_from_slice(&samples[..first]);
                     ring[..n - first].copy_from_slice(&samples[first..]);
                 }
             }
-            self.pos = (self.pos + n) % FFT_SIZE;
+            self.pos = (self.pos + n) % self.size;
             self.since += n;
             t += n;
-            if self.since == HOP {
+            if self.since == self.hop {
                 self.since = 0;
                 self.emit(t as u32 - 1, out);
             }
@@ -410,7 +486,7 @@ impl Analyzer {
         for voice in 0..self.shape.voices {
             for channel in 0..self.shape.channels {
                 let lane = voice * self.shape.channels + channel;
-                let ring = &self.rings[lane * FFT_SIZE..(lane + 1) * FFT_SIZE];
+                let ring = &self.rings[lane * self.size..(lane + 1) * self.size];
                 // The oldest sample is at `pos`.
                 let (recent, oldest) = ring.split_at(self.pos);
                 for (i, &x) in oldest.iter().chain(recent).enumerate() {
@@ -437,6 +513,8 @@ impl Analyzer {
 /// Turns spectral frames back into audio by overlap-adding them.
 pub struct Synthesizer {
     shape: Shape,
+    size: usize,
+    bins: usize,
     ifft: Arc<dyn ComplexToReal<f32>>,
     window: Box<[f32]>,
     /// Each lane's overlap-add accumulator, as a ring.
@@ -452,17 +530,25 @@ pub struct Synthesizer {
 impl Synthesizer {
     /// Allocates; call off the audio thread.
     pub fn new(shape: Shape) -> Self {
-        let ifft = RealFftPlanner::<f32>::new().plan_fft_inverse(FFT_SIZE);
-        let window = hann();
+        Self::with_size(shape, FFT_SIZE)
+    }
+
+    /// A synthesizer for frames of `size` samples. Allocates.
+    pub fn with_size(shape: Shape, size: usize) -> Self {
+        let ifft = RealFftPlanner::<f32>::new().plan_fft_inverse(size);
+        let window = hann(size);
+        let hop = fft_hop(size);
         // Undo the analysis scaling, the inverse transform's missing
-        // 1 / FFT_SIZE, and the gain of the overlapping windows squared.
+        // 1 / size, and the gain of the overlapping windows squared.
         let window_sum: f32 = window.iter().sum();
-        let overlap: f32 = (0..FFT_SIZE / HOP).map(|k| window[k * HOP].powi(2)).sum();
-        let scale = (window_sum / 2.0) / FFT_SIZE as f32 / overlap;
+        let overlap: f32 = (0..size / hop).map(|k| window[k * hop].powi(2)).sum();
+        let scale = (window_sum / 2.0) / size as f32 / overlap;
         Self {
             shape,
+            size,
+            bins: fft_bins(size),
             window,
-            rings: vec![0.0; shape.lanes() * FFT_SIZE],
+            rings: vec![0.0; shape.lanes() * size],
             pos: 0,
             spectrum: ifft.make_input_vec(),
             time: ifft.make_output_vec(),
@@ -496,14 +582,14 @@ impl Synthesizer {
                         next += 1;
                     }
                     // The sample that no later frame can touch.
-                    let at = (pos + 1) % FFT_SIZE;
-                    let ring = &mut self.rings[lane * FFT_SIZE..(lane + 1) * FFT_SIZE];
+                    let at = (pos + 1) % self.size;
+                    let ring = &mut self.rings[lane * self.size..(lane + 1) * self.size];
                     *sample = std::mem::take(&mut ring[at]);
                     pos = at;
                 }
             }
         }
-        self.pos = (self.pos + frames) % FFT_SIZE;
+        self.pos = (self.pos + frames) % self.size;
     }
 
     /// Adds a frame ending at ring position `pos`.
@@ -513,14 +599,14 @@ impl Synthesizer {
         }
         // The transform wants real DC and Nyquist bins.
         self.spectrum[0].im = 0.0;
-        self.spectrum[BINS - 1].im = 0.0;
+        self.spectrum[self.bins - 1].im = 0.0;
         let _ =
             self.ifft
                 .process_with_scratch(&mut self.spectrum, &mut self.time, &mut self.scratch);
-        let ring = &mut self.rings[lane * FFT_SIZE..(lane + 1) * FFT_SIZE];
-        let start = (pos + 1) % FFT_SIZE;
+        let ring = &mut self.rings[lane * self.size..(lane + 1) * self.size];
+        let start = (pos + 1) % self.size;
         for (i, (&x, &w)) in self.time.iter().zip(&self.window).enumerate() {
-            ring[(start + i) % FFT_SIZE] += x * w * self.scale;
+            ring[(start + i) % self.size] += x * w * self.scale;
         }
     }
 }
@@ -549,18 +635,25 @@ impl Default for FormantWarp {
 }
 
 impl FormantWarp {
-    /// Allocates; call off the audio thread.
+    /// A warp for default-size frames. Allocates; call off the audio thread.
     pub fn new() -> Self {
+        Self::with_size(FFT_SIZE)
+    }
+
+    /// A warp for frames of `size` samples. Allocates.
+    pub fn with_size(size: usize) -> Self {
+        let bins = fft_bins(size);
         Self {
-            prefix: vec![0.0; BINS + 1],
-            envelope: vec![0.0; BINS],
+            prefix: vec![0.0; bins + 1],
+            envelope: vec![0.0; bins],
         }
     }
 
     /// Writes `input` to `out` with its envelope moved by `ratio` (above 1
     /// is up). A ratio near 1 copies the frame.
     pub fn apply(&mut self, input: &[Bin], out: &mut [Bin], ratio: f32, width: usize) {
-        debug_assert!(input.len() == BINS && out.len() == BINS);
+        let bins = self.envelope.len();
+        debug_assert!(input.len() == bins && out.len() == bins);
         if (ratio - 1.0).abs() < 1e-4 || !ratio.is_finite() || ratio <= 0.0 {
             out.copy_from_slice(input);
             return;
@@ -571,10 +664,10 @@ impl FormantWarp {
             self.prefix[k] = sum;
             sum += bin.magnitude();
         }
-        self.prefix[BINS] = sum;
+        self.prefix[bins] = sum;
         for (k, e) in self.envelope.iter_mut().enumerate() {
             let lo = k.saturating_sub(width);
-            let hi = (k + width + 1).min(BINS);
+            let hi = (k + width + 1).min(bins);
             *e = (self.prefix[hi] - self.prefix[lo]) / (hi - lo) as f32;
         }
         // A floor under the envelope, so silence stays silent.
@@ -582,9 +675,9 @@ impl FormantWarp {
         for (k, (bin, slot)) in input.iter().zip(out.iter_mut()).enumerate() {
             let at = k as f32 / ratio;
             let below = at.floor() as usize;
-            let e_new = if below >= BINS - 1 {
+            let e_new = if below >= bins - 1 {
                 // Above the top the envelope has nothing to move down.
-                self.envelope[BINS - 1]
+                self.envelope[bins - 1]
             } else {
                 let t = at - below as f32;
                 self.envelope[below] * (1.0 - t) + self.envelope[below + 1] * t
@@ -605,7 +698,7 @@ mod tests {
         let shape = Shape::MONO;
         let block = 100;
         let delay = 1_300; // not a multiple of a hop or a block
-        let mut line = SpectralDelay::new(1, delay, block);
+        let mut line = SpectralDelay::new(1, delay, block, FFT_SIZE);
         let mut source = SpectralBuf::new(1, block);
         let mut dest = SpectralBuf::new(1, block);
         let mut heard = Vec::new();
