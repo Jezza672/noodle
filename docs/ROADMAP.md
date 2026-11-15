@@ -79,17 +79,7 @@ Seven features picked from a shortlist in November 2026. Each issue holds the de
 
 1. The node, the `.scl` and `.kbm` parser, the loader in the properties panel, an example with a golden render. Size M.
 
-**Wavetable oscillator (#536), what is left.** The node, the tables, the template and its presets landed (see [features/wavetable-and-grains.md](features/wavetable-and-grains.md)). Still owed, size S to M:
-
-1. The cycle at the current `position` drawn on the node's body, as the Sampler draws its waveform.
-2. Dropping a table (a file or a Sounds entry) on the node, by the Sampler's path (`editor::pad_sampler`, `sample_drop.rs`), and a `wavetable` tag on the shipped tables so the Sounds panel can filter for them (the Sounds panel does not list system samples yet).
-3. `cycle` guessed from the file (a `clm ` chunk, or a length that is a multiple of 2048), the config overriding it.
-
-**Grains (#537), what is left.** The node, the two templates and their presets landed (see the same file). Still owed, size M:
-
-1. The sample's waveform drawn on the node with a mark at `position`, the spray as a band and the live grains as ticks (from telemetry, as the voice lights are).
-2. Dropping a sample or a Sounds entry on the node, and the S17 route extended to send a rendered clip into Grains if that makes the route shorter (`stories/registry.rs`).
-3. A grain delay (grains from live input) as a second node.
+**Wavetable follow-ups.** `cycle` guessed from the file (a `clm ` chunk, or a length that is a multiple of 2048) with the config overriding it; a `wavetable` tag on the shipped tables and the Sounds panel listing system samples so it can filter for them; a grain delay (Grains from live input) as a second node. Size S each.
 
 **Looper (#541).** `noodle.util.looper`: record, loop on the bar, overdub, undo the last layer and clear, driven by gate parameters. The recording is session state and survives a seek, so the node is exempt from the reset-equals-fresh tests.
 
@@ -105,19 +95,11 @@ Seven features picked from a shortlist in November 2026. Each issue holds the de
 
 Noodle loaded in another DAW: the node editor, properties, library and Sounds panel in the host's window, no arrangement, with Host In, Host Out and Host MIDI nodes already in the graph. CLAP first; VST3 and AU are made from the CLAP with `clap-wrapper`. The issue holds the design and the open questions (whether an instance is a project or a group is the main one).
 
-1. Shell split and host backend: `noodle-app` as a library with a desktop shell, a host audio backend in `noodle-io`, Host devices and ports on the io nodes. Size M.
-2. A headless CLAP (`noodle-plugin`): ports, process, state, latency, default projects, tested by Noodle hosting Noodle. Size L.
-3. Transport and tempo from the host, and a 64-slot bank of host parameters surfaced as Host Parameter nodes. Size M.
-4. The window: the editor-only layout drawn in the host's window, focus, text, drag and drop, scaling. Size L, the main risk.
-5. More than one instance in a process: the UI waker and the other process-wide state. Size M.
-6. VST3 and AU through the wrapper, packaging, and an owed pass in real hosts on the Mac. Size M.
+Chunks 1 to 3 are built: see [features/noodle-as-a-plugin.md](features/noodle-as-a-plugin.md). Owed from them: the CLAP validator in CI.
 
-## Planned: feedback regions (#547)
-
-A wired feedback loop as tight as the patch asks for, with no setting. The compiler groups the nodes on a loop into a region and runs only those in chunks as short as the loop's shortest delay, so a long echo costs what it does today and a plucked string above 375 Hz becomes possible as a group. A one-sample Feedback node makes delay-free loops legal.
-
-1. Regions and Delay: the region step in the compiler and the plan, `Node::loop_chunk`, Delay without its one-block floor inside a region, events, silence, meters and parallel processing through a region. Size L.
-2. The Feedback node (`noodle.util.feedback`), and the Plucked String, Comb and Flanger templates with examples and golden renders. Size M.
+1. The window: the editor-only layout drawn in the host's window, focus, text, drag and drop, scaling. Size L, the main risk.
+2. More than one instance in a process: the UI waker and the other process-wide state. Size M.
+3. VST3 and AU through the wrapper, packaging, and an owed pass in real hosts on the Mac. Size M.
 
 ## Planned: low-latency monitoring (#548)
 

@@ -220,7 +220,7 @@ impl ClipEditor {
     }
 
     /// What is being edited, if the editor is open.
-    pub fn subject(&self) -> Option<Subject> {
+    pub(crate) fn subject(&self) -> Option<Subject> {
         self.subject
     }
 

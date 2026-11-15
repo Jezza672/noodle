@@ -124,6 +124,9 @@ struct Shared {
     clock: Arc<AudioClock>,
     open: OpenSink,
     state: Mutex<State>,
+    /// The rings of the nodes on the host's port, which a host backend
+    /// reads in its own callback (no sender thread, no clock of the wall).
+    host: Mutex<Vec<Consumer<OutMessage>>>,
 }
 
 /// What the MIDI Out nodes send through. Cloning gives another handle to the
@@ -146,6 +149,7 @@ impl MidiOutHub {
                 clock,
                 open,
                 state: Mutex::new(State::default()),
+                host: Mutex::new(Vec::new()),
             }),
         }
     }
@@ -154,11 +158,39 @@ impl MidiOutHub {
         &self.shared.clock
     }
 
+    /// Hands `take` every message the nodes on the host's port have queued,
+    /// oldest first within a node. For the audio thread of a host backend: it
+    /// doesn't block (if a node is being added, it takes nothing this time)
+    /// or allocate.
+    pub fn drain_host(&self, take: &mut dyn FnMut(OutMessage)) {
+        let Ok(mut rings) = self.shared.host.try_lock() else {
+            return;
+        };
+        for ring in rings.iter_mut() {
+            while let Ok(message) = ring.pop() {
+                take(message);
+            }
+        }
+    }
+
     /// A way to send to the port called `port`; an empty name sends nowhere.
     /// Starts the sender thread if it isn't running. Locks, so not for the
     /// audio thread.
     pub fn sender(&self, port: &str) -> MidiOutSender {
         let (producer, ring) = RingBuffer::new(RING);
+        if port == crate::HOST_MIDI_PORT {
+            // Host MIDI Out: a host backend takes these in its callback.
+            let mut rings = self.shared.host.lock().expect("host midi lock");
+            // Pruned here, on the main thread: dropping a ring frees it.
+            rings.retain(|ring| !(ring.is_abandoned() && ring.is_empty()));
+            rings.push(ring);
+            drop(rings);
+            return MidiOutSender {
+                producer,
+                enabled: true,
+                clock: Arc::clone(&self.shared.clock),
+            };
+        }
         let mut state = self.shared.state.lock().expect("midi out lock");
         if !port.is_empty() {
             state.sources.push(Source {

@@ -28,12 +28,14 @@ mod eq;
 mod euclidean;
 mod event_delay;
 mod export;
+mod feedback;
 mod follower;
 mod freeze;
 mod fundamental;
 mod gain;
 mod grains;
 mod held_notes;
+mod host_param;
 mod humanise;
 mod ladder;
 mod lag;
@@ -150,6 +152,7 @@ pub use export::{
     ExportJobError, ExportReport, ExportRequest, TrackExport, export, spawn_export,
     spawn_export_all,
 };
+pub use feedback::{FEEDBACK_ID, Feedback};
 pub use follower::{EnvelopeFollower, FOLLOWER_ID};
 pub use freeze::{
     FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,
@@ -160,6 +163,10 @@ pub use gain::{GAIN_ID, Gain};
 pub use grains::{
     DEFAULT_GRAINS, GRAINS_ID, GRAINS_KEY, Grains, MAX_GRAINS, MIN_GRAINS,
     SAMPLE_KEY as GRAINS_SAMPLE_KEY,
+};
+pub use host_param::{
+    HOST_PARAM_ID, HOST_PARAM_NAME, HOST_PARAM_NAME_KEY, HOST_PARAM_SLOT, HOST_PARAM_SLOT_KEY,
+    HostParam,
 };
 pub use humanise::{HUMANISE_ID, Humanise, MAX_TIMING_MS as HUMANISE_MAX_TIMING_MS};
 pub use ladder::{LADDER_ID, LADDER_SELF_OSCILLATES, Ladder, ladder_response};
@@ -278,6 +285,9 @@ pub struct Library {
     pub midi: noodle_io::MidiBus,
     /// Where MIDI Out nodes send their messages to.
     pub midi_out: noodle_io::MidiOutHub,
+    /// The host's parameter bank, tempo and play state: what the Host
+    /// Parameter nodes read. A plugin shell hands it to its host backend.
+    pub host: std::sync::Arc<noodle_io::HostLink>,
     /// Where Sampler nodes get their samples, by hash. Give it a folder
     /// ([`SampleStore::set_dir`]) to read them from disk.
     pub samples: SampleStore,
@@ -321,6 +331,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Math);
     registry.register(Script);
     registry.register(Delay);
+    registry.register(Feedback);
     registry.register(Looper);
     registry.register(Morph);
     registry.register(Dynamics::new(&telemetry));
@@ -394,6 +405,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(MidiControl::new(&midi));
     let midi_out = noodle_io::MidiOutHub::new(std::sync::Arc::clone(midi.clock()));
     registry.register(MidiOut::new(&midi_out));
+    let host = noodle_io::HostLink::new();
+    registry.register(HostParam::new(&host));
     let samples = SampleStore::new();
     registry.register(if clips.is_blocking() {
         Sampler::blocking(&samples, &telemetry)
@@ -402,13 +415,14 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     });
     registry.register(Slice::new(&samples));
     registry.register(Wavetable::new(&samples));
-    registry.register(Grains::new(&samples));
+    registry.register(Grains::new(&samples, &telemetry));
     registry.register(Convolver::new(&samples));
     Library {
         telemetry,
         clips,
         midi,
         midi_out,
+        host,
         samples,
     }
 }

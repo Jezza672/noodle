@@ -100,6 +100,34 @@ impl<'a> SignalIn<'a> {
         }
     }
 
+    /// Copies frames `start..start + len` of every lane into `to`, packed
+    /// `len` apart, and views the copy. The constant carries over, and so do
+    /// the silence flags (they hold for the whole block, so for any part of
+    /// it) unless `silent` gives the flags for just this part.
+    pub(crate) fn window_into<'b>(
+        &self,
+        start: usize,
+        len: usize,
+        to: &'b mut [f32],
+        silent: Option<&'b [bool]>,
+    ) -> SignalIn<'b>
+    where
+        'a: 'b,
+    {
+        let lanes = self.shape.lanes();
+        for lane in 0..lanes {
+            let from = lane * self.frames + start;
+            to[lane * len..(lane + 1) * len].copy_from_slice(&self.data[from..from + len]);
+        }
+        SignalIn {
+            data: &to[..lanes * len],
+            shape: self.shape,
+            frames: len,
+            constant: self.constant,
+            silent: silent.unwrap_or(self.silent),
+        }
+    }
+
     /// Attaches the producer's silence flags, one per lane (see
     /// [`SignalIn::is_silent`]).
     pub fn with_silent(self, silent: &'a [bool]) -> Self {

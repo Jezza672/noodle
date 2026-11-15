@@ -1839,6 +1839,7 @@ mod tests {
             silent: true,
             sounding: 1,
             voices: 4,
+            ..Default::default()
         };
         writer.write(state);
         let mut bodies = Bodies::default();

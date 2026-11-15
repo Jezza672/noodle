@@ -2755,6 +2755,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "noodle-plugin"
+version = "0.1.0"
+dependencies = [
+ "base64 0.22.1",
+ "clack-extensions",
+ "clack-plugin",
+ "noodle-app",
+ "noodle-core",
+ "noodle-engine",
+ "noodle-io",
+ "noodle-nodes",
+ "noodle-plugins",
+]
+
+[[package]]
 name = "noodle-plugins"
 version = "0.1.0"
 dependencies = [
