@@ -127,6 +127,7 @@ impl BlockParams {
             signature_start: self.signature_start,
             count_in: false,
             version: 0,
+            key: noodle_core::Key::default(),
         }
     }
 }

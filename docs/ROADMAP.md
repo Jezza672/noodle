@@ -81,8 +81,7 @@ Seven features picked from a shortlist in November 2026. Each issue holds the de
 
 **Harmony and chance nodes (#538).** Scale Quantise, Chord, Transpose, Euclidean and Chance on the events wire, and a Song Key source node (named apart from the existing Key node, which makes notes from a gate) that puts the timeline's key on a wire (the pattern of ADR 0008).
 
-1. Scale Quantise, Chord, Transpose, the Song Key node and `Transport::key`. Size M.
-2. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M.
+1. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M. (Scale Quantise, Chord, Transpose, Song Key and `Transport::key` are built: [features/harmony-nodes.md](features/harmony-nodes.md).)
 
 **Wavetable follow-ups.** `cycle` guessed from the file (a `clm ` chunk, or a length that is a multiple of 2048) with the config overriding it; a `wavetable` tag on the shipped tables and the Sounds panel listing system samples so it can filter for them; a grain delay (Grains from live input) as a second node. Size S each.
 
@@ -118,8 +117,8 @@ A wired feedback loop as tight as the patch asks for, with no setting. The compi
 
 The least delay the hardware allows while a track is armed or monitored, chosen automatically, and a larger device buffer when nobody is recording. One setting, Monitoring latency (Auto, Always low, Off). The engine block stays 128 so cache entries stay valid; the device buffer is what moves. (So the deferred idea below, of the engine block following the device period, is not part of this.)
 
-1. The monitored path is not held back by other tracks' plugin latency (`plan::compensate` leaves the live cone out), with the readout and the setting. Size M.
-2. The device buffer follows arming: Low (64) while armed or monitored, Normal (256), Relaxed (1024) when idle; the stream reopens only when stopped and never during a take. Owed on the Mac: the gap on arming and a power measurement. Size M.
+Chunks 1 and 2 are built (`features/low-latency-monitoring.md`). Owed on the Mac: the gap when arming reopens the stream, and a power measurement of the relaxed buffer.
+
 3. Only the live cone runs in the device callback. Today a cluster with no entry plays live until the background `Freezing` render finishes and swaps in; this adds a streaming render that keeps just ahead of the playhead and is played while it fills, with an ADR for the change to that rule. Size L, and it may want two PRs (the streaming entry, then the hand-over on edits and shortfalls).
 
 ## Owed: needs a person on real hardware

@@ -98,6 +98,6 @@ pub use telemetry::{
     LOAD_BUCKETS, Level, MeterReader, MeterWriter, NodeActivity, ParamReading, ParamWriter,
     PositionWriter, ScopeView, ScopeWriter, StateWriter, Telemetry,
 };
-pub use tempo::TempoTable;
+pub use tempo::{KeyTable, TempoTable};
 pub mod wake;
 pub use transport::{InputTap, TAP_CHANNELS, TransportControl};

@@ -1333,6 +1333,122 @@
         ),
     )),
     NodePreset((
+        name: "C Major",
+        slug: "scale-quantise-c-major",
+        node_type: "noodle.event.scale_quantise",
+        values: (
+            params: {
+                "root": 0.0,
+                "scale": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "A Minor Pentatonic",
+        slug: "scale-quantise-a-minor-pentatonic",
+        node_type: "noodle.event.scale_quantise",
+        values: (
+            params: {
+                "root": 9.0,
+                "scale": 10.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "D Dorian Up",
+        slug: "scale-quantise-d-dorian-up",
+        node_type: "noodle.event.scale_quantise",
+        values: (
+            params: {
+                "direction": 2.0,
+                "root": 2.0,
+                "scale": 2.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Triad",
+        slug: "chord-triad",
+        node_type: "noodle.event.chord",
+        values: (
+            params: {
+                "type": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Minor Seventh Strum",
+        slug: "chord-minor-seventh-strum",
+        node_type: "noodle.event.chord",
+        values: (
+            params: {
+                "strum": 40.0,
+                "type": 9.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Open Fifth",
+        slug: "chord-open-fifth",
+        node_type: "noodle.event.chord",
+        values: (
+            params: {
+                "spread": 1.0,
+                "type": 11.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Octave Up",
+        slug: "transpose-octave-up",
+        node_type: "noodle.event.transpose",
+        values: (
+            params: {
+                "semitones": 12.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Octave Down",
+        slug: "transpose-octave-down",
+        node_type: "noodle.event.transpose",
+        values: (
+            params: {
+                "semitones": -12.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Fifth Up",
+        slug: "transpose-fifth-up",
+        node_type: "noodle.event.transpose",
+        values: (
+            params: {
+                "semitones": 7.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Written in C Major",
+        slug: "song-key-written-in-c-major",
+        node_type: "noodle.mod.key",
+        values: (
+            params: {
+                "from": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Written in A Minor",
+        slug: "song-key-written-in-a-minor",
+        node_type: "noodle.mod.key",
+        values: (
+            params: {
+                "from": 21.0,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Keyboard Split at C3",
         slug: "note-split-keyboard-split-at-c3",
         node_type: "noodle.event.note_split",

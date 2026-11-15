@@ -1531,6 +1531,16 @@ fn a_sampler_chain_with_dynamics_and_reverb_never_allocates_through_notes_edits_
             .with_param("timing", 10.0)
             .with_param("velocity", 0.3),
     );
+    // The pitch nodes after them: Song Key's outputs wired into Scale Quantise
+    // and Transpose, and a strummed Chord.
+    let song_key = s.add(Node::new("noodle.mod.key").with_param("from", 3.0));
+    let quantise = s.add(Node::new("noodle.event.scale_quantise").with_param("direction", 2.0));
+    let chord = s.add(
+        Node::new("noodle.event.chord")
+            .with_param("type", 7.0)
+            .with_param("strum", 30.0),
+    );
+    let transpose = s.add(Node::new("noodle.event.transpose").with_param("semitones", 3.0));
     // A Choke Gate before the split: the swung notes also arrive on its
     // `choke` input, so each cuts the ones still sounding.
     let gate = s.add(Node::new("noodle.event.choke_gate"));
@@ -1559,7 +1569,13 @@ fn a_sampler_chain_with_dynamics_and_reverb_never_allocates_through_notes_edits_
     s.wire(key, "out", arp, "in");
     s.wire(arp, "out", swing, "in");
     s.wire(swing, "out", humanise, "in");
-    s.wire(humanise, "out", gate, "in");
+    s.wire(song_key, "root", quantise, "root");
+    s.wire(song_key, "scale", quantise, "scale");
+    s.wire(song_key, "shift", transpose, "semitones");
+    s.wire(humanise, "out", quantise, "in");
+    s.wire(quantise, "out", chord, "in");
+    s.wire(chord, "out", transpose, "in");
+    s.wire(transpose, "out", gate, "in");
     s.wire(swing, "out", gate, "choke");
     s.wire(gate, "out", split, "in");
     s.wire(split, "out1", low, "in");
@@ -1595,6 +1611,8 @@ fn a_sampler_chain_with_dynamics_and_reverb_never_allocates_through_notes_edits_
             (eq, "gain1", round as f32 - 8.0),
             (reverb, "decay", 0.5 + round as f32 * 0.2),
             (low, "tune", 10.0 * round as f32),
+            (chord, "type", (round % 13) as f32),
+            (chord, "strum", 5.0 * round as f32),
         ] {
             s.controller.set_param(node, key, value);
         }

@@ -46,6 +46,13 @@ pub struct AudioConfig {
     /// for [`LIVE_BUFFER`] frames where the device allows, and otherwise
     /// lets the device decide.
     pub buffer_size: Option<u32>,
+    /// The size to ask for in place of [`LIVE_BUFFER`] when `buffer_size` is
+    /// `None`, set by the app as monitoring comes and goes (see
+    /// `Monitoring latency`). Like the automatic size it is only a request:
+    /// it is moved into the span the device takes, and a device that refuses
+    /// it is left to choose. Never saved.
+    #[serde(skip)]
+    pub live_buffer: Option<u32>,
     /// Channels to open the main output device with, for surround or a
     /// multichannel interface. `None` uses the device's default (usually
     /// two); a count the device lacks is an error rather than a guess.
