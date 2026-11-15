@@ -21,6 +21,7 @@ pub mod learn_midi;
 mod library;
 pub mod make_external;
 pub mod map_to;
+pub mod morph;
 pub mod record_automation;
 mod render_clip;
 pub mod replace;
@@ -152,6 +153,15 @@ pub enum Edit {
     /// holding the parameter's value in every version, as one undo step (see
     /// [`versions`]). It starts the version list if the project has none.
     VaryPerVersion(noodle_core::Endpoint),
+    /// Morph between presets on a group: a Morph node inside it, wired into
+    /// every parameter that differs between library group presets `a` and
+    /// `b`, with `position` exposed as the group input `morph`, as one undo
+    /// step (see [`morph`]).
+    MorphPresets {
+        group: NodeId,
+        a: String,
+        b: String,
+    },
     /// Arms or disarms an Automation node for recording (see
     /// [`record_automation`]). Session state: not an undo step, not saved.
     ArmAutomation {
@@ -2027,6 +2037,16 @@ impl Session {
                         Ok(command) => command,
                         Err(error) => {
                             self.message = Some(format!("Couldn't vary per version: {error}"));
+                            continue;
+                        }
+                    }
+                }
+                Edit::MorphPresets { group, a, b } => {
+                    self.history.end_group();
+                    match self.morph_presets(group, &a, &b) {
+                        Ok(command) => command,
+                        Err(error) => {
+                            self.message = Some(format!("Couldn't morph: {error}"));
                             continue;
                         }
                     }

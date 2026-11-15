@@ -16,6 +16,7 @@ mod clip;
 mod clock;
 mod comparator;
 mod control;
+mod convolver;
 mod curve;
 mod delay;
 mod distortion;
@@ -34,12 +35,14 @@ mod lag;
 mod launch_quantise;
 mod level;
 mod lfo;
+mod looper;
 mod math;
 mod meter;
 mod metronome;
 mod midi_in;
 mod midi_out;
 mod mix;
+mod morph;
 mod noise;
 mod normalize;
 mod note_split;
@@ -66,6 +69,8 @@ mod script;
 mod selector;
 mod slice;
 mod spectral;
+mod spectral_dynamics;
+mod spectral_pitch;
 mod spectrum;
 mod stage;
 mod surround;
@@ -113,6 +118,7 @@ pub use control::{
     ENCODER_BINARY_OFFSET, ENCODER_SIGN_MAGNITUDE, ENCODER_TWOS_COMPLEMENT, MIDI_CONTROL_ID,
     MidiControl, PITCH_BEND as CONTROL_PITCH_BEND, PRESSURE as CONTROL_PRESSURE,
 };
+pub use convolver::{CONVOLVER_ID, Convolver};
 pub use curve::{Curve, CurvePoint, Handle, LUT_STEPS, lookup};
 pub use delay::{DELAY_ID, Delay, MAX_TIME as DELAY_MAX_TIME};
 pub use distortion::{DISTORTION_ID, Distortion, SHAPES as DISTORTION_SHAPES, shaper};
@@ -144,12 +150,18 @@ pub use ladder::{LADDER_ID, LADDER_SELF_OSCILLATES, Ladder, ladder_response};
 pub use lag::{LAG_ID, Lag};
 pub use launch_quantise::{LAUNCH_QUANTISE_ID, LaunchQuantise};
 pub use lfo::{LFO_ID, Lfo, lfo_wave};
+pub use looper::{LOOPER_ID, Looper};
 pub use math::{MATH_ID, Math};
 pub use meter::{METER_ID, Meter};
 pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
 pub use midi_in::{MIDI_IN_ID, MIDI_PORT, MIDI_PORT_KEY, MidiIn};
 pub use midi_out::{MIDI_OUT_ID, MIDI_OUT_PORT, MIDI_OUT_PORT_KEY, MidiOut};
 pub use mix::Mix;
+pub use morph::{
+    MAX_ROWS as MORPH_MAX_ROWS, MORPH_ID, MORPH_POSITION, MORPH_TARGETS, Morph, MorphRow,
+    morph_config, morph_output_key, rows_from_text as morph_rows_from_text,
+    rows_to_text as morph_rows_to_text,
+};
 pub use noise::WhiteNoise;
 pub use normalize::{NORMALIZE_ID, Normalize};
 pub use note_split::{NOTE_SPLIT_ID, NoteSplit, param_index as note_split_param};
@@ -201,6 +213,10 @@ pub use spectral::{
     SPECTRAL_FILTER_ID, SPECTRAL_FREEZE_ID, SPECTRAL_GATE_ID, SPECTRAL_SHIFT_ID, SYNTHESIZE_ID,
     SpectralBlur, SpectralFilter, SpectralFreeze, SpectralGate, SpectralShift, Synthesize,
 };
+pub use spectral_dynamics::{
+    SPECTRAL_COMPRESS_ID, SPECTRAL_DENOISE_ID, SpectralCompress, SpectralDenoise,
+};
+pub use spectral_pitch::{SPECTRAL_PITCH_ID, SPECTRAL_STRETCH_ID, SpectralPitch, SpectralStretch};
 pub use spectrum::{
     FLOOR_DB as SPECTRUM_FLOOR_DB, HIGH_HZ as SPECTRUM_HIGH_HZ, LOW_HZ as SPECTRUM_LOW_HZ,
     SPECTRUM_ID, Spectrum, SpectrumAnalyser, WINDOW as SPECTRUM_WINDOW, column_frequency,
@@ -283,6 +299,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Math);
     registry.register(Script);
     registry.register(Delay);
+    registry.register(Looper);
+    registry.register(Morph);
     registry.register(Dynamics::new(&telemetry));
     registry.register(ParametricEq);
     registry.register(Reverb);
@@ -301,6 +319,10 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(FormantShift);
     registry.register(SpectralFreeze);
     registry.register(SpectralBlur);
+    registry.register(SpectralPitch);
+    registry.register(SpectralStretch);
+    registry.register(SpectralCompress);
+    registry.register(SpectralDenoise);
     registry.register(Cross);
     registry.register(Comparator);
     registry.register(Automation);
@@ -351,6 +373,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
         Sampler::new(&samples, &telemetry)
     });
     registry.register(Slice::new(&samples));
+    registry.register(Convolver::new(&samples));
     Library {
         telemetry,
         clips,

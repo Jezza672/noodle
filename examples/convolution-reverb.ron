@@ -1,0 +1,40 @@
+// A convolution reverb. A saw plucks A3 and goes through a Convolver whose
+// impulse response, `ir-hall` (a synthetic concert-hall tail shipped with the
+// program), comes in on a Sample node. The Convolver's output is mixed with
+// the dry pluck at -9 dB, so the pluck rings into the room. The Convolver
+// delays its output by one 256-sample block and says so, so the dry path is
+// delayed to match and the two stay in time.
+(
+    format: 4,
+    graph: (
+        nodes: {
+            1: (type: "noodle.input.button", params: {"state": 1.0}, position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.event.key", params: {"note": 57.0, "velocity": 0.9}, position: (x: 200.0, y: 0.0)),
+            3: (type: "noodle.event.mono", position: (x: 400.0, y: 0.0)),
+            4: (type: "noodle.osc.saw", position: (x: 600.0, y: -80.0)),
+            5: (type: "noodle.filter.svf", params: {"cutoff": 1800.0, "resonance": 0.2}, position: (x: 800.0, y: -80.0)),
+            6: (type: "noodle.mod.adsr", params: {"attack": 0.002, "decay": 0.04, "sustain": 0.0, "release": 0.05}, position: (x: 600.0, y: 100.0)),
+            7: (type: "noodle.util.vca", position: (x: 1000.0, y: 0.0)),
+            8: (type: "noodle.instrument.sample", config: {"sample": "f87d4d277b041a35981d236d04e930681a1721f6f5726f13f49012ee40d48703"}, position: (x: 1000.0, y: 250.0)),
+            9: (type: "noodle.effect.convolver", position: (x: 1200.0, y: 100.0)),
+            10: (type: "noodle.util.mix", params: {"gain2": -9.0}, position: (x: 1400.0, y: 0.0)),
+            11: (type: "noodle.util.gain", params: {"gain": -9.0}, position: (x: 1600.0, y: 0.0)),
+            12: (type: "noodle.io.output", position: (x: 1800.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 2, port: "gate")),
+            (from: (node: 2, port: "out"), to: (node: 3, port: "in")),
+            (from: (node: 3, port: "pitch"), to: (node: 4, port: "frequency")),
+            (from: (node: 3, port: "gate"), to: (node: 6, port: "gate")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+            (from: (node: 5, port: "low"), to: (node: 7, port: "in")),
+            (from: (node: 6, port: "out"), to: (node: 7, port: "level")),
+            (from: (node: 7, port: "out"), to: (node: 9, port: "in")),
+            (from: (node: 8, port: "sample"), to: (node: 9, port: "ir")),
+            (from: (node: 7, port: "out"), to: (node: 10, port: "in1")),
+            (from: (node: 9, port: "out"), to: (node: 10, port: "in2")),
+            (from: (node: 10, port: "out"), to: (node: 11, port: "in")),
+            (from: (node: 11, port: "out"), to: (node: 12, port: "in")),
+        ],
+    )
+)

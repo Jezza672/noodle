@@ -62,6 +62,7 @@ impl Harness {
             max_frames,
             seed,
             0,
+            crate::FFT_SIZE,
         )
     }
 
@@ -76,6 +77,30 @@ impl Harness {
         sample_rate: f32,
         max_frames: usize,
     ) -> Result<Self, NodeError> {
+        Self::with_spectral_size(
+            node_type,
+            config,
+            connected,
+            spectral,
+            crate::FFT_SIZE,
+            sample_rate,
+            max_frames,
+        )
+    }
+
+    /// Like [`with_spectral`](Self::with_spectral), with the spectral inputs
+    /// carrying frames of `input_size` samples. The node's own spectral size
+    /// is what it makes of that ([`NodeType::spectral_size`]), so an Analyze
+    /// has the size its config asks for.
+    pub fn with_spectral_size(
+        node_type: &dyn NodeType,
+        config: &Config,
+        connected: &[(usize, Shape)],
+        spectral: &[Shape],
+        input_size: usize,
+        sample_rate: f32,
+        max_frames: usize,
+    ) -> Result<Self, NodeError> {
         Self::build(
             node_type,
             config,
@@ -85,6 +110,7 @@ impl Harness {
             max_frames,
             0,
             0,
+            input_size,
         )
     }
 
@@ -108,6 +134,7 @@ impl Harness {
             max_frames,
             0,
             position,
+            crate::FFT_SIZE,
         )
     }
 
@@ -121,6 +148,7 @@ impl Harness {
         max_frames: usize,
         seed: u64,
         position: u64,
+        input_size: usize,
     ) -> Result<Self, NodeError> {
         let connected_shape =
             |port: usize| connected.iter().find(|(p, _)| *p == port).map(|(_, s)| *s);
@@ -143,6 +171,8 @@ impl Harness {
             "output_shapes must return one shape per output"
         );
 
+        let spectral_size =
+            node_type.spectral_size(config, &vec![Some(input_size); spectral.len()])?;
         let instance = node_type.instantiate(&Setup {
             node: noodle_core::NodeId(0),
             config,
@@ -150,6 +180,7 @@ impl Harness {
             max_frames,
             input_shapes: &input_shapes,
             output_shapes: &output_shapes,
+            spectral_size,
             seed,
             position,
         })?;
@@ -184,11 +215,21 @@ impl Harness {
                 .collect(),
             spectral_inputs: spectral
                 .iter()
-                .map(|&shape| (shape, SpectralBuf::new(shape.lanes(), max_frames)))
+                .map(|&shape| {
+                    (
+                        shape,
+                        SpectralBuf::with_size(shape.lanes(), max_frames, input_size),
+                    )
+                })
                 .collect(),
             spectral_outputs: output_shapes[layout.outputs.len()..]
                 .iter()
-                .map(|&shape| (shape, SpectralBuf::new(shape.lanes(), max_frames)))
+                .map(|&shape| {
+                    (
+                        shape,
+                        SpectralBuf::with_size(shape.lanes(), max_frames, spectral_size),
+                    )
+                })
                 .collect(),
             event_inputs: layout.event_inputs.iter().map(|_| Vec::new()).collect(),
             event_outputs: layout

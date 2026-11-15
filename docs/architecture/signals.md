@@ -63,11 +63,14 @@ reference to a sample instead of signal:
   - **Testing:** `Harness::send_events` and `Harness::events` feed and read a
     node's event ports.
 - **Spectral:** FFT frames, for processing a sound by its frequencies. Every
-  `HOP` (512) samples a spectral wire carries one frame per lane: `BINS`
-  (1025) complex bins from 0 Hz to Nyquist, an `FFT_SIZE` (2048) Hann window
-  of the last samples (`noodle_engine::spectral`). The frame size is the same
-  for the whole engine, which is what lets any spectral node feed any other
-  (decision in ADR 0007). Bins are scaled so a sine of amplitude `a` has
+  `hop` samples a spectral wire carries one frame per lane: `bins`
+  complex bins from 0 Hz to Nyquist, a Hann window of the last `size` samples,
+  with hop = size / 4 (`noodle_engine::spectral`). The size is per wire: an
+  Analyze's `size` config (256 to 8192, default `FFT_SIZE` 2048, so `HOP` 512
+  and `BINS` 1025) sets it and every spectral node downstream adopts it
+  (`NodeType::spectral_size`, `Setup::spectral_size`; the compiler's
+  `infer_spectral_sizes` reports a node whose spectral inputs differ;
+  ADR 0007). Bins are scaled so a sine of amplitude `a` has
   magnitude `a` on its bin.
   - **In the graph:** spectral ports are their own kind (`Layout::spectral_input`
     and `spectral_output`, drawn as violet squares and wires, and
@@ -120,7 +123,11 @@ reference to a sample instead of signal:
     vocoder's character at any frame size; the modulator's latest frame is used
     for each carrier frame, so the two analysers need not have started
     together) and `Selector` (one of N spectral inputs by `which`, switching
-    at the first frame after a change; see `synths-and-library.md`).
+    at the first frame after a change; see `synths-and-library.md`),
+    `Spectral Pitch`, `Spectral Stretch`, `Spectral Compress` and
+    `Spectral Denoise` (see `features/spectral-effects.md`). The Convolver
+    (`noodle.effect.convolver`, an audio node with an impulse-response sample
+    input) is the library's Convolution Reverb.
   - **Caching:** a node's cache key covers its spectral inputs like its event
     inputs, so a freeze across a spectral chain keys correctly. Offline nodes
     take no spectral input.

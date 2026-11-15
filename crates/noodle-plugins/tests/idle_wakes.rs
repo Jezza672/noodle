@@ -24,6 +24,7 @@ fn an_idle_plugin_thread_does_not_wake_until_asked() {
             max_frames: 256,
             input_shapes: &[],
             output_shapes: &[],
+            spectral_size: noodle_engine::FFT_SIZE,
             seed: 0,
             position: 0,
         })

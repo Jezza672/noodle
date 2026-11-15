@@ -270,6 +270,7 @@ fn state_and_editor(_sandbox: Sandboxed) {
             max_frames: FRAMES,
             input_shapes: &[],
             output_shapes: &[],
+            spectral_size: noodle_engine::FFT_SIZE,
             seed: 0,
             position: 0,
         })
