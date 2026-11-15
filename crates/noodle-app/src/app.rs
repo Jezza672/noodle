@@ -71,6 +71,9 @@ pub(crate) fn shortcut_chords() -> Vec<KeyboardShortcut> {
 }
 
 pub struct App {
+    /// Drawn in a plugin's window: the node editor and its panels, with no
+    /// arrangement, piano roll or clip editor (the host has the timeline).
+    plugin_layout: bool,
     /// The view the Edit menu's Cut, Copy, Paste and Duplicate act on: the
     /// last one clicked in.
     focus: Focus,
@@ -320,10 +323,19 @@ fn added_automation_node(edits: &[Edit]) -> Option<noodle_core::NodeId> {
     })
 }
 
+// A plugin's window runs the app on its own thread (and on the host's main
+// thread in other plugins' hosts), so it has to be `Send`: nothing in it may
+// be an `Rc`, a bare `dyn` without `Send`, or the like.
+const _: () = {
+    const fn assert_send<T: Send>() {}
+    assert_send::<App>();
+};
+
 impl App {
     pub fn new(session: Session) -> Self {
         let templates = session.templates();
         let mut app = Self {
+            plugin_layout: false,
             session,
             version_edits: std::cell::RefCell::new(Vec::new()),
             editor: EditorState::default(),
@@ -370,15 +382,27 @@ impl App {
         app
     }
 
+    /// An app for a plugin's window: the editor-only layout.
+    pub fn new_plugin(session: Session) -> Self {
+        let mut app = Self::new(session);
+        app.plugin_layout = true;
+        app
+    }
+
+    /// The session, for the plugin shell, whose host asks things of it.
+    pub fn session(&self) -> &Session {
+        &self.session
+    }
+
+    /// The session, mutably.
+    pub fn session_mut(&mut self) -> &mut Session {
+        &mut self.session
+    }
+
     /// Turns autosave on, and offers whatever a crashed run left in it.
     pub fn set_autosave(&mut self, autosave: crate::autosave::Autosave) {
         self.recovery = autosave.pending();
         self.autosave = Some(autosave);
-    }
-
-    #[cfg(test)]
-    pub fn session_mut(&mut self) -> &mut Session {
-        &mut self.session
     }
 
     #[cfg(test)]
@@ -402,11 +426,6 @@ impl App {
     #[cfg(test)]
     pub fn cache_panel_open(&self) -> bool {
         self.cache_panel.is_open()
-    }
-
-    #[cfg(test)]
-    pub fn session(&self) -> &Session {
-        &self.session
     }
 
     #[cfg(test)]
@@ -660,57 +679,59 @@ impl App {
         self.browser
             .show(ui, &self.session, &mut self.editor, &mut self.sounds);
 
-        let arrangement = egui::Panel::top("arrangement")
-            .resizable(true)
-            .default_size(theme::timeline::DEFAULT_HEIGHT)
-            .frame(egui::Frame::NONE)
-            .show(ui, |ui| {
-                #[cfg(test)]
-                crate::testkit::mark_view(ui, "timeline");
-                let playhead = Some(self.session.playhead());
-                let out = timeline::show(ui, &mut self.timeline, &self.session, playhead);
-                let automation = added_automation_node(&out.edits);
-                self.session.edit(out.edits);
-                if let Some(tick) = out.seek {
-                    self.session.seek(tick);
-                }
-                if let Some(notice) = out.notice {
-                    self.session.notify(notice);
-                }
-                #[cfg(test)]
-                ui.data_mut(|d| {
-                    d.insert_temp(
-                        egui::Id::new("arrangement content height"),
-                        ui.min_rect().height(),
-                    );
-                });
-                if let Some(node) = automation {
-                    self.editor.reveal_top_level(node);
-                }
-                if let Some(region) = out.set_loop {
-                    self.session.set_loop(region);
-                }
-                if !ui.input(|i| i.pointer.any_down()) {
-                    self.session.settle_loop();
-                }
-                if let Some(target) = out.pick {
-                    self.import_audio(target);
-                }
-                if let Some(clip) = out.open_midi {
-                    self.clip_editor.close();
-                    self.piano_roll.open(clip);
-                }
-                if let Some(audition) = out.audition {
-                    self.session.set_take_audition(audition);
-                }
-                if let Some(clip) = out.open_audio {
-                    self.piano_roll.close();
-                    self.clip_editor.open(clip);
-                }
-                for (track, kind, on) in out.arm {
-                    self.session.arm_kind(track, kind, on);
-                }
-            });
+        let arrangement = (!self.plugin_layout).then(|| {
+            egui::Panel::top("arrangement")
+                .resizable(true)
+                .default_size(theme::timeline::DEFAULT_HEIGHT)
+                .frame(egui::Frame::NONE)
+                .show(ui, |ui| {
+                    #[cfg(test)]
+                    crate::testkit::mark_view(ui, "timeline");
+                    let playhead = Some(self.session.playhead());
+                    let out = timeline::show(ui, &mut self.timeline, &self.session, playhead);
+                    let automation = added_automation_node(&out.edits);
+                    self.session.edit(out.edits);
+                    if let Some(tick) = out.seek {
+                        self.session.seek(tick);
+                    }
+                    if let Some(notice) = out.notice {
+                        self.session.notify(notice);
+                    }
+                    #[cfg(test)]
+                    ui.data_mut(|d| {
+                        d.insert_temp(
+                            egui::Id::new("arrangement content height"),
+                            ui.min_rect().height(),
+                        );
+                    });
+                    if let Some(node) = automation {
+                        self.editor.reveal_top_level(node);
+                    }
+                    if let Some(region) = out.set_loop {
+                        self.session.set_loop(region);
+                    }
+                    if !ui.input(|i| i.pointer.any_down()) {
+                        self.session.settle_loop();
+                    }
+                    if let Some(target) = out.pick {
+                        self.import_audio(target);
+                    }
+                    if let Some(clip) = out.open_midi {
+                        self.clip_editor.close();
+                        self.piano_roll.open(clip);
+                    }
+                    if let Some(audition) = out.audition {
+                        self.session.set_take_audition(audition);
+                    }
+                    if let Some(clip) = out.open_audio {
+                        self.piano_roll.close();
+                        self.clip_editor.open(clip);
+                    }
+                    for (track, kind, on) in out.arm {
+                        self.session.arm_kind(track, kind, on);
+                    }
+                })
+        });
 
         // A double-click on a Sampler's preview in the properties panel.
         if let Some(node) = crate::sample_view::take_request(ui.ctx()) {
@@ -742,7 +763,7 @@ impl App {
         }
 
         let mut roll_rect = None;
-        if let Some(clip) = self.piano_roll.clip() {
+        if let Some(clip) = self.piano_roll.clip().filter(|_| !self.plugin_layout) {
             roll_rect = Some(
                 egui::Panel::top("piano roll")
                     .resizable(true)
@@ -770,7 +791,7 @@ impl App {
             );
         }
         self.clip_editor.retain_existing(self.session.project());
-        if let Some(subject) = self.clip_editor.subject() {
+        if let Some(subject) = self.clip_editor.subject().filter(|_| !self.plugin_layout) {
             egui::Panel::top("clip editor")
                 .resizable(true)
                 .default_size(clip_editor::DEFAULT_HEIGHT)
@@ -824,7 +845,7 @@ impl App {
             });
         self.track_focus(
             ui.ctx(),
-            arrangement.response.rect,
+            arrangement.map(|a| a.response.rect),
             roll_rect,
             graph.response.rect,
         );
@@ -2757,7 +2778,7 @@ impl App {
     fn track_focus(
         &mut self,
         ctx: &egui::Context,
-        arrangement: egui::Rect,
+        arrangement: Option<egui::Rect>,
         roll: Option<egui::Rect>,
         graph: egui::Rect,
     ) {
@@ -2771,7 +2792,7 @@ impl App {
         {
             return;
         }
-        if arrangement.contains(at) {
+        if arrangement.is_some_and(|a| a.contains(at)) {
             self.focus = Focus::Arrangement;
         } else if roll.is_some_and(|r| r.contains(at)) {
             self.focus = Focus::Notes;

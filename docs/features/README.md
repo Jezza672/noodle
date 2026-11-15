@@ -62,4 +62,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [looper.md](looper.md) | The Looper node: record, loop on the bar, overdub, undo, clear |
 | [preset-morph.md](preset-morph.md) | The Morph node and Morph between presets on a group |
 | [wavetable-and-grains.md](wavetable-and-grains.md) | Wavetable oscillator and Grains: nodes, shipped tables, three templates |
-| [noodle-as-a-plugin.md](noodle-as-a-plugin.md) | Noodle as a plugin, chunks 1 to 3: library split, host backend, headless CLAP, host transport and parameters |
+| [noodle-as-a-plugin.md](noodle-as-a-plugin.md) | Noodle as a plugin: library split, host backend, headless CLAP, host transport and parameters, the editor window, more than one instance, VST3 and AU |

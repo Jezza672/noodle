@@ -96,7 +96,7 @@ const MAX_PPS: f32 = 1200.0;
 
 pub struct TimelineState {
     /// The track list for the project revision it was worked out at.
-    tracks_cache: Option<(u64, std::rc::Rc<[NodeId]>)>,
+    tracks_cache: Option<(u64, std::sync::Arc<[NodeId]>)>,
     /// Zoom: screen points per second.
     pps: f32,
     /// How far the view is scrolled, in screen points.
@@ -234,11 +234,11 @@ impl Default for TimelineState {
 
 impl TimelineState {
     /// [`tracks`], worked out again only when the project changed.
-    fn tracks(&mut self, project: &Project) -> std::rc::Rc<[NodeId]> {
+    fn tracks(&mut self, project: &Project) -> std::sync::Arc<[NodeId]> {
         match &self.tracks_cache {
             Some((revision, tracks)) if *revision == project.revision() => tracks.clone(),
             _ => {
-                let tracks: std::rc::Rc<[NodeId]> = visible_tracks(project).into();
+                let tracks: std::sync::Arc<[NodeId]> = visible_tracks(project).into();
                 self.tracks_cache = Some((project.revision(), tracks.clone()));
                 tracks
             }
