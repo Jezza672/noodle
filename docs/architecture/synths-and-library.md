@@ -397,3 +397,6 @@ The formats are the contract with hosted sources, so any change bumps it.
   author or credit, unknown SPDX ids, empty custom licences, unsafe `file`
   paths, and files missing from `dir`. It does no network I/O and does not
   decode audio, so checking a hash against a file is the publisher's job.
+
+- **Looper** (`noodle.util.looper`): a nondeterministic Effects node that records, loops on the bar, overdubs and undoes one layer; the recording is session state and survives a seek. See [../features/looper.md](../features/looper.md).
+- **Morph between presets** (`noodle.mod.morph`, `Edit::MorphPresets`): one Morph node inside a group, one wire per parameter that differs between two group presets, `position` exposed as the group input `morph`. Wired parameters and config stay out. See [../features/preset-morph.md](../features/preset-morph.md).
