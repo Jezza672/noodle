@@ -823,7 +823,7 @@ mod tests {
         fs::create_dir_all(&dir).unwrap();
         noodle_io::write_wav(
             &dir.join("tone.wav"),
-            &vec![0.25f32; 2 * 48_000 * 4],
+            &vec![0.25f32; 2 * 48_000 * 60],
             2,
             48_000,
         )
@@ -869,7 +869,13 @@ mod tests {
             thread::sleep(Duration::from_millis(100));
             peak = tap.take().iter().fold(peak, |peak, s| peak.max(s.abs()));
         }
-        assert!(peak > 0.2, "noodle play is silent on a clip: peak {peak}");
+        assert!(
+            peak > 0.2,
+            "noodle play is silent on a clip: peak {peak}, at {} of {} Hz, {:?}",
+            controller.transport().position(),
+            playback.settings().sample_rate,
+            library.clips.status(track),
+        );
         fs::remove_dir_all(&dir).unwrap();
     }
 
