@@ -1,4 +1,4 @@
-# Looper node (#541), node only
+# Looper (#541)
 
 `noodle.util.looper` (Effects, `crates/noodle-nodes/src/looper.rs`): record the input, loop it on the bar, overdub, undo the last layer, clear. Every control is a parameter (`record`, `undo` and `clear` are rising edges, `play` mutes while the loop keeps running, `feedback`, `level`, `length` Auto/1/2/4/8 bars), so a Button, a MIDI Control or a Launch Quantise drives it through visible wires. Config `max_seconds` (default 30) sizes the two preallocated buffers.
 
@@ -9,4 +9,9 @@
 - **Shape:** one voice out, channels follow the input. Nondeterministic, so never cached or frozen. The recording is session state, not saved; `reset` (a seek) keeps it, so the node is skipped in `reset_matches_fresh.rs`. Changing `max_seconds` or the channel count loses the loop.
 - **Tests:** unit tests with `Harness` at 1 kHz (bar length, sine repeat, mid-bar stop, fixed length, overdub, feedback fold, undo, clear, reset, seam, mute); `looper_never_allocates_in_any_state` in `realtime.rs`. Each was shown to fail by breaking the code (no crossfade, no fold, no-op undo, reset clearing the loop, an allocation in `process`).
 
-Not done: the state and playhead display, the `system:template:looper` group (Buttons, Launch Quantise, Mono Note) and the S27 route, which stay in ROADMAP.md.
+## Display, template and route
+
+- **State display.** The node reports to the telemetry hub (`Telemetry::open_loop`, `read_loop`: state, whether a layer can be undone, whether a change waits for the loop's end, and the playhead as a fraction), one relaxed atomic write per block. The properties panel (`noodle-app/src/looper_panel.rs`) shows a coloured dot and the state in words, a bar with the playhead (while recording, how far through the fixed length or the most the buffers hold), and "Ends at the next bar line" style hints. It repaints while the engine runs.
+- **`system:template:looper`** (generated in `noodle-eval/src/song/system.rs`, presets Bar Loop, Four Bars, Fading Layers): the Looper with a Button each for record, undo and clear. Record goes Button, Key, Launch Quantise (the `grid` input, Hold), Mono Note's gate, into `record`, so the press lands on the bar line; undo and clear act at once. Group inputs: `in`, `record`, `undo`, `clear` (button states, so wire a Button or a MIDI Control to them), `play`, `grid`, `length`, `feedback`, `level`; output `out`, the loop alone, to mix with the dry signal.
+- **S27 route** "record a one-bar loop on the Looper pedal": a sine into the template, a Button into `record`, transport started, the loop heard.
+- **Tests:** `the_state_and_playhead_are_reported` (looper.rs), the route, and the library tests (34 templates, each with presets that fit).

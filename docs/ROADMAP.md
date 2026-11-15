@@ -69,7 +69,7 @@ deliberately deferred items.
 
 ## Planned: new nodes and MIDI files
 
-Seven features picked from a shortlist in November 2026. Each issue holds the design, the tests and the open questions; the chunks below are one PR each. Every instrument here ships as a group template built from the new primitive, never as a synth node. They are independent of each other, so the order is only a suggestion: quick wins first, then the two sound primitives, the looper and the morph.
+Seven features picked from a shortlist in November 2026 (the looper and the preset morph are built; see [features/looper.md](features/looper.md) and [features/preset-morph.md](features/preset-morph.md)). Each issue holds the design, the tests and the open questions; the chunks below are one PR each. Every instrument here ships as a group template built from the new primitive, never as a synth node. They are independent of each other, so the order is only a suggestion: quick wins first, then the two sound primitives.
 
 **MIDI file import and export (#540).** Drop a .mid on the timeline or use File > Import MIDI; export a clip, a track or the arrangement.
 
@@ -93,16 +93,6 @@ Seven features picked from a shortlist in November 2026. Each issue holds the de
 
 1. The node, an example with a golden render. Size M to L.
 2. The Grain Pad and Grain Freeze templates, the waveform and grains drawn on the node, the S17 route. Size M.
-
-**Looper (#541).** `noodle.util.looper`: record, loop on the bar, overdub, undo the last layer and clear, driven by gate parameters. The recording is session state and survives a seek, so the node is exempt from the reset-equals-fresh tests.
-
-1. ~~The node.~~ Done: see [features/looper.md](features/looper.md).
-2. The Looper template (Buttons, Launch Quantise, Mono Note for the gate), the state display, the S27 route. Size M.
-
-**Preset morph (#543).** "Morph between presets…" on a group adds one Morph node (`noodle.mod.morph`) with an output wired into every parameter that differs between two group presets, and exposes its `position` as a group input. Nothing is modulated without a wire; a parameter that already has a wire or a lane, and all config, stay out.
-
-1. ~~The node, `Edit::MorphPresets`, the picker.~~ Done: see [features/preset-morph.md](features/preset-morph.md). Still open from this chunk: the node's panel listing the rows with A and B sliders, and the S13 route using the morph.
-2. The XY form for four presets with a pad widget, Set from current, Randomise. Size M.
 
 ## Planned: Noodle as a plugin (#544)
 

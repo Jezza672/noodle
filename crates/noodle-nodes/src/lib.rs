@@ -158,9 +158,9 @@ pub use midi_in::{MIDI_IN_ID, MIDI_PORT, MIDI_PORT_KEY, MidiIn};
 pub use midi_out::{MIDI_OUT_ID, MIDI_OUT_PORT, MIDI_OUT_PORT_KEY, MidiOut};
 pub use mix::Mix;
 pub use morph::{
-    MAX_ROWS as MORPH_MAX_ROWS, MORPH_ID, MORPH_POSITION, MORPH_TARGETS, Morph, MorphRow,
-    morph_config, morph_output_key, rows_from_text as morph_rows_from_text,
-    rows_to_text as morph_rows_to_text,
+    MAX_ROWS as MORPH_MAX_ROWS, MORPH_ID, MORPH_POSITION, MORPH_TARGETS, MORPH_Y, Morph, MorphRow,
+    morph_config, morph_output_key, randomise_corner, rows_from_text as morph_rows_from_text,
+    rows_of as morph_rows_of, rows_to_text as morph_rows_to_text, set_corner_from_current,
 };
 pub use noise::WhiteNoise;
 pub use normalize::{NORMALIZE_ID, Normalize};
@@ -299,7 +299,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Math);
     registry.register(Script);
     registry.register(Delay);
-    registry.register(Looper);
+    registry.register(Looper::new(&telemetry));
     registry.register(Morph);
     registry.register(Dynamics::new(&telemetry));
     registry.register(ParametricEq);

@@ -3,8 +3,8 @@
 use crate::meter::voice_sum;
 use noodle_core::TimeSignature;
 use noodle_engine::{
-    Config, ConfigInfo, Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
-    ParamInfo, Ports, Setup, Shape,
+    Config, ConfigInfo, Context, Instance, Io, Layout, LoopState, LoopWriter, Node, NodeError,
+    NodeInfo, NodeType, ParamInfo, Ports, Setup, Shape, Telemetry,
 };
 
 /// Records the audio at its input when told to, then plays it back as a loop
@@ -47,7 +47,19 @@ use noodle_engine::{
 /// recording), so it and everything after it are never cached. The recording
 /// is session state and is not saved. Changing `max_seconds` or the input's
 /// channel count rebuilds the node and loses the loop.
-pub struct Looper;
+pub struct Looper {
+    telemetry: Telemetry,
+}
+
+impl Looper {
+    /// A Looper that reports its state and playhead to `telemetry`, for the
+    /// properties panel.
+    pub fn new(telemetry: &Telemetry) -> Self {
+        Self {
+            telemetry: telemetry.clone(),
+        }
+    }
+}
 
 pub const LOOPER_ID: &str = "noodle.util.looper";
 
@@ -144,6 +156,7 @@ impl NodeType for Looper {
                 .collect::<Vec<_>>()
         };
         Ok(Instance::realtime(LooperNode {
+            report: self.telemetry.open_loop(setup.node),
             sample_rate: setup.sample_rate,
             channels,
             cap,
@@ -177,6 +190,8 @@ enum State {
 }
 
 struct LooperNode {
+    /// Tells the UI what the loop is doing, once a block.
+    report: LoopWriter,
     sample_rate: f32,
     channels: usize,
     /// Samples each buffer holds.
@@ -285,6 +300,29 @@ impl LooperNode {
             }
             _ => {}
         }
+    }
+}
+
+impl LooperNode {
+    /// Reports the state and the playhead for the display.
+    fn publish(&self) {
+        let (state, at) = match self.state {
+            State::Empty => (LoopState::Empty, 0.0),
+            State::Recording => {
+                let end = self.stop_at.unwrap_or(self.cap).max(1);
+                (LoopState::Recording, self.pos as f32 / end as f32)
+            }
+            State::Playing => (LoopState::Playing, self.pos as f32 / self.len.max(1) as f32),
+            State::Overdubbing => (
+                LoopState::Overdubbing,
+                self.pos as f32 / self.len.max(1) as f32,
+            ),
+        };
+        let queued = self.pending_start
+            || self.pending_stop
+            || self.pending_undo
+            || (self.state == State::Recording && self.stop_at.is_some());
+        self.report.write(state, self.layer_valid, queued, at);
     }
 }
 
@@ -399,6 +437,7 @@ impl Node for LooperNode {
                 State::Empty => {}
             }
         }
+        self.publish();
     }
 
     /// Keeps the recording: a seek moves the playhead, not the loop.
@@ -416,7 +455,14 @@ mod tests {
     const OUT: usize = 0;
 
     fn harness() -> Harness {
-        Harness::new(&Looper, &Config::new(), &[(IN, Shape::MONO)], RATE, 100).unwrap()
+        Harness::new(
+            &Looper::new(&Telemetry::new()),
+            &Config::new(),
+            &[(IN, Shape::MONO)],
+            RATE,
+            100,
+        )
+        .unwrap()
     }
 
     /// Runs `samples` frames of `signal(n)`, from sample `start`, and returns
@@ -609,9 +655,52 @@ mod tests {
 
     #[test]
     fn the_output_is_one_voice_with_the_inputs_channels() {
-        let shapes = Looper
+        let shapes = Looper::new(&Telemetry::new())
             .output_shapes(&Config::new(), &LooperPorts::layout(), &[Shape::new(4, 2)])
             .unwrap();
         assert_eq!(shapes, vec![Shape::new(1, 2)]);
+    }
+
+    #[test]
+    fn the_state_and_playhead_are_reported() {
+        let telemetry = Telemetry::new();
+        let mut h = Harness::new(
+            &Looper::new(&telemetry),
+            &Config::new(),
+            &[(IN, Shape::MONO)],
+            RATE,
+            100,
+        )
+        .unwrap();
+        let node = noodle_core::NodeId(0);
+        run(&mut h, 0, 100, |_| 0.0);
+        assert_eq!(telemetry.read_loop(node).unwrap().state, LoopState::Empty);
+        h.set(RECORD, 1.0);
+        run(&mut h, 0, 100, |_| 0.1);
+        h.set(RECORD, 0.0);
+        run(&mut h, 100, 500, |_| 0.1);
+        let r = telemetry.read_loop(node).unwrap();
+        assert_eq!(r.state, LoopState::Recording);
+        assert!(r.at > 0.0 && r.at < 1.0, "{}", r.at);
+        // Stop: the end is queued for the bar line.
+        h.set(RECORD, 1.0);
+        run(&mut h, 600, 100, |_| 0.1);
+        h.set(RECORD, 0.0);
+        assert!(telemetry.read_loop(node).unwrap().queued);
+        run(&mut h, 700, BAR - 700 + 500, |_| 0.1);
+        let r = telemetry.read_loop(node).unwrap();
+        assert_eq!(r.state, LoopState::Playing);
+        assert!(r.at > 0.1 && r.at < 0.5, "{}", r.at);
+        // Overdub, then undo is offered once a pass has been written.
+        press(&mut h, RECORD, 0.1);
+        run(&mut h, 0, 2 * BAR, |_| 0.1);
+        h.set(RECORD, 1.0);
+        run(&mut h, 0, 100, |_| 0.1);
+        h.set(RECORD, 0.0);
+        run(&mut h, 0, 2 * BAR, |_| 0.1);
+        assert!(telemetry.read_loop(node).unwrap().has_layer);
+        press(&mut h, CLEAR, 0.0);
+        run(&mut h, 0, 100, |_| 0.0);
+        assert_eq!(telemetry.read_loop(node).unwrap().state, LoopState::Empty);
     }
 }

@@ -153,13 +153,12 @@ pub enum Edit {
     /// [`versions`]). It starts the version list if the project has none.
     VaryPerVersion(noodle_core::Endpoint),
     /// Morph between presets on a group: a Morph node inside it, wired into
-    /// every parameter that differs between library group presets `a` and
-    /// `b`, with `position` exposed as the group input `morph`, as one undo
-    /// step (see [`morph`]).
+    /// every parameter that differs between two library group presets (or
+    /// four, for an XY pad), with `position` exposed as the group input
+    /// `morph` (and `y` as `morph y`), as one undo step (see [`morph`]).
     MorphPresets {
         group: NodeId,
-        a: String,
-        b: String,
+        presets: Vec<String>,
     },
     /// Arms or disarms an Automation node for recording (see
     /// [`record_automation`]). Session state: not an undo step, not saved.
@@ -2025,9 +2024,9 @@ impl Session {
                         }
                     }
                 }
-                Edit::MorphPresets { group, a, b } => {
+                Edit::MorphPresets { group, presets } => {
                     self.history.end_group();
-                    match self.morph_presets(group, &a, &b) {
+                    match self.morph_presets(group, &presets) {
                         Ok(command) => command,
                         Err(error) => {
                             self.message = Some(format!("Couldn't morph: {error}"));

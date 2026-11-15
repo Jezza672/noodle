@@ -70,6 +70,12 @@ pub fn show<'a>(
             if node.type_id == noodle_nodes::PATTERN_ID {
                 crate::pattern_panel::show(ui, session, id, node, &mut edits);
             }
+            if node.type_id == noodle_nodes::MORPH_ID {
+                crate::morph_panel::show(ui, session, id, node, live, &mut edits);
+            }
+            if node.type_id == noodle_nodes::LOOPER_ID {
+                crate::looper_panel::show(ui, session, id, node, &mut edits);
+            }
             config(ui, session, node_type.as_ref(), id, node, &mut edits);
             params(ui, session, node_type.as_ref(), id, node, live, &mut edits);
         }
@@ -182,9 +188,9 @@ fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut 
     ui.separator();
 }
 
-/// "Morph between presets...": two presets of the group to pick, and a button
-/// that adds a Morph node wired into everything that differs between them
-/// (see `session::morph`).
+/// "Morph between presets...": two presets of the group to pick, or four for
+/// an XY pad, and a button that adds a Morph node wired into everything that
+/// differs between them (see `session::morph`).
 fn morph_picker(ui: &mut Ui, id: NodeId, available: &[(&str, &str)], edits: &mut Vec<Edit>) {
     egui::CollapsingHeader::new("Morph between presets...")
         .id_salt(("morph presets", id))
@@ -192,10 +198,18 @@ fn morph_picker(ui: &mut Ui, id: NodeId, available: &[(&str, &str)], edits: &mut
         .show(ui, |ui| {
             ui.weak("Adds one Morph node, wired into every parameter that differs, and a `morph` group input.");
             let key = ui.id().with(("morph pick", id));
-            let (mut a, mut b): (usize, usize) = ui.data(|d| d.get_temp(key)).unwrap_or((0, 1));
-            a = a.min(available.len() - 1);
-            b = b.min(available.len() - 1);
-            for (label, index) in [("A", &mut a), ("B", &mut b)] {
+            let mut picked: ([usize; 4], bool) =
+                ui.data(|d| d.get_temp(key)).unwrap_or(([0, 1, 0, 1], false));
+            let can_xy = available.len() >= 4;
+            if can_xy {
+                ui.checkbox(&mut picked.1, "Four presets (XY pad)");
+            } else {
+                picked.1 = false;
+            }
+            let count = if picked.1 { 4 } else { 2 };
+            for (n, label) in ["A", "B", "C", "D"].into_iter().take(count).enumerate() {
+                let index = &mut picked.0[n];
+                *index = (*index).min(available.len() - 1);
                 egui::ComboBox::from_label(label)
                     .selected_text(available[*index].1)
                     .show_ui(ui, |ui| {
@@ -204,16 +218,21 @@ fn morph_picker(ui: &mut Ui, id: NodeId, available: &[(&str, &str)], edits: &mut
                         }
                     });
             }
-            ui.data_mut(|d| d.insert_temp(key, (a, b)));
+            ui.data_mut(|d| d.insert_temp(key, picked));
+            let chosen = &picked.0[..count];
+            let distinct = chosen
+                .iter()
+                .enumerate()
+                .all(|(i, p)| !chosen[..i].contains(p));
             if ui
-                .add_enabled(a != b, egui::Button::new("Morph"))
+                .add_enabled(distinct, egui::Button::new("Morph"))
                 .on_hover_text("One undo step. Applies A, then wires the differences to a Morph node")
+                .on_disabled_hover_text("Pick different presets")
                 .clicked()
             {
                 edits.push(Edit::MorphPresets {
                     group: id,
-                    a: available[a].0.to_owned(),
-                    b: available[b].0.to_owned(),
+                    presets: chosen.iter().map(|&i| available[i].0.to_owned()).collect(),
                 });
             }
         });
