@@ -136,16 +136,22 @@ impl Shared {
     /// its audio input is (armed and not set to Off), or a key of the piano
     /// roll's keyboard is down.
     pub fn is_live(&self) -> bool {
+        self.is_monitored()
+            || self
+                .audition
+                .iter()
+                .any(|word| word.load(Ordering::Relaxed) != 0)
+    }
+
+    /// Live input is being played through the track by arming or by its
+    /// `monitor` parameter, which lasts, unlike a key of the keyboard held.
+    pub fn is_monitored(&self) -> bool {
         self.monitoring.load(Ordering::Relaxed)
             || match self.monitor_mode.load(Ordering::Relaxed) {
                 MONITOR_IN => true,
                 MONITOR_AUTO => self.audio_armed.load(Ordering::Relaxed),
                 _ => false,
             }
-            || self
-                .audition
-                .iter()
-                .any(|word| word.load(Ordering::Relaxed) != 0)
     }
 
     pub fn set_audition(&self, key: u8, on: bool) {

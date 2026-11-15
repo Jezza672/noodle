@@ -126,8 +126,8 @@ A wired feedback loop as tight as the patch asks for, with no setting. The compi
 
 The least delay the hardware allows while a track is armed or monitored, chosen automatically, and a larger device buffer when nobody is recording. One setting, Monitoring latency (Auto, Always low, Off). The engine block stays 128 so cache entries stay valid; the device buffer is what moves. (So the deferred idea below, of the engine block following the device period, is not part of this.)
 
-1. The monitored path is not held back by other tracks' plugin latency (`plan::compensate` leaves the live cone out), with the readout and the setting. Size M.
-2. The device buffer follows arming: Low (64) while armed or monitored, Normal (256), Relaxed (1024) when idle; the stream reopens only when stopped and never during a take. Owed on the Mac: the gap on arming and a power measurement. Size M.
+Chunks 1 and 2 are built (`features/low-latency-monitoring.md`). Owed on the Mac: the gap when arming reopens the stream, and a power measurement of the relaxed buffer.
+
 3. Only the live cone runs in the device callback. Today a cluster with no entry plays live until the background `Freezing` render finishes and swaps in; this adds a streaming render that keeps just ahead of the playhead and is played while it fills, with an ADR for the change to that rule. Size L, and it may want two PRs (the streaming entry, then the hand-over on edits and shortfalls).
 
 ## Owed: needs a person on real hardware

@@ -1278,6 +1278,17 @@ impl ClipFeeds {
             || patterns.get(&node).is_some_and(|shared| shared.is_live())
     }
 
+    /// The track inputs that are monitored, by arming or by their `monitor`
+    /// parameter (not a held key of the keyboard). Delay compensation leaves
+    /// their paths alone so they sound at once.
+    pub fn monitored_nodes(&self) -> std::collections::HashSet<NodeId> {
+        let hubs = self.inner.hubs.lock().expect("feeds lock");
+        hubs.iter()
+            .filter(|(_, shared)| shared.is_monitored())
+            .map(|(&node, _)| node)
+            .collect()
+    }
+
     /// While on, warped clips play as Repitch whatever their mode: cheap
     /// enough to follow a warp marker that is being dragged, where the
     /// stretch would have to start over with every change. Turn it off when

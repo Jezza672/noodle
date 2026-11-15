@@ -192,6 +192,7 @@ impl DeviceArgs {
             },
             sample_rate: self.sample_rate,
             buffer_size: self.buffer_size,
+            live_buffer: None,
             channels: self.channels,
             midi_inputs: Vec::new(),
             threads: 0,
