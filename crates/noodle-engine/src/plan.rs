@@ -71,6 +71,9 @@ pub(crate) struct PlanInfo {
     delay_keys: Vec<((NodeId, usize), u32)>,
     /// How late the mix sounds, in samples, once everything is aligned.
     pub(crate) output_latency: u32,
+    /// How late the live cone sounds at the outputs, if any live input is
+    /// heard: only its own path's latency, not held back to match the rest.
+    pub(crate) monitored_latency: Option<u32>,
     /// How much of the plan can run at once.
     pub(crate) shape: PlanShape,
 }
@@ -299,6 +302,7 @@ pub(crate) fn build(
     telemetry: Option<&Telemetry>,
     cells: &mut Cells,
     position: u64,
+    live_nodes: &HashSet<NodeId>,
     diagnostics: &mut Vec<Diagnostic>,
 ) -> (Box<Plan>, PlanInfo) {
     let Settings {
@@ -353,6 +357,7 @@ pub(crate) fn build(
         delays: Vec::new(),
         delay_keys: Vec::new(),
         output_latency: 0,
+        monitored_latency: None,
         shape: PlanShape::default(),
     };
     let mut slot_info: Vec<SlotInfo> = Vec::with_capacity(schedule.nodes.len());
@@ -712,6 +717,9 @@ pub(crate) fn build(
             outputs: scheduled.outputs.clone(),
             spectral_inputs: scheduled.spectral_inputs.clone(),
             spectral_outputs: scheduled.spectral_outputs.clone(),
+            event_inputs: scheduled.event_inputs.clone(),
+            event_outputs: scheduled.event_outputs.clone(),
+            live_source: live_nodes.contains(&id),
             consumes: scheduled.phase != Phase::Input,
         });
         nodes.push(PlanNode {
@@ -1974,6 +1982,13 @@ struct SlotInfo {
     /// outputs. Lateness travels along them.
     spectral_inputs: Vec<Option<crate::SpectralBufferId>>,
     spectral_outputs: Vec<crate::SpectralBufferId>,
+    /// The buffer behind each event input, if connected, and the event
+    /// outputs. Live playing travels along them, into a synth.
+    event_inputs: Vec<Option<crate::EventBufferId>>,
+    event_outputs: Vec<crate::EventBufferId>,
+    /// Played live: a monitored track input. It, and everything it feeds, is
+    /// the live cone.
+    live_source: bool,
     /// False for the input half of a split node, which only reads its loop
     /// input and makes no output.
     consumes: bool,
@@ -1992,6 +2007,14 @@ struct SlotInfo {
 /// whole path. Spectral inputs are lined up like signal inputs, with a
 /// [`SpectralDelay`] that holds the frames of the earlier paths back, so a
 /// Cross of paths of different lateness sees frames of the same moment.
+///
+/// The live cone is left out: what is played live (a monitored track input)
+/// and everything it feeds. Its paths are never held back
+/// to match the others, so a plugin's latency on another track doesn't reach
+/// what a player hears of their own playing. Where the cone meets other
+/// paths (a mix), only the others are lined up with each other. The mix's
+/// own latency ([`PlanInfo::output_latency`]) is that of the others, and the
+/// cone's is [`PlanInfo::monitored_latency`].
 ///
 /// Events aren't compensated, and a loop's own input never is (the loop
 /// already carries its delay). Returns the delay lines that can take over
@@ -2015,11 +2038,23 @@ fn compensate(
     // reused, so this follows the schedule.
     let mut arrival: HashMap<crate::BufferId, u32> = HashMap::new();
     let mut spectral_arrival: HashMap<crate::SpectralBufferId, u32> = HashMap::new();
-    // The latest a step's spectral inputs arrive.
+    // How late the live part of a buffer in the cone is. `arrival` holds the
+    // rest of it: what the other paths mixed into it come to.
+    let mut live_arrival: HashMap<crate::BufferId, u32> = HashMap::new();
+    let mut spectral_live: HashMap<crate::SpectralBufferId, u32> = HashMap::new();
+    // What the live cone has written, as of the step being looked at.
+    let mut cone: HashSet<crate::BufferId> = HashSet::new();
+    let mut spectral_cone: HashSet<crate::SpectralBufferId> = HashSet::new();
+    let mut event_cone: HashSet<crate::EventBufferId> = HashSet::new();
+    // The latest a step's spectral inputs arrive, outside the cone.
     let mut spectral_slowest: Vec<u32> = Vec::with_capacity(slots.len());
     let mut spectral_input_arrival: Vec<Vec<Option<u32>>> = Vec::with_capacity(slots.len());
     let mut input_arrival: Vec<Vec<Option<u32>>> = Vec::with_capacity(slots.len());
+    // Which of a step's inputs come from the cone.
+    let mut input_cone: Vec<Vec<bool>> = Vec::with_capacity(slots.len());
+    let mut spectral_input_cone: Vec<Vec<bool>> = Vec::with_capacity(slots.len());
     let mut sink_latency = 0;
+    let mut monitored: Option<u32> = None;
     for slot in slots {
         let arrivals: Vec<Option<u32>> = slot
             .inputs
@@ -2031,35 +2066,95 @@ fn compensate(
             .iter()
             .map(|b| b.map(|b| spectral_arrival.get(&b).copied().unwrap_or(0)))
             .collect();
+        let from_cone: Vec<bool> = slot
+            .inputs
+            .iter()
+            .map(|b| b.is_some_and(|b| cone.contains(&b)))
+            .collect();
+        let spectral_from_cone: Vec<bool> = slot
+            .spectral_inputs
+            .iter()
+            .map(|b| b.is_some_and(|b| spectral_cone.contains(&b)))
+            .collect();
+        let in_cone = slot.live_source
+            || from_cone.iter().any(|&c| c)
+            || spectral_from_cone.iter().any(|&c| c)
+            || slot
+                .event_inputs
+                .iter()
+                .flatten()
+                .any(|b| event_cone.contains(b));
+        // What the others come to: every input's own part, cone or not. The
+        // cone's part is only ever heard, never lined up with them.
         let spectral = spectral_arrivals
             .iter()
             .flatten()
             .copied()
             .max()
             .unwrap_or(0);
-        spectral_input_arrival.push(spectral_arrivals);
-        spectral_slowest.push(spectral);
-        let slowest = arrivals
+        let others = arrivals
             .iter()
             .flatten()
             .copied()
             .max()
             .unwrap_or(0)
             .max(spectral);
+        let live = slot
+            .inputs
+            .iter()
+            .flatten()
+            .filter_map(|b| live_arrival.get(b))
+            .chain(
+                slot.spectral_inputs
+                    .iter()
+                    .flatten()
+                    .filter_map(|b| spectral_live.get(b)),
+            )
+            .copied()
+            .max()
+            .unwrap_or(0);
+        spectral_input_arrival.push(spectral_arrivals);
+        spectral_slowest.push(spectral);
         if slot.consumes {
-            info.arrival.insert(slot.id, slowest + slot.latency);
+            let heard = if in_cone { live } else { others };
+            info.arrival.insert(slot.id, heard + slot.latency);
             for &b in &slot.outputs {
-                arrival.insert(b, slowest + slot.latency);
+                arrival.insert(b, others + slot.latency);
+                if in_cone {
+                    cone.insert(b);
+                    live_arrival.insert(b, live + slot.latency);
+                } else {
+                    cone.remove(&b);
+                }
             }
             for &b in &slot.spectral_outputs {
-                spectral_arrival.insert(b, slowest + slot.latency);
+                spectral_arrival.insert(b, others + slot.latency);
+                if in_cone {
+                    spectral_cone.insert(b);
+                    spectral_live.insert(b, live + slot.latency);
+                } else {
+                    spectral_cone.remove(&b);
+                }
+            }
+            for &b in &slot.event_outputs {
+                if in_cone {
+                    event_cone.insert(b);
+                } else {
+                    event_cone.remove(&b);
+                }
             }
         }
         if slot.sink {
-            sink_latency = sink_latency.max(slowest);
+            sink_latency = sink_latency.max(others);
+            if in_cone {
+                monitored = Some(monitored.unwrap_or(0).max(live));
+            }
         }
         input_arrival.push(arrivals);
+        input_cone.push(from_cone);
+        spectral_input_cone.push(spectral_from_cone);
     }
+    info.monitored_latency = monitored;
     info.output_latency = sink_latency;
 
     let mut migrations = Vec::new();
@@ -2082,7 +2177,7 @@ fn compensate(
         // Spectral inputs have their own lines, keyed after the signal inputs.
         for (port, arrived) in spectral_input_arrival[index].iter().enumerate() {
             let Some(arrived) = *arrived else { continue };
-            if arrived >= target {
+            if arrived >= target || spectral_input_cone[index][port] {
                 continue;
             }
             let Some((source, shape)) = nodes[index].spectral_inputs[port] else {
@@ -2114,7 +2209,7 @@ fn compensate(
         }
         for (input, arrived) in arrivals.iter().enumerate() {
             let Some(arrived) = *arrived else { continue };
-            if arrived >= target {
+            if arrived >= target || input_cone[index][input] {
                 continue;
             }
             let delay = (target - arrived) as usize;
@@ -2326,6 +2421,9 @@ impl NodeLatency {
 pub struct LatencyReport {
     /// How late the mix sounds against the timeline, in samples.
     pub output: u32,
+    /// How late what is played live (a monitored track) sounds, in samples: only its own path's latency, which is not held
+    /// back to match the rest of the mix. `None` when nothing live is heard.
+    pub monitored: Option<u32>,
     /// Only the nodes that report latency, are held back or sit downstream
     /// of one; the rest are quiet.
     pub nodes: HashMap<NodeId, NodeLatency>,
@@ -2371,6 +2469,7 @@ impl PlanInfo {
         }
         LatencyReport {
             output: self.output_latency,
+            monitored: self.monitored_latency,
             nodes,
         }
     }

@@ -361,3 +361,96 @@ fn a_cross_of_spectral_paths_of_unequal_latency_lines_them_up() {
         .fold(0.0, f32::max);
     assert!(worst < 1e-3, "worst difference {worst}");
 }
+
+/// Two sources into a mixer: node 1 straight, node 2 through a Latent node of
+/// `other` samples. `own` samples of latency sit on node 1's path too, if
+/// non-zero.
+fn two_tracks(own: i64, other: i64) -> Graph {
+    let mut nodes = vec![
+        (NodeId(1), Node::new("test.impulse")),
+        (NodeId(2), Node::new("test.impulse")),
+        (NodeId(3), latent(other)),
+        (NodeId(4), Node::new("noodle.util.mix")),
+        (NodeId(5), Node::new("noodle.io.output")),
+    ];
+    let mut wires = vec![
+        wire((2, "out"), (3, "in")),
+        wire((3, "out"), (4, "in2")),
+        wire((4, "out"), (5, "in")),
+    ];
+    if own > 0 {
+        nodes.push((NodeId(6), latent(own)));
+        wires.push(wire((1, "out"), (6, "in")));
+        wires.push(wire((6, "out"), (4, "in1")));
+    } else {
+        wires.push(wire((1, "out"), (4, "in1")));
+    }
+    Graph::from_parts(nodes, wires).unwrap()
+}
+
+#[test]
+fn the_live_cone_is_not_held_back_to_match_other_tracks() {
+    let (mut controller, _processor) = noodle_engine::engine(SETTINGS).unwrap();
+    // Nothing live: the straight track waits for the latent one.
+    controller.update(&two_tracks(0, 150), &registry());
+    let report = controller.latency_report();
+    assert_eq!(report.monitored, None);
+    assert_eq!(report.node(NodeId(4)).held.len(), 1);
+
+    // Track 1 is live: it is heard at once, and the mix is still as late as
+    // the others.
+    assert!(controller.set_live_nodes([NodeId(1)].into()));
+    controller.update(&two_tracks(0, 150), &registry());
+    let report = controller.latency_report();
+    assert_eq!(report.monitored, Some(0));
+    assert_eq!(report.output, 150);
+    assert!(report.node(NodeId(4)).held.is_empty());
+    assert_eq!(controller.output_latency(), 150);
+
+    // Its own latency still counts, and only its own.
+    controller.update(&two_tracks(40, 150), &registry());
+    let report = controller.latency_report();
+    assert_eq!(report.monitored, Some(40));
+    assert_eq!(report.output, 150);
+    assert!(report.node(NodeId(4)).held.is_empty());
+
+    // Setting the same set again says nothing changed.
+    assert!(!controller.set_live_nodes([NodeId(1)].into()));
+    // Letting go puts the alignment back.
+    assert!(controller.set_live_nodes(Default::default()));
+    controller.update(&two_tracks(0, 150), &registry());
+    assert_eq!(controller.latency_report().monitored, None);
+    assert_eq!(controller.latency_report().node(NodeId(4)).held.len(), 1);
+}
+
+#[test]
+fn what_follows_the_cone_stays_in_it_and_the_others_still_line_up() {
+    // The live track and a latent one meet in a mix, whose output goes through
+    // a plugin of its own. Both inputs of the mix reach the sink late by that
+    // plugin; the live one is not also held for the latent track's 150.
+    let graph = Graph::from_parts(
+        vec![
+            (NodeId(1), Node::new("test.impulse")),
+            (NodeId(2), Node::new("test.impulse")),
+            (NodeId(3), latent(150)),
+            (NodeId(4), Node::new("noodle.util.mix")),
+            (NodeId(5), latent(20)),
+            (NodeId(6), Node::new("noodle.io.output")),
+        ],
+        vec![
+            wire((2, "out"), (3, "in")),
+            wire((3, "out"), (4, "in2")),
+            wire((1, "out"), (4, "in1")),
+            wire((4, "out"), (5, "in")),
+            wire((5, "out"), (6, "in")),
+        ],
+    )
+    .unwrap();
+    let (mut controller, _processor) = noodle_engine::engine(SETTINGS).unwrap();
+    controller.set_live_nodes([NodeId(1)].into());
+    controller.update(&graph, &registry());
+    let report = controller.latency_report();
+    assert_eq!(report.monitored, Some(20));
+    assert_eq!(report.output, 170);
+    assert!(report.node(NodeId(4)).held.is_empty());
+}
