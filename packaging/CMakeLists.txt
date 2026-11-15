@@ -11,6 +11,10 @@
 # macOS).
 
 cmake_minimum_required(VERSION 3.21)
+# Rust links the dynamic MSVC runtime (/MD); everything here has to match, or the link fails
+# on mismatched CRTs. Must be set before `project()`.
+cmake_policy(SET CMP0091 NEW)
+set(CMAKE_MSVC_RUNTIME_LIBRARY "MultiThreadedDLL")
 project(noodle_plugin VERSION 0.1.0 LANGUAGES C CXX)
 
 if (APPLE)
