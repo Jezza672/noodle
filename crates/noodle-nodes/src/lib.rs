@@ -41,6 +41,7 @@ mod metronome;
 mod midi_in;
 mod midi_out;
 mod mix;
+mod morph;
 mod noise;
 mod normalize;
 mod note_split;
@@ -152,6 +153,11 @@ pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
 pub use midi_in::{MIDI_IN_ID, MIDI_PORT, MIDI_PORT_KEY, MidiIn};
 pub use midi_out::{MIDI_OUT_ID, MIDI_OUT_PORT, MIDI_OUT_PORT_KEY, MidiOut};
 pub use mix::Mix;
+pub use morph::{
+    MAX_ROWS as MORPH_MAX_ROWS, MORPH_ID, MORPH_POSITION, MORPH_TARGETS, Morph, MorphRow,
+    morph_config, morph_output_key, rows_from_text as morph_rows_from_text,
+    rows_to_text as morph_rows_to_text,
+};
 pub use noise::WhiteNoise;
 pub use normalize::{NORMALIZE_ID, Normalize};
 pub use note_split::{NOTE_SPLIT_ID, NoteSplit, param_index as note_split_param};
@@ -286,6 +292,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Script);
     registry.register(Delay);
     registry.register(Looper);
+    registry.register(Morph);
     registry.register(Dynamics::new(&telemetry));
     registry.register(ParametricEq);
     registry.register(Reverb);

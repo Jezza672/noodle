@@ -352,3 +352,7 @@ The side panel, collapsible to a strip, with a tab for Sounds and one for Nodes 
 **Sounds**:
 The browser's tab for the samples of all sources.
 _Avoid_: Sample library
+
+**Looper**: the node that records its input and plays it back as a loop on the bar, with overdub, one-level undo and clear, all driven by parameters.
+
+**Morph**: a node that blends a group between two presets with one `position`, with one visible wire into each parameter that differs.

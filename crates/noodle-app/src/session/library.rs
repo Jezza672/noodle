@@ -134,6 +134,39 @@ impl Session {
         command.ok().map(Edit::Apply)
     }
 
+    /// The command for [`Edit::MorphPresets`]. Says in the status bar what it
+    /// wired and what it left out.
+    pub(super) fn morph_presets(
+        &mut self,
+        group: NodeId,
+        a: &str,
+        b: &str,
+    ) -> Result<noodle_core::Command, String> {
+        let first = self
+            .library
+            .group_preset(a)
+            .ok_or("the first preset is gone")?;
+        let second = self
+            .library
+            .group_preset(b)
+            .ok_or("the second preset is gone")?;
+        let ids = super::morph::Ids {
+            morph: self.new_node_id(),
+            frame: self.new_frame_id(),
+            boundary: self.new_node_id(),
+        };
+        let morphed = super::morph::command(
+            &self.project,
+            &self.registry,
+            group,
+            (a, first),
+            second,
+            &ids,
+        )?;
+        self.message = Some(morphed.notice());
+        Ok(morphed.command)
+    }
+
     /// The preset last applied to a node or group, and whether it has been
     /// edited since. `None` if none was applied or it's gone from the
     /// library.
