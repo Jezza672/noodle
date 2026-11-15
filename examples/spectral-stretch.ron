@@ -1,0 +1,36 @@
+// Time stretch on frames. A saw plucks A3 (a short ADSR through a VCA) and
+// goes through an Analyze with a frame size of 4096, which keeps a low note's
+// harmonics apart, into Spectral Stretch at half speed, and back through
+// Synthesize. The pluck comes out twice as long and still at A3: the pitch
+// doesn't change when the time does.
+(
+    format: 4,
+    graph: (
+        nodes: {
+            1: (type: "noodle.input.button", params: {"state": 1.0}, position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.event.key", params: {"note": 57.0, "velocity": 0.9}, position: (x: 200.0, y: 0.0)),
+            3: (type: "noodle.event.mono", position: (x: 400.0, y: 0.0)),
+            4: (type: "noodle.osc.saw", position: (x: 600.0, y: -80.0)),
+            5: (type: "noodle.mod.adsr", params: {"attack": 0.002, "decay": 0.06, "sustain": 0.0, "release": 0.05}, position: (x: 600.0, y: 100.0)),
+            6: (type: "noodle.util.vca", position: (x: 800.0, y: 0.0)),
+            7: (type: "noodle.spectral.analyze", config: {"size": 4096}, position: (x: 1000.0, y: 0.0)),
+            8: (type: "noodle.spectral.stretch", params: {"rate": 0.5, "length": 2.0}, position: (x: 1200.0, y: 0.0)),
+            9: (type: "noodle.spectral.synthesize", position: (x: 1400.0, y: 0.0)),
+            10: (type: "noodle.util.gain", params: {"gain": -12.0}, position: (x: 1600.0, y: 0.0)),
+            11: (type: "noodle.io.output", position: (x: 1800.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 2, port: "gate")),
+            (from: (node: 2, port: "out"), to: (node: 3, port: "in")),
+            (from: (node: 3, port: "pitch"), to: (node: 4, port: "frequency")),
+            (from: (node: 3, port: "gate"), to: (node: 5, port: "gate")),
+            (from: (node: 4, port: "out"), to: (node: 6, port: "in")),
+            (from: (node: 5, port: "out"), to: (node: 6, port: "level")),
+            (from: (node: 6, port: "out"), to: (node: 7, port: "in")),
+            (from: (node: 7, port: "spectrum"), to: (node: 8, port: "spectrum")),
+            (from: (node: 8, port: "out"), to: (node: 9, port: "spectrum")),
+            (from: (node: 9, port: "out"), to: (node: 10, port: "in")),
+            (from: (node: 10, port: "out"), to: (node: 11, port: "in")),
+        ],
+    )
+)

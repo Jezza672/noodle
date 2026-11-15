@@ -1,0 +1,33 @@
+// A spectral compressor. A saw plays A2: its harmonics fall away as 1/n, so
+// the low ones are loud and the high ones quiet. The Spectral Compress node
+// (32 bands, a threshold of -45 dB and a ratio of 6) turns down only the bands
+// that are over the threshold, so the loud fundamental and low harmonics come
+// down towards the quiet ones and the sound evens out and turns brighter and
+// thinner, with no change to the highs. The same note through a plain
+// compressor would turn the whole sound down together.
+(
+    format: 4,
+    graph: (
+        nodes: {
+            1: (type: "noodle.input.button", params: {"state": 1.0}, position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.event.key", params: {"note": 45.0, "velocity": 0.9}, position: (x: 200.0, y: 0.0)),
+            3: (type: "noodle.event.mono", position: (x: 400.0, y: 0.0)),
+            4: (type: "noodle.osc.saw", position: (x: 600.0, y: 0.0)),
+            5: (type: "noodle.spectral.analyze", position: (x: 800.0, y: 0.0)),
+            6: (type: "noodle.spectral.compress", params: {"threshold": -45.0, "ratio": 6.0, "attack": 0.005, "release": 0.1, "knee": 6.0, "makeup": 6.0, "bands": 32.0}, position: (x: 1000.0, y: 0.0)),
+            7: (type: "noodle.spectral.synthesize", position: (x: 1200.0, y: 0.0)),
+            8: (type: "noodle.util.gain", params: {"gain": -9.0}, position: (x: 1400.0, y: 0.0)),
+            9: (type: "noodle.io.output", position: (x: 1600.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 2, port: "gate")),
+            (from: (node: 2, port: "out"), to: (node: 3, port: "in")),
+            (from: (node: 3, port: "pitch"), to: (node: 4, port: "frequency")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+            (from: (node: 5, port: "spectrum"), to: (node: 6, port: "spectrum")),
+            (from: (node: 6, port: "out"), to: (node: 7, port: "spectrum")),
+            (from: (node: 7, port: "out"), to: (node: 8, port: "in")),
+            (from: (node: 8, port: "out"), to: (node: 9, port: "in")),
+        ],
+    )
+)

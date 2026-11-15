@@ -172,6 +172,7 @@ fn an_installed_plugins_editor_opens_and_closes_on_an_x_display() {
                 max_frames: 256,
                 input_shapes: &[],
                 output_shapes: &[],
+                spectral_size: noodle_engine::FFT_SIZE,
                 seed: 0,
                 position: 0,
             },

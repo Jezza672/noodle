@@ -53,7 +53,7 @@ Instruments: a granular sample player, one cloud per voice, driven by signals.
   is scaled by `1 / sqrt(max(1, density x size))`. A lane with `gate` silent
   and no grain playing is idle.
 - **Templates.** Grain Pad (Voices into Grains following pitch, filter,
-  envelope, LFO on position; presets Steel Haze, Banjo Cloud, Frozen Bell) and
+  envelope, LFO on position; the cloud keeps starting grains until the envelope has finished its release; presets Steel Haze, Banjo Cloud, Frozen Bell) and
   Grain Freeze (no notes, for drones; presets Steel Drone, Banjo Mist, Frozen
   Glass), using shipped CC0 samples. Grains also has node presets Freeze,
   Texture and Scatter.

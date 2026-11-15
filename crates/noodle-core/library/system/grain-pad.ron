@@ -113,7 +113,7 @@
                 to: (node: 6, port: "frequency"),
             ),
             (
-                from: (node: 3, port: "gate"),
+                from: (node: 8, port: "active"),
                 to: (node: 6, port: "gate"),
             ),
             (
@@ -185,10 +185,10 @@
     GroupPreset((
         name: "Steel Haze",
         slug: "grain-pad-steel-haze",
-        topology: "d08a504251995685",
+        topology: "503613bcfe4428a8",
         nodes: [
             (
-                params: {"attack": 0.15, "decay": 0.3, "release": 1.0, "sustain": 0.85},
+                config: {"voices": 6},
             ),
             (
                 params: {"a": 0.08},
@@ -197,18 +197,18 @@
             (),
             (),
             (
-                config: {"voices": 6},
-            ),
-            (),
-            (),
-            (),
-            (),
-            (
                 params: {"cutoff": 6000.0},
             ),
+            (),
+            (),
+            (),
+            (),
             (
                 params: {"density": 28.0, "jitter": 0.4, "pitch_spray": 0.15, "position": 0.08, "root": 60.0, "size": 0.18, "spray": 0.1, "spread": 0.6},
                 config: {"sample": "1ac5a3c33f1e037e427b982e9ae0104241c09cb59a612889978dc45036f00498"},
+            ),
+            (
+                params: {"attack": 0.15, "decay": 0.3, "release": 1.0, "sustain": 0.85},
             ),
             (
                 params: {"depth": 0.08, "rate": 0.15},
@@ -218,10 +218,10 @@
     GroupPreset((
         name: "Banjo Cloud",
         slug: "grain-pad-banjo-cloud",
-        topology: "d08a504251995685",
+        topology: "503613bcfe4428a8",
         nodes: [
             (
-                params: {"attack": 0.3, "decay": 0.3, "release": 1.5, "sustain": 0.85},
+                config: {"voices": 6},
             ),
             (
                 params: {"a": 0.04},
@@ -230,18 +230,18 @@
             (),
             (),
             (
-                config: {"voices": 6},
-            ),
-            (),
-            (),
-            (),
-            (),
-            (
                 params: {"cutoff": 4500.0},
             ),
+            (),
+            (),
+            (),
+            (),
             (
                 params: {"density": 40.0, "jitter": 0.4, "pitch_spray": 0.3, "position": 0.04, "root": 49.0, "size": 0.12, "spray": 0.05, "spread": 0.8},
                 config: {"sample": "2d862cb19a48b9768e6500ccf8b0226e4103e7ab1907143e667563d2b184f486"},
+            ),
+            (
+                params: {"attack": 0.3, "decay": 0.3, "release": 1.5, "sustain": 0.85},
             ),
             (
                 params: {"depth": 0.12, "rate": 0.15},
@@ -251,10 +251,10 @@
     GroupPreset((
         name: "Frozen Bell",
         slug: "grain-pad-frozen-bell",
-        topology: "d08a504251995685",
+        topology: "503613bcfe4428a8",
         nodes: [
             (
-                params: {"attack": 0.5, "decay": 0.3, "release": 2.0, "sustain": 0.85},
+                config: {"voices": 6},
             ),
             (
                 params: {"a": 0.05},
@@ -263,18 +263,18 @@
             (),
             (),
             (
-                config: {"voices": 6},
-            ),
-            (),
-            (),
-            (),
-            (),
-            (
                 params: {"cutoff": 9000.0},
             ),
+            (),
+            (),
+            (),
+            (),
             (
                 params: {"density": 14.0, "jitter": 0.4, "pitch_spray": 0.05, "position": 0.05, "root": 72.0, "size": 0.35, "spray": 0.02, "spread": 0.4},
                 config: {"sample": "08db0eb90355df382a998728f1a599aef9aea9ad0e49f2e6762a2e6fcc000be0"},
+            ),
+            (
+                params: {"attack": 0.5, "decay": 0.3, "release": 2.0, "sustain": 0.85},
             ),
             (
                 params: {"depth": 0.03, "rate": 0.08},

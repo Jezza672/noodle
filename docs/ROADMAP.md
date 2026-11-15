@@ -209,10 +209,6 @@ The least delay the hardware allows while a track is armed or monitored, chosen 
   for the drum rack. Needs a stable, fairly universal interface definition (parts,
   STFT front end, chunking), so it waits until the three built-in models show what
   that has to cover. The MDX23C DrumSep is not supported (no licence, gone upstream).
-- **M11 follow-ups:** more spectral nodes (pitch shift and time stretch on
-  frames, spectral compressor, convolution reverb from an impulse response,
-  noise-profile denoiser) and a choice of frame size (a config on Analyze that
-  every spectral node on the wire adopts).
 - **Piano roll and recording:** the 128-frame engine block is fixed; it could
   follow the device period.
 - **VST3:** an editor window on Linux (the app makes none).

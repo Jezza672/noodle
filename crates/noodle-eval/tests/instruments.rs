@@ -198,3 +198,14 @@ fn the_grain_freeze_drones() {
     let later = peak(&samples, 2.0, 3.0);
     assert!(later > 0.02, "still droning at 2 s ({later})");
 }
+
+/// A Grain Pad's cloud keeps starting grains through the envelope's release,
+/// so the release is heard (the chord is held for 0.5 s and a grain
+/// is 0.18 s long, so sound after 0.72 s is from grains started after the
+/// note-off).
+#[test]
+fn the_grain_pad_sounds_through_its_release() {
+    let samples = play("grain-pad", 3.0);
+    let release = peak(&samples, 0.72, 0.9);
+    assert!(release > 0.008, "silent in the release ({release})");
+}

@@ -369,6 +369,7 @@ fn voiced_out(
     from: Port,
     controls: [Port; 2],
     times: [f32; 2],
+    hold: Option<Port>,
 ) {
     let [attack, release] = controls;
     let amp = p.add(adsr(env(times[0], 0.3, 0.85, times[1])), 5.0, 5.0);
@@ -385,6 +386,12 @@ fn voiced_out(
     p.connect((touch, "out"), (faded, "in"));
     p.connect((voices, "fade"), (faded, "level"));
     p.connect((amp, "active"), (voices, "busy"));
+    // A source that makes sound by itself (a Grains cloud) keeps going until
+    // the envelope has finished, not just until the note-off. `active` is on
+    // from the gate to the end of the release.
+    if let Some(hold) = hold {
+        p.connect((amp, "active"), hold);
+    }
     let sum = p.add(spec(VOICE_MIX_ID), 10.0, 0.0);
     p.connect((faded, "out"), (sum, "in"));
     let out = p.output("out");
@@ -502,6 +509,7 @@ fn wavetable_synth(p: &mut Patch, w: Wavetable) -> NodeId {
         (filter, "low"),
         [attack, release],
         [w.attack, w.release],
+        None,
     );
     group
 }
@@ -635,7 +643,6 @@ fn grain_pad(p: &mut Patch, c: Cloud) -> NodeId {
     p.connect((lfo, "out"), (place, "b"));
     let cloud = p.add(grains(c), 4.0, 0.0);
     p.connect((voices, "pitch"), (cloud, "frequency"));
-    p.connect((voices, "gate"), (cloud, "gate"));
     p.connect((place, "out"), (cloud, "position"));
     p.connect(spray, (cloud, "spray"));
     p.connect(size, (cloud, "size"));
@@ -654,6 +661,7 @@ fn grain_pad(p: &mut Patch, c: Cloud) -> NodeId {
         (filter, "low"),
         [attack, release],
         [c.attack, c.release],
+        Some((cloud, "gate")),
     );
     group
 }

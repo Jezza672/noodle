@@ -25,6 +25,21 @@ const FRAMES: usize = 12_000;
 /// Platforms' maths libraries can differ in the last bits of functions like
 /// `sin`.
 const TOLERANCE: f32 = 1e-4;
+/// Phase vocoders lock a partial's phase to a spectral peak chosen from the
+/// first frames of a note, which are mostly transform rounding noise. The
+/// chosen peaks, and so the exact waveform, differ between processors (the
+/// sound, its pitch and its level do not), so these are compared by the
+/// level of each block instead of sample by sample.
+const BY_LEVEL: &[&str] = &["spectral-pitch", "spectral-stretch"];
+const LEVEL_BLOCK: usize = 1_000;
+const LEVEL_TOLERANCE: f32 = 0.03;
+
+fn block_levels(samples: &[f32]) -> Vec<f32> {
+    samples
+        .chunks(LEVEL_BLOCK)
+        .map(|block| (block.iter().map(|x| x * x).sum::<f32>() / block.len() as f32).sqrt())
+        .collect()
+}
 
 #[test]
 fn examples_match_their_golden_renders() {
@@ -85,6 +100,19 @@ fn examples_match_their_golden_renders() {
                 rendered.samples.len(),
                 expected.samples.len()
             ));
+        } else if BY_LEVEL.contains(&&*name) {
+            let (got, want) = (
+                block_levels(&rendered.samples),
+                block_levels(&expected.samples),
+            );
+            if let Some((i, (g, w))) = got
+                .iter()
+                .zip(&want)
+                .enumerate()
+                .find(|(_, (g, w))| (**g - **w).abs() > LEVEL_TOLERANCE)
+            {
+                failures.push(format!("{name}: block {i} has level {g}, expected {w}"));
+            }
         } else if let Some((i, (got, want))) = rendered
             .samples
             .iter()

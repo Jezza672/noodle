@@ -152,6 +152,7 @@ fn start(hello: &Hello) -> Result<Started, String> {
         max_frames: hello.spec.max_frames,
         input_shapes: &input_shapes,
         output_shapes: &output_shapes,
+        spectral_size: noodle_engine::FFT_SIZE,
         seed: hello.seed,
         position: hello.position,
     };
