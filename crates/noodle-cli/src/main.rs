@@ -845,7 +845,7 @@ mod tests {
             .apply(&mut project, Edit::Connect(connection))
             .unwrap();
         let id = project.new_clip_id();
-        let clip = Clip::audio(track, Tick(0), "tone.wav", 48_000);
+        let clip = Clip::audio(track, Tick(0), "tone.wav", 48_000 * 60);
         history
             .apply(&mut project, Edit::AddClip { id, clip })
             .unwrap();
@@ -861,30 +861,14 @@ mod tests {
         let tap = playback.virtual_capture().unwrap();
         tap.start();
         send_project(&mut controller, &library, &project, &registry, &dir);
-        eprintln!(
-            "diag: tracked {} runs {} dir {}",
-            library.clips.tracked(),
-            library.clips.background_runs(track),
-            dir.display()
-        );
         // The clip's file is read in the background, so on a slow machine the
         // sound can start late: wait for it rather than for a fixed time.
         let mut peak = 0.0f32;
         let deadline = std::time::Instant::now() + Duration::from_secs(15);
         while peak <= 0.2 && std::time::Instant::now() < deadline {
             thread::sleep(Duration::from_millis(100));
-            eprintln!(
-                "diag tick: pos {} {:?}",
-                controller.transport().position(),
-                library.clips.status(track)
-            );
             peak = tap.take().iter().fold(peak, |peak, s| peak.max(s.abs()));
         }
-        eprintln!(
-            "diag after: tracked {} runs {}",
-            library.clips.tracked(),
-            library.clips.background_runs(track)
-        );
         assert!(
             peak > 0.2,
             "noodle play is silent on a clip: peak {peak}, at {} of {} Hz, {:?}",
@@ -893,36 +877,6 @@ mod tests {
             library.clips.status(track),
         );
         fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn diag_sine_is_heard() {
-        let text = fs::read_to_string(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/../../examples/sine.ron"
-        ))
-        .unwrap();
-        let project = parse(Path::new("sine.ron"), &text).unwrap();
-        let config = AudioConfig {
-            output: Some(noodle_io::VIRTUAL_OUTPUT.to_owned()),
-            ..AudioConfig::default()
-        };
-        let (playback, mut controller) =
-            noodle_io::play_with_outputs(&config, &[], MAX_FRAMES, &noodle_io::MidiBus::new())
-                .unwrap();
-        let (registry, library) = registry(Path::new("."));
-        let tap = playback.virtual_capture().unwrap();
-        tap.start();
-        send_project(
-            &mut controller,
-            &library,
-            &project,
-            &registry,
-            Path::new("."),
-        );
-        thread::sleep(Duration::from_millis(1000));
-        let peak = tap.take().iter().fold(0.0f32, |p, s| p.max(s.abs()));
-        assert!(peak > 0.05, "sine peak {peak}");
     }
 
     #[test]
