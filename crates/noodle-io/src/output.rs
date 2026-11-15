@@ -805,6 +805,9 @@ impl VirtualClock {
         let flag = Arc::clone(&stop);
         let tap = Arc::new(Mutex::<Option<Vec<f32>>>::new(None));
         let tapped = Arc::clone(&tap);
+        // The buffer size is known up front, so report it from the start
+        // rather than once the thread's first block has been written.
+        writer.fade.period.fetch_max(frames, Ordering::Relaxed);
         let period = Duration::from_secs_f64(f64::from(frames) / f64::from(rate));
         let thread = std::thread::Builder::new()
             .name("noodle virtual output".into())
