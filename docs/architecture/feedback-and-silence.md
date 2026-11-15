@@ -33,9 +33,10 @@ key of the signal input it reads *last*: `Delay`'s `in`, and `Voices`' `busy`.
   the block). The default is the whole block, which is how a loop ran before
   regions (`Voices`' `busy` loop is unchanged). `Delay` answers the floor of
   its shortest `time` in the block, in samples, at least 1: a chunk then reads
-  only samples earlier chunks wrote. `time` always comes from outside the
-  region, because a loop that reaches a breaker through any input but its loop
-  input is refused. The Feedback node answers 1. A loop with a 40-sample Delay
+  only samples earlier chunks wrote. A signal the breaker reads from a node of
+  the region itself (a second loop's Delay setting this one's `time`) isn't
+  written yet when the chunk is asked for, so the plan plays safe and answers 1
+  for it. The Feedback node answers 1. A loop with a 40-sample Delay
   therefore runs its nodes 40 frames at a time; a 300 ms echo has a chunk longer
   than the block and runs exactly as before.
 - **Running a region** (`plan::run_region`). The region's first step runs every

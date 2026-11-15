@@ -453,3 +453,53 @@ fn a_note_inside_a_loop_region_lands_on_its_sample() {
         assert!((a - b).abs() < 1e-4, "sample {n}: {a} vs {b}");
     }
 }
+
+#[test]
+fn a_delay_time_made_inside_the_region_is_not_trusted_ahead_of_the_block() {
+    // Two loops through one mixer make one region, and the first loop's Delay
+    // output sets the second's time. That signal is not written yet when the
+    // region asks how long a chunk may be, so the region plays safe (one
+    // sample) and the sound is the same at any block size.
+    let mut graph = Patch::default();
+    graph.add(1, Node::new("test.impulse"));
+    graph.add(
+        2,
+        Node::new("noodle.util.mix")
+            .with_config(noodle_engine::Config::new().with("inputs", noodle_core::Value::Int(3))),
+    );
+    graph.add(3, Node::new(DELAY_ID).with_param("time", 0.01));
+    graph.add(4, Node::new("noodle.util.gain").with_param("gain", -6.0206));
+    graph.add(5, Node::new(DELAY_ID).with_param("time", 0.0));
+    graph.add(6, Node::new("noodle.util.gain").with_param("gain", -6.0206));
+    graph.add(7, Node::new("noodle.io.output"));
+    graph.wire((1, "out"), (2, "in1"));
+    graph.wire((2, "out"), (3, "in"));
+    graph.wire((3, "out"), (4, "in"));
+    graph.wire((4, "out"), (2, "in2"));
+    graph.wire((2, "out"), (5, "in"));
+    graph.wire((5, "out"), (6, "in"));
+    graph.wire((6, "out"), (2, "in3"));
+    graph.wire((3, "out"), (5, "time"));
+    graph.wire((2, "out"), (7, "in"));
+    let at = |max_frames: usize| {
+        let settings = Settings {
+            max_frames,
+            ..SETTINGS
+        };
+        let rendered = render(&graph.graph(), &registry(), settings, 2_000).unwrap();
+        assert!(
+            rendered.diagnostics.is_empty(),
+            "{:?}",
+            rendered.diagnostics
+        );
+        rendered.samples
+    };
+    let small = at(16);
+    let large = at(256);
+    let worst = small
+        .iter()
+        .zip(&large)
+        .map(|(a, b)| (a - b).abs())
+        .fold(0.0, f32::max);
+    assert!(worst < 1e-5, "block size changes the sound by {worst}");
+}

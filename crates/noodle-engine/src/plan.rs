@@ -1397,6 +1397,29 @@ unsafe fn block_inputs<'a>(frame: &Frame<'a>, node: &PlanNode, into: &mut Vec<Si
     }));
 }
 
+/// Whether any signal a step reads is written by a step of the region, so
+/// its block-sized view of the signal holds nothing from this block yet.
+///
+/// SAFETY: as for [`run_single`].
+unsafe fn reads_region(frame: &Frame<'_>, region: &Region, node: &PlanNode) -> bool {
+    let max_frames = frame.max_frames;
+    let overlaps = |view: View| {
+        let end = view.offset + view.shape.lanes() * max_frames;
+        region.members.clone().any(|index| {
+            let member = unsafe { &*frame.nodes.add(index) };
+            member.outputs.iter().any(|out| {
+                let out_end = out.offset + out.shape.lanes() * max_frames;
+                view.offset < out_end && out.offset < end
+            })
+        })
+    };
+    node.inputs.iter().any(|input| match *input {
+        Input::Buffer(view) => overlaps(view),
+        Input::Offset(k) => overlaps(unsafe { &*frame.offsets.add(k) }.source),
+        _ => false,
+    })
+}
+
 /// Runs a loop region: every step on a feedback loop, together. First each
 /// loop-breaking node says how many frames the loop can run at a time (a
 /// delay of 40 samples allows 40); the region then runs its nodes in order
@@ -1422,6 +1445,14 @@ unsafe fn run_region(frame: &Frame<'_>, region: &Region, fresh: bool) -> bool {
         if let Some(instance) = &mut node.instance {
             let answer = instance.loop_chunk(ctx, &inputs, region.held);
             if !region.held {
+                // What a breaker reads from inside the region (a delay time
+                // that another loop of the region makes) is not written yet,
+                // so what it says about the block is stale: play safe.
+                let answer = if unsafe { reads_region(frame, region, node) } {
+                    1
+                } else {
+                    answer
+                };
                 chunk = chunk.min(answer.clamp(1, frames.max(1)));
             }
         }

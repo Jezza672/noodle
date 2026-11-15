@@ -96,6 +96,9 @@ impl FeedbackNode {
 impl Node for FeedbackNode {
     fn process(&mut self, ctx: &Context, io: Io<'_, '_>) {
         let input = &io.inputs[IN];
+        if ctx.frames == 0 {
+            return;
+        }
         for lane in 0..self.shape.lanes() {
             let (voice, channel) = self.lane_of(lane);
             let samples = input.lane(voice, channel);
