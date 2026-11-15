@@ -1,7 +1,6 @@
 # Wavetable and Grains
 
-Issues #536 and #537, first chunks (the display and the drops are still on the
-[roadmap](../ROADMAP.md)).
+Issues #536 and #537.
 
 ## Wavetable oscillator
 
@@ -68,3 +67,23 @@ skips without clicking; reset equals new; `realtime.rs`.
 
 `noodle-eval/tests/instruments.rs` plays the Wavetable Synth and Grain Pad like
 the other instruments and checks the Grain Freeze drones.
+
+## Display and drops (second PR)
+
+- **Properties panel.** `sample_nodes.rs`: the Wavetable shows the stack of
+  cycles faintly and the cycle at `position` brightly (the unmodulated slider
+  value; a wired position shows where the slider rests); Grains shows the
+  sample with the position as a line, `spray` as a band and the grains playing
+  as ticks. The ticks come from telemetry: Grains reports each playing grain's
+  place in the sample through `Telemetry::open_positions` (64 slots a voice),
+  as the Sampler reports its voices.
+- **Drops.** A clip, a file or a Sounds entry dropped on a Wavetable, a Grains
+  node, or a group holding exactly one Sampler, Grains or Wavetable
+  (`editor::pad_sampler`, `sample_drop::{choose, onto_sampler}`) sets its
+  sample: a clip's part of the file is a window of the reference; Grains also
+  gets `root` from the sample's pitch. The panel's "Load sample" and "Browse
+  sounds" work the same way.
+- **Not done.** Guessing `cycle` from the file and a `wavetable` tag for the
+  Sounds panel (it does not list system samples) are still open (ROADMAP). The
+  S17 route is unchanged: sending a rendered clip into Grains does not make the
+  slicing route shorter, so the drop is covered by an app test instead.

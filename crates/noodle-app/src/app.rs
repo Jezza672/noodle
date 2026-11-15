@@ -2915,7 +2915,8 @@ impl App {
                 };
                 match dropped.on {
                     editor::DropOn::Sampler(node) => {
-                        let command = crate::sample_drop::onto_sampler(node, &sample);
+                        let command =
+                            crate::sample_drop::onto_sampler(&self.session, node, &sample);
                         self.session.edit([crate::session::Edit::Apply(command)]);
                     }
                     editor::DropOn::Canvas(at) => {
@@ -5407,6 +5408,59 @@ mod tests {
         h.state_mut().session.undo();
         let node = h.state().session.project().graph().node(sampler).unwrap();
         assert!(node.params.is_empty() && node.config.get(noodle_nodes::SAMPLE_KEY).is_none());
+    }
+
+    #[test]
+    fn a_clip_dragged_onto_grains_or_a_wavetable_sets_the_sample_they_play() {
+        let (mut h, clip, _dir) = clip_rig();
+        let (grains, table) = (noodle_core::NodeId(10), noodle_core::NodeId(11));
+        for (id, type_id, x) in [
+            (grains, noodle_nodes::GRAINS_ID, 300.0),
+            (table, noodle_nodes::WAVETABLE_ID, 700.0),
+        ] {
+            h.state_mut().session.edit([Edit::Apply(Command::AddNode {
+                id,
+                node: Node::new(type_id).at(x, 200.0),
+            })]);
+        }
+        h.run();
+        for (id, key, x) in [
+            (grains, noodle_nodes::GRAINS_SAMPLE_KEY, 300.0),
+            (table, noodle_nodes::TABLE_KEY, 700.0),
+        ] {
+            let to = on_canvas(&h, egui::pos2(x, 200.0)) + egui::vec2(20.0, 10.0);
+            carry_clip(&mut h, clip, to);
+            let node = h.state().session.project().graph().node(id).unwrap();
+            // The clip's part of the file, as a window of the reference.
+            let Some(noodle_core::Value::Text(text)) = node.config.get(key) else {
+                panic!("{key} is not set: {:?}", node.config);
+            };
+            let reference = noodle_nodes::SampleRef::parse(text);
+            assert_eq!(reference.hash.len(), 64, "{text}");
+            assert!((reference.start - 0.25).abs() < 1e-4, "{reference:?}");
+            assert!((reference.end - 0.5).abs() < 1e-4, "{reference:?}");
+        }
+        // Grains also gets the root from the tone (key 69); a Wavetable has
+        // none.
+        let node = h.state().session.project().graph().node(grains).unwrap();
+        assert!(
+            (node.params["root"] - 69.0).abs() < 0.1,
+            "{:?}",
+            node.params
+        );
+        assert!(
+            h.state()
+                .session
+                .project()
+                .graph()
+                .node(table)
+                .unwrap()
+                .params
+                .is_empty()
+        );
+        h.state_mut().session.undo();
+        let node = h.state().session.project().graph().node(table).unwrap();
+        assert!(node.config.get(noodle_nodes::TABLE_KEY).is_none());
     }
 
     #[test]

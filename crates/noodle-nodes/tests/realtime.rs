@@ -3191,7 +3191,8 @@ fn wavetable_and_grains_never_allocate_with_every_parameter_modulated() {
     let mut s = Session::new();
     let store = SampleStore::new();
     s.registry.replace(Wavetable::new(&store));
-    s.registry.replace(Grains::new(&store));
+    s.registry
+        .replace(Grains::new(&store, &noodle_engine::Telemetry::new()));
     let hash = store.insert(&Audio {
         samples: (0..9600).map(|i| (i as f32 * 0.05).sin() * 0.5).collect(),
         channels: 1,
