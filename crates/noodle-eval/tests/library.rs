@@ -75,6 +75,7 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.group.stage",
     "noodle.input.button",
     "noodle.internal.automation",
+    "noodle.io.host_param",
     "noodle.io.input",
     "noodle.io.output",
     "noodle.instrument.sample",
