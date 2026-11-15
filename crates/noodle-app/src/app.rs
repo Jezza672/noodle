@@ -243,7 +243,9 @@ pub(crate) enum Action {
     ToggleCache,
     ToggleCpu,
     ImportAudio,
+    ImportMidi,
     ExportAudio,
+    ExportMidi,
     /// Asks where the export the dialog chose is to be written.
     StartExport,
     DeleteSelection,
@@ -1077,9 +1079,11 @@ impl App {
             });
             ui.separator();
             item(ui, "Import Audio…", None, true, Action::ImportAudio);
+            item(ui, "Import MIDI…", None, true, Action::ImportMidi);
             item(ui, "Browse Sounds…", None, true, Action::OpenSounds);
             item(ui, "Make Shareable Pack…", None, true, Action::MakePack);
             item(ui, "Export Audio…", None, true, Action::ExportAudio);
+            item(ui, "Export MIDI…", None, true, Action::ExportMidi);
             ui.separator();
             item(ui, "Settings…", Some(&SETTINGS), true, Action::Settings);
         });
@@ -2681,6 +2685,8 @@ impl App {
                         .notify("Add a track before importing audio".to_string()),
                 }
             }
+            Action::ImportMidi => self.import_midi(),
+            Action::ExportMidi => self.export_midi(),
             Action::ExportAudio => self.export.open(&mut self.session),
             Action::StartExport => {
                 if let Some(choice) = self.export.take_choice() {
@@ -3063,6 +3069,68 @@ impl App {
     #[cfg(test)]
     pub(crate) fn sounds_busy(&self) -> bool {
         self.sounds.busy()
+    }
+
+    /// Asks which MIDI files to add. The first file track goes on the
+    /// selected track, if there is one; the rest get tracks of their own.
+    fn import_midi(&mut self) {
+        let Some(files) = crate::picker::pick_files(("MIDI", &["mid", "midi"])) else {
+            return;
+        };
+        let playhead = self.session.playhead();
+        let target = self
+            .timeline
+            .import_target(self.session.project(), playhead);
+        let track = target.as_ref().map(|t| t.track);
+        let at = playhead.max(noodle_core::Tick::ZERO);
+        let added = timeline::midi_file::import(&self.session, &files, track, at);
+        if let Some(command) = added.command {
+            self.session.clear_message();
+            self.session.edit([crate::session::Edit::Apply(command)]);
+        }
+        if let Some(notice) = added.notice {
+            self.session.notify(notice);
+        }
+    }
+
+    /// Writes a MIDI file: the selected clip, else the selected track's MIDI
+    /// clips, else every MIDI clip.
+    fn export_midi(&mut self) {
+        use timeline::midi_file::Scope;
+        let scope = match (
+            self.timeline.selected_clip(),
+            self.timeline.selected_track(),
+        ) {
+            (Some(clip), _) => Scope::Clip(clip),
+            (None, Some(track)) => Scope::Track(track),
+            (None, None) => Scope::Arrangement,
+        };
+        let Some((bytes, left_out)) = timeline::midi_file::export(&self.session, &scope) else {
+            self.session
+                .notify("There are no MIDI clips to export".to_string());
+            return;
+        };
+        let Some(path) = crate::picker::save_file("export.mid", ("MIDI", &["mid"]), None) else {
+            return;
+        };
+        let path = if path.extension().is_some() {
+            path
+        } else {
+            path.with_extension("mid")
+        };
+        match std::fs::write(&path, bytes) {
+            Ok(()) if left_out.is_empty() => {
+                self.session.notify(format!("Wrote {}", path.display()));
+            }
+            Ok(()) => self.session.notify(format!(
+                "Wrote {}; left out: {}",
+                path.display(),
+                left_out.join("; ")
+            )),
+            Err(error) => self
+                .session
+                .notify(format!("Couldn't write {}: {error}", path.display())),
+        }
     }
 
     /// Asks which audio files to add, and adds them as clips at `target`.

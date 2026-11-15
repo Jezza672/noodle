@@ -841,6 +841,55 @@ fn several_dropped_files_are_laid_end_to_end() {
     assert!(clips_on(&h, 2).is_empty());
 }
 
+/// A .mid with two tracks, each one note, in the test's folder.
+fn two_track_mid(h: &H) -> std::path::PathBuf {
+    use noodle_core::{MidiClip, MidiNote};
+    let mut tracks = Vec::new();
+    for (name, key) in [("Lead", 72u8), ("Bass", 36)] {
+        let mut clip = MidiClip::new(Tick(3840));
+        clip.notes.push(MidiNote::new(Tick(0), Tick(480), key));
+        tracks.push(noodle_io::ExportTrack {
+            name: name.into(),
+            clips: vec![(Tick(0), clip)],
+        });
+    }
+    let (file, _) = noodle_io::export_smf(&tracks, &noodle_core::TempoMap::default());
+    let path = h.state()._dir.path().join("song.mid");
+    std::fs::write(&path, noodle_io::write_smf(&file)).unwrap();
+    path
+}
+
+#[test]
+fn dropping_a_midi_file_makes_clips_and_tracks_in_one_undo_step() {
+    let (mut h, id) = rig();
+    let file = two_track_mid(&h);
+    let before = h.state().session.project().clone();
+    let at = lane_two(&h, id, 0.05);
+    drop_files(&mut h, at, &[file]);
+    let project = h.state().session.project();
+    // The first file track lands on the track it was dropped on.
+    let on_two = clips_on(&h, 2);
+    assert_eq!(on_two.len(), 1);
+    let lead = on_two[0].as_midi().expect("a MIDI clip");
+    assert_eq!(lead.notes[0].key, 72);
+    // The second got a track of its own, named from the file.
+    let others: Vec<_> = project
+        .clips()
+        .filter(|(_, c)| c.as_midi().is_some_and(|m| m.notes[0].key == 36))
+        .collect();
+    assert_eq!(others.len(), 1);
+    assert!(
+        h.state()
+            .notices
+            .iter()
+            .any(|n| n.contains("no instrument")),
+        "{:?}",
+        h.state().notices
+    );
+    h.state_mut().session.undo();
+    assert_eq!(*h.state().session.project(), before, "one undo step");
+}
+
 #[test]
 fn a_file_that_cant_be_read_is_reported_and_adds_nothing() {
     let (mut h, id) = rig();

@@ -10,6 +10,7 @@ cpal = "0.18.2"
 flacenc = "0.5.1"
 hound = "3.5.1"
 midir = "0.11.1"
+midly = { version = "0.5", default-features = false, features = ["alloc", "std"] }
 noodle-core.workspace = true
 noodle-engine.workspace = true
 realfft = "3.5.0"
