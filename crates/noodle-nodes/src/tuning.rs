@@ -18,7 +18,8 @@ use noodle_engine::{
 /// With no scale loaded it is 12-tone equal temperament, so it changes
 /// nothing until `reference_hz` moves off 440. `reference_hz` is the
 /// frequency of the mapping's reference note (A4 by default); it replaces the
-/// `.kbm` file's own frequency. Keys a `.kbm` leaves unmapped play untuned.
+/// `.kbm` file's own frequency. Keys a `.kbm` leaves unmapped don't sound: the
+/// note, its note-off and its expression are dropped.
 /// `reference_hz` is read when each note starts, so a held note keeps its
 /// tuning.
 ///
@@ -241,7 +242,8 @@ pub fn parse_kbm(text: &str) -> Result<Mapping, String> {
 }
 
 /// The semitones each key moves from 12-tone equal temperament (A4 = 440 Hz at
-/// key 69), for a reference note at `reference_hz`. Unmapped keys are 0.
+/// key 69), for a reference note at `reference_hz`. Keys the mapping leaves
+/// unmapped are NaN: they don't sound.
 pub fn offsets(scale: &Scale, mapping: &Mapping, reference_hz: f64) -> [f32; 128] {
     let n = scale.degrees.len() as i64;
     let steps = |key: i64| -> Option<i64> {
@@ -257,7 +259,7 @@ pub fn offsets(scale: &Scale, mapping: &Mapping, reference_hz: f64) -> [f32; 128
     let reference = steps(mapping.reference_note)
         .map(|s| scale.cents(s))
         .unwrap_or(0.0);
-    let mut out = [0.0f32; 128];
+    let mut out = [f32::NAN; 128];
     for (key, slot) in out.iter_mut().enumerate() {
         let Some(step) = steps(key as i64) else {
             continue;
@@ -359,8 +361,13 @@ impl Node for TuningNode {
         for event in event_inputs[TuningPorts::NOTES] {
             match event.kind {
                 EventKind::NoteOn { note, key, .. } => {
-                    let _ = out.push(*event);
                     let offset = self.table_offset(hz, key);
+                    if offset.is_nan() && self.held.len() < HELD {
+                        // Unmapped: remembered so its off and expression go too.
+                        self.held.push((note, offset));
+                        continue;
+                    }
+                    let _ = out.push(*event);
                     if self.held.len() < HELD {
                         self.held.push((note, offset));
                         if offset != 0.0 {
@@ -378,8 +385,11 @@ impl Node for TuningNode {
                     }
                 }
                 EventKind::NoteOff { note, .. } => {
+                    let dropped = self.held.iter().any(|(n, o)| *n == note && o.is_nan());
                     self.held.retain(|(n, _)| *n != note);
-                    let _ = out.push(*event);
+                    if !dropped {
+                        let _ = out.push(*event);
+                    }
                 }
                 EventKind::Expression {
                     note,
@@ -391,6 +401,9 @@ impl Node for TuningNode {
                         .iter()
                         .find(|(n, _)| *n == note)
                         .map_or(0.0, |(_, b)| *b);
+                    if base.is_nan() {
+                        continue;
+                    }
                     let _ = out.push(Event {
                         time: event.time,
                         kind: EventKind::Expression {
@@ -552,12 +565,40 @@ mod tests {
         // Key 60 is at 300 Hz now, not 261.6: a little over two semitones up.
         let expected = 12.0 * (300.0f64 / 261.6256).log2();
         assert!((f64::from(table[60]) - expected).abs() < 1e-3);
-        assert_eq!(table[61], 0.0);
+        assert!(table[61].is_nan());
     }
 
     /// The Hz a key sounds at once its pitch expression is applied.
     fn hz(key: u8, offset: f32) -> f64 {
         440.0 * ((f64::from(key) - 69.0 + f64::from(offset)) / 12.0).exp2()
+    }
+
+    #[test]
+    fn an_unmapped_key_does_not_sound() {
+        // Key 60 mapped, key 61 unmapped, repeating.
+        let kbm = "2\n0\n127\n60\n60\n261.6256\n12\n0\nx\n";
+        let mut h = harness(&config("", kbm));
+        h.send_events(
+            TuningPorts::NOTES,
+            &[
+                on(0, 1, 60),
+                on(0, 2, 61),
+                bend(5, 2, 1.0),
+                off(50, 2),
+                off(60, 1),
+            ],
+        );
+        h.run(128).unwrap();
+        let out = h.events(TuningPorts::OUT);
+        let note_of = |k: &EventKind| match k {
+            EventKind::NoteOn { note, .. }
+            | EventKind::NoteOff { note, .. }
+            | EventKind::Expression { note, .. } => note.0,
+            _ => 0,
+        };
+        assert!(out.iter().all(|e| note_of(&e.kind) == 1), "{out:?}");
+        // Note 1: on, its tuning, off.
+        assert_eq!(out.len(), 3, "{out:?}");
     }
 
     #[test]

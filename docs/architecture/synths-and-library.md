@@ -313,7 +313,7 @@ These are primitives; instruments and racks built from them are groups.
   it. A pitch expression arriving for a note has the tuning added, so clip
   bends and MPE still work. `reference_hz` (default 440) is the frequency of
   the mapping's reference note, read at each note-on, so a held note keeps its
-  tuning. Unmapped keys play untuned; at most 128 notes are tuned at once.
+  tuning. Keys a `.kbm` leaves unmapped do not sound; at most 128 notes are tuned at once.
   Not retuned: MIDI Out, plugins that ignore tuning expressions, Pitch Track.
   The properties panel loads and clears the files (one undo step).
 - **Choke.** Note Split output *n* has a `choke{n}` group (0 for none, 1 to 8).
