@@ -1,0 +1,284 @@
+[
+    Template((
+        name: "Grain Pad",
+        slug: "grain-pad",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Grain Pad"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:notes\n2:position\n3:spray\n4:size\n5:density\n6:cutoff\n7:lfo rate\n8:lfo depth\n9:attack\n10:release"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.poly.voices",
+                config: {"voices": 6},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.mod.lfo",
+                params: {"depth": 0.08, "rate": 0.15},
+                position: (x: 440.0, y: 390.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.util.math",
+                params: {"a": 0.08},
+                config: {"expr": "a + b"},
+                position: (x: 660.0, y: 390.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.instrument.grains",
+                params: {"density": 28.0, "jitter": 0.4, "pitch_spray": 0.15, "position": 0.08, "root": 60.0, "size": 0.18, "spray": 0.1, "spread": 0.6},
+                config: {"sample": "1ac5a3c33f1e037e427b982e9ae0104241c09cb59a612889978dc45036f00498"},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.filter.svf",
+                params: {"cutoff": 6000.0},
+                position: (x: 1320.0, y: 0.0),
+                parent: Some(1),
+            ),
+            8: (
+                type: "noodle.mod.adsr",
+                params: {"attack": 0.15, "decay": 0.3, "release": 1.0, "sustain": 0.85},
+                position: (x: 1100.0, y: 650.0),
+                parent: Some(1),
+            ),
+            9: (
+                type: "noodle.util.vca",
+                position: (x: 1540.0, y: 0.0),
+                parent: Some(1),
+            ),
+            10: (
+                type: "noodle.util.vca",
+                position: (x: 1760.0, y: 0.0),
+                parent: Some(1),
+            ),
+            11: (
+                type: "noodle.util.vca",
+                position: (x: 1980.0, y: 0.0),
+                parent: Some(1),
+            ),
+            12: (
+                type: "noodle.poly.voice_mix",
+                position: (x: 2200.0, y: 0.0),
+                parent: Some(1),
+            ),
+            13: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 2450.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 8, port: "active"),
+                to: (node: 3, port: "busy"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 3, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p8"),
+                to: (node: 4, port: "depth"),
+            ),
+            (
+                from: (node: 2, port: "p7"),
+                to: (node: 4, port: "rate"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 5, port: "a"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "b"),
+            ),
+            (
+                from: (node: 2, port: "p5"),
+                to: (node: 6, port: "density"),
+            ),
+            (
+                from: (node: 3, port: "pitch"),
+                to: (node: 6, port: "frequency"),
+            ),
+            (
+                from: (node: 3, port: "gate"),
+                to: (node: 6, port: "gate"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 6, port: "position"),
+            ),
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 6, port: "size"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 6, port: "spray"),
+            ),
+            (
+                from: (node: 2, port: "p6"),
+                to: (node: 7, port: "cutoff"),
+            ),
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 7, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p9"),
+                to: (node: 8, port: "attack"),
+            ),
+            (
+                from: (node: 3, port: "gate"),
+                to: (node: 8, port: "gate"),
+            ),
+            (
+                from: (node: 2, port: "p10"),
+                to: (node: 8, port: "release"),
+            ),
+            (
+                from: (node: 7, port: "low"),
+                to: (node: 9, port: "in"),
+            ),
+            (
+                from: (node: 8, port: "out"),
+                to: (node: 9, port: "level"),
+            ),
+            (
+                from: (node: 9, port: "out"),
+                to: (node: 10, port: "in"),
+            ),
+            (
+                from: (node: 3, port: "velocity"),
+                to: (node: 10, port: "level"),
+            ),
+            (
+                from: (node: 10, port: "out"),
+                to: (node: 11, port: "in"),
+            ),
+            (
+                from: (node: 3, port: "fade"),
+                to: (node: 11, port: "level"),
+            ),
+            (
+                from: (node: 11, port: "out"),
+                to: (node: 12, port: "in"),
+            ),
+            (
+                from: (node: 12, port: "out"),
+                to: (node: 13, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Steel Haze",
+        slug: "grain-pad-steel-haze",
+        topology: "d08a504251995685",
+        nodes: [
+            (
+                params: {"attack": 0.15, "decay": 0.3, "release": 1.0, "sustain": 0.85},
+            ),
+            (
+                params: {"a": 0.08},
+                config: {"expr": "a + b"},
+            ),
+            (),
+            (),
+            (
+                config: {"voices": 6},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"cutoff": 6000.0},
+            ),
+            (
+                params: {"density": 28.0, "jitter": 0.4, "pitch_spray": 0.15, "position": 0.08, "root": 60.0, "size": 0.18, "spray": 0.1, "spread": 0.6},
+                config: {"sample": "1ac5a3c33f1e037e427b982e9ae0104241c09cb59a612889978dc45036f00498"},
+            ),
+            (
+                params: {"depth": 0.08, "rate": 0.15},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Banjo Cloud",
+        slug: "grain-pad-banjo-cloud",
+        topology: "d08a504251995685",
+        nodes: [
+            (
+                params: {"attack": 0.3, "decay": 0.3, "release": 1.5, "sustain": 0.85},
+            ),
+            (
+                params: {"a": 0.04},
+                config: {"expr": "a + b"},
+            ),
+            (),
+            (),
+            (
+                config: {"voices": 6},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"cutoff": 4500.0},
+            ),
+            (
+                params: {"density": 40.0, "jitter": 0.4, "pitch_spray": 0.3, "position": 0.04, "root": 49.0, "size": 0.12, "spray": 0.05, "spread": 0.8},
+                config: {"sample": "2d862cb19a48b9768e6500ccf8b0226e4103e7ab1907143e667563d2b184f486"},
+            ),
+            (
+                params: {"depth": 0.12, "rate": 0.15},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Frozen Bell",
+        slug: "grain-pad-frozen-bell",
+        topology: "d08a504251995685",
+        nodes: [
+            (
+                params: {"attack": 0.5, "decay": 0.3, "release": 2.0, "sustain": 0.85},
+            ),
+            (
+                params: {"a": 0.05},
+                config: {"expr": "a + b"},
+            ),
+            (),
+            (),
+            (
+                config: {"voices": 6},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"cutoff": 9000.0},
+            ),
+            (
+                params: {"density": 14.0, "jitter": 0.4, "pitch_spray": 0.05, "position": 0.05, "root": 72.0, "size": 0.35, "spray": 0.02, "spread": 0.4},
+                config: {"sample": "08db0eb90355df382a998728f1a599aef9aea9ad0e49f2e6762a2e6fcc000be0"},
+            ),
+            (
+                params: {"depth": 0.03, "rate": 0.08},
+            ),
+        ],
+    )),
+]

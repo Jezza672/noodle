@@ -84,15 +84,17 @@ Seven features picked from a shortlist in November 2026. Each issue holds the de
 1. Scale Quantise, Chord, Transpose, the Song Key node and `Transport::key`. Size M.
 2. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M.
 
-**Wavetable oscillator (#536).** `noodle.osc.wavetable`: a table is a sample in the store, `position` is a parameter, band-limited copies are built off the audio thread.
+**Wavetable oscillator (#536), what is left.** The node, the tables, the template and its presets landed (see [features/wavetable-and-grains.md](features/wavetable-and-grains.md)). Still owed, size S to M:
 
-1. The oscillator, the table builder, an example with a golden render. Size M.
-2. Generated CC0 tables committed as system samples with their generator, the Wavetable Synth template and presets, the cycle drawn on the node, drop a table on the node. Size M.
+1. The cycle at the current `position` drawn on the node's body, as the Sampler draws its waveform.
+2. Dropping a table (a file or a Sounds entry) on the node, by the Sampler's path (`editor::pad_sampler`, `sample_drop.rs`), and a `wavetable` tag on the shipped tables so the Sounds panel can filter for them (the Sounds panel does not list system samples yet).
+3. `cycle` guessed from the file (a `clm ` chunk, or a length that is a multiple of 2048), the config overriding it.
 
-**Grains (#537).** `noodle.instrument.grains`: a granular sample player with position, spray, size, density, pitch and scatter as parameters, one cloud per voice.
+**Grains (#537), what is left.** The node, the two templates and their presets landed (see the same file). Still owed, size M:
 
-1. The node, an example with a golden render. Size M to L.
-2. The Grain Pad and Grain Freeze templates, the waveform and grains drawn on the node, the S17 route. Size M.
+1. The sample's waveform drawn on the node with a mark at `position`, the spray as a band and the live grains as ticks (from telemetry, as the voice lights are).
+2. Dropping a sample or a Sounds entry on the node, and the S17 route extended to send a rendered clip into Grains if that makes the route shorter (`stories/registry.rs`).
+3. A grain delay (grains from live input) as a second node.
 
 **Looper (#541).** `noodle.util.looper`: record, loop on the bar, overdub, undo the last layer and clear, driven by gate parameters. The recording is session state and survives a seek, so the node is exempt from the reset-equals-fresh tests.
 

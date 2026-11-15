@@ -909,6 +909,40 @@ fn table() -> Vec<Row> {
             "Fixed Pitch Hit",
             &[("mode", 0.0), ("keytrack", 0.0), ("release", 0.05)],
         ),
+        row(
+            "noodle.instrument.grains",
+            "Freeze",
+            &[
+                ("spray", 0.0),
+                ("size", 0.3),
+                ("density", 20.0),
+                ("jitter", 0.2),
+            ],
+        ),
+        row(
+            "noodle.instrument.grains",
+            "Texture",
+            &[
+                ("spray", 0.5),
+                ("size", 0.08),
+                ("density", 60.0),
+                ("jitter", 1.0),
+                ("pitch_spray", 4.0),
+                ("spread", 1.0),
+            ],
+        ),
+        row(
+            "noodle.instrument.grains",
+            "Scatter",
+            &[
+                ("spray", 1.0),
+                ("size", 0.04),
+                ("density", 30.0),
+                ("jitter", 1.0),
+                ("reverse", 0.5),
+                ("spread", 0.8),
+            ],
+        ),
         // Voices and mixing.
         row(
             "noodle.poly.voices",

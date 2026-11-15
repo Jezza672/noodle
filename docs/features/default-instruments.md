@@ -22,3 +22,5 @@ can make music without building a synth first.
   the key and (for the kit) plays on its keys; `system_samples` tests check the
   index matches the files. The architecture is in
   [../architecture/synths-and-library.md](../architecture/synths-and-library.md).
+- **Later:** the Wavetable Synth, Grain Pad and Grain Freeze templates are in
+  [wavetable-and-grains.md](wavetable-and-grains.md).

@@ -26,6 +26,12 @@ fn play(slug: &str, seconds: f32) -> Vec<f32> {
 }
 
 fn play_notes(slug: &str, seconds: f32, keys: &[u8]) -> Vec<f32> {
+    render(slug, seconds, keys, true)
+}
+
+/// Like [`play_notes`]; an instrument with no `notes` input (a drone) isn't
+/// wired to the track's MIDI when `wire_notes` is off.
+fn render(slug: &str, seconds: f32, keys: &[u8], wire_notes: bool) -> Vec<f32> {
     let library = Library::in_memory();
     let template = library
         .template(&format!("system:template:{slug}"))
@@ -52,12 +58,14 @@ fn play_notes(slug: &str, seconds: f32, keys: &[u8]) -> Vec<f32> {
             .apply(project, Command::Connect(Connection { from, to }))
             .unwrap();
     };
-    wire(
-        &mut project,
-        &mut history,
-        Endpoint::new(input, MIDI),
-        Endpoint::new(instrument, "notes"),
-    );
+    if wire_notes {
+        wire(
+            &mut project,
+            &mut history,
+            Endpoint::new(input, MIDI),
+            Endpoint::new(instrument, "notes"),
+        );
+    }
     wire(
         &mut project,
         &mut history,
@@ -129,6 +137,8 @@ const SYNTHS: &[&str] = &[
     "chip-synth",
     "pluck-synth",
     "warm-pad",
+    "wavetable-synth",
+    "grain-pad",
 ];
 
 const SAMPLED: &[&str] = &["steel-drum", "banjo"];
@@ -177,4 +187,14 @@ fn a_sampled_instrument_follows_the_key() {
         crossings(&high[2_000..22_000]),
     );
     assert!(b > a, "an octave up crosses zero more often ({a} vs {b})");
+}
+
+/// A Grain Freeze has no notes: it drones until it is stopped.
+#[test]
+fn the_grain_freeze_drones() {
+    let samples = render("grain-freeze", 3.0, &[], false);
+    let held = peak(&samples, 0.5, 1.0);
+    assert!(held > 0.02 && held < 1.0, "{held}");
+    let later = peak(&samples, 2.0, 3.0);
+    assert!(later > 0.02, "still droning at 2 s ({later})");
 }

@@ -345,6 +345,477 @@ fn sampled_family(
     )
 }
 
+fn math(expr: &str) -> super::patch::Spec {
+    spec("noodle.util.math").config("expr", Value::Text(expr.into()))
+}
+
+fn adsr(e: Env) -> super::patch::Spec {
+    spec("noodle.mod.adsr")
+        .param("attack", e.attack)
+        .param("decay", e.decay)
+        .param("sustain", e.sustain)
+        .param("release", e.release)
+}
+
+/// The end of a polyphonic voice, from `from`: an amplitude envelope on
+/// Voices' gate (with the `attack` and `release` controls) through a VCA, then
+/// the velocity and Voices' steal fade through two more, then Voice Mix to the
+/// group's `out`. The envelope's `active` tells Voices when a voice is free.
+/// Leaves the group.
+fn voiced_out(
+    p: &mut Patch,
+    group: NodeId,
+    voices: NodeId,
+    from: Port,
+    controls: [Port; 2],
+    times: [f32; 2],
+) {
+    let [attack, release] = controls;
+    let amp = p.add(adsr(env(times[0], 0.3, 0.85, times[1])), 5.0, 5.0);
+    p.connect((voices, "gate"), (amp, "gate"));
+    p.connect(attack, (amp, "attack"));
+    p.connect(release, (amp, "release"));
+    let shaped = p.add(spec("noodle.util.vca"), 7.0, 0.0);
+    p.connect(from, (shaped, "in"));
+    p.connect((amp, "out"), (shaped, "level"));
+    let touch = p.add(spec("noodle.util.vca"), 8.0, 0.0);
+    p.connect((shaped, "out"), (touch, "in"));
+    p.connect((voices, "velocity"), (touch, "level"));
+    let faded = p.add(spec("noodle.util.vca"), 9.0, 0.0);
+    p.connect((touch, "out"), (faded, "in"));
+    p.connect((voices, "fade"), (faded, "level"));
+    p.connect((amp, "active"), (voices, "busy"));
+    let sum = p.add(spec(VOICE_MIX_ID), 10.0, 0.0);
+    p.connect((faded, "out"), (sum, "in"));
+    let out = p.output("out");
+    p.connect((sum, "out"), out);
+    p.leave(group);
+}
+
+/// The settings of one Wavetable Synth preset.
+#[derive(Clone, Copy)]
+struct Wavetable {
+    table: &'static str,
+    position: f32,
+    /// How far the position envelope sweeps `position`.
+    amount: f32,
+    sweep: Env,
+    lfo_rate: f32,
+    lfo_depth: f32,
+    cutoff: f32,
+    resonance: f32,
+    attack: f32,
+    release: f32,
+    detune: f32,
+}
+
+/// Voices into two Wavetable oscillators (detuned by `detune` cents either
+/// way), a State Variable Filter, an amplitude envelope and Voice Mix. The
+/// table position is the `position` control plus an LFO (`lfo rate`,
+/// `lfo depth`) and a second envelope (scaled by `sweep amount`), added by a
+/// Math node and wired to both oscillators. Its inputs are `notes`,
+/// `position`, `sweep amount`, `lfo rate`, `lfo depth`, `cutoff`, `resonance`,
+/// `attack`, `release` and `detune`; the output is `out`.
+fn wavetable_synth(p: &mut Patch, w: Wavetable) -> NodeId {
+    let group = p.enter("Wavetable Synth", 0.0, 0.0);
+    let notes = p.input("notes");
+    let position = p.input("position");
+    let amount = p.input("sweep amount");
+    let lfo_rate = p.input("lfo rate");
+    let lfo_depth = p.input("lfo depth");
+    let cutoff = p.input("cutoff");
+    let resonance = p.input("resonance");
+    let attack = p.input("attack");
+    let release = p.input("release");
+    let detune = p.input("detune");
+    let voices = p.add(spec(VOICES_ID).config("voices", Value::Int(8)), 1.0, 0.0);
+    p.connect(notes, (voices, "in"));
+
+    // Where in the table: the base, plus an envelope and an LFO.
+    let sweep = p.add(adsr(w.sweep), 2.0, 3.0);
+    p.connect((voices, "gate"), (sweep, "gate"));
+    let lfo = p.add(
+        spec("noodle.mod.lfo")
+            .param("rate", w.lfo_rate)
+            .param("depth", w.lfo_depth),
+        2.0,
+        4.0,
+    );
+    p.connect(lfo_rate, (lfo, "rate"));
+    p.connect(lfo_depth, (lfo, "depth"));
+    let place = p.add(
+        math("a + b * c + d")
+            .param("a", w.position)
+            .param("b", w.amount),
+        3.0,
+        3.0,
+    );
+    p.connect(position, (place, "a"));
+    p.connect(amount, (place, "b"));
+    p.connect((sweep, "out"), (place, "c"));
+    p.connect((lfo, "out"), (place, "d"));
+
+    let mix = p.add(
+        spec("noodle.util.mix")
+            .config("inputs", Value::Int(2))
+            .param("gain1", -19.5)
+            .param("gain2", -19.5),
+        5.0,
+        0.0,
+    );
+    for (i, (side, input)) in [(-1.0f32, "in1"), (1.0, "in2")].into_iter().enumerate() {
+        let row = i as f32 * 1.4;
+        let frequency = p.add(
+            math(&format!("a * pow(2, b * {side} / 1200)")).param("b", w.detune),
+            2.0,
+            row,
+        );
+        let table = p.add(
+            spec("noodle.osc.wavetable")
+                .config("table", Value::Text(system_samples::hash(w.table).into()))
+                .config("cycle", Value::Int(2048)),
+            3.0,
+            row,
+        );
+        let pan = p.add(spec("noodle.util.pan").param("pan", 0.35 * side), 4.0, row);
+        p.connect((voices, "pitch"), (frequency, "a"));
+        p.connect(detune, (frequency, "b"));
+        p.connect((frequency, "out"), (table, "frequency"));
+        p.connect((place, "out"), (table, "position"));
+        p.connect((table, "out"), (pan, "in"));
+        p.connect((pan, "out"), (mix, input));
+    }
+    let filter = p.add(
+        spec("noodle.filter.svf")
+            .param("cutoff", w.cutoff)
+            .param("resonance", w.resonance),
+        6.0,
+        0.0,
+    );
+    p.connect((mix, "out"), (filter, "in"));
+    p.connect(cutoff, (filter, "cutoff"));
+    p.connect(resonance, (filter, "resonance"));
+    voiced_out(
+        p,
+        group,
+        voices,
+        (filter, "low"),
+        [attack, release],
+        [w.attack, w.release],
+    );
+    group
+}
+
+fn wavetable_family() -> Family {
+    let base = Wavetable {
+        table: "wt-basic-shapes",
+        position: 0.0,
+        amount: 0.6,
+        sweep: env(0.01, 0.8, 0.2, 0.3),
+        lfo_rate: 0.3,
+        lfo_depth: 0.1,
+        cutoff: 5000.0,
+        resonance: 0.15,
+        attack: 0.01,
+        release: 0.3,
+        detune: 7.0,
+    };
+    let presets = [
+        ("Glass Sweep", base),
+        (
+            "Vowel Pad",
+            Wavetable {
+                table: "wt-formant-sweep",
+                position: 0.15,
+                amount: 0.4,
+                sweep: env(1.2, 1.0, 0.8, 1.0),
+                lfo_rate: 0.2,
+                lfo_depth: 0.2,
+                cutoff: 3500.0,
+                attack: 0.6,
+                release: 1.2,
+                detune: 12.0,
+                ..base
+            },
+        ),
+        (
+            "Digital Pluck",
+            Wavetable {
+                table: "wt-digital",
+                position: 0.1,
+                amount: 0.7,
+                sweep: env(0.001, 0.25, 0.0, 0.1),
+                lfo_rate: 0.0,
+                lfo_depth: 0.0,
+                cutoff: 7000.0,
+                resonance: 0.25,
+                attack: 0.002,
+                release: 0.15,
+                detune: 3.0,
+            },
+        ),
+    ];
+    effect_family(
+        "wavetable-synth",
+        "Wavetable Synth",
+        presets
+            .into_iter()
+            .map(|(name, w)| {
+                let build: Build = Box::new(move |p: &mut Patch| wavetable_synth(p, w));
+                (name, build)
+            })
+            .collect(),
+    )
+}
+
+/// The settings of one Grain Pad or Grain Freeze preset.
+#[derive(Clone, Copy)]
+struct Cloud {
+    /// The shipped sample and the key it sounds at.
+    sample: &'static str,
+    root: f32,
+    position: f32,
+    spray: f32,
+    size: f32,
+    density: f32,
+    pitch_spray: f32,
+    spread: f32,
+    /// The pad's filter, LFO and envelope; the freeze ignores them.
+    cutoff: f32,
+    lfo_rate: f32,
+    lfo_depth: f32,
+    attack: f32,
+    release: f32,
+    /// The freeze's level, in decibels.
+    gain: f32,
+}
+
+fn grains(c: Cloud) -> super::patch::Spec {
+    spec("noodle.instrument.grains")
+        .config("sample", Value::Text(system_samples::hash(c.sample).into()))
+        .param("root", c.root)
+        .param("position", c.position)
+        .param("spray", c.spray)
+        .param("size", c.size)
+        .param("density", c.density)
+        .param("pitch_spray", c.pitch_spray)
+        .param("spread", c.spread)
+        .param("jitter", 0.4)
+}
+
+/// Voices into a Grains cloud that follows the pitch, a filter and an
+/// envelope, with an LFO moving the position. Inputs: `notes`, `position`,
+/// `spray`, `size`, `density`, `cutoff`, `lfo rate`, `lfo depth`, `attack` and
+/// `release`; the output is `out`, in stereo.
+fn grain_pad(p: &mut Patch, c: Cloud) -> NodeId {
+    let group = p.enter("Grain Pad", 0.0, 0.0);
+    let notes = p.input("notes");
+    let position = p.input("position");
+    let spray = p.input("spray");
+    let size = p.input("size");
+    let density = p.input("density");
+    let cutoff = p.input("cutoff");
+    let lfo_rate = p.input("lfo rate");
+    let lfo_depth = p.input("lfo depth");
+    let attack = p.input("attack");
+    let release = p.input("release");
+    let voices = p.add(spec(VOICES_ID).config("voices", Value::Int(6)), 1.0, 0.0);
+    p.connect(notes, (voices, "in"));
+    let lfo = p.add(
+        spec("noodle.mod.lfo")
+            .param("rate", c.lfo_rate)
+            .param("depth", c.lfo_depth),
+        2.0,
+        3.0,
+    );
+    p.connect(lfo_rate, (lfo, "rate"));
+    p.connect(lfo_depth, (lfo, "depth"));
+    let place = p.add(math("a + b").param("a", c.position), 3.0, 3.0);
+    p.connect(position, (place, "a"));
+    p.connect((lfo, "out"), (place, "b"));
+    let cloud = p.add(grains(c), 4.0, 0.0);
+    p.connect((voices, "pitch"), (cloud, "frequency"));
+    p.connect((voices, "gate"), (cloud, "gate"));
+    p.connect((place, "out"), (cloud, "position"));
+    p.connect(spray, (cloud, "spray"));
+    p.connect(size, (cloud, "size"));
+    p.connect(density, (cloud, "density"));
+    let filter = p.add(
+        spec("noodle.filter.svf").param("cutoff", c.cutoff),
+        6.0,
+        0.0,
+    );
+    p.connect((cloud, "out"), (filter, "in"));
+    p.connect(cutoff, (filter, "cutoff"));
+    voiced_out(
+        p,
+        group,
+        voices,
+        (filter, "low"),
+        [attack, release],
+        [c.attack, c.release],
+    );
+    group
+}
+
+/// A cloud with no notes, for drones: Grains with its gate unwired, and a gain
+/// stage. Inputs: `position`, `spray`, `size`, `density`, `pitch` (semitones)
+/// and `gain` (decibels); the output is `out`, in stereo.
+fn grain_freeze(p: &mut Patch, c: Cloud) -> NodeId {
+    let group = p.enter("Grain Freeze", 0.0, 0.0);
+    let position = p.input("position");
+    let spray = p.input("spray");
+    let size = p.input("size");
+    let density = p.input("density");
+    let pitch = p.input("pitch");
+    let gain = p.input("gain");
+    let cloud = p.add(grains(c), 2.0, 0.0);
+    p.connect(position, (cloud, "position"));
+    p.connect(spray, (cloud, "spray"));
+    p.connect(size, (cloud, "size"));
+    p.connect(density, (cloud, "density"));
+    p.connect(pitch, (cloud, "pitch"));
+    let level = p.add(spec("noodle.util.gain").param("gain", c.gain), 4.0, 0.0);
+    p.connect((cloud, "out"), (level, "in"));
+    p.connect(gain, (level, "gain"));
+    let out = p.output("out");
+    p.connect((level, "out"), out);
+    p.leave(group);
+    group
+}
+
+fn cloud_family(
+    slug: &'static str,
+    name: &'static str,
+    build: fn(&mut Patch, Cloud) -> NodeId,
+    presets: [(&'static str, Cloud); 3],
+) -> Family {
+    effect_family(
+        slug,
+        name,
+        presets
+            .into_iter()
+            .map(|(preset, cloud)| {
+                let build: Build = Box::new(move |p: &mut Patch| build(p, cloud));
+                (preset, build)
+            })
+            .collect(),
+    )
+}
+
+fn grain_families() -> Vec<Family> {
+    let pad = Cloud {
+        sample: "steel-drum-60",
+        root: 60.0,
+        position: 0.08,
+        spray: 0.1,
+        size: 0.18,
+        density: 28.0,
+        pitch_spray: 0.15,
+        spread: 0.6,
+        cutoff: 6000.0,
+        lfo_rate: 0.15,
+        lfo_depth: 0.08,
+        attack: 0.15,
+        release: 1.0,
+        gain: -6.0,
+    };
+    vec![
+        cloud_family(
+            "grain-pad",
+            "Grain Pad",
+            grain_pad,
+            [
+                ("Steel Haze", pad),
+                (
+                    "Banjo Cloud",
+                    Cloud {
+                        sample: "banjo-Cs4",
+                        root: 49.0,
+                        position: 0.04,
+                        spray: 0.05,
+                        size: 0.12,
+                        density: 40.0,
+                        pitch_spray: 0.3,
+                        spread: 0.8,
+                        cutoff: 4500.0,
+                        lfo_depth: 0.12,
+                        attack: 0.3,
+                        release: 1.5,
+                        ..pad
+                    },
+                ),
+                (
+                    "Frozen Bell",
+                    Cloud {
+                        sample: "steel-drum-72",
+                        root: 72.0,
+                        position: 0.05,
+                        spray: 0.02,
+                        size: 0.35,
+                        density: 14.0,
+                        pitch_spray: 0.05,
+                        spread: 0.4,
+                        cutoff: 9000.0,
+                        lfo_rate: 0.08,
+                        lfo_depth: 0.03,
+                        attack: 0.5,
+                        release: 2.0,
+                        ..pad
+                    },
+                ),
+            ],
+        ),
+        cloud_family(
+            "grain-freeze",
+            "Grain Freeze",
+            grain_freeze,
+            [
+                (
+                    "Steel Drone",
+                    Cloud {
+                        position: 0.1,
+                        size: 0.3,
+                        density: 18.0,
+                        gain: -9.0,
+                        ..pad
+                    },
+                ),
+                (
+                    "Banjo Mist",
+                    Cloud {
+                        sample: "banjo-G3",
+                        root: 43.0,
+                        position: 0.06,
+                        spray: 0.1,
+                        size: 0.1,
+                        density: 60.0,
+                        pitch_spray: 0.4,
+                        spread: 1.0,
+                        gain: -9.0,
+                        ..pad
+                    },
+                ),
+                (
+                    "Frozen Glass",
+                    Cloud {
+                        sample: "steel-drum-78",
+                        root: 78.0,
+                        position: 0.04,
+                        spray: 0.01,
+                        size: 0.45,
+                        density: 10.0,
+                        pitch_spray: 0.02,
+                        spread: 0.3,
+                        gain: -9.0,
+                        ..pad
+                    },
+                ),
+            ],
+        ),
+    ]
+}
+
 /// The eight body sounds on General MIDI drum keys.
 fn body_kit(db: f32, spread: f32) -> Instrument {
     let slots = [
@@ -377,7 +848,7 @@ fn body_kit(db: f32, spread: f32) -> Instrument {
 }
 
 pub(super) fn families() -> Vec<Family> {
-    vec![
+    let mut all = vec![
         family(
             "lead-synth",
             "Lead Synth",
@@ -556,5 +1027,8 @@ pub(super) fn families() -> Vec<Family> {
             })
             .collect(),
         ),
-    ]
+    ];
+    all.push(wavetable_family());
+    all.extend(grain_families());
+    all
 }

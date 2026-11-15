@@ -3008,3 +3008,85 @@ fn version_values_and_articulation_maps_never_allocate_through_switches_and_edit
         assert!(out.iter().all(|x| x.is_finite()), "round {round}");
     }
 }
+
+#[test]
+fn wavetable_and_grains_never_allocate_with_every_parameter_modulated() {
+    use noodle_io::Audio;
+    use noodle_nodes::{Grains, SampleStore, Wavetable};
+
+    let mut s = Session::new();
+    let store = SampleStore::new();
+    s.registry.replace(Wavetable::new(&store));
+    s.registry.replace(Grains::new(&store));
+    let hash = store.insert(&Audio {
+        samples: (0..9600).map(|i| (i as f32 * 0.05).sin() * 0.5).collect(),
+        channels: 1,
+        sample_rate: 48_000,
+    });
+    let config = |cycle: i64| {
+        Config::new()
+            .with("table", Value::Text(hash.clone()))
+            .with("cycle", Value::Int(cycle))
+    };
+    let table = s.add(Node::new("noodle.osc.wavetable").with_config(config(512)));
+    let grains = s.add(
+        Node::new("noodle.instrument.grains")
+            .with_config(Config::new().with("sample", Value::Text(hash.clone())))
+            .with_param("density", 60.0)
+            .with_param("jitter", 0.5)
+            .with_param("spread", 0.5),
+    );
+    let mix = s.add(Node::new("noodle.util.mix"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    // A slow LFO on every parameter that takes a wire.
+    let mut lfos = Vec::new();
+    for (node, port) in [
+        (table, "frequency"),
+        (table, "position"),
+        (table, "phase"),
+        (grains, "gate"),
+        (grains, "position"),
+        (grains, "spray"),
+        (grains, "size"),
+        (grains, "density"),
+        (grains, "jitter"),
+        (grains, "pitch"),
+        (grains, "frequency"),
+        (grains, "pitch_spray"),
+        (grains, "reverse"),
+        (grains, "spread"),
+        (grains, "shape"),
+    ] {
+        let lfo =
+            s.add(Node::new("noodle.osc.sine").with_param("frequency", 1.5 + lfos.len() as f32));
+        s.wire(lfo, "out", node, port);
+        lfos.push(lfo);
+    }
+    s.wire(table, "out", mix, "in1");
+    s.wire(grains, "out", mix, "in2");
+    s.wire(mix, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for round in 0..8 {
+        // A new table build and a new grain limit happen off the audio thread.
+        if round % 2 == 1 {
+            let cycle = [256, 512, 1024, 2048][round / 2 % 4];
+            s.edit(Command::SetConfig {
+                node: table,
+                key: "cycle".into(),
+                value: Some(Value::Int(cycle)),
+            });
+            s.edit(Command::SetConfig {
+                node: grains,
+                key: "grains".into(),
+                value: Some(Value::Int(8 + 8 * round as i64)),
+            });
+            s.update();
+        }
+        s.controller.maintain();
+        s.render_realtime(&mut out, round);
+        assert!(out.iter().all(|x| x.is_finite()));
+    }
+    assert!(out.iter().any(|&x| x != 0.0));
+}
