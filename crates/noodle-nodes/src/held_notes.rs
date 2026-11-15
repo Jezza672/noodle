@@ -56,13 +56,24 @@ impl HeldNotes {
     /// Records that `note` became `outs` (at most [`MAX_OUT`]; none means it
     /// was dropped). A note already held under the same ID is replaced.
     pub fn insert(&mut self, note: u32, outs: &[Out]) {
+        // The same note again, else a free slot, and only when every slot
+        // holds a sounding note the oldest is forgotten.
         let at = match self.slots.iter().position(|h| h.live && h.note == note) {
             Some(at) => at,
-            None => {
-                let at = self.next;
-                self.next = (self.next + 1) % NOTES;
-                at
-            }
+            None => match (0..NOTES)
+                .map(|k| (self.next + k) % NOTES)
+                .find(|&at| !self.slots[at].live)
+            {
+                Some(at) => {
+                    self.next = (at + 1) % NOTES;
+                    at
+                }
+                None => {
+                    let at = self.next;
+                    self.next = (self.next + 1) % NOTES;
+                    at
+                }
+            },
         };
         let len = outs.len().min(MAX_OUT);
         let mut held = Held {
@@ -85,5 +96,31 @@ impl HeldNotes {
         let held = self.slots.iter_mut().find(|h| h.live && h.note == note)?;
         held.live = false;
         Some(*held)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_held_note_survives_more_notes_than_the_table_holds() {
+        let mut held = HeldNotes::new();
+        held.insert(1, &[Out { id: 1, delay: 0 }]);
+        for note in 2..2 * NOTES as u32 {
+            held.insert(note, &[Out { id: note, delay: 0 }]);
+            held.release(note);
+        }
+        assert_eq!(held.get(1).map(|h| h.outs().len()), Some(1));
+    }
+
+    #[test]
+    fn a_full_table_forgets_the_oldest() {
+        let mut held = HeldNotes::new();
+        for note in 0..NOTES as u32 + 1 {
+            held.insert(note, &[Out { id: note, delay: 0 }]);
+        }
+        assert!(held.get(0).is_none());
+        assert!(held.get(NOTES as u32).is_some());
     }
 }
