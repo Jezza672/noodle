@@ -42,9 +42,9 @@ pub use automation::{
     AUTOMATION_ID, INTERNAL_CATEGORY, LIVE, LIVE_ON, Lanes, source_id as lane_source_id,
 };
 pub use builtin::{
-    INPUT_CHANNELS, INPUT_ID, Input, MAX_INPUT_CHANNELS, MAX_ROUTES, OUTPUT_DEVICE,
-    OUTPUT_DEVICE_KEY, OUTPUT_ID, OUTPUT_ROUTING, OUTPUT_ROUTING_KEY, Output, output_devices,
-    parse_routing,
+    HOST_DEVICE, INPUT_CHANNELS, INPUT_DEVICE, INPUT_DEVICE_KEY, INPUT_ID, Input,
+    MAX_INPUT_CHANNELS, MAX_ROUTES, OUTPUT_DEVICE, OUTPUT_DEVICE_KEY, OUTPUT_ID, OUTPUT_ROUTING,
+    OUTPUT_ROUTING_KEY, Output, output_devices, parse_routing,
 };
 pub use cache::{
     Analysis, CacheEnv, DEFAULT_MIN_COST, EntrySpec, InputOrigin, LoopKind, NodeAnalysis, Pass,
@@ -98,6 +98,6 @@ pub use telemetry::{
     LOAD_BUCKETS, Level, MeterReader, MeterWriter, NodeActivity, ParamReading, ParamWriter,
     PositionWriter, ScopeView, ScopeWriter, StateWriter, Telemetry,
 };
-pub use tempo::TempoTable;
+pub use tempo::{KeyTable, TempoTable};
 pub mod wake;
 pub use transport::{InputTap, TAP_CHANNELS, TransportControl};

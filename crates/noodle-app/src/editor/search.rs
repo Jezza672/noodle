@@ -69,6 +69,10 @@ const SYNONYMS: &[(&str, &str)] = &[
     ("White Noise", "random hiss"),
     ("Sample & Hold", "random stepped"),
     ("Humanise", "random loose feel"),
+    ("Scale Quantise", "key scale snap harmony pitch correct"),
+    ("Chord", "harmony triad strum notes"),
+    ("Transpose", "shift pitch semitones key"),
+    ("Song Key", "key tonic root follow timeline marker"),
     (
         "Dynamics",
         "compressor limiter gate expander sidechain duck",

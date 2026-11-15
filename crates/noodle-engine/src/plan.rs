@@ -14,7 +14,9 @@ use std::time::Instant;
 use noodle_core::NodeId;
 
 use crate::ChannelLayout;
-use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID, OUTPUT_ROUTING, parse_routing};
+use crate::builtin::{
+    HOST_DEVICE, INPUT_DEVICE, INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID, OUTPUT_ROUTING, parse_routing,
+};
 use crate::parallel::{StepGraph, Workers};
 use crate::render::TAP_ID;
 use crate::{
@@ -167,9 +169,115 @@ pub(crate) struct Plan {
     silenced: Box<[bool]>,
     /// Reports how long each block takes, when something is watching.
     blocks: Option<BlockWriter>,
+    /// The loop regions, whose steps run together (see [`Region`]).
+    regions: Vec<Region>,
+}
+
+/// A loop region: the steps on a feedback loop, consecutive in the
+/// schedule. The first runs them all, in chunks as short as the loop's
+/// shortest delay (see [`Node::loop_chunk`]); the rest do nothing.
+struct Region {
+    members: std::ops::Range<usize>,
+    /// Runs whole blocks, as a loop did before regions, because a step in it
+    /// can't run in chunks: a plugin, a spectral node, or a delay line that
+    /// delay compensation put in front of it.
+    held: bool,
+}
+
+/// What a node in a loop region needs to run a chunk at a time: its inputs
+/// and outputs copied to and from chunk-sized buffers.
+struct Chunk {
+    /// Per signal input: the chunk's window of it, and for a wired parameter
+    /// the value it works out to.
+    inputs: Vec<ChunkInput>,
+    outputs: Vec<ChunkOutput>,
+    /// Per event input, the events inside the chunk; per event output, what
+    /// the node wrote in it. Events are rebased to the chunk's start.
+    event_inputs: Vec<Vec<Event>>,
+    event_outputs: Vec<Vec<Event>>,
+    /// Time the node has taken this block, when its CPU is watched.
+    nanos: u64,
+}
+
+struct ChunkInput {
+    window: Box<[f32]>,
+    value: Box<[f32]>,
+    /// For an input that reads another node of the region: its slot and the
+    /// index of its output. The input then has that output's silence flags
+    /// for the chunk (a consumer's skipping depends on them, so it must see
+    /// what a block of that length would).
+    from: Option<(usize, usize)>,
+}
+
+struct ChunkOutput {
+    data: Box<[f32]>,
+    silent: Box<[bool]>,
+}
+
+impl Chunk {
+    fn new(
+        node: &PlanNode,
+        offsets: &[OffsetInput],
+        max_frames: usize,
+        producer: &dyn Fn(usize) -> Option<(usize, usize)>,
+    ) -> Self {
+        let zeros = |lanes: usize| vec![0.0; lanes * max_frames].into_boxed_slice();
+        let inputs = node
+            .inputs
+            .iter()
+            .map(|input| match *input {
+                Input::Buffer(view) => ChunkInput {
+                    window: zeros(view.shape.lanes()),
+                    value: Box::default(),
+                    from: producer(view.offset),
+                },
+                Input::Value(_) => ChunkInput {
+                    window: zeros(1),
+                    value: Box::default(),
+                    from: None,
+                },
+                Input::Offset(k) => ChunkInput {
+                    window: zeros(offsets[k].source.shape.lanes()),
+                    value: zeros(offsets[k].source.shape.lanes()),
+                    from: producer(offsets[k].source.offset),
+                },
+                Input::Absent => ChunkInput {
+                    window: Box::default(),
+                    value: Box::default(),
+                    from: None,
+                },
+            })
+            .collect();
+        Self {
+            inputs,
+            outputs: node
+                .outputs
+                .iter()
+                .map(|view| ChunkOutput {
+                    data: zeros(view.shape.lanes()),
+                    silent: vec![false; view.shape.lanes()].into_boxed_slice(),
+                })
+                .collect(),
+            event_inputs: node
+                .event_inputs
+                .iter()
+                .map(|_| Vec::with_capacity(EVENT_CAPACITY))
+                .collect(),
+            event_outputs: node
+                .event_outputs
+                .iter()
+                .map(|_| Vec::with_capacity(EVENT_CAPACITY))
+                .collect(),
+            nanos: 0,
+        }
+    }
 }
 
 struct PlanNode {
+    /// The loop region this step belongs to, by index into the plan's regions.
+    region: Option<usize>,
+    /// What the node needs to run in chunks, when its region does.
+    chunk: Option<Box<Chunk>>,
     /// `None` until a carried-over instance arrives from the previous plan.
     /// Always `None` for the input half of a split node, which runs its
     /// `owner`'s instance.
@@ -200,6 +308,9 @@ struct PlanNode {
     downmix: Option<Box<[f32]>>,
     /// An Input node, whose output the executor fills from the device input.
     is_input: bool,
+    /// An Input node that hears the input: not one tied to the host's input
+    /// when no host drives the engine.
+    input_live: bool,
     /// Reports the signals wired into parameters, by input index.
     probes: Vec<(usize, ParamWriter)>,
     /// Reports the level arriving at each wired audio input, by input index.
@@ -361,6 +472,9 @@ pub(crate) fn build(
         shape: PlanShape::default(),
     };
     let mut slot_info: Vec<SlotInfo> = Vec::with_capacity(schedule.nodes.len());
+    let region_ranges = schedule.regions.clone();
+    // Whether each step can run in chunks shorter than a block.
+    let mut chunkable: Vec<bool> = Vec::with_capacity(schedule.nodes.len());
     let mut nodes = Vec::with_capacity(schedule.nodes.len());
     let mut values = Vec::new();
     let mut offsets_in = Vec::new();
@@ -722,7 +836,14 @@ pub(crate) fn build(
             live_source: live_nodes.contains(&id),
             consumes: scheduled.phase != Phase::Input,
         });
+        chunkable.push(
+            scheduled.node_type.chunkable(&scheduled.config)
+                && scheduled.layout.spectral_inputs.is_empty()
+                && scheduled.layout.spectral_outputs.is_empty(),
+        );
         nodes.push(PlanNode {
+            region: None,
+            chunk: None,
             instance,
             phase: scheduled.phase,
             owner,
@@ -757,6 +878,8 @@ pub(crate) fn build(
                 Some(ChannelLayout::convert_matrix(from, to).into_boxed_slice())
             }),
             is_input: scheduled.node_type.info().id == INPUT_ID,
+            input_live: INPUT_DEVICE.get_text(&scheduled.config) != HOST_DEVICE
+                || main == Some(HOST_DEVICE),
             probes,
             input_meters,
             output_meters,
@@ -808,7 +931,35 @@ pub(crate) fn build(
                 || (info.silent.contains(id) && previous.is_some_and(|p| p.silent.contains(id)))
         });
 
-    let graph = step_graph(&nodes, &offsets_in);
+    let mut regions = Vec::with_capacity(region_ranges.len());
+    for members in region_ranges {
+        let held = members.clone().any(|slot| {
+            !chunkable[slot]
+                || !nodes[slot].delays.is_empty()
+                || !nodes[slot].spectral_delays.is_empty()
+        });
+        // Which member writes each buffer, by where it starts.
+        let written: HashMap<usize, (usize, usize)> = members
+            .clone()
+            .flat_map(|slot| {
+                nodes[slot]
+                    .outputs
+                    .iter()
+                    .enumerate()
+                    .map(move |(j, view)| (view.offset, (slot, j)))
+            })
+            .collect();
+        for slot in members.clone() {
+            nodes[slot].region = Some(regions.len());
+            if !held {
+                let producer = |offset: usize| written.get(&offset).copied();
+                let chunk = Chunk::new(&nodes[slot], &offsets_in, max_frames, &producer);
+                nodes[slot].chunk = Some(Box::new(chunk));
+            }
+        }
+        regions.push(Region { members, held });
+    }
+    let graph = step_graph(&nodes, &offsets_in, &regions);
     let readers = readers_of(&wiring, &mut nodes);
     let slots = nodes.len();
     let nodes_have_loops = nodes.iter().any(|node| node.owner.is_some());
@@ -848,6 +999,7 @@ pub(crate) fn build(
         zero: vec![false; slots].into_boxed_slice(),
         silenced: vec![false; slots].into_boxed_slice(),
         blocks: telemetry.map(Telemetry::block_writer),
+        regions,
     };
     (Box::new(plan), info)
 }
@@ -1143,6 +1295,7 @@ impl Plan {
             input,
             live: &self.live,
             zero: &self.zero,
+            regions: &self.regions,
         };
 
         match workers.filter(|w| w.worth(self.graph.shape())) {
@@ -1196,6 +1349,7 @@ struct Frame<'a> {
     /// By slot of the node's output half. See [`Plan::update_liveness`].
     live: &'a [bool],
     zero: &'a [bool],
+    regions: &'a [Region],
 }
 
 /// A block shared between threads.
@@ -1219,6 +1373,415 @@ impl ParallelRun<'_> {
     }
 }
 
+/// Runs one step. A step in a loop region is run by the region's first step
+/// (see [`run_region`]); the others have nothing left to do.
+///
+/// SAFETY: as for [`run_single`], for the whole region when the step is the
+/// first of one.
+unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bool) -> bool {
+    let region = unsafe { (*frame.nodes.add(index)).region };
+    match region {
+        None => unsafe { run_single(frame, index, mix_out, fresh, None) },
+        Some(r) if frame.regions[r].members.start == index => unsafe {
+            run_region(frame, &frame.regions[r], fresh)
+        },
+        Some(_) => false,
+    }
+}
+
+/// The signal inputs of a node for the whole block, with the wired parameters'
+/// values worked out.
+///
+/// SAFETY: as for the views in [`run_single`].
+unsafe fn block_inputs<'a>(frame: &Frame<'a>, node: &PlanNode, into: &mut Vec<SignalIn<'a>>) {
+    let &Frame {
+        pool,
+        silent,
+        values,
+        offsets,
+        zeros,
+        max_frames,
+        ctx,
+        ..
+    } = frame;
+    let frames = ctx.frames;
+    for input in &node.inputs {
+        if let Input::Offset(k) = *input {
+            let offset = unsafe { &mut *offsets.add(k) };
+            unsafe { offset.compute(pool, frames, &*values.add(offset.value)) };
+        }
+    }
+    into.extend(node.inputs.iter().map(|input| match *input {
+        Input::Buffer(view) => unsafe { view.read(pool, silent, frames, max_frames) },
+        Input::Value(slot) => unsafe { (*values.add(slot)).signal(frames) },
+        Input::Offset(k) => unsafe { (*offsets.add(k)).signal(frames) },
+        Input::Absent => {
+            SignalIn::new(&zeros[..frames], Shape::MONO, frames).with_silent(&ABSENT_SILENT)
+        }
+    }));
+}
+
+/// Whether any signal a step reads is written by a step of the region, so
+/// its block-sized view of the signal holds nothing from this block yet.
+///
+/// SAFETY: as for [`run_single`].
+unsafe fn reads_region(frame: &Frame<'_>, region: &Region, node: &PlanNode) -> bool {
+    let max_frames = frame.max_frames;
+    let overlaps = |view: View| {
+        let end = view.offset + view.shape.lanes() * max_frames;
+        region.members.clone().any(|index| {
+            let member = unsafe { &*frame.nodes.add(index) };
+            member.outputs.iter().any(|out| {
+                let out_end = out.offset + out.shape.lanes() * max_frames;
+                view.offset < out_end && out.offset < end
+            })
+        })
+    };
+    node.inputs.iter().any(|input| match *input {
+        Input::Buffer(view) => overlaps(view),
+        Input::Offset(k) => overlaps(unsafe { &*frame.offsets.add(k) }.source),
+        _ => false,
+    })
+}
+
+/// Runs a loop region: every step on a feedback loop, together. First each
+/// loop-breaking node says how many frames the loop can run at a time (a
+/// delay of 40 samples allows 40); the region then runs its nodes in order
+/// for each chunk of the block that long, so each chunk reads only what the
+/// chunks before it wrote. When that is the whole block, or the region is
+/// held to whole blocks, the steps just run one after another.
+///
+/// SAFETY: as for [`run_single`], for every step of the region.
+unsafe fn run_region(frame: &Frame<'_>, region: &Region, fresh: bool) -> bool {
+    let &Frame { nodes, ctx, .. } = frame;
+    let frames = ctx.frames;
+    // The shortest chunk any breaker allows.
+    let mut chunk = frames;
+    for index in region.members.clone() {
+        let node = unsafe { &mut *nodes.add(index) };
+        if node.phase != Phase::Output || !frame.live[index] {
+            continue;
+        }
+        let mut inputs: Vec<SignalIn<'_>> = recycle(mem::take(&mut node.scratch.inputs));
+        if !region.held {
+            unsafe { block_inputs(frame, node, &mut inputs) };
+        }
+        if let Some(instance) = &mut node.instance {
+            let answer = instance.loop_chunk(ctx, &inputs, region.held);
+            if !region.held {
+                // What a breaker reads from inside the region (a delay time
+                // that another loop of the region makes) is not written yet,
+                // so what it says about the block is stale: play safe.
+                let answer = if unsafe { reads_region(frame, region, node) } {
+                    1
+                } else {
+                    answer
+                };
+                chunk = chunk.min(answer.clamp(1, frames.max(1)));
+            }
+        }
+        node.scratch.inputs = recycle(inputs);
+    }
+    if region.held || chunk >= frames {
+        let mut panicked = false;
+        for index in region.members.clone() {
+            panicked |= unsafe {
+                run_single(
+                    frame,
+                    index,
+                    std::ptr::null_mut(),
+                    fresh,
+                    Some((chunk, region.held)),
+                )
+            };
+        }
+        return panicked;
+    }
+    let run = || unsafe { run_chunks(frame, region, chunk) };
+    if fresh {
+        if std::panic::catch_unwind(std::panic::AssertUnwindSafe(run)).is_err() {
+            for index in region.members.clone() {
+                let node = unsafe { &mut *nodes.add(index) };
+                unsafe { silence_outputs(frame, node) };
+            }
+            return true;
+        }
+        false
+    } else {
+        run();
+        false
+    }
+}
+
+/// Fills a node's outputs with flagged silence, after a panic.
+///
+/// SAFETY: nothing else may touch the node's outputs.
+unsafe fn silence_outputs(frame: &Frame<'_>, node: &PlanNode) {
+    let frames = frame.ctx.frames;
+    for view in &node.outputs {
+        let mut out = unsafe { view.write(frame.pool, frame.silent, frames, frame.max_frames) };
+        out.fill(0.0);
+        for lane in 0..view.shape.lanes() {
+            out.set_silent(lane / view.shape.channels, lane % view.shape.channels);
+        }
+    }
+}
+
+/// The context of the chunk that starts `at` frames into the block.
+fn chunk_context(ctx: &Context, at: usize, frames: usize) -> Context {
+    let mut chunk = *ctx;
+    chunk.frames = frames;
+    chunk.transport.position += at as u64;
+    chunk.transport.tick +=
+        at as f64 * chunk.transport.bpm * 960.0 / (60.0 * f64::from(ctx.sample_rate));
+    chunk
+}
+
+/// Runs the region's live nodes chunk by chunk, then reports what they did.
+///
+/// SAFETY: as for [`run_region`].
+unsafe fn run_chunks(frame: &Frame<'_>, region: &Region, chunk: usize) {
+    let &Frame {
+        nodes, events, ctx, ..
+    } = frame;
+    let frames = ctx.frames;
+    for index in region.members.clone() {
+        let node = unsafe { &mut *nodes.add(index) };
+        let home = node.owner.unwrap_or(index);
+        if !frame.live[home] {
+            // Not running: outputs that something reads are zeros.
+            unsafe {
+                run_single(
+                    frame,
+                    index,
+                    std::ptr::null_mut(),
+                    false,
+                    Some((chunk, false)),
+                )
+            };
+            continue;
+        }
+        node.chunk
+            .as_mut()
+            .expect("chunked regions have buffers")
+            .nanos = 0;
+        for &buffer in &node.event_outputs {
+            unsafe { (*events.add(buffer)).clear() };
+        }
+    }
+    let mut at = 0;
+    while at < frames {
+        let len = chunk.min(frames - at);
+        let chunk_ctx = chunk_context(ctx, at, len);
+        for index in region.members.clone() {
+            let node = unsafe { &mut *nodes.add(index) };
+            let home = node.owner.unwrap_or(index);
+            if frame.live[home] {
+                unsafe { run_chunk(frame, index, &chunk_ctx, at, len) };
+            }
+        }
+        at += len;
+    }
+    for index in region.members.clone() {
+        let node = unsafe { &mut *nodes.add(index) };
+        let home = node.owner.unwrap_or(index);
+        if !frame.live[home] {
+            continue;
+        }
+        let mut inputs: Vec<SignalIn<'_>> = recycle(mem::take(&mut node.scratch.inputs));
+        if !node.probes.is_empty() || !node.input_meters.is_empty() {
+            unsafe { block_inputs(frame, node, &mut inputs) };
+            report_inputs(node, &inputs);
+        }
+        node.scratch.inputs = recycle(inputs);
+        if let (Some(cpu), Some(chunk)) = (&mut node.cpu, &node.chunk) {
+            cpu.record(
+                chunk.nanos,
+                frames as f64 * 1e9 / f64::from(ctx.sample_rate),
+            );
+        }
+        // SAFETY: every chunk of the node has run and its views are gone.
+        unsafe {
+            report_outputs(
+                node,
+                frame.pool,
+                frame.silent,
+                events,
+                frames,
+                frame.max_frames,
+                Some((chunk, false)),
+            );
+        }
+    }
+}
+
+/// Runs one node for the chunk of `len` frames starting `at` frames into the
+/// block, on windows of its inputs, and copies what it wrote into its
+/// buffers.
+///
+/// SAFETY: as for [`run_single`]; the node's region is being run by this call
+/// alone.
+unsafe fn run_chunk(frame: &Frame<'_>, index: usize, ctx: &Context, at: usize, len: usize) {
+    let &Frame {
+        nodes,
+        pool,
+        silent,
+        events,
+        values,
+        offsets,
+        zeros,
+        max_frames,
+        ..
+    } = frame;
+    let frames = frame.ctx.frames;
+    let node = unsafe { &mut *nodes.add(index) };
+    let mut inputs: Vec<SignalIn<'_>> = recycle(mem::take(&mut node.scratch.inputs));
+    let mut outputs: Vec<SignalOut<'_>> = recycle(mem::take(&mut node.scratch.outputs));
+    let mut event_inputs: Vec<&[Event]> = recycle(mem::take(&mut node.scratch.event_inputs));
+    let mut event_outputs: Vec<EventsOut<'_>> = recycle(mem::take(&mut node.scratch.event_outputs));
+    let buffers = node.chunk.as_mut().expect("chunked regions have buffers");
+
+    // SAFETY: the views are in bounds of the pool, and nothing writes the
+    // buffers the windows are copied from while this node runs.
+    unsafe {
+        for (input, buffer) in node.inputs.iter().zip(buffers.inputs.iter_mut()) {
+            let ChunkInput {
+                window,
+                value,
+                from,
+            } = buffer;
+            // What a node of the region wrote this chunk is flagged silent
+            // for the chunk, not for the block so far.
+            let flags: Option<&[bool]> = from.and_then(|(slot, output)| {
+                let producer = &*nodes.add(slot);
+                let home = producer.owner.unwrap_or(slot);
+                (frame.live[home])
+                    .then_some(producer.chunk.as_ref())
+                    .flatten()
+                    .map(|chunk| &chunk.outputs[output].silent[..])
+            });
+            inputs.push(match *input {
+                Input::Buffer(view) => view
+                    .read(pool, silent, frames, max_frames)
+                    .window_into(at, len, window, flags),
+                Input::Value(slot) => (*values.add(slot))
+                    .signal(frames)
+                    .window_into(at, len, window, None),
+                Input::Offset(k) => {
+                    let offset = &*offsets.add(k);
+                    let base = &*values.add(offset.value);
+                    let source = offset
+                        .source
+                        .read_samples(pool, frames)
+                        .window_into(at, len, window, flags);
+                    let shape = source.shape();
+                    let uniform = offset_values(
+                        &offset.info,
+                        &source,
+                        base.constant(),
+                        &base.samples(frames)[at..at + len],
+                        &mut value[..shape.lanes() * len],
+                    );
+                    let signal = SignalIn::new(&value[..shape.lanes() * len], shape, len);
+                    match uniform {
+                        Some(constant) => signal.with_constant(constant),
+                        None => signal,
+                    }
+                }
+                Input::Absent => {
+                    SignalIn::new(&zeros[..len], Shape::MONO, len).with_silent(&ABSENT_SILENT)
+                }
+            });
+        }
+        for (view, buffer) in node.outputs.iter().zip(buffers.outputs.iter_mut()) {
+            let lanes = view.shape.lanes();
+            outputs.push(
+                SignalOut::new(&mut buffer.data[..lanes * len], view.shape, len)
+                    .with_silent(&mut buffer.silent),
+            );
+        }
+        for (source, window) in node
+            .event_inputs
+            .iter()
+            .zip(buffers.event_inputs.iter_mut())
+        {
+            window.clear();
+            if let Some(b) = source {
+                let (from, to) = (at as u32, (at + len) as u32);
+                window.extend(
+                    (*events.add(*b))
+                        .iter()
+                        .filter(|e| from <= e.time && e.time < to)
+                        .map(|e| Event {
+                            time: e.time - from,
+                            ..*e
+                        }),
+                );
+            }
+        }
+        event_inputs.extend(buffers.event_inputs.iter().map(Vec::as_slice));
+        event_outputs.extend(buffers.event_outputs.iter_mut().map(EventsOut::new));
+    }
+
+    let io = Io {
+        inputs: &inputs,
+        outputs: &mut outputs,
+        event_inputs: &event_inputs,
+        event_outputs: &mut event_outputs,
+        spectral_inputs: &[],
+        spectral_outputs: &mut [],
+    };
+    // A split node's input half runs the instance of its output half.
+    let instance = match node.owner {
+        Some(owner) => unsafe { &mut (*nodes.add(owner)).instance },
+        None => &mut node.instance,
+    };
+    let started = node.cpu.is_some().then(Instant::now);
+    match (instance, node.phase) {
+        (Some(instance), Phase::Whole) => instance.process(ctx, io),
+        (Some(instance), Phase::Output) => instance.process_output(ctx, io),
+        (Some(instance), Phase::Input) => instance.process_input(ctx, io),
+        (None, Phase::Input) => {}
+        (None, _) => Silence.process(ctx, io),
+    }
+    if let Some(started) = started {
+        buffers.nanos += started.elapsed().as_nanos() as u64;
+    }
+    node.scratch.outputs = recycle(outputs);
+    node.scratch.event_outputs = recycle(event_outputs);
+
+    // Copy what the node wrote into the block's buffers, where the nodes
+    // after it in this chunk (and outside the region, after it) read it.
+    // A lane is silent for the block if it was for every chunk.
+    for (view, buffer) in node.outputs.iter().zip(&buffers.outputs) {
+        for lane in 0..view.shape.lanes() {
+            // SAFETY: in bounds of the pool, which this node's outputs alone
+            // may write now.
+            unsafe {
+                let to =
+                    std::slice::from_raw_parts_mut(pool.add(view.offset + lane * frames + at), len);
+                to.copy_from_slice(&buffer.data[lane * len..(lane + 1) * len]);
+                let flag = &mut *silent.add(view.offset / max_frames.max(1) + lane);
+                *flag = buffer.silent[lane] && (at == 0 || *flag);
+            }
+        }
+    }
+    for (&b, written) in node.event_outputs.iter().zip(&buffers.event_outputs) {
+        // SAFETY: the node's own event outputs.
+        let sent = unsafe { &mut *events.add(b) };
+        for event in written {
+            if sent.len() < sent.capacity() {
+                sent.push(Event {
+                    time: event.time + at as u32,
+                    ..*event
+                });
+            }
+        }
+    }
+    node.scratch.inputs = recycle(inputs);
+    node.scratch.event_inputs = recycle(event_inputs);
+}
+
 /// Runs one step: builds the node's views, runs it, and mixes it into
 /// `mix_out` if it is an Output node. With `fresh`, `mix_out` is a scratch
 /// buffer that starts empty and a panic in the node is caught (its outputs
@@ -1229,7 +1792,13 @@ impl ParallelRun<'_> {
 /// SAFETY: no other thread may touch this node, the buffers it reads or
 /// writes, its offsets or its owner's instance, and every step it must follow
 /// has finished.
-unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bool) -> bool {
+unsafe fn run_single(
+    frame: &Frame<'_>,
+    index: usize,
+    mix_out: *mut f32,
+    fresh: bool,
+    chunk: Option<(usize, bool)>,
+) -> bool {
     let &Frame {
         nodes,
         pool,
@@ -1344,21 +1913,7 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
         );
     }
 
-    for (index, probe) in &node.probes {
-        let signal = &inputs[*index];
-        if signal.shape().lanes() > 0 {
-            probe.write(signal.lane(0, 0));
-        }
-    }
-
-    let input_levels = node.gather.as_ref().is_none_or(Gather::input_levels);
-    for (index, meter) in node.input_meters.iter().filter(|_| input_levels) {
-        let signal = &inputs[*index];
-        let shape = signal.shape();
-        for channel in 0..shape.channels.min(meter.channels()) {
-            meter.write(channel, input_level(signal, channel));
-        }
-    }
+    report_inputs(node, &inputs);
 
     let io = Io {
         inputs: &inputs,
@@ -1402,7 +1957,14 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
         );
     }
     if node.is_input {
-        read_input(input, &mut outputs[0]);
+        read_input(
+            if node.input_live {
+                input
+            } else {
+                Interleaved::NONE
+            },
+            &mut outputs[0],
+        );
     }
     // Mixed now, not after the whole schedule: the compiler frees a buffer
     // after its last reader, so a later node may reuse it.
@@ -1426,8 +1988,28 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
     node.scratch.spectral_outputs = recycle(spectral_outputs);
     // SAFETY: the node has finished, and its views are dropped, so reading
     // what it wrote races with nothing.
-    unsafe { report_outputs(node, pool, silent, events, frames, max_frames) };
+    unsafe { report_outputs(node, pool, silent, events, frames, max_frames, chunk) };
     panicked
+}
+
+/// Reports the signals wired into parameters and the level of each wired
+/// audio input, as far as the UI wants them.
+fn report_inputs(node: &PlanNode, inputs: &[SignalIn<'_>]) {
+    for (index, probe) in &node.probes {
+        let signal = &inputs[*index];
+        if signal.shape().lanes() > 0 {
+            probe.write(signal.lane(0, 0));
+        }
+    }
+
+    let input_levels = node.gather.as_ref().is_none_or(Gather::input_levels);
+    for (index, meter) in node.input_meters.iter().filter(|_| input_levels) {
+        let signal = &inputs[*index];
+        let shape = signal.shape();
+        for channel in 0..shape.channels.min(meter.channels()) {
+            meter.write(channel, input_level(signal, channel));
+        }
+    }
 }
 
 /// Reports what a node just wrote: the level of each audio output, the
@@ -1443,6 +2025,7 @@ unsafe fn report_outputs(
     events: *mut Vec<Event>,
     frames: usize,
     max_frames: usize,
+    chunk: Option<(usize, bool)>,
 ) {
     let Some(gather) = &node.gather else {
         return;
@@ -1491,6 +2074,8 @@ unsafe fn report_outputs(
             silent: all_silent,
             sounding: sounding.min(255) as u8,
             voices: voices.min(255) as u8,
+            chunk: chunk.map_or(0, |(chunk, _)| chunk.min(usize::from(u16::MAX)) as u16),
+            held: chunk.is_some_and(|(_, held)| held),
         });
     }
 }
@@ -1500,7 +2085,7 @@ unsafe fn report_outputs(
 /// writer of what it reads, it waits for the readers (and writer) of what it
 /// overwrites. A split node's input half also waits for its output half,
 /// which holds the instance.
-fn step_graph(nodes: &[PlanNode], offsets: &[OffsetInput]) -> StepGraph {
+fn step_graph(nodes: &[PlanNode], offsets: &[OffsetInput], regions: &[Region]) -> StepGraph {
     // Buffers (and event buffers) are told apart by where they start: a view
     // always begins at its buffer's start.
     #[derive(Default)]
@@ -1574,6 +2159,25 @@ fn step_graph(nodes: &[PlanNode], offsets: &[OffsetInput]) -> StepGraph {
         wait.sort_unstable();
         wait.dedup();
         waits.push(wait);
+    }
+    // A region is one step: its first runs every member, so it waits for
+    // everything any member waits for, and the others wait for it.
+    for region in regions {
+        let members = &region.members;
+        let mut head: Vec<usize> = members
+            .clone()
+            .flat_map(|step| waits[step].iter().copied())
+            .filter(|w| !members.contains(w))
+            .collect();
+        head.sort_unstable();
+        head.dedup();
+        for step in members.clone() {
+            waits[step] = if step == members.start {
+                mem::take(&mut head)
+            } else {
+                vec![members.start]
+            };
+        }
     }
     StepGraph::new(&waits)
 }
@@ -1797,42 +2401,14 @@ impl OffsetInput {
     unsafe fn compute(&mut self, pool: *const f32, frames: usize, base: &ValueInput) {
         // SAFETY: as promised by the caller.
         let source = unsafe { self.source.read_samples(pool, frames) };
-        let shape = source.shape();
-        let info = &self.info;
-        let constant = base.constant().map(|value| info.position(value));
-        let base = base.samples(frames);
-        // The one value of every sample of every lane, while there is one.
-        let mut uniform: Option<Option<f32>> = None;
-        for voice in 0..shape.voices {
-            for channel in 0..shape.channels {
-                let start = (voice * shape.channels + channel) * frames;
-                let out = &mut self.scratch[start..start + frames];
-                let signal = source.lane(voice, channel);
-                // A held signal (a gate, a velocity, a sustaining envelope)
-                // costs one conversion rather than one per sample.
-                let held = constant
-                    .zip(signal.first())
-                    .filter(|&(_, &first)| first.is_finite() && signal.iter().all(|&x| x == first));
-                if let Some((position, &x)) = held {
-                    let value = info.value_at(position + x);
-                    out.fill(value);
-                    uniform = Some(match uniform {
-                        None => Some(value),
-                        Some(Some(u)) if u == value => Some(u),
-                        Some(_) => None,
-                    });
-                    continue;
-                }
-                uniform = Some(None);
-                for (i, (out, &x)) in out.iter_mut().zip(signal).enumerate() {
-                    // A non-finite signal must not poison the node's state.
-                    let x = if x.is_finite() { x } else { 0.0 };
-                    let position = constant.unwrap_or_else(|| info.position(base[i]));
-                    *out = info.value_at(position + x);
-                }
-            }
-        }
-        self.constant = uniform.flatten();
+        let lanes = source.shape().lanes();
+        self.constant = offset_values(
+            &self.info,
+            &source,
+            base.constant(),
+            base.samples(frames),
+            &mut self.scratch[..lanes * frames],
+        );
     }
 
     fn signal(&self, frames: usize) -> SignalIn<'_> {
@@ -1843,6 +2419,55 @@ impl OffsetInput {
             None => signal,
         }
     }
+}
+
+/// Works out the value of a parameter that a wire offsets, for every sample
+/// of every lane of `source`, into `out` (laid out like `source`). `base` is
+/// the parameter's own value for each sample, and `constant` that value if it
+/// is the same throughout. Returns the one value of every sample, if there is
+/// one.
+fn offset_values(
+    info: &ParamInfo,
+    source: &SignalIn<'_>,
+    constant: Option<f32>,
+    base: &[f32],
+    out: &mut [f32],
+) -> Option<f32> {
+    let shape = source.shape();
+    let frames = source.frames();
+    let constant = constant.map(|value| info.position(value));
+    // The one value of every sample of every lane, while there is one.
+    let mut uniform: Option<Option<f32>> = None;
+    for voice in 0..shape.voices {
+        for channel in 0..shape.channels {
+            let start = (voice * shape.channels + channel) * frames;
+            let out = &mut out[start..start + frames];
+            let signal = source.lane(voice, channel);
+            // A held signal (a gate, a velocity, a sustaining envelope)
+            // costs one conversion rather than one per sample.
+            let held = constant
+                .zip(signal.first())
+                .filter(|&(_, &first)| first.is_finite() && signal.iter().all(|&x| x == first));
+            if let Some((position, &x)) = held {
+                let value = info.value_at(position + x);
+                out.fill(value);
+                uniform = Some(match uniform {
+                    None => Some(value),
+                    Some(Some(u)) if u == value => Some(u),
+                    Some(_) => None,
+                });
+                continue;
+            }
+            uniform = Some(None);
+            for (i, (out, &x)) in out.iter_mut().zip(signal).enumerate() {
+                // A non-finite signal must not poison the node's state.
+                let x = if x.is_finite() { x } else { 0.0 };
+                let position = constant.unwrap_or_else(|| info.position(base[i]));
+                *out = info.value_at(position + x);
+            }
+        }
+    }
+    uniform.flatten()
 }
 
 /// An unconnected input: a buffer holding its value, smoothed on change.

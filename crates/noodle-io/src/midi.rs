@@ -364,6 +364,27 @@ impl MidiBus {
         }
     }
 
+    /// Hands `packet` from a host (the [`HOST_MIDI_PORT`](crate::HOST_MIDI_PORT)
+    /// port) to the receivers, stamped `micros`. For a plugin's audio
+    /// thread: it never blocks or allocates, so if the subscribers are
+    /// being changed (a plan change holds the lock for a moment) it
+    /// returns false and the caller tries again later. MIDI learn's taps
+    /// don't hear it.
+    #[must_use]
+    pub fn send_host(&self, packet: Packet, micros: u64) -> bool {
+        let Ok(mut subscribers) = self.subscribers.try_lock() else {
+            return false;
+        };
+        // Abandoned receivers are left for the main thread to drop.
+        deliver_keeping(
+            &mut subscribers,
+            Some(crate::host::HOST_MIDI_PORT),
+            packet,
+            micros,
+        );
+        true
+    }
+
     /// Releases every note on every channel (controller 123), for when the
     /// port that held them down goes away.
     pub fn all_notes_off(&self) {
@@ -389,8 +410,19 @@ impl MidiBus {
 }
 
 fn deliver(subscribers: &mut Vec<Subscriber>, from: Option<&str>, packet: Packet, micros: u64) {
-    let note = packet.is_note();
     subscribers.retain(|s| !s.producer.is_abandoned());
+    deliver_keeping(subscribers, from, packet, micros);
+}
+
+/// [`deliver`] without dropping subscribers that have gone, which frees
+/// their queues and so isn't for the audio thread.
+fn deliver_keeping(
+    subscribers: &mut [Subscriber],
+    from: Option<&str>,
+    packet: Packet,
+    micros: u64,
+) {
+    let note = packet.is_note();
     for subscriber in subscribers.iter_mut() {
         let heard = match (&subscriber.port, from) {
             (None, _) => true,

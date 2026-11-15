@@ -8,6 +8,7 @@ mod drum_bins;
 mod export;
 mod files;
 mod hash;
+mod host;
 mod input;
 mod key;
 mod limiter;
@@ -51,6 +52,10 @@ pub use export::{
 };
 pub use files::{AudioFiles, FileStamp};
 pub use hash::{FileHasher, Peek};
+pub use host::{
+    HOST_MAX_CHANNELS, HOST_MIDI_PORT, HOST_PARAMS, HostBackend, HostConfig, HostEvents, HostLink,
+    HostMidi, HostParamChange, HostTransport, host_engine,
+};
 pub use input::{Capture, Feed, InputMeter, input_path, recordable_input_path};
 pub use key::detect_key;
 pub use limiter::TruePeakLimiter;

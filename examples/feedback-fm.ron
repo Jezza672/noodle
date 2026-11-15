@@ -1,0 +1,23 @@
+// Feedback FM: a sine whose own output sets its frequency. The Feedback node
+// delays the output by one sample, which is what makes the loop legal; Math
+// turns it into 440 Hz plus up to 200 Hz either way. The loop is one sample
+// long, so the three nodes on it run a sample at a time.
+(
+    format: 4,
+    graph: (
+        nodes: {
+            1: (type: "noodle.osc.sine", position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.util.feedback", position: (x: 200.0, y: 120.0)),
+            3: (type: "noodle.util.math", config: {"expr": "440 + 200 * a"}, position: (x: 400.0, y: 120.0)),
+            4: (type: "noodle.util.gain", params: {"gain": -12.0}, position: (x: 200.0, y: 0.0)),
+            5: (type: "noodle.io.output", position: (x: 400.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 2, port: "in")),
+            (from: (node: 2, port: "out"), to: (node: 3, port: "a")),
+            (from: (node: 3, port: "out"), to: (node: 1, port: "frequency")),
+            (from: (node: 1, port: "out"), to: (node: 4, port: "in")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+        ],
+    ),
+)

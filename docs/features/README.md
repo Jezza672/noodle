@@ -49,6 +49,7 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [formants-and-latency.md](formants-and-latency.md) | Formant Shift node, Keep formants on a transposed clip (#424), per-node latency and delay-compensation display (#429) |
 | [first-use-discoverability.md](first-use-discoverability.md) | Add menu on right-click and double-click, one track menu, clip actions in the panel and palette, tooltips, export messages, problems list (#396-#406) |
 | [default-instruments.md](default-instruments.md) | Playable default instruments: ten synths, three sampled instruments with shipped CC0 audio |
+| [feedback-regions.md](feedback-regions.md) | Feedback regions: loops in chunks of their shortest delay, the Feedback node, Plucked String, Comb and Flanger |
 | [live-feedback.md](live-feedback.md) | Live visual feedback: wires that light, output meters, faded silent nodes, voice lights, beat pulse, heat tint, the Display tab of Settings |
 | [user-settings.md](user-settings.md) | Snap and take quantise saved as user settings; export, import, saved in the project, Open with Settings |
 | [drum-separation-analyser.md](drum-separation-analyser.md) | The separation analyser of Create drum rack from clip: mixed hits from a drum model, take a part's audio (#501) |
@@ -59,6 +60,8 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [low-latency-monitoring.md](low-latency-monitoring.md) | Low-latency monitoring, chunks 1 and 2: the live cone left out of delay compensation, the Monitoring latency setting, the device buffer following arming (#548) |
 | [deferred-items-2.md](deferred-items-2.md) | Plugin editors keep the plugin running, CLAP latency changes, one retry policy for files, re-quantise a recorded MIDI clip |
 | [midi-file.md](midi-file.md) | MIDI file import and export, Tuning node (microtuning) |
+| [harmony-nodes.md](harmony-nodes.md) | Scale Quantise, Chord, Transpose, Song Key and the key on the transport |
 | [looper.md](looper.md) | The Looper node: record, loop on the bar, overdub, undo, clear |
 | [preset-morph.md](preset-morph.md) | The Morph node and Morph between presets on a group |
 | [wavetable-and-grains.md](wavetable-and-grains.md) | Wavetable oscillator and Grains: nodes, shipped tables, three templates |
+| [noodle-as-a-plugin.md](noodle-as-a-plugin.md) | Noodle as a plugin, chunks 1 to 3: library split, host backend, headless CLAP, host transport and parameters |

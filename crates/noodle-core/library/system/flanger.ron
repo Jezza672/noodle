@@ -1,0 +1,227 @@
+[
+    Template((
+        name: "Flanger",
+        slug: "flanger",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Flanger"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:in\n2:rate\n3:depth\n4:feedback\n5:wet"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.util.math",
+                params: {"a": 0.25},
+                config: {"expr": "ln(a * 100) / ln(10000)"},
+                position: (x: 220.0, y: 260.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.mod.lfo",
+                params: {"rate": 0.01},
+                position: (x: 440.0, y: 260.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.util.math",
+                params: {"a": 0.8},
+                config: {"expr": "(0.0025 + 0.002 * a * b) / 2"},
+                position: (x: 660.0, y: 260.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.util.mix",
+                config: {"inputs": 2},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.util.delay",
+                params: {"time": 0.0},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(1),
+            ),
+            8: (
+                type: "noodle.util.gain",
+                params: {"gain": -4.0},
+                position: (x: 1100.0, y: 0.0),
+                parent: Some(1),
+            ),
+            9: (
+                type: "noodle.util.mix",
+                params: {"gain1": -3.0, "gain2": -3.0},
+                config: {"inputs": 2},
+                position: (x: 1320.0, y: 0.0),
+                parent: Some(1),
+            ),
+            10: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 1570.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 3, port: "a"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 4, port: "rate"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 5, port: "a"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "b"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 6, port: "in1"),
+            ),
+            (
+                from: (node: 8, port: "out"),
+                to: (node: 6, port: "in2"),
+            ),
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 7, port: "in"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 7, port: "time"),
+            ),
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 8, port: "gain"),
+            ),
+            (
+                from: (node: 7, port: "out"),
+                to: (node: 8, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p5"),
+                to: (node: 9, port: "gain2"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 9, port: "in1"),
+            ),
+            (
+                from: (node: 7, port: "out"),
+                to: (node: 9, port: "in2"),
+            ),
+            (
+                from: (node: 9, port: "out"),
+                to: (node: 10, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Classic",
+        slug: "flanger-classic",
+        topology: "e6c5f6d4aa4a5789",
+        nodes: [
+            (),
+            (),
+            (
+                params: {"a": 0.25},
+                config: {"expr": "ln(a * 100) / ln(10000)"},
+            ),
+            (
+                params: {"gain1": -3.0, "gain2": -3.0},
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"gain": -4.0},
+            ),
+            (
+                params: {"time": 0.0},
+            ),
+            (
+                params: {"a": 0.8},
+                config: {"expr": "(0.0025 + 0.002 * a * b) / 2"},
+            ),
+            (
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"rate": 0.01},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Jet",
+        slug: "flanger-jet",
+        topology: "e6c5f6d4aa4a5789",
+        nodes: [
+            (),
+            (),
+            (
+                params: {"a": 0.08},
+                config: {"expr": "ln(a * 100) / ln(10000)"},
+            ),
+            (
+                params: {"gain1": -3.0, "gain2": -3.0},
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"gain": -1.5},
+            ),
+            (
+                params: {"time": 0.0},
+            ),
+            (
+                params: {"a": 1.0},
+                config: {"expr": "(0.0025 + 0.002 * a * b) / 2"},
+            ),
+            (
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"rate": 0.01},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Shimmer",
+        slug: "flanger-shimmer",
+        topology: "e6c5f6d4aa4a5789",
+        nodes: [
+            (),
+            (),
+            (
+                params: {"a": 1.2},
+                config: {"expr": "ln(a * 100) / ln(10000)"},
+            ),
+            (
+                params: {"gain1": -3.0, "gain2": -6.0},
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"gain": -8.0},
+            ),
+            (
+                params: {"time": 0.0},
+            ),
+            (
+                params: {"a": 0.4},
+                config: {"expr": "(0.0025 + 0.002 * a * b) / 2"},
+            ),
+            (
+                config: {"inputs": 2},
+            ),
+            (
+                params: {"rate": 0.01},
+            ),
+        ],
+    )),
+]

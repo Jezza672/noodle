@@ -16,10 +16,13 @@ use noodle_engine::{
 /// **Feedback loops.** Delay is the node that lets a wire close a loop. When
 /// one does, the compiler runs Delay in two steps, one that writes the output
 /// from what the line already holds and one, later in the block, that reads
-/// the input. The output can then be at most as new as the block before, so
-/// *inside a loop* the delay is at least one block, the engine's largest (about
-/// 2.7 ms at the app's 128 frames), and shorter times are held to that. Outside a
-/// loop there is no minimum.
+/// the input. The loop's region runs in chunks as short as the shortest delay
+/// in it (see [`Node::loop_chunk`]), so each chunk reads only what earlier
+/// chunks wrote, and a loop can be as tight as the delay: 48 samples at 48
+/// kHz resonates at 1 kHz. A delay of less than one sample is held to one.
+/// A region that has a plugin or spectral node in it can't run in chunks and
+/// runs whole blocks, and a Delay in it is then held to one block, the engine's
+/// largest. Outside a loop there is no minimum.
 ///
 /// **Silence.** A lane whose input stays silent for as long as the line is
 /// long is flagged silent, and costs almost nothing, so a polyphonic echo
@@ -91,6 +94,7 @@ impl NodeType for Delay {
             mask: len - 1,
             quiet: vec![len; shape.lanes()],
             written: 0,
+            floor: setup.max_frames as f32,
         }))
     }
 }
@@ -110,6 +114,11 @@ struct DelayNode {
     /// The number of samples written so far, which wraps. Sample `n` of the
     /// stream lives at `n & mask`.
     written: usize,
+    /// The shortest delay, in samples, while the node is on a loop: a block
+    /// when the loop is held to whole blocks, a sample when it runs in chunks
+    /// (which are never longer than the delay). Set each block by
+    /// `loop_chunk`.
+    floor: f32,
 }
 
 impl DelayNode {
@@ -208,11 +217,48 @@ impl Node for DelayNode {
     }
 
     fn process_output(&mut self, _ctx: &Context, io: Io<'_, '_>) {
-        // Everything the output reads was written by earlier blocks, so the
-        // shortest delay is a whole block. It is the largest block rather than
-        // this one's size, so the delay doesn't change as blocks do.
-        let min = self.max_frames as f32;
-        self.read_block(&io.inputs[TIME], &mut io.outputs[0], self.written, min);
+        // Everything the output reads was written by earlier chunks (or
+        // blocks, when the loop is held to them), so the shortest delay is
+        // the one `loop_chunk` set.
+        self.read_block(
+            &io.inputs[TIME],
+            &mut io.outputs[0],
+            self.written,
+            self.floor,
+        );
+    }
+
+    fn loop_chunk(&mut self, ctx: &Context, inputs: &[SignalIn<'_>], held: bool) -> usize {
+        if held {
+            // A whole block at a time, which reads at least the largest block
+            // back, whatever the size of the block in hand.
+            self.floor = self.max_frames as f32;
+            return ctx.frames;
+        }
+        self.floor = 1.0;
+        // A chunk reads up to its length back from before it started, so it
+        // may be as long as the shortest delay in the block.
+        let time = &inputs[TIME];
+        let shape = time.shape();
+        let mut shortest = f32::INFINITY;
+        for voice in 0..shape.voices {
+            for channel in 0..shape.channels {
+                let seconds = match time.constant() {
+                    Some(seconds) => seconds,
+                    None => {
+                        time.lane(voice, channel)
+                            .iter()
+                            .copied()
+                            .fold(f32::INFINITY, |a, b| {
+                                if b.is_finite() { a.min(b) } else { a.min(0.0) }
+                            })
+                    }
+                };
+                shortest = shortest.min(if seconds.is_finite() { seconds } else { 0.0 });
+            }
+        }
+        let samples = shortest.clamp(0.0, MAX_TIME) * self.sample_rate;
+        (samples as usize).clamp(1, ctx.frames.max(1))
     }
 
     fn process_input(&mut self, ctx: &Context, io: Io<'_, '_>) {

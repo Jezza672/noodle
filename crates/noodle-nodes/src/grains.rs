@@ -5,7 +5,7 @@ use std::sync::Arc;
 
 use noodle_engine::{
     Config, ConfigInfo, Context, Instance, Io, Layout, Node, NodeError, NodeInfo, NodeType,
-    ParamInfo, Ports, Setup, Shape, Unit,
+    ParamInfo, Ports, PositionWriter, Setup, Shape, Telemetry, Unit,
 };
 
 use crate::sample::{Sample, SampleRef, SampleStore};
@@ -144,17 +144,23 @@ static INFO: NodeInfo = NodeInfo {
 /// `1 / sqrt(max(1, density x size))`: turning the density up thickens the
 /// sound without a large jump in level.
 ///
+/// **Display.** Where each playing grain is in the sample is reported to the
+/// [`Telemetry`] hub (see [`Telemetry::read_positions`]), for the node's
+/// display.
+///
 /// **Real-time rules.** A grain reads the sample, held whole in memory, with
 /// linear interpolation. Nothing allocates: the grains are an array in the
 /// cloud.
 pub struct Grains {
     store: SampleStore,
+    telemetry: Telemetry,
 }
 
 impl Grains {
-    pub fn new(store: &SampleStore) -> Self {
+    pub fn new(store: &SampleStore, telemetry: &Telemetry) -> Self {
         Self {
             store: store.clone(),
+            telemetry: telemetry.clone(),
         }
     }
 }
@@ -220,6 +226,9 @@ impl NodeType for Grains {
             sample_rate: setup.sample_rate,
             base: setup.seed,
             clouds: (0..voices).map(|_| Cloud::new()).collect(),
+            positions: self
+                .telemetry
+                .open_positions(setup.node, voices * MAX_GRAINS),
         }))
     }
 }
@@ -316,6 +325,7 @@ struct GrainsNode {
     sample_rate: f32,
     base: u64,
     clouds: Vec<Cloud>,
+    positions: PositionWriter,
 }
 
 impl GrainsNode {
@@ -372,6 +382,20 @@ fn read(data: &[f32], pos: f64) -> f32 {
     a + (b - a) * frac
 }
 
+impl GrainsNode {
+    /// Tells the display where every playing grain is in the sample.
+    fn report(&self) {
+        let len = self.sample.as_ref().map_or(0, |s| s.frames()) as f64;
+        for (v, cloud) in self.clouds.iter().enumerate() {
+            for (i, grain) in cloud.grains.iter().enumerate() {
+                let at = (grain.active && len > 0.0).then(|| (grain.pos / len) as f32);
+                self.positions.write(v * MAX_GRAINS + i, at);
+            }
+        }
+        self.positions.publish();
+    }
+}
+
 impl Node for GrainsNode {
     fn reset(&mut self) {
         for cloud in &mut self.clouds {
@@ -392,6 +416,7 @@ impl Node for GrainsNode {
                 out.silence(voice, 1);
                 head.silence(voice, 0);
             }
+            self.report();
             return;
         };
         let lane = |port: usize, voice: usize| inputs[port].lane(voice, 0);
@@ -483,6 +508,7 @@ impl Node for GrainsNode {
             }
             head.lane_mut(voice, 0).copy_from_slice(position);
         }
+        self.report();
     }
 }
 
@@ -521,7 +547,15 @@ mod tests {
     }
 
     fn harness(store: &SampleStore, config: &Config, seed: u64) -> Harness {
-        Harness::with_seed(&Grains::new(store), config, &[], RATE, BLOCK, seed).unwrap()
+        Harness::with_seed(
+            &Grains::new(store, &Telemetry::new()),
+            config,
+            &[],
+            RATE,
+            BLOCK,
+            seed,
+        )
+        .unwrap()
     }
 
     /// Runs `blocks` blocks and returns the left and right channels.
@@ -612,7 +646,7 @@ mod tests {
         let (store, config) = sample_of(noise(48_000), 48_000);
         let shape = Shape::new(2, 1);
         let mut h = Harness::with_seed(
-            &Grains::new(&store),
+            &Grains::new(&store, &Telemetry::new()),
             &config,
             &[(GrainsPorts::GATE, shape)],
             RATE,
@@ -638,7 +672,7 @@ mod tests {
     fn a_low_gate_lets_grains_finish_and_starts_none() {
         let (store, config) = sample_of(vec![1.0; 48_000], 48_000);
         let mut h = Harness::new(
-            &Grains::new(&store),
+            &Grains::new(&store, &Telemetry::new()),
             &config,
             &[(GrainsPorts::GATE, Shape::MONO)],
             RATE,
@@ -722,6 +756,26 @@ mod tests {
         h.run(BLOCK).unwrap();
         let head = h.output(GrainsPorts::PLAYHEAD);
         assert!(head.lane(0, 0).iter().all(|&x| (x - 0.4).abs() < 1e-6));
+    }
+
+    #[test]
+    fn playing_grains_report_where_they_are_in_the_sample() {
+        let (store, config) = sample_of(noise(24_001), 48_000);
+        let telemetry = Telemetry::new();
+        let mut h =
+            Harness::new(&Grains::new(&store, &telemetry), &config, &[], RATE, BLOCK).unwrap();
+        h.set(GrainsPorts::DENSITY, 0.5);
+        h.set(GrainsPorts::SIZE, 0.1);
+        h.set(GrainsPorts::POSITION, 0.5);
+        h.run(BLOCK).unwrap();
+        let at = telemetry.read_positions(noodle_core::NodeId(0));
+        assert_eq!(at.len(), 1);
+        assert!((at[0] - 0.5).abs() < 0.02, "{at:?}");
+        // Once the grain is over, nothing is reported.
+        for _ in 0..30 {
+            h.run(BLOCK).unwrap();
+        }
+        assert!(telemetry.read_positions(noodle_core::NodeId(0)).is_empty());
     }
 
     #[test]

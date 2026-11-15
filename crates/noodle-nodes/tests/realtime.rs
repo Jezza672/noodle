@@ -1053,6 +1053,72 @@ fn a_feedback_loop_through_a_delay_never_allocates_even_while_the_loop_is_made_a
 }
 
 #[test]
+fn a_loop_region_running_in_chunks_never_allocates_through_swaps_seeks_and_sweeps() {
+    use noodle_core::Tick;
+
+    // saw -> mix -> delay -> filter -> gain -> back into the mix, and out, with
+    // the loop 29 samples long: shorter than the 256-frame block, so the
+    // region's nodes run in chunks. A second loop (a Feedback node round a
+    // sine's frequency) runs sample by sample. The loop is closed, swept and
+    // opened again, and the transport jumps, all while rendering.
+    let mut s = Session::new();
+    let saw = s.add(Node::new("noodle.osc.saw").with_param("frequency", 110.0));
+    let mix = s.add(Node::new("noodle.util.mix"));
+    let delay = s.add(Node::new("noodle.util.delay").with_param("time", 29.0 / 48_000.0));
+    let svf = s.add(Node::new("noodle.filter.svf").with_param("cutoff", 4000.0));
+    let gain = s.add(Node::new("noodle.util.gain").with_param("gain", -3.0));
+    let fm = s.add(Node::new("noodle.osc.sine"));
+    let feedback = s.add(Node::new("noodle.util.feedback"));
+    let math = s.add(
+        Node::new("noodle.util.math")
+            .with_config(Config::new().with("expr", Value::Text("440 + 100 * a".into()))),
+    );
+    let sum = s.add(Node::new("noodle.util.mix"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(saw, "out", mix, "in1");
+    s.wire(mix, "out", delay, "in");
+    s.wire(delay, "out", svf, "in");
+    s.wire(svf, "low", gain, "in");
+    s.wire(fm, "out", feedback, "in");
+    s.wire(feedback, "out", math, "a");
+    s.wire(math, "out", fm, "frequency");
+    s.wire(mix, "out", sum, "in1");
+    s.wire(fm, "out", sum, "in2");
+    s.wire(sum, "out", output, "in");
+    s.update();
+
+    let transport = s.controller.transport();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for round in 0..12 {
+        let closed = round % 2 == 1;
+        if closed {
+            s.wire(gain, "out", mix, "in2");
+        } else if round > 0 {
+            s.edit(Command::Disconnect {
+                input: Endpoint::new(mix, "in2"),
+            });
+        }
+        s.update();
+        // Sweeps the delay across the chunk lengths, down to a few samples.
+        let samples = [29.0, 200.0, 3.0, 60.0, 1.0, 400.0][round % 6];
+        s.controller.set_param(delay, "time", samples / 48_000.0);
+        if round % 3 == 2 {
+            transport.seek(Tick(100 * round as i64));
+        }
+        s.controller.maintain();
+        s.render_realtime(&mut out, round);
+        assert!(
+            out.iter().all(|x| x.is_finite() && x.abs() < 10.0),
+            "round {round}"
+        );
+        assert!(
+            out.iter().any(|&x| x.abs() > 1e-3),
+            "silent in round {round}"
+        );
+    }
+}
+
+#[test]
 fn a_cached_player_never_allocates_through_seeks_and_loops() {
     use noodle_core::{Tick, group::group_nodes};
     use noodle_nodes::{Freezer, RenderRequest, freeze};
@@ -1531,6 +1597,16 @@ fn a_sampler_chain_with_dynamics_and_reverb_never_allocates_through_notes_edits_
             .with_param("timing", 10.0)
             .with_param("velocity", 0.3),
     );
+    // The pitch nodes after them: Song Key's outputs wired into Scale Quantise
+    // and Transpose, and a strummed Chord.
+    let song_key = s.add(Node::new("noodle.mod.key").with_param("from", 3.0));
+    let quantise = s.add(Node::new("noodle.event.scale_quantise").with_param("direction", 2.0));
+    let chord = s.add(
+        Node::new("noodle.event.chord")
+            .with_param("type", 7.0)
+            .with_param("strum", 30.0),
+    );
+    let transpose = s.add(Node::new("noodle.event.transpose").with_param("semitones", 3.0));
     // A Choke Gate before the split: the swung notes also arrive on its
     // `choke` input, so each cuts the ones still sounding.
     let tuning = s.add(
@@ -1572,7 +1648,13 @@ fn a_sampler_chain_with_dynamics_and_reverb_never_allocates_through_notes_edits_
     s.wire(key, "out", arp, "in");
     s.wire(arp, "out", swing, "in");
     s.wire(swing, "out", humanise, "in");
-    s.wire(humanise, "out", tuning, "in");
+    s.wire(song_key, "root", quantise, "root");
+    s.wire(song_key, "scale", quantise, "scale");
+    s.wire(song_key, "shift", transpose, "semitones");
+    s.wire(humanise, "out", quantise, "in");
+    s.wire(quantise, "out", chord, "in");
+    s.wire(chord, "out", transpose, "in");
+    s.wire(transpose, "out", tuning, "in");
     s.wire(tuning, "out", gate, "in");
     s.wire(swing, "out", gate, "choke");
     s.wire(gate, "out", split, "in");
@@ -1609,6 +1691,8 @@ fn a_sampler_chain_with_dynamics_and_reverb_never_allocates_through_notes_edits_
             (eq, "gain1", round as f32 - 8.0),
             (reverb, "decay", 0.5 + round as f32 * 0.2),
             (low, "tune", 10.0 * round as f32),
+            (chord, "type", (round % 13) as f32),
+            (chord, "strum", 5.0 * round as f32),
         ] {
             s.controller.set_param(node, key, value);
         }
@@ -3023,6 +3107,124 @@ fn version_values_and_articulation_maps_never_allocate_through_switches_and_edit
     }
 }
 
+/// A host calls the engine from its own audio thread: audio in and out, notes
+/// in and out, a parameter bank, and a transport that plays, stops, seeks and
+/// changes tempo. None of it may allocate.
+#[test]
+fn the_host_backend_never_allocates() {
+    use noodle_engine::{HOST_DEVICE, INPUT_DEVICE_KEY, OUTPUT_DEVICE_KEY};
+    use noodle_io::{
+        HostConfig, HostEvents, HostMidi, HostParamChange, HostTransport, host_engine,
+    };
+    use noodle_nodes::{HOST_PARAM_ID, MIDI_IN_ID, MIDI_OUT_ID, register_library};
+
+    let mut registry = Registry::with_builtins();
+    let library = register_library(&mut registry);
+    let mut project = Project::new();
+    let text = |key: &str, value: &str| {
+        let mut config = Config::new();
+        config.set(key, Value::Text(value.into()));
+        config
+    };
+    let mut add = |node: Node| {
+        let id = project.new_node_id();
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+        id
+    };
+    let input = add(Node::new(INPUT_ID).with_config(text(INPUT_DEVICE_KEY, HOST_DEVICE)));
+    let gain = add(Node::new("noodle.util.gain"));
+    let param = add(Node::new(HOST_PARAM_ID));
+    let tempo = add(Node::new("noodle.mod.tempo"));
+    let notes_in = add(Node::new(MIDI_IN_ID).with_config(text("port", HOST_DEVICE)));
+    let notes_out = add(Node::new(MIDI_OUT_ID).with_config(text("port", HOST_DEVICE)));
+    let mix = add(Node::new("noodle.util.mix"));
+    let output = add(Node::new(OUTPUT_ID).with_config(text(OUTPUT_DEVICE_KEY, HOST_DEVICE)));
+    let wires = [
+        (input, "out", gain, "in"),
+        (param, "value", gain, "gain"),
+        (gain, "out", mix, "in1"),
+        (tempo, "rate", mix, "in2"),
+        (mix, "out", output, "in"),
+        (notes_in, "out", notes_out, "in"),
+    ];
+    for (from, from_port, to, to_port) in wires {
+        Command::Connect(Connection {
+            from: Endpoint::new(from, from_port),
+            to: Endpoint::new(to, to_port),
+        })
+        .apply(&mut project)
+        .unwrap();
+    }
+    let (mut controller, mut backend) = host_engine(HostConfig {
+        sample_rate: 48_000.0,
+        out_channels: 2,
+        in_channels: 2,
+        block: 128,
+        midi: library.midi.clone(),
+        midi_out: library.midi_out.clone(),
+        link: library.host.clone(),
+        workers: 0,
+    })
+    .unwrap();
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let sizes = [1usize, 37, 128, 1000, 4096];
+    let (left, right) = (vec![0.25f32; 4096], vec![-0.25f32; 4096]);
+    let mut out = [vec![0.0f32; 4096], vec![0.0f32; 4096]];
+    let mut heard = 0usize;
+    for round in 0..40usize {
+        let frames = sizes[round % sizes.len()];
+        let midi = [
+            HostMidi {
+                offset: 0,
+                bytes: [0x90, 60 + (round % 12) as u8, 100],
+            },
+            HostMidi {
+                offset: (frames / 2) as u32,
+                bytes: [0x80, 60 + (round % 12) as u8, 0],
+            },
+        ];
+        let params = [
+            HostParamChange {
+                offset: (frames / 3) as u32,
+                slot: 0,
+                value: (round % 10) as f32 / 10.0,
+            },
+            HostParamChange {
+                offset: (frames / 3 * 2) as u32,
+                slot: 0,
+                value: 0.5,
+            },
+        ];
+        let transport = HostTransport {
+            playing: round % 7 != 3,
+            tempo: Some(100.0 + round as f64),
+            // A jump every few rounds, so seeks and resets are in the count.
+            beats: Some(if round % 5 == 0 { 2.0 } else { round as f64 }),
+        };
+        let [l, r] = &mut out;
+        let violations = realtime(|| {
+            backend.process(
+                frames,
+                &[&left, &right],
+                &mut [l.as_mut_slice(), r.as_mut_slice()],
+                HostEvents {
+                    midi: &midi,
+                    params: &params,
+                    transport,
+                },
+                &mut |_| heard += 1,
+            );
+        });
+        assert_eq!(
+            violations, 0,
+            "allocated on the host's audio thread in round {round}"
+        );
+        assert!(out[0][..frames].iter().all(|x| x.is_finite()));
+    }
+    assert!(heard > 0, "the MIDI Out node should have sent notes");
+}
 /// noise -> convolver (an impulse response from a Sample node) -> Analyze ->
 /// Spectral Pitch -> Spectral Stretch -> Spectral Compress -> Spectral Denoise
 /// (profile from a second noise's analysis) -> Synthesize -> output, all at
@@ -3187,7 +3389,8 @@ fn wavetable_and_grains_never_allocate_with_every_parameter_modulated() {
     let mut s = Session::new();
     let store = SampleStore::new();
     s.registry.replace(Wavetable::new(&store));
-    s.registry.replace(Grains::new(&store));
+    s.registry
+        .replace(Grains::new(&store, &noodle_engine::Telemetry::new()));
     let hash = store.insert(&Audio {
         samples: (0..9600).map(|i| (i as f32 * 0.05).sin() * 0.5).collect(),
         channels: 1,

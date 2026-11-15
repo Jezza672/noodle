@@ -27,6 +27,10 @@ pub enum TempoSource {
     Tap,
     /// An external MIDI clock, which also starts and stops the transport.
     MidiClock,
+    /// The host a plugin instance runs in: its tempo, and its play, stop and
+    /// seek. Set by the plugin shell, not offered in the app's picker
+    /// ([`ALL`](Self::ALL)).
+    Host,
 }
 
 impl TempoSource {
@@ -37,6 +41,7 @@ impl TempoSource {
             Self::Map => "Tempo map",
             Self::Tap => "Tap",
             Self::MidiClock => "MIDI clock",
+            Self::Host => "Host",
         }
     }
 }

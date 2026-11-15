@@ -9,6 +9,14 @@ use crate::{
 };
 
 pub const OUTPUT_ID: &str = "noodle.io.output";
+
+/// The device ID, in an Input or Output node's `device` setting, of the host
+/// a plugin instance runs in. In a host-driven engine (`noodle-io`'s
+/// `HostBackend`) it is the main bus's device, so Host Out is the same as an
+/// Output node with no device; in an app with a sound card it names nothing,
+/// so a project made in the plugin opens there with Host Out unconnected and
+/// Host In silent, and is moved by choosing a real device.
+pub const HOST_DEVICE: &str = "host";
 pub const INPUT_ID: &str = "noodle.io.input";
 
 /// Sends its input to an audio device. Every Output node's input is mixed
@@ -87,13 +95,14 @@ pub fn parse_routing(text: &str) -> Result<Vec<Option<usize>>, String> {
 
 /// The devices that Output nodes in `graph` are tied to, each once, in
 /// order. Output nodes with no device play on the main output and aren't
-/// listed.
+/// listed, and neither are those on the [`HOST_DEVICE`], which is no device a
+/// sound card opens.
 pub fn output_devices(graph: &noodle_core::Graph) -> Vec<String> {
     let devices: std::collections::BTreeSet<String> = graph
         .nodes()
         .filter(|(_, node)| node.type_id == OUTPUT_ID)
         .map(|(_, node)| OUTPUT_DEVICE.get_text(&node.config))
-        .filter(|device| !device.is_empty())
+        .filter(|device| !device.is_empty() && device != HOST_DEVICE)
         .collect();
     devices.into_iter().collect()
 }
@@ -152,7 +161,9 @@ impl Node for OutputScope {
 /// Delivers audio from the input device. Its output has `channels` channels
 /// (config, default 2): channel n is the device's channel n, a mono device
 /// feeds every channel, and channels the device doesn't have are silent.
-/// With no input device, as when rendering offline, it's silent.
+/// With no input device, as when rendering offline, it's silent. Its `device`
+/// setting can be [`HOST_DEVICE`]: Host In, the audio a host plugin instance is
+/// given.
 pub struct Input;
 
 static INPUT: NodeInfo = NodeInfo {
@@ -164,6 +175,15 @@ static INPUT: NodeInfo = NodeInfo {
 
 /// Channels on an Input node's output. Config, since it's the output's shape.
 pub const INPUT_CHANNELS: ConfigInfo = ConfigInfo::int("channels", "Channels", 2);
+
+/// The config key of the device an Input node listens to.
+pub const INPUT_DEVICE_KEY: &str = "device";
+
+/// The device an Input node listens to: empty for the engine's input (the
+/// one chosen in the audio settings, or the host's in a plugin), or
+/// [`HOST_DEVICE`] for the host's input, which is silent unless a host drives
+/// the engine. Config because it routes the node to a stream.
+pub const INPUT_DEVICE: ConfigInfo = ConfigInfo::text(INPUT_DEVICE_KEY, "Device");
 
 /// The most channels an Input node can have.
 pub const MAX_INPUT_CHANNELS: usize = 64;
@@ -186,7 +206,7 @@ impl NodeType for Input {
     }
 
     fn config(&self) -> &[ConfigInfo] {
-        static CONFIG: [ConfigInfo; 1] = [INPUT_CHANNELS];
+        static CONFIG: [ConfigInfo; 2] = [INPUT_CHANNELS, INPUT_DEVICE];
         &CONFIG
     }
 

@@ -70,6 +70,9 @@ key(output) = hash(key(node), output index)
   (while it is, warped clips play as Repitch). For a MIDI clip: its length,
   notes (with their expressions), controller points, and `loop_on`,
   `loop_start` and `loop_len`.
+- **What Song Key adds.** The timeline's key is not in the graph, so the node
+  adds the project's key and every marker's tick and key (the same ones the
+  track input adds for a clip that follows the key).
 - **Plugin latency** is not keyed separately. It is read from an instance,
   which analysis must not build, and it is a function of what is keyed already:
   the plugin file's size and time, its saved state (in the config), the sample
