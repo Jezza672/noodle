@@ -1,0 +1,46 @@
+// A noise-profile denoiser. A saw at A2 is buried in hiss (white noise at
+// -24 dB against the saw's -12 dB). A second white noise of the same level
+// goes through its own Analyze into the Denoise node's `noise` input, which
+// averages it into a profile of what the hiss looks like, bin by bin. Bins
+// that don't stand above that profile are turned down by 24 dB; the saw's
+// partials, well above it, are left alone. In a project the profile can come
+// from a stretch of room tone, or from the node's own `learn` switch over a
+// moment of silence.
+(
+    format: 4,
+    graph: (
+        nodes: {
+            1: (type: "noodle.input.button", params: {"state": 1.0}, position: (x: 0.0, y: 0.0)),
+            2: (type: "noodle.event.key", params: {"note": 45.0, "velocity": 0.9}, position: (x: 200.0, y: 0.0)),
+            3: (type: "noodle.event.mono", position: (x: 400.0, y: 0.0)),
+            4: (type: "noodle.osc.saw", position: (x: 600.0, y: 0.0)),
+            5: (type: "noodle.util.gain", params: {"gain": -12.0}, position: (x: 800.0, y: 0.0)),
+            6: (type: "noodle.noise.white", position: (x: 600.0, y: 200.0)),
+            7: (type: "noodle.util.gain", params: {"gain": -24.0}, position: (x: 800.0, y: 200.0)),
+            8: (type: "noodle.util.mix", position: (x: 1000.0, y: 100.0)),
+            9: (type: "noodle.spectral.analyze", position: (x: 1200.0, y: 100.0)),
+            10: (type: "noodle.noise.white", position: (x: 600.0, y: 400.0)),
+            11: (type: "noodle.util.gain", params: {"gain": -24.0}, position: (x: 800.0, y: 400.0)),
+            12: (type: "noodle.spectral.analyze", position: (x: 1200.0, y: 400.0)),
+            13: (type: "noodle.spectral.denoise", params: {"reduction": 24.0, "threshold": 6.0, "smooth": 0.5}, position: (x: 1400.0, y: 200.0)),
+            14: (type: "noodle.spectral.synthesize", position: (x: 1600.0, y: 200.0)),
+            15: (type: "noodle.io.output", position: (x: 1800.0, y: 200.0)),
+        },
+        connections: [
+            (from: (node: 1, port: "out"), to: (node: 2, port: "gate")),
+            (from: (node: 2, port: "out"), to: (node: 3, port: "in")),
+            (from: (node: 3, port: "pitch"), to: (node: 4, port: "frequency")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+            (from: (node: 5, port: "out"), to: (node: 8, port: "in1")),
+            (from: (node: 6, port: "out"), to: (node: 7, port: "in")),
+            (from: (node: 7, port: "out"), to: (node: 8, port: "in2")),
+            (from: (node: 8, port: "out"), to: (node: 9, port: "in")),
+            (from: (node: 10, port: "out"), to: (node: 11, port: "in")),
+            (from: (node: 11, port: "out"), to: (node: 12, port: "in")),
+            (from: (node: 9, port: "spectrum"), to: (node: 13, port: "spectrum")),
+            (from: (node: 12, port: "spectrum"), to: (node: 13, port: "noise")),
+            (from: (node: 13, port: "out"), to: (node: 14, port: "spectrum")),
+            (from: (node: 14, port: "out"), to: (node: 15, port: "in")),
+        ],
+    )
+)

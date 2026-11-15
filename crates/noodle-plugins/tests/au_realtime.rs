@@ -99,6 +99,7 @@ fn never_allocates(id: &str) -> bool {
             max_frames: FRAMES,
             input_shapes: &input_shapes,
             output_shapes: &output_shapes,
+            spectral_size: noodle_engine::FFT_SIZE,
             seed: 0,
             position: 0,
         })

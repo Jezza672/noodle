@@ -1,5 +1,6 @@
 //! Audio shipped inside the program, for the system library's sample-based
-//! instruments (the Steel Drum, the Banjo, the Body Percussion kit).
+//! instruments (the Steel Drum, the Banjo, the Body Percussion kit) and the
+//! Convolution Reverb's impulse responses.
 //!
 //! A system template names its samples by content hash like any other
 //! instrument (ADR 0004), and [`SampleStore`](crate::SampleStore) looks here
@@ -53,6 +54,9 @@ samples![
     "body-chest-thump",
     "body-chest-slap",
     "body-cheek-pop",
+    "ir-room",
+    "ir-hall",
+    "ir-plate",
 ];
 
 const INDEX: &str = include_str!("../assets/samples/index.txt");

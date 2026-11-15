@@ -266,6 +266,33 @@ pub trait NodeType: Send + Sync + 'static {
         ])
     }
 
+    /// The FFT size of this node's spectral outputs, given the sizes of its
+    /// spectral inputs (`None` for an unconnected one). By default a node
+    /// adopts the size of the wire it reads, and its connected inputs must
+    /// agree; with none connected it is [`FFT_SIZE`](crate::FFT_SIZE).
+    /// Analyze overrides this with its `size` config. A node with no
+    /// spectral outputs is asked too: Synthesize runs at the size it reads.
+    fn spectral_size(
+        &self,
+        _config: &Config,
+        inputs: &[Option<usize>],
+    ) -> Result<usize, NodeError> {
+        let mut size = None;
+        for &input in inputs.iter().flatten() {
+            match size {
+                None => size = Some(input),
+                Some(first) if first != input => {
+                    return Err(NodeError::config(format!(
+                        "spectral inputs have different frame sizes ({first} and {input}); \
+                         both must come from Analyze nodes of the same size"
+                    )));
+                }
+                Some(_) => {}
+            }
+        }
+        Ok(size.unwrap_or(crate::FFT_SIZE))
+    }
+
     /// Runs off the audio thread, so it may allocate.
     fn instantiate(&self, setup: &Setup<'_>) -> Result<Instance, NodeError>;
 }
@@ -675,6 +702,8 @@ pub struct Setup<'a> {
     pub input_shapes: &'a [Shape],
     /// The shapes of the signal outputs, then those of the spectral outputs.
     pub output_shapes: &'a [Shape],
+    /// The FFT size of the node's spectral wires ([`NodeType::spectral_size`]).
+    pub spectral_size: usize,
     /// A seed for anything random. It's the same for this node on every run,
     /// so renders repeat exactly (and can be cached), but different for every
     /// node, so two noise sources aren't identical.

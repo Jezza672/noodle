@@ -3127,3 +3127,110 @@ fn the_host_backend_never_allocates() {
     }
     assert!(heard > 0, "the MIDI Out node should have sent notes");
 }
+/// noise -> convolver (an impulse response from a Sample node) -> Analyze ->
+/// Spectral Pitch -> Spectral Stretch -> Spectral Compress -> Spectral Denoise
+/// (profile from a second noise's analysis) -> Synthesize -> output, all at
+/// one frame size that changes while playing.
+#[test]
+fn the_new_spectral_nodes_and_the_convolver_never_allocate_through_edits_and_a_size_change() {
+    use noodle_io::Audio;
+    use noodle_nodes::{Convolver, SampleStore};
+
+    let mut s = Session::new();
+    let store = SampleStore::new();
+    s.registry.replace(Convolver::new(&store));
+    let ir = |frames: usize, store: &SampleStore| {
+        store.insert(&Audio {
+            samples: (0..frames * 2)
+                .map(|i| ((i * 7919) % 1000) as f32 / 500.0 - 1.0)
+                .collect(),
+            channels: 2,
+            sample_rate: 44_100,
+        })
+    };
+    let (short, long) = (ir(3_000, &store), ir(30_000, &store));
+    let response = s.add(
+        Node::new("noodle.instrument.sample")
+            .with_config(Config::new().with("sample", Value::Text(short))),
+    );
+    let (noise, profile_noise) = (
+        s.add(Node::new("noodle.noise.white")),
+        s.add(Node::new("noodle.noise.white")),
+    );
+    let convolver = s.add(Node::new("noodle.effect.convolver"));
+    let analyze = |s: &mut Session| {
+        s.add(
+            Node::new("noodle.spectral.analyze")
+                .with_config(Config::new().with("size", Value::Int(1024))),
+        )
+    };
+    let (a, b) = (analyze(&mut s), analyze(&mut s));
+    let pitch = s.add(Node::new("noodle.spectral.pitch").with_param("shift", 5.0));
+    let stretch = s.add(
+        Node::new("noodle.spectral.stretch")
+            .with_param("rate", 0.7)
+            .with_param("length", 1.0),
+    );
+    let compress = s.add(Node::new("noodle.spectral.compress").with_param("threshold", -60.0));
+    let denoise = s.add(Node::new("noodle.spectral.denoise"));
+    let freeze = s.add(Node::new("noodle.spectral.freeze"));
+    let synth = s.add(Node::new("noodle.spectral.synthesize"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    let transport = s.controller.transport();
+    s.wire(response, "sample", convolver, "ir");
+    s.wire(noise, "out", convolver, "in");
+    s.wire(convolver, "out", a, "in");
+    s.wire(profile_noise, "out", b, "in");
+    s.wire(a, "spectrum", pitch, "spectrum");
+    s.wire(pitch, "out", stretch, "spectrum");
+    s.wire(stretch, "out", compress, "spectrum");
+    s.wire(compress, "out", denoise, "spectrum");
+    s.wire(b, "spectrum", denoise, "noise");
+    s.wire(denoise, "out", freeze, "spectrum");
+    s.wire(freeze, "out", synth, "spectrum");
+    s.wire(synth, "out", output, "in");
+    s.update();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for round in 0..10 {
+        // A jump resets every node: none may allocate doing it.
+        transport.seek(noodle_core::Tick(480 * round as i64));
+        for (node, key, value) in [
+            (pitch, "shift", round as f32 - 5.0),
+            (stretch, "rate", 0.3 + 0.2 * round as f32),
+            (stretch, "length", 0.2 + 0.3 * round as f32),
+            (compress, "ratio", 1.0 + round as f32),
+            (compress, "bands", if round % 2 == 0 { 0.0 } else { 24.0 }),
+            (denoise, "learn", (round % 3 == 0) as u8 as f32),
+            (denoise, "smooth", 0.1 * round as f32),
+            (convolver, "gain", round as f32 - 5.0),
+        ] {
+            s.edit(Command::SetParam {
+                node,
+                key: key.into(),
+                value: Some(value),
+            });
+            s.controller.set_param(node, key, value);
+        }
+        // New config rebuilds nodes and swaps the plan: another frame size
+        // for both Analyzes, and a longer impulse response.
+        if round == 4 {
+            for node in [a, b] {
+                s.edit(Command::SetConfig {
+                    node,
+                    key: "size".into(),
+                    value: Some(Value::Int(4096)),
+                });
+            }
+            s.edit(Command::SetConfig {
+                node: response,
+                key: "sample".into(),
+                value: Some(Value::Text(long.clone())),
+            });
+            s.update();
+        }
+        s.controller.maintain();
+        s.render_realtime(&mut out, round);
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+    }
+    assert!(out.iter().any(|&x| x != 0.0), "should be making sound");
+}

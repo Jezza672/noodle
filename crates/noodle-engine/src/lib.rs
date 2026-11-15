@@ -88,8 +88,10 @@ pub use runtime::{
 };
 pub use signal::{Shape, ShapeError, SignalBuffer, SignalIn, SignalOut};
 pub use spectral::{
-    Analyzer, BINS, Bin, FFT_SIZE, FormantWarp, HOP, SYNTH_LATENCY, SpectralBuf, SpectralDelay,
-    SpectralIn, SpectralOut, Synthesizer, bin_frequency, frame_capacity,
+    Analyzer, BINS, Bin, FFT_SIZE, FormantWarp, HOP, MAX_FFT_SIZE, MIN_FFT_SIZE, SYNTH_LATENCY,
+    SpectralBuf, SpectralDelay, SpectralIn, SpectralOut, Synthesizer, bin_frequency,
+    bin_frequency_in, clamp_fft_size, fft_bins, fft_hop, frame_capacity, frame_capacity_for,
+    synth_latency,
 };
 pub use telemetry::{
     ACTIVITY_FLOOR, BlockStats, BlockWriter, CpuReading, CpuTotals, CpuWriter, EventWriter, Gather,
