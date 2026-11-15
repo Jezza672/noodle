@@ -99,12 +99,11 @@ Seven features picked from a shortlist in November 2026. Each issue holds the de
 
 Noodle loaded in another DAW: the node editor, properties, library and Sounds panel in the host's window, no arrangement, with Host In, Host Out and Host MIDI nodes already in the graph. CLAP first; VST3 and AU are made from the CLAP with `clap-wrapper`. The issue holds the design and the open questions (whether an instance is a project or a group is the main one).
 
-1. Shell split and host backend: `noodle-app` as a library with a desktop shell, a host audio backend in `noodle-io`, Host devices and ports on the io nodes. Size M.
-2. A headless CLAP (`noodle-plugin`): ports, process, state, latency, default projects, tested by Noodle hosting Noodle. Size L.
-3. Transport and tempo from the host, and a 64-slot bank of host parameters surfaced as Host Parameter nodes. Size M.
-4. The window: the editor-only layout drawn in the host's window, focus, text, drag and drop, scaling. Size L, the main risk.
-5. More than one instance in a process: the UI waker and the other process-wide state. Size M.
-6. VST3 and AU through the wrapper, packaging, and an owed pass in real hosts on the Mac. Size M.
+Chunks 1 to 3 are built: see [features/noodle-as-a-plugin.md](features/noodle-as-a-plugin.md). Owed from them: the CLAP validator in CI.
+
+1. The window: the editor-only layout drawn in the host's window, focus, text, drag and drop, scaling. Size L, the main risk.
+2. More than one instance in a process: the UI waker and the other process-wide state. Size M.
+3. VST3 and AU through the wrapper, packaging, and an owed pass in real hosts on the Mac. Size M.
 
 ## Planned: feedback regions (#547)
 

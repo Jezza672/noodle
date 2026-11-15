@@ -3027,6 +3027,124 @@ fn version_values_and_articulation_maps_never_allocate_through_switches_and_edit
     }
 }
 
+/// A host calls the engine from its own audio thread: audio in and out, notes
+/// in and out, a parameter bank, and a transport that plays, stops, seeks and
+/// changes tempo. None of it may allocate.
+#[test]
+fn the_host_backend_never_allocates() {
+    use noodle_engine::{HOST_DEVICE, INPUT_DEVICE_KEY, OUTPUT_DEVICE_KEY};
+    use noodle_io::{
+        HostConfig, HostEvents, HostMidi, HostParamChange, HostTransport, host_engine,
+    };
+    use noodle_nodes::{HOST_PARAM_ID, MIDI_IN_ID, MIDI_OUT_ID, register_library};
+
+    let mut registry = Registry::with_builtins();
+    let library = register_library(&mut registry);
+    let mut project = Project::new();
+    let text = |key: &str, value: &str| {
+        let mut config = Config::new();
+        config.set(key, Value::Text(value.into()));
+        config
+    };
+    let mut add = |node: Node| {
+        let id = project.new_node_id();
+        Command::AddNode { id, node }.apply(&mut project).unwrap();
+        id
+    };
+    let input = add(Node::new(INPUT_ID).with_config(text(INPUT_DEVICE_KEY, HOST_DEVICE)));
+    let gain = add(Node::new("noodle.util.gain"));
+    let param = add(Node::new(HOST_PARAM_ID));
+    let tempo = add(Node::new("noodle.mod.tempo"));
+    let notes_in = add(Node::new(MIDI_IN_ID).with_config(text("port", HOST_DEVICE)));
+    let notes_out = add(Node::new(MIDI_OUT_ID).with_config(text("port", HOST_DEVICE)));
+    let mix = add(Node::new("noodle.util.mix"));
+    let output = add(Node::new(OUTPUT_ID).with_config(text(OUTPUT_DEVICE_KEY, HOST_DEVICE)));
+    let wires = [
+        (input, "out", gain, "in"),
+        (param, "value", gain, "gain"),
+        (gain, "out", mix, "in1"),
+        (tempo, "rate", mix, "in2"),
+        (mix, "out", output, "in"),
+        (notes_in, "out", notes_out, "in"),
+    ];
+    for (from, from_port, to, to_port) in wires {
+        Command::Connect(Connection {
+            from: Endpoint::new(from, from_port),
+            to: Endpoint::new(to, to_port),
+        })
+        .apply(&mut project)
+        .unwrap();
+    }
+    let (mut controller, mut backend) = host_engine(HostConfig {
+        sample_rate: 48_000.0,
+        out_channels: 2,
+        in_channels: 2,
+        block: 128,
+        midi: library.midi.clone(),
+        midi_out: library.midi_out.clone(),
+        link: library.host.clone(),
+        workers: 0,
+    })
+    .unwrap();
+    let diagnostics = controller.update_project(&project, &registry);
+    assert!(diagnostics.is_empty(), "{diagnostics:?}");
+
+    let sizes = [1usize, 37, 128, 1000, 4096];
+    let (left, right) = (vec![0.25f32; 4096], vec![-0.25f32; 4096]);
+    let mut out = [vec![0.0f32; 4096], vec![0.0f32; 4096]];
+    let mut heard = 0usize;
+    for round in 0..40usize {
+        let frames = sizes[round % sizes.len()];
+        let midi = [
+            HostMidi {
+                offset: 0,
+                bytes: [0x90, 60 + (round % 12) as u8, 100],
+            },
+            HostMidi {
+                offset: (frames / 2) as u32,
+                bytes: [0x80, 60 + (round % 12) as u8, 0],
+            },
+        ];
+        let params = [
+            HostParamChange {
+                offset: (frames / 3) as u32,
+                slot: 0,
+                value: (round % 10) as f32 / 10.0,
+            },
+            HostParamChange {
+                offset: (frames / 3 * 2) as u32,
+                slot: 0,
+                value: 0.5,
+            },
+        ];
+        let transport = HostTransport {
+            playing: round % 7 != 3,
+            tempo: Some(100.0 + round as f64),
+            // A jump every few rounds, so seeks and resets are in the count.
+            beats: Some(if round % 5 == 0 { 2.0 } else { round as f64 }),
+        };
+        let [l, r] = &mut out;
+        let violations = realtime(|| {
+            backend.process(
+                frames,
+                &[&left, &right],
+                &mut [l.as_mut_slice(), r.as_mut_slice()],
+                HostEvents {
+                    midi: &midi,
+                    params: &params,
+                    transport,
+                },
+                &mut |_| heard += 1,
+            );
+        });
+        assert_eq!(
+            violations, 0,
+            "allocated on the host's audio thread in round {round}"
+        );
+        assert!(out[0][..frames].iter().all(|x| x.is_finite()));
+    }
+    assert!(heard > 0, "the MIDI Out node should have sent notes");
+}
 /// noise -> convolver (an impulse response from a Sample node) -> Analyze ->
 /// Spectral Pitch -> Spectral Stretch -> Spectral Compress -> Spectral Denoise
 /// (profile from a second noise's analysis) -> Synthesize -> output, all at

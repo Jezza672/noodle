@@ -739,6 +739,8 @@ fn open_virtual_input(
 enum MainStream {
     Device(cpal::Stream),
     Virtual(VirtualClock),
+    /// A host calls the engine itself (see [`crate::HostBackend`]).
+    Host,
 }
 
 /// The virtual output: a thread that calls the writer once per block's
@@ -870,6 +872,29 @@ pub struct OpenedOutput {
 }
 
 impl Playback {
+    /// The stand-in for a stream when a host drives the engine: nothing to
+    /// open, wait for or close. `name` is what the host calls itself.
+    pub fn host(settings: Settings, name: &str) -> Self {
+        let fade = Arc::new(Fade::default());
+        // Nothing to fade: the host owns the stream.
+        fade.done.store(true, Ordering::Release);
+        Self {
+            fade,
+            _stream: MainStream::Host,
+            recorder: None,
+            _input_stream: None,
+            _extra_streams: Vec::new(),
+            drained: Vec::new(),
+            outputs: Vec::new(),
+            device: name.to_owned(),
+            input: None,
+            input_meter: None,
+            input_problem: None,
+            settings,
+            health: Health::new(),
+        }
+    }
+
     /// How long after the audio thread renders a sample the device plays it,
     /// as the driver reports it: zero until the first callback.
     pub fn output_latency(&self) -> Duration {
@@ -885,7 +910,7 @@ impl Playback {
     pub fn virtual_capture(&self) -> Option<VirtualCapture> {
         match &self._stream {
             MainStream::Virtual(clock) => Some(VirtualCapture(Arc::clone(&clock.tap))),
-            MainStream::Device(_) => None,
+            MainStream::Device(_) | MainStream::Host => None,
         }
     }
 

@@ -78,6 +78,7 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.util.looper",
     "noodle.mod.morph",
     "noodle.internal.automation",
+    "noodle.io.host_param",
     "noodle.io.input",
     "noodle.io.output",
     "noodle.instrument.sample",
