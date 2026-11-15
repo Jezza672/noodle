@@ -53,6 +53,10 @@ pub struct Schedule {
     /// How many lanes each spectral buffer must hold, where a lane holds one
     /// block of FFT frames.
     pub spectral_lanes: Vec<usize>,
+    /// The loop regions: the ranges of `nodes` that lie on feedback loops,
+    /// each a whole number of consecutive steps that the plan can run in chunks
+    /// shorter than a block. Two loops that share a node are one region.
+    pub regions: Vec<std::ops::Range<usize>>,
 }
 
 /// Which part of a node a schedule step runs. Only a node on a feedback loop
@@ -177,7 +181,7 @@ impl fmt::Display for Problem {
             }
             Self::Loop => f.write_str(
                 "this wire closes a loop, which has to pass through a Delay \
-                 (into its signal input) or another node that breaks loops",
+                 (into its signal input), a Feedback node or another node that breaks loops",
             ),
             Self::Shape(error) => error.fmt(f),
             Self::NotAParam(key) => {
@@ -368,7 +372,8 @@ pub(crate) fn compile_with(
     split_loop_nodes(&mut candidates, &wires);
     assign_vertices(&candidates, &mut wires);
     let wires = drop_loops(2 * candidates.len(), wires, &mut diagnostics);
-    let order = sort(&candidates, &wires);
+    let region = find_regions(candidates.len(), &wires);
+    let order = sort(&candidates, &wires, &region);
 
     // Which wire feeds each input, if any.
     let mut signal_source = vec![Vec::new(); candidates.len()];
@@ -402,6 +407,7 @@ pub(crate) fn compile_with(
         &signal_source,
         &event_source,
         &spectral_source,
+        &region,
         options.independent_buffers,
     );
     (schedule, diagnostics)
@@ -832,45 +838,190 @@ fn assign_vertices(candidates: &[Candidate<'_>], wires: &mut [Wire]) {
     }
 }
 
-/// Orders the steps so each comes after everything it reads from, breaking
-/// ties by node so the order is stable. A split node's output half comes
-/// before its input half.
-fn sort(candidates: &[Candidate<'_>], wires: &[Wire]) -> Vec<Step> {
-    let n = candidates.len();
-    let exists = |v: usize| v < n || candidates[v - n].split;
-    let mut outgoing = vec![Vec::new(); 2 * n];
-    let mut waiting_on = vec![0; 2 * n];
-    let mut edge = |from: usize, to: usize| {
-        outgoing[from].push(to);
-        waiting_on[to] += 1;
-    };
+/// Finds the loop regions: the nodes that lie on a feedback loop, grouped
+/// into strongly connected components of the wires that are left once
+/// [`drop_loops`] has refused the rest. Two loops that share a node are one
+/// region. Returns each node's region, numbered from 0.
+fn find_regions(nodes: usize, wires: &[Wire]) -> Vec<Option<usize>> {
+    let mut outgoing = vec![Vec::new(); nodes];
     for wire in wires {
-        edge(wire.from_v, wire.to_v);
+        outgoing[wire.from].push(wire.to);
     }
-    for (i, c) in candidates.iter().enumerate() {
-        if c.split {
-            edge(n + i, i);
+    // Tarjan's algorithm, iteratively.
+    const UNSEEN: usize = usize::MAX;
+    let mut index = vec![UNSEEN; nodes];
+    let mut low = vec![0; nodes];
+    let mut on_stack = vec![false; nodes];
+    let mut stack = Vec::new();
+    let mut next = 0;
+    let mut component = vec![UNSEEN; nodes];
+    let mut components = 0;
+    for root in 0..nodes {
+        if index[root] != UNSEEN {
+            continue;
+        }
+        let mut path = vec![(root, 0)];
+        index[root] = next;
+        low[root] = next;
+        next += 1;
+        stack.push(root);
+        on_stack[root] = true;
+        while let Some(top) = path.last_mut() {
+            let (node, followed) = *top;
+            if let Some(&target) = outgoing[node].get(followed) {
+                top.1 += 1;
+                if index[target] == UNSEEN {
+                    index[target] = next;
+                    low[target] = next;
+                    next += 1;
+                    stack.push(target);
+                    on_stack[target] = true;
+                    path.push((target, 0));
+                } else if on_stack[target] {
+                    low[node] = low[node].min(index[target]);
+                }
+                continue;
+            }
+            path.pop();
+            if let Some(&(parent, _)) = path.last() {
+                low[parent] = low[parent].min(low[node]);
+            }
+            if low[node] == index[node] {
+                while let Some(member) = stack.pop() {
+                    on_stack[member] = false;
+                    component[member] = components;
+                    if member == node {
+                        break;
+                    }
+                }
+                components += 1;
+            }
         }
     }
+    // A component is a loop if it holds more than one node, or one that
+    // feeds itself.
+    let mut size = vec![0usize; components];
+    for &c in &component {
+        size[c] += 1;
+    }
+    let mut loops = vec![false; components];
+    for wire in wires {
+        if wire.from == wire.to {
+            loops[component[wire.from]] = true;
+        }
+    }
+    let mut number = vec![None; components];
+    let mut regions = 0;
+    let mut result = vec![None; nodes];
+    for node in 0..nodes {
+        let c = component[node];
+        if size[c] > 1 || loops[c] {
+            let r = *number[c].get_or_insert_with(|| {
+                regions += 1;
+                regions - 1
+            });
+            result[node] = Some(r);
+        }
+    }
+    result
+}
+
+/// Orders the steps so each comes after everything it reads from, breaking
+/// ties by node so the order is stable. A split node's output half comes
+/// before its input half. The steps of a loop region stay together, in an
+/// order of their own, so the plan can run them as one step.
+fn sort(candidates: &[Candidate<'_>], wires: &[Wire], region: &[Option<usize>]) -> Vec<Step> {
+    let n = candidates.len();
+    let exists = |v: usize| v < n || candidates[v - n].split;
+    // A vertex's unit: itself, or its region (numbered after the vertices).
+    let unit = |v: usize| match region[v % n] {
+        Some(r) => 2 * n + r,
+        None => v,
+    };
+    let units = 2 * n + region.iter().flatten().map(|r| r + 1).max().unwrap_or(0);
+    let mut edges: Vec<(usize, usize)> = wires.iter().map(|w| (w.from_v, w.to_v)).collect();
+    for (i, c) in candidates.iter().enumerate() {
+        if c.split {
+            edges.push((n + i, i));
+        }
+    }
+    let step = |v: usize| Step {
+        node: v % n,
+        phase: match (v >= n, candidates[v % n].split) {
+            (true, _) => Phase::Output,
+            (false, true) => Phase::Input,
+            (false, false) => Phase::Whole,
+        },
+    };
     let key = |v: usize| Reverse((v % n, v));
-    let mut ready: BinaryHeap<Reverse<(usize, usize)>> = (0..2 * n)
-        .filter(|&v| exists(v) && waiting_on[v] == 0)
-        .map(key)
+
+    // The order inside each region, by the wires inside it.
+    let regions = units - 2 * n;
+    let mut inner: Vec<Vec<usize>> = vec![Vec::new(); regions];
+    {
+        let mut outgoing = vec![Vec::new(); 2 * n];
+        let mut waiting_on = vec![0; 2 * n];
+        for &(from, to) in &edges {
+            if unit(from) == unit(to) && unit(from) >= 2 * n {
+                outgoing[from].push(to);
+                waiting_on[to] += 1;
+            }
+        }
+        let mut ready: Vec<BinaryHeap<Reverse<(usize, usize)>>> =
+            (0..regions).map(|_| BinaryHeap::new()).collect();
+        for v in (0..2 * n).filter(|&v| exists(v) && unit(v) >= 2 * n) {
+            if waiting_on[v] == 0 {
+                ready[unit(v) - 2 * n].push(key(v));
+            }
+        }
+        for r in 0..regions {
+            while let Some(Reverse((_, v))) = ready[r].pop() {
+                inner[r].push(v);
+                for &next in &outgoing[v] {
+                    waiting_on[next] -= 1;
+                    if waiting_on[next] == 0 {
+                        ready[r].push(key(next));
+                    }
+                }
+            }
+        }
+    }
+
+    // The order of the units: nodes that aren't in a region, and each region
+    // as one.
+    let mut outgoing = vec![Vec::new(); units];
+    let mut waiting_on = vec![0; units];
+    for &(from, to) in &edges {
+        if unit(from) != unit(to) {
+            outgoing[unit(from)].push(unit(to));
+            waiting_on[unit(to)] += 1;
+        }
+    }
+    // A region is ordered by its first node.
+    let mut first = vec![usize::MAX; units];
+    for v in (0..2 * n).filter(|&v| exists(v)) {
+        first[unit(v)] = first[unit(v)].min(v % n);
+    }
+    let unit_key = |u: usize| Reverse((first[u], u));
+    let mut exists_unit = vec![false; units];
+    for v in (0..2 * n).filter(|&v| exists(v)) {
+        exists_unit[unit(v)] = true;
+    }
+    let mut ready: BinaryHeap<Reverse<(usize, usize)>> = (0..units)
+        .filter(|&u| exists_unit[u] && waiting_on[u] == 0)
+        .map(unit_key)
         .collect();
     let mut order = Vec::with_capacity(n);
-    while let Some(Reverse((_, v))) = ready.pop() {
-        order.push(Step {
-            node: v % n,
-            phase: match (v >= n, candidates[v % n].split) {
-                (true, _) => Phase::Output,
-                (false, true) => Phase::Input,
-                (false, false) => Phase::Whole,
-            },
-        });
-        for &next in &outgoing[v] {
+    while let Some(Reverse((_, u))) = ready.pop() {
+        if u >= 2 * n {
+            order.extend(inner[u - 2 * n].iter().map(|&v| step(v)));
+        } else {
+            order.push(step(u));
+        }
+        for &next in &outgoing[u] {
             waiting_on[next] -= 1;
             if waiting_on[next] == 0 {
-                ready.push(key(next));
+                ready.push(unit_key(next));
             }
         }
     }
@@ -1044,6 +1195,7 @@ fn blame_shape(
 /// With `independent`, a buffer is reused only by a step that already follows
 /// everything that used it: the reuse then orders nothing that wasn't
 /// ordered by the signal flow, so steps that could overlap still can.
+#[allow(clippy::too_many_arguments)]
 fn allocate(
     candidates: Vec<Candidate<'_>>,
     order: &[Step],
@@ -1051,6 +1203,7 @@ fn allocate(
     signal_source: &[Vec<Option<usize>>],
     event_source: &[Vec<Option<usize>>],
     spectral_source: &[Vec<Option<usize>>],
+    region: &[Option<usize>],
     independent: bool,
 ) -> Schedule {
     let n = candidates.len();
@@ -1106,6 +1259,23 @@ fn allocate(
     let mut users: [Vec<Vec<usize>>; 3] = [Vec::new(), Vec::new(), Vec::new()];
     let mut nodes = Vec::with_capacity(runs.len());
     let mut candidates: Vec<Option<Candidate<'_>>> = candidates.into_iter().map(Some).collect();
+    // The last step of each loop region. A region runs in chunks, so what its
+    // steps use isn't free for its own later steps: the buffers of a step
+    // are given back only once the region is done.
+    let mut region_end: HashMap<usize, usize> = HashMap::new();
+    let mut region_start: HashMap<usize, usize> = HashMap::new();
+    for (s, run) in runs.iter().enumerate() {
+        if let Some(r) = region[run.node] {
+            region_end.insert(r, s);
+            region_start.entry(r).or_insert(s);
+        }
+    }
+    let mut regions: Vec<std::ops::Range<usize>> = region_start
+        .iter()
+        .map(|(r, &start)| start..region_end[r] + 1)
+        .collect();
+    regions.sort_by_key(|r| r.start);
+    let mut deferred: Vec<(Kind, usize)> = Vec::new();
 
     for (s, run) in runs.iter().enumerate() {
         let (i, phase) = (run.node, run.phase);
@@ -1306,11 +1476,25 @@ fn allocate(
             .chain((0..event_outputs.len()).map(|port| (Kind::Event, i, port)))
             .chain((0..spectral_outputs.len()).map(|port| (Kind::Spectral, i, port)))
             .filter(|key| !last_read.contains_key(key));
+        let region_done = region[i].is_none_or(|r| region_end[&r] == s);
         for key in finished.into_iter().chain(unread) {
-            match key.0 {
-                Kind::Signal => free_buffers.push(written[&key]),
-                Kind::Event => free_events.push(written[&key]),
-                Kind::Spectral => free_spectral.push(written[&key]),
+            if region_done {
+                match key.0 {
+                    Kind::Signal => free_buffers.push(written[&key]),
+                    Kind::Event => free_events.push(written[&key]),
+                    Kind::Spectral => free_spectral.push(written[&key]),
+                }
+            } else {
+                deferred.push((key.0, written[&key]));
+            }
+        }
+        if region_done {
+            for (kind, buffer) in deferred.drain(..) {
+                match kind {
+                    Kind::Signal => free_buffers.push(buffer),
+                    Kind::Event => free_events.push(buffer),
+                    Kind::Spectral => free_spectral.push(buffer),
+                }
             }
         }
 
@@ -1336,6 +1520,7 @@ fn allocate(
         buffer_lanes,
         event_buffers,
         spectral_lanes,
+        regions,
     }
 }
 

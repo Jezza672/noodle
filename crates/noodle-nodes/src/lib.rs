@@ -24,6 +24,7 @@ mod envelope;
 mod eq;
 mod event_delay;
 mod export;
+mod feedback;
 mod follower;
 mod freeze;
 mod fundamental;
@@ -132,6 +133,7 @@ pub use export::{
     ExportJobError, ExportReport, ExportRequest, TrackExport, export, spawn_export,
     spawn_export_all,
 };
+pub use feedback::{FEEDBACK_ID, Feedback};
 pub use follower::{EnvelopeFollower, FOLLOWER_ID};
 pub use freeze::{
     FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,
@@ -283,6 +285,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Math);
     registry.register(Script);
     registry.register(Delay);
+    registry.register(Feedback);
     registry.register(Dynamics::new(&telemetry));
     registry.register(ParametricEq);
     registry.register(Reverb);

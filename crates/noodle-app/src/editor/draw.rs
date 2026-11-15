@@ -1183,6 +1183,7 @@ mod glow_tests {
             silent: false,
             sounding: 1,
             voices: 1,
+            ..Default::default()
         };
         writer.write(sounding);
         state

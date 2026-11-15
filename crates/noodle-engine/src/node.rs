@@ -190,6 +190,15 @@ pub trait NodeType: Send + Sync + 'static {
         None
     }
 
+    /// Whether the node can run in chunks shorter than a block, which a loop
+    /// region does when its delay is shorter than the block (see
+    /// [`Node::loop_chunk`]). A node that can't (a hosted plugin, which
+    /// processes whole blocks) returns false, and a region it is in runs whole
+    /// blocks as it always did.
+    fn chunkable(&self, _config: &Config) -> bool {
+        true
+    }
+
     /// Mixes into `key` whatever this node's output depends on besides its
     /// config, its inputs and the tempo map, which are keyed already. A track
     /// input adds the clips it plays, with the contents of their files. An
@@ -728,6 +737,21 @@ pub trait Node: Send + 'static {
     /// Second half, run once the loop input has been produced. Only the loop
     /// input is real, and there are no outputs.
     fn process_input(&mut self, _ctx: &Context, _io: Io<'_, '_>) {}
+
+    /// For a node that is on a feedback loop: how many frames the loop can
+    /// run at a time. Asked once per block, before the loop's region runs,
+    /// with the node's signal inputs for the whole block (the loop input is an
+    /// empty placeholder). The region runs its nodes in chunks of the
+    /// smallest answer in it, so each chunk reads only what earlier chunks
+    /// wrote. The default is the whole block, which is how a loop ran before
+    /// regions: a node whose output half needs this block's input to be
+    /// whole. The answer is clamped to `1..=ctx.frames`.
+    ///
+    /// With `held`, the region runs whole blocks whatever is answered (it has
+    /// a plugin in it, say), and the node must work as it did before regions.
+    fn loop_chunk(&mut self, ctx: &Context, _inputs: &[SignalIn<'_>], _held: bool) -> usize {
+        ctx.frames
+    }
 
     /// How many samples later than its inputs the node's outputs sound, as
     /// reported by a plugin or caused by lookahead. The engine delays the

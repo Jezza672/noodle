@@ -39,7 +39,17 @@ the ports it makes or the error as you type. `examples/script-fold.ron` and
 interpolated linearly, offset-style modulation so an LFO can sweep it) and
 outputs only the delayed signal; an echo is a Mix, the Delay and a Gain wired
 round in a loop (`examples/feedback-echo.ron`). Every lane has its own line,
-and a lane silent for a whole line's length is flagged silent.
+and a lane silent for a whole line's length is flagged silent. In a loop the
+Delay can be as short as the patch asks (its loop runs in chunks of it, see
+[feedback-and-silence.md](feedback-and-silence.md)); a delay shorter than one
+sample is held to one.
+`Feedback` (`noodle.util.feedback`, Utilities) is a one-sample delay that
+closes loops, for feedback FM or a filter built from integrators
+(`examples/feedback-fm.ron`); its loop runs sample by sample. The Plucked
+String, Comb and Flanger templates (`song/feedback.rs`) are loops of Delay
+tuned by a Math node (`1 / pitch` less the filter's lag, as a fraction of the
+slider's 2 s travel) and are checked in `noodle-eval/tests/instruments.rs` and
+`feedback_templates.rs`.
 
 ## Library and presets (M9)
 

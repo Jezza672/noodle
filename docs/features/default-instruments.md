@@ -22,3 +22,7 @@ can make music without building a synth first.
   the key and (for the kit) plays on its keys; `system_samples` tests check the
   index matches the files. The architecture is in
   [../architecture/synths-and-library.md](../architecture/synths-and-library.md).
+
+- **Plucked String** joins the playable instruments (Voices, a nested `String`
+  group, Voice Mix inside; presets Nylon, Steel and Muted Pluck) with Comb and
+  Flanger as effect templates: see [feedback-regions.md](feedback-regions.md).
