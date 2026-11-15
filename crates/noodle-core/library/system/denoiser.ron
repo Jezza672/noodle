@@ -1,0 +1,133 @@
+[
+    Template((
+        name: "Denoiser",
+        slug: "denoiser",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Denoiser"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:in\n2:noise\n3:learn\n4:reduction\n5:threshold\n6:smooth"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.spectral.analyze",
+                position: (x: 220.0, y: 0.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.spectral.analyze",
+                position: (x: 220.0, y: 260.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.spectral.denoise",
+                params: {"reduction": 20.0, "smooth": 0.5, "threshold": 6.0},
+                position: (x: 440.0, y: 0.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.spectral.synthesize",
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 910.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 3, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 4, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 5, port: "learn"),
+            ),
+            (
+                from: (node: 4, port: "spectrum"),
+                to: (node: 5, port: "noise"),
+            ),
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 5, port: "reduction"),
+            ),
+            (
+                from: (node: 2, port: "p6"),
+                to: (node: 5, port: "smooth"),
+            ),
+            (
+                from: (node: 3, port: "spectrum"),
+                to: (node: 5, port: "spectrum"),
+            ),
+            (
+                from: (node: 2, port: "p5"),
+                to: (node: 5, port: "threshold"),
+            ),
+            (
+                from: (node: 5, port: "out"),
+                to: (node: 6, port: "spectrum"),
+            ),
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 7, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Standard",
+        slug: "denoiser-standard",
+        topology: "444e18d538487fa4",
+        nodes: [
+            (),
+            (),
+            (),
+            (
+                params: {"reduction": 20.0, "smooth": 0.5, "threshold": 6.0},
+            ),
+            (),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Gentle",
+        slug: "denoiser-gentle",
+        topology: "444e18d538487fa4",
+        nodes: [
+            (),
+            (),
+            (),
+            (
+                params: {"reduction": 12.0, "smooth": 0.3, "threshold": 3.0},
+            ),
+            (),
+            (),
+        ],
+    )),
+    GroupPreset((
+        name: "Heavy Hiss",
+        slug: "denoiser-heavy-hiss",
+        topology: "444e18d538487fa4",
+        nodes: [
+            (),
+            (),
+            (),
+            (
+                params: {"reduction": 30.0, "smooth": 0.7, "threshold": 9.0},
+            ),
+            (),
+            (),
+        ],
+    )),
+]

@@ -200,6 +200,7 @@ pub fn render_offline_node(
         max_frames: frames,
         input_shapes: &input_shapes,
         output_shapes: &output_shapes,
+        spectral_size: crate::FFT_SIZE,
         seed: seed_for(node),
         position: 0,
     })?;
