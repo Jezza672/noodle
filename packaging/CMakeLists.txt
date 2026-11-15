@@ -7,7 +7,7 @@
 #   cmake --build build/packaging --target noodle_all
 #
 # The wrapper and the VST3 and AudioUnit SDKs are downloaded when it is
-# configured. Output is under `build/packaging/` in `VST3/` (and `AUv2/` on
+# configured. Output is under `build/packaging/out/` (`Noodle.vst3`, and `Noodle.component` on
 # macOS).
 
 cmake_minimum_required(VERSION 3.21)
@@ -50,7 +50,7 @@ set_target_properties(noodle_impl PROPERTIES IMPORTED_LOCATION "${NOODLE_PLUGIN_
 if (WIN32)
   target_link_libraries(noodle_impl INTERFACE
     ws2_32 userenv ntdll bcrypt advapi32 kernel32 user32 gdi32 shell32 ole32 oleaut32 dwmapi
-    imm32 winmm propsys uxtheme comctl32 crypt32 secur32 ncrypt)
+    imm32 winmm propsys uxtheme comctl32 crypt32 secur32 ncrypt synchronization)
 elseif (APPLE)
   target_link_libraries(noodle_impl INTERFACE
     "-framework Foundation" "-framework CoreFoundation" "-framework AppKit"
@@ -58,7 +58,7 @@ elseif (APPLE)
     "-framework AudioToolbox" "-framework Metal" "-framework QuartzCore"
     "-framework Security" "-framework SystemConfiguration" "-framework CoreServices"
     "-framework IOKit" "-framework CoreText" "-framework CoreVideo"
-    "-framework UniformTypeIdentifiers" iconv)
+    "-framework UniformTypeIdentifiers" "-framework Carbon" iconv)
 else()
   target_link_libraries(noodle_impl INTERFACE dl pthread m rt util asound)
 endif()
