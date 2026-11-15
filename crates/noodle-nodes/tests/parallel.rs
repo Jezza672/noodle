@@ -164,9 +164,24 @@ impl Rig {
         .unwrap();
     }
 
-    /// sine → filter → gain → mix input `i`.
+    /// sine → filter → gain → mix input `i`. The first has a loop of Delay in
+    /// it, 33 samples long (inside one 128-frame block), so its nodes run in
+    /// chunks as a region, as one step among the threads' work.
     fn chain(&mut self, i: usize, hz: f32) {
         let sine = self.add(Node::new("noodle.osc.saw").with_param("frequency", hz));
+        if i == 0 {
+            let feed = self.add(Node::new("noodle.util.mix"));
+            let delay = self.add(Node::new("noodle.util.delay").with_param("time", 0.0007));
+            let back = self.add(Node::new("noodle.util.gain").with_param("gain", -3.0));
+            let gain = self.add(Node::new("noodle.util.gain").with_param("gain", -12.0));
+            self.wire(sine, "out", feed, "in1");
+            self.wire(feed, "out", delay, "in");
+            self.wire(delay, "out", back, "in");
+            self.wire(back, "out", feed, "in2");
+            self.wire(feed, "out", gain, "in");
+            self.wire(gain, "out", self.mix, "in1");
+            return;
+        }
         let svf = self.add(Node::new("noodle.filter.svf").with_param("cutoff", 800.0));
         let gain = self.add(Node::new("noodle.util.gain").with_param("gain", -12.0));
         self.wire(sine, "out", svf, "in");

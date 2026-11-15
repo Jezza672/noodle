@@ -137,6 +137,7 @@ const SYNTHS: &[&str] = &[
     "chip-synth",
     "pluck-synth",
     "warm-pad",
+    "plucked-string",
     "wavetable-synth",
     "grain-pad",
 ];
@@ -187,6 +188,51 @@ fn a_sampled_instrument_follows_the_key() {
         crossings(&high[2_000..22_000]),
     );
     assert!(b > a, "an octave up crosses zero more often ({a} vs {b})");
+}
+
+/// The frequency of `samples` by autocorrelation, searching `lo..hi` hertz.
+fn pitch(samples: &[f32], lo: f32, hi: f32) -> f32 {
+    let (min, max) = ((RATE / hi) as usize, (RATE / lo) as usize);
+    let n = samples.len() - max;
+    let mut best = (0.0f32, min);
+    for lag in min..=max {
+        let sum: f32 = (0..n).map(|i| samples[i] * samples[i + lag]).sum();
+        if sum > best.0 {
+            best = (sum, lag);
+        }
+    }
+    // Refine between lags by a parabola through the peak.
+    let at = |lag: usize| -> f32 { (0..n).map(|i| samples[i] * samples[i + lag]).sum() };
+    let (a, b, c) = (at(best.1 - 1), at(best.1), at(best.1 + 1));
+    let shift = 0.5 * (a - c) / (a - 2.0 * b + c);
+    RATE / (best.1 as f32 + shift)
+}
+
+/// A plucked string is a loop of Delay a few dozen samples long at the top of
+/// the keyboard, which only a loop that runs in chunks can be: it follows the
+/// key across four octaves.
+#[test]
+fn a_plucked_string_follows_the_key_across_four_octaves() {
+    for key in [36u8, 48, 60, 72, 84] {
+        let expected = 440.0 * 2f32.powf((f32::from(key) - 69.0) / 12.0);
+        let samples = play_notes("plucked-string", 1.0, &[key]);
+        let held = peak(&samples, 0.02, 0.4);
+        assert!(held > 0.02, "key {key} is silent ({held})");
+        assert!(held < 1.0, "key {key} clips ({held})");
+        let heard = pitch(&samples[500..3_500], expected * 0.8, expected * 1.25);
+        let cents = 1200.0 * (heard / expected).log2();
+        assert!(
+            cents.abs() < 45.0,
+            "key {key}: wanted {expected} Hz, heard {heard} Hz ({cents:.1} cents)"
+        );
+    }
+}
+
+#[test]
+fn a_plucked_string_dies_away_and_the_voice_is_freed() {
+    let samples = play_notes("plucked-string", 8.0, &[60]);
+    assert!(peak(&samples, 0.02, 0.4) > 0.02);
+    assert!(peak(&samples, 6.0, 8.0) < 0.002);
 }
 
 /// A Grain Freeze has no notes: it drones until it is stopped.

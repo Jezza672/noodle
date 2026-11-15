@@ -314,7 +314,7 @@ impl Telemetry {
     /// Call this when building a plan, not on the audio thread.
     pub fn open_state(&self, node: NodeId) -> StateWriter {
         let cells = Arc::new(StateCells {
-            packed: AtomicU32::new(0),
+            packed: AtomicU64::new(0),
             written: AtomicBool::new(false),
             activity: self.activity.clone(),
         });
@@ -1033,28 +1033,39 @@ pub struct NodeActivity {
     pub sounding: u8,
     /// The most voices any of its outputs has.
     pub voices: u8,
+    /// For a node in a feedback loop region: the frames it last ran at a
+    /// time (a block's worth when the loop's delay is longer), else 0.
+    pub chunk: u16,
+    /// The node is in a loop region that runs whole blocks whatever its
+    /// delay, because something in it (a plugin, a spectral node) can't run
+    /// in chunks.
+    pub held: bool,
 }
 
 impl NodeActivity {
-    fn pack(self) -> u32 {
-        u32::from(self.ran)
-            | u32::from(self.silent) << 1
-            | u32::from(self.sounding) << 8
-            | u32::from(self.voices) << 16
+    fn pack(self) -> u64 {
+        u64::from(self.ran)
+            | u64::from(self.silent) << 1
+            | u64::from(self.held) << 2
+            | u64::from(self.sounding) << 8
+            | u64::from(self.voices) << 16
+            | u64::from(self.chunk) << 32
     }
 
-    fn unpack(bits: u32) -> Self {
+    fn unpack(bits: u64) -> Self {
         Self {
             ran: bits & 1 != 0,
             silent: bits & 2 != 0,
+            held: bits & 4 != 0,
             sounding: (bits >> 8) as u8,
             voices: (bits >> 16) as u8,
+            chunk: (bits >> 32) as u16,
         }
     }
 }
 
 struct StateCells {
-    packed: AtomicU32,
+    packed: AtomicU64,
     written: AtomicBool,
     activity: Arc<AtomicU64>,
 }

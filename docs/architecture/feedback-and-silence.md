@@ -18,11 +18,71 @@ key of the signal input it reads *last*: `Delay`'s `in`, and `Voices`' `busy`.
 - **What stays refused.** A loop that reaches the node through any other
   input (a `time` wire, say) or through nodes that are not loop-breakers
   gets the usual `Loop` diagnostic on the wire that closes it.
-- **Cost of a loop.** The output half runs before this block's input exists.
-  `Delay` therefore reads at least `max_frames` samples back while in a loop
-  (the engine's largest block, a constant, so the delay doesn't change with
-  the size of the block in hand; about 2.7 ms at the app's 128 frames); shorter times are held to that. A `Delay` that
-  is not on a loop has no minimum.
+- **Loop regions.** The compiler collects every node on a loop (a strongly
+  connected component of the wires that are left once refused loops are
+  dropped, with the breaker's two halves together) into a *loop region*. Two
+  loops that share a node are one region. `sort` orders a region as one unit, so
+  its steps are consecutive in the schedule (the order inside it is the usual
+  topological one), and `allocate` gives back the buffers a region's steps used
+  only when the region is done, so no two of its steps share a buffer.
+  `Schedule::regions` names the ranges. Nodes outside a region are untouched
+  and run a block at a time.
+- **Chunk size.** Before it runs each block, the plan asks every loop-breaking
+  node in a region `Node::loop_chunk(ctx, inputs, held)` with the node's
+  signal inputs for the whole block, and takes the smallest answer (clamped to
+  the block). The default is the whole block, which is how a loop ran before
+  regions (`Voices`' `busy` loop is unchanged). `Delay` answers the floor of
+  its shortest `time` in the block, in samples, at least 1: a chunk then reads
+  only samples earlier chunks wrote. A signal the breaker reads from a node of
+  the region itself (a second loop's Delay setting this one's `time`) isn't
+  written yet when the chunk is asked for, so the plan plays safe and answers 1
+  for it. The Feedback node answers 1. A loop with a 40-sample Delay
+  therefore runs its nodes 40 frames at a time; a 300 ms echo has a chunk longer
+  than the block and runs exactly as before.
+- **Running a region** (`plan::run_region`). The region's first step runs every
+  member, the others do nothing (in the step graph they wait for the first,
+  which waits for everything any member waits for, so on several threads a
+  region is one step). With a chunk shorter than the block, each live member
+  runs for each chunk in order on windows of its inputs, copied into chunk
+  buffers the plan owns (`Chunk`, sized when the plan is built) and copies what
+  it wrote back into its block buffers, where nodes after it, and nodes outside
+  the region, read it. The context carries the chunk's length and a transport
+  advanced to the chunk's start. Nothing allocates on the audio thread.
+  - *Events* in are windowed per chunk with their offsets rebased, and
+    events out are rebased back and appended.
+  - *Silence flags.* A node in the region that reads another sees that node's
+    flags for the chunk (a consumer's skipping depends on them, so it must see
+    what a block of that length would). A reader outside sees the AND over the
+    chunks. A lane is flagged silent for the block only if it was in every chunk.
+  - *Wired parameters* are worked out per chunk from the window of the wire.
+  - *Meters, probes and the state report* are made once per block, after the
+    region, from the block buffers; a node's CPU time is the sum over its
+    chunks.
+  - *Panics* on a worker are caught around the whole region (every member is
+    silenced for the block).
+- **Held regions.** A region with a hosted plugin in it
+  (`NodeType::chunkable` false), a spectral node, or a node with a delay
+  compensation line in front of it runs whole blocks, as every loop did before
+  regions. `Delay` is then held to at least `max_frames` (the engine's largest
+  block, so the delay doesn't change with the block in hand), and the node's
+  `NodeActivity::held` says so; the Latency section of the properties panel
+  explains it.
+- **Cost of a loop.** A node in a region is called once per chunk, which costs
+  about half a microsecond per call besides the node's own work, so a node in a
+  loop running sample by sample costs about 2 to 3% of a core at 48 kHz, and
+  proportionally less at longer chunks. A node processes all its voices in one
+  call, so polyphony does not multiply the calls, though every voice runs at
+  the chunk of the shortest delay among them. The properties panel shows the
+  chunk a node last ran at ("runs 12 samples at a time, in a feedback loop"),
+  and the CPU meters already show the cost. There is no setting. A loop's sound
+  no longer depends on the engine's block size.
+- **The Feedback node** (`noodle.util.feedback`) is a one-sample delay that is
+  a loop breaker, with chunk 1. It makes delay-free loops legal and explicit:
+  feedback FM (an oscillator's output into its own frequency), a filter built
+  from integrators. Without it such a wire still gets the `Loop` diagnostic,
+  whose text suggests the node. Outside a loop it is a plain one-sample
+  delay. Not in `Delay`'s class: it needs a region (or a held block, where it
+  delays a block).
 - **Shapes.** The output half is shaped before the loop input is known. The
   compiler assumes a mono loop input, finishes, and if the real input
   differs, starts shape inference again with that assumption, up to four
