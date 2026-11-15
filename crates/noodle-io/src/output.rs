@@ -1234,7 +1234,11 @@ fn open_playback(
             let host_id = host_for(choice.host.as_deref(), None, Direction::Output)?;
             // What `virtual_output()` advertises; a hand-edited setting
             // outside it is refused, not trusted.
-            let frames = choice.buffer_size.unwrap_or(VIRTUAL_BUFFER);
+            let frames = choice.buffer_size.unwrap_or_else(|| {
+                choice.live_buffer.map_or(VIRTUAL_BUFFER, |f| {
+                    f.clamp(VIRTUAL_BUFFERS.0, VIRTUAL_BUFFERS.1)
+                })
+            });
             if !(VIRTUAL_BUFFERS.0..=VIRTUAL_BUFFERS.1).contains(&frames) {
                 return Err(AudioError::UnsupportedBufferSize {
                     frames,
@@ -1281,7 +1285,7 @@ fn open_playback(
                 None => buffer_request(
                     &ranges,
                     choice.sample_rate.unwrap_or(default.sample_rate()),
-                    None,
+                    choice.live_buffer,
                 ),
             };
             let chosen = |buffer| {
@@ -1387,6 +1391,7 @@ fn open_playback(
                     id,
                     &settings,
                     choice.buffer_size,
+                    choice.live_buffer,
                     live_default,
                     &mut health,
                 )
@@ -1623,6 +1628,7 @@ fn open_input(
     id: Option<&str>,
     settings: &Settings,
     buffer_size: Option<u32>,
+    live_buffer: Option<u32>,
     live_default: bool,
     health: &mut Health,
 ) -> Result<(InputStream, String, usize, Feed, Recorder), AudioError> {
@@ -1641,7 +1647,7 @@ fn open_input(
     let buffer = if buffer_size.is_none() && !live_default {
         None
     } else {
-        buffer_request(&ranges, rate, buffer_size)
+        buffer_request(&ranges, rate, buffer_size.or(live_buffer))
     };
     let chosen = |buffer| choose_config(&ranges, default, Some(rate), buffer, None);
     let Chosen { config, format } = match buffer {
@@ -1674,7 +1680,7 @@ fn open_input(
     // builds: leave it to the device, unless the size was chosen.
     let stream = match stream {
         Err(_) if buffer.is_some() && buffer_size.is_none() => {
-            return open_input(host, id, settings, None, false, health);
+            return open_input(host, id, settings, None, None, false, health);
         }
         stream => stream?,
     };

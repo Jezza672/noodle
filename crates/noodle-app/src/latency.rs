@@ -6,9 +6,141 @@
 //! the engine holds the early ones back. Both are shown: a badge on the node
 //! and a panel in its properties.
 
+use std::time::Duration;
+
 use noodle_core::NodeId;
+use serde::{Deserialize, Serialize};
 
 use crate::session::Session;
+
+/// What the device buffer does while tracks are armed or monitored.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum MonitoringLatency {
+    /// The smallest buffer while a track is armed or monitored, the usual one
+    /// otherwise, and a large one after a while with nothing to do.
+    #[default]
+    Auto,
+    /// The smallest buffer all the time.
+    AlwaysLow,
+    /// Leave the buffer alone (the size chosen in the audio settings, or the
+    /// usual one).
+    Off,
+}
+
+impl MonitoringLatency {
+    pub const ALL: [Self; 3] = [Self::Auto, Self::AlwaysLow, Self::Off];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Auto => "Auto",
+            Self::AlwaysLow => "Always low",
+            Self::Off => "Off",
+        }
+    }
+}
+
+/// How big the device buffer is asked to be.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BufferTier {
+    /// Armed or monitored: as little delay as the device allows.
+    Low,
+    /// The usual size, which is what the stream opens with.
+    Normal,
+    /// Nothing is playing or armed: fewer, larger callbacks, which cost less
+    /// power.
+    Relaxed,
+}
+
+impl BufferTier {
+    /// The size asked for, in frames. `Normal` leaves the choice to the
+    /// device's usual live size.
+    pub fn request(self) -> Option<u32> {
+        match self {
+            Self::Low => Some(64),
+            Self::Normal => None,
+            Self::Relaxed => Some(1024),
+        }
+    }
+}
+
+/// The Monitoring latency row of the Audio settings, and what it is doing now.
+/// A change takes effect at once (the buffer follows when the transport is
+/// stopped) and is saved.
+pub fn monitoring_row(ui: &mut egui::Ui, session: &mut Session) {
+    let mut setting = session.monitoring_latency();
+    ui.horizontal(|ui| {
+        ui.label("Monitoring latency");
+        egui::ComboBox::from_id_salt("monitoring latency")
+            .selected_text(setting.label())
+            .show_ui(ui, |ui| {
+                for choice in MonitoringLatency::ALL {
+                    ui.selectable_value(&mut setting, choice, choice.label());
+                }
+            })
+            .response
+            .on_hover_text(
+                "Auto: the smallest device buffer while a track is armed or monitored, \
+                 a large one when nothing has been going on for a while. Always low: the \
+                 smallest all the time. Off: leave the buffer as it is. A buffer size \
+                 chosen below is never changed.",
+            );
+    });
+    if setting != session.monitoring_latency() {
+        session.set_monitoring_latency(setting);
+        crate::prefs::remember_monitoring_latency(setting);
+    }
+    if let Some(line) = monitoring_readout(session) {
+        ui.weak(line);
+    }
+}
+
+/// What monitoring is doing: the buffer it asked for and what the monitored
+/// path adds on top.
+pub fn monitoring_readout(session: &Session) -> Option<String> {
+    let rate = session.latency_report()?.sample_rate;
+    let mut parts = Vec::new();
+    if let Some(tier) = session.buffer_tier() {
+        parts.push(match tier {
+            BufferTier::Low => "Buffer: low while armed or monitored".to_owned(),
+            BufferTier::Normal => "Buffer: usual size".to_owned(),
+            BufferTier::Relaxed => "Buffer: large while idle".to_owned(),
+        });
+    }
+    if let Some(samples) = session.plan_latency().monitored {
+        parts.push(if samples == 0 {
+            "Monitored path: no plugin latency".to_owned()
+        } else {
+            format!(
+                "Monitored path: {} of plugin latency, not held back by other tracks",
+                ms(samples, rate)
+            )
+        });
+    }
+    (!parts.is_empty()).then(|| parts.join(". "))
+}
+
+/// How long nothing has to be playing or armed before the buffer relaxes.
+pub const RELAX_AFTER: Duration = Duration::from_secs(10);
+
+/// The tier the device buffer should be at, `None` for no say in it.
+/// `current` is the tier it is at. The buffer follows arming one way only:
+/// once low it stays low until it has been idle long enough to relax, and a
+/// relaxed one goes back to low and never to normal, so one session takes
+/// few reopenings.
+pub fn wanted_tier(
+    setting: MonitoringLatency,
+    live: bool,
+    idle_long: bool,
+    current: Option<BufferTier>,
+) -> Option<BufferTier> {
+    match setting {
+        MonitoringLatency::Off => None,
+        MonitoringLatency::AlwaysLow => Some(BufferTier::Low),
+        MonitoringLatency::Auto if live => Some(BufferTier::Low),
+        MonitoringLatency::Auto if idle_long => Some(BufferTier::Relaxed),
+        MonitoringLatency::Auto => Some(current.unwrap_or(BufferTier::Normal)),
+    }
+}
 
 /// What one node adds, and what was held back at its inputs.
 #[derive(Clone, Debug, PartialEq, Eq, Default)]
@@ -153,5 +285,40 @@ mod tests {
             held: vec![("In 2".into(), 2_048)],
         };
         assert_eq!(badge(&held, 48_000.0), "holds 43 ms");
+    }
+}
+
+#[cfg(test)]
+mod tier_tests {
+    use super::BufferTier::*;
+    use super::MonitoringLatency::*;
+    use super::*;
+
+    #[test]
+    fn auto_is_low_while_live_and_relaxes_after_idling() {
+        assert_eq!(wanted_tier(Auto, true, false, None), Some(Low));
+        assert_eq!(wanted_tier(Auto, false, false, None), Some(Normal));
+        assert_eq!(wanted_tier(Auto, false, true, Some(Normal)), Some(Relaxed));
+        // Not live any more but not idle long: stays low rather than bounce.
+        assert_eq!(wanted_tier(Auto, false, false, Some(Low)), Some(Low));
+        assert_eq!(
+            wanted_tier(Auto, false, false, Some(Relaxed)),
+            Some(Relaxed)
+        );
+        // Live again wakes a relaxed buffer.
+        assert_eq!(wanted_tier(Auto, true, false, Some(Relaxed)), Some(Low));
+    }
+
+    #[test]
+    fn always_low_and_off() {
+        assert_eq!(wanted_tier(AlwaysLow, false, true, None), Some(Low));
+        assert_eq!(wanted_tier(Off, true, false, Some(Low)), None);
+    }
+
+    #[test]
+    fn the_sizes_asked_for() {
+        assert_eq!(Low.request(), Some(64));
+        assert_eq!(Normal.request(), None);
+        assert_eq!(Relaxed.request(), Some(1024));
     }
 }

@@ -6,6 +6,7 @@
 //! old plans come back to be freed off the audio thread. Parameter values are
 //! shared atomics, so changing one doesn't need a recompile or a queue.
 
+use std::collections::HashSet;
 use std::fmt;
 use std::mem;
 use std::sync::Arc;
@@ -102,6 +103,7 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
         telemetry: None,
         buses: None,
         monitor: None,
+        live: HashSet::new(),
         control: control.clone(),
         tempo_map: TempoMap::default(),
         project_tempo: TempoMap::default(),
@@ -172,6 +174,8 @@ pub struct Controller {
     buses: Option<Vec<Bus>>,
     /// A node being listened to, added to every plan (see [`Monitor`]).
     monitor: Option<Monitor>,
+    /// Nodes played live, whose paths delay compensation leaves alone.
+    live: HashSet<NodeId>,
     control: Arc<TransportControl>,
     /// The tempo map the engine plays by: the project's, or one constant
     /// tempo while a live tempo is set.
@@ -216,6 +220,18 @@ impl Controller {
     /// listening if it's `None`. Offline renders never include it.
     pub fn set_monitor(&mut self, monitor: Option<Monitor>) {
         self.monitor = monitor;
+    }
+
+    /// Names the nodes played live (a monitored track input), from the next
+    /// update on. The live cone, these and what they feed, is left out of
+    /// plugin delay compensation, so another track's latent plugin doesn't
+    /// delay what a player hears of their own playing. Offline renders have none.
+    /// Returns whether the set changed, so a caller knows an
+    /// update is due.
+    pub fn set_live_nodes(&mut self, nodes: HashSet<NodeId>) -> bool {
+        let changed = self.live != nodes;
+        self.live = nodes;
+        changed
     }
 
     /// The tempo map the transport reports to nodes. While a live tempo is
@@ -390,6 +406,7 @@ impl Controller {
             self.telemetry.as_ref(),
             &mut self.cells,
             self.control.position(),
+            &self.live,
             &mut diagnostics,
         );
         self.pending = Some((plan, info));
