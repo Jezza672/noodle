@@ -565,7 +565,8 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
     // Watch from the text that was loaded, so an edit made while the device
     // opens isn't missed.
     let mut watch = Watch::new(path, text);
-    let registry = registry(path.parent().unwrap_or(Path::new("")));
+    let base = path.parent().unwrap_or(Path::new(""));
+    let (registry, library) = registry(base);
     // Output nodes tied to other devices play on those too. The devices are
     // opened once, so a reload that changes them takes a restart.
     let mut devices = noodle_engine::output_devices(project.graph());
@@ -581,7 +582,7 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
             Err(error) => eprintln!("warning: can't play on {}: {error}", status.device),
         }
     }
-    report(&controller.update_project(&project, &registry));
+    send_project(&mut controller, &library, &project, &registry, base);
     let settings = playback.settings();
     eprintln!(
         "Playing {} on {} ({} Hz, {} channels). Press Ctrl-C to stop.",
@@ -642,12 +643,30 @@ fn play(path: &Path, config: &AudioConfig) -> Result<(), String> {
                         eprintln!("warning: restart to play on the outputs' new devices.");
                         devices = wanted;
                     }
-                    report(&controller.update_project(&project, &registry));
+                    send_project(&mut controller, &library, &project, &registry, base);
                     eprintln!("Reloaded {}.", path.display());
                 }
                 Err(message) => eprintln!("noodle: {message}"),
             }
         }
+    }
+}
+
+/// Sends a project to the playing engine: the graph, and the timeline's
+/// clips to the track inputs. Without the clips, a track input is silent,
+/// whatever is on the timeline.
+fn send_project(
+    controller: &mut noodle_engine::Controller,
+    library: &noodle_nodes::Library,
+    project: &Project,
+    registry: &Registry,
+    base: &Path,
+) {
+    report(&controller.update_project(project, registry));
+    let rate = controller.settings().sample_rate;
+    let table = noodle_engine::TempoTable::new(project.tempo_map(), rate);
+    for problem in library.clips.update(project, &table, rate as u32, base) {
+        eprintln!("warning: clip {}: {}", problem.clip.0, problem.message);
     }
 }
 
@@ -726,13 +745,14 @@ fn parse(path: &Path, text: &str) -> Result<Project, String> {
 
 /// The node types, with samples read from `samples` beside the project file
 /// in `base`.
-fn registry(base: &Path) -> Registry {
+fn registry(base: &Path) -> (Registry, noodle_nodes::Library) {
     let mut registry = Registry::with_builtins();
-    // Nothing displays meters or scopes yet, so their hub isn't needed.
+    // Nothing displays meters or scopes yet, but the track inputs get their
+    // clips through the library, so it is kept.
     let library = noodle_nodes::register_library(&mut registry);
     library.samples.set_dir(base.join("samples"));
     noodle_plugins::discover().catalog.register(&mut registry);
-    registry
+    (registry, library)
 }
 
 #[cfg(test)]
@@ -790,6 +810,61 @@ mod tests {
             held.iter().all(|&s| (s - 0.25).abs() < 1e-6),
             "the clip isn\'t in the render"
         );
+        fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn play_hears_a_projects_audio_clips() {
+        use noodle_core::{
+            Clip, Command as Edit, Connection, Endpoint, History, Node, NodeId, Tick,
+        };
+
+        let dir = std::env::temp_dir().join(format!("noodle-play-{}", std::process::id()));
+        fs::create_dir_all(&dir).unwrap();
+        noodle_io::write_wav(
+            &dir.join("tone.wav"),
+            &vec![0.25f32; 2 * 48_000 * 4],
+            2,
+            48_000,
+        )
+        .unwrap();
+        let mut project = Project::new();
+        let mut history = History::new();
+        let (track, out) = (NodeId(1), NodeId(2));
+        for (id, kind) in [(track, "noodle.track.input"), (out, "noodle.io.output")] {
+            let node = Node::new(kind);
+            history
+                .apply(&mut project, Edit::AddNode { id, node })
+                .unwrap();
+        }
+        let connection = Connection {
+            from: Endpoint::new(track, "audio"),
+            to: Endpoint::new(out, "in"),
+        };
+        history
+            .apply(&mut project, Edit::Connect(connection))
+            .unwrap();
+        let id = project.new_clip_id();
+        let clip = Clip::audio(track, Tick(0), "tone.wav", 48_000);
+        history
+            .apply(&mut project, Edit::AddClip { id, clip })
+            .unwrap();
+
+        let config = AudioConfig {
+            output: Some(noodle_io::VIRTUAL_OUTPUT.to_owned()),
+            ..AudioConfig::default()
+        };
+        let (playback, mut controller) =
+            noodle_io::play_with_outputs(&config, &[], MAX_FRAMES, &noodle_io::MidiBus::new())
+                .unwrap();
+        let (registry, library) = registry(&dir);
+        let tap = playback.virtual_capture().unwrap();
+        tap.start();
+        send_project(&mut controller, &library, &project, &registry, &dir);
+        thread::sleep(Duration::from_millis(1500));
+        let heard = tap.take();
+        let peak = heard.iter().fold(0.0f32, |peak, s| peak.max(s.abs()));
+        assert!(peak > 0.2, "noodle play is silent on a clip: peak {peak}");
         fs::remove_dir_all(&dir).unwrap();
     }
 
