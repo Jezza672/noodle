@@ -59,7 +59,8 @@ The editor's View > CPU meters shows each node's load in its header, coloured
 amber from 15 % and red from 50 % (or a peak over 90 %), and the graph's total
 in the corner. A group has no step of its own (it is flattened away), so its
 header shows the sum of the nodes inside it at any depth. A split node (feedback loop) reports its output half; the input
-half's time is not counted. Time spent in delay lines is not attributed to a
+half's time is not counted. A node in a loop region reports the sum of its time
+over the block's chunks. Time spent in delay lines is not attributed to a
 node.
 
 ## Parallel processing
@@ -78,7 +79,10 @@ and `plan::step_graph` turns that order into a dependency graph
 waits for the writer of every buffer it reads (and every event buffer), and,
 because the compiler reuses buffers, for the readers and writer of the buffer
 it overwrites. A split (feedback) node's input half waits for its output half,
-which holds the instance. Delay compensation lines are part of the step that
+which holds the instance. A loop region is one step: its first step waits for
+everything any member waits for and runs every member (chunk by chunk, see
+[feedback-and-silence.md](feedback-and-silence.md)), and the other members wait
+for it and do nothing. Delay compensation lines are part of the step that
 owns them. The graph is built off the audio thread, with the plan, and
 `PlanShape` (`Controller::plan_shape`) reports its steps, longest chain and
 width.

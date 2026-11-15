@@ -402,6 +402,7 @@ fn families() -> Vec<Family> {
         ),
     ];
     families.extend(super::instruments::families());
+    families.extend(super::feedback::families());
     families.extend(super::spectral_effects::families());
     families
 }

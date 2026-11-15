@@ -95,13 +95,6 @@ Seven features picked from a shortlist in November 2026. Each issue holds the de
 1. ~~The node, `Edit::MorphPresets`, the picker.~~ Done: see [features/preset-morph.md](features/preset-morph.md). Still open from this chunk: the node's panel listing the rows with A and B sliders, and the S13 route using the morph.
 2. The XY form for four presets with a pad widget, Set from current, Randomise. Size M.
 
-## Planned: feedback regions (#547)
-
-A wired feedback loop as tight as the patch asks for, with no setting. The compiler groups the nodes on a loop into a region and runs only those in chunks as short as the loop's shortest delay, so a long echo costs what it does today and a plucked string above 375 Hz becomes possible as a group. A one-sample Feedback node makes delay-free loops legal.
-
-1. Regions and Delay: the region step in the compiler and the plan, `Node::loop_chunk`, Delay without its one-block floor inside a region, events, silence, meters and parallel processing through a region. Size L.
-2. The Feedback node (`noodle.util.feedback`), and the Plucked String, Comb and Flanger templates with examples and golden renders. Size M.
-
 ## Planned: low-latency monitoring (#548)
 
 The least delay the hardware allows while a track is armed or monitored, chosen automatically, and a larger device buffer when nobody is recording. One setting, Monitoring latency (Auto, Always low, Off). The engine block stays 128 so cache entries stay valid; the device buffer is what moves. (So the deferred idea below, of the engine block following the device period, is not part of this.)

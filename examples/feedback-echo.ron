@@ -3,8 +3,8 @@
 // ADSR is a short pluck (it decays to nothing, so each repeat stands out).
 // The pluck goes into a Mix, then through a Delay, and the delayed signal
 // comes back to the Mix through a Gain of -6 dB: a feedback loop. Each echo is
-// half as loud as the one before it. Inside a loop the Delay's time can't be
-// shorter than one audio block.
+// half as loud as the one before it. The echo here is longer than a block; a
+// loop's Delay can be as short as you like (see plucked-string.ron).
 (
     format: 4,
     graph: (

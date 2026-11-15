@@ -1053,6 +1053,72 @@ fn a_feedback_loop_through_a_delay_never_allocates_even_while_the_loop_is_made_a
 }
 
 #[test]
+fn a_loop_region_running_in_chunks_never_allocates_through_swaps_seeks_and_sweeps() {
+    use noodle_core::Tick;
+
+    // saw -> mix -> delay -> filter -> gain -> back into the mix, and out, with
+    // the loop 29 samples long: shorter than the 256-frame block, so the
+    // region's nodes run in chunks. A second loop (a Feedback node round a
+    // sine's frequency) runs sample by sample. The loop is closed, swept and
+    // opened again, and the transport jumps, all while rendering.
+    let mut s = Session::new();
+    let saw = s.add(Node::new("noodle.osc.saw").with_param("frequency", 110.0));
+    let mix = s.add(Node::new("noodle.util.mix"));
+    let delay = s.add(Node::new("noodle.util.delay").with_param("time", 29.0 / 48_000.0));
+    let svf = s.add(Node::new("noodle.filter.svf").with_param("cutoff", 4000.0));
+    let gain = s.add(Node::new("noodle.util.gain").with_param("gain", -3.0));
+    let fm = s.add(Node::new("noodle.osc.sine"));
+    let feedback = s.add(Node::new("noodle.util.feedback"));
+    let math = s.add(
+        Node::new("noodle.util.math")
+            .with_config(Config::new().with("expr", Value::Text("440 + 100 * a".into()))),
+    );
+    let sum = s.add(Node::new("noodle.util.mix"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(saw, "out", mix, "in1");
+    s.wire(mix, "out", delay, "in");
+    s.wire(delay, "out", svf, "in");
+    s.wire(svf, "low", gain, "in");
+    s.wire(fm, "out", feedback, "in");
+    s.wire(feedback, "out", math, "a");
+    s.wire(math, "out", fm, "frequency");
+    s.wire(mix, "out", sum, "in1");
+    s.wire(fm, "out", sum, "in2");
+    s.wire(sum, "out", output, "in");
+    s.update();
+
+    let transport = s.controller.transport();
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for round in 0..12 {
+        let closed = round % 2 == 1;
+        if closed {
+            s.wire(gain, "out", mix, "in2");
+        } else if round > 0 {
+            s.edit(Command::Disconnect {
+                input: Endpoint::new(mix, "in2"),
+            });
+        }
+        s.update();
+        // Sweeps the delay across the chunk lengths, down to a few samples.
+        let samples = [29.0, 200.0, 3.0, 60.0, 1.0, 400.0][round % 6];
+        s.controller.set_param(delay, "time", samples / 48_000.0);
+        if round % 3 == 2 {
+            transport.seek(Tick(100 * round as i64));
+        }
+        s.controller.maintain();
+        s.render_realtime(&mut out, round);
+        assert!(
+            out.iter().all(|x| x.is_finite() && x.abs() < 10.0),
+            "round {round}"
+        );
+        assert!(
+            out.iter().any(|&x| x.abs() > 1e-3),
+            "silent in round {round}"
+        );
+    }
+}
+
+#[test]
 fn a_cached_player_never_allocates_through_seeks_and_loops() {
     use noodle_core::{Tick, group::group_nodes};
     use noodle_nodes::{Freezer, RenderRequest, freeze};
