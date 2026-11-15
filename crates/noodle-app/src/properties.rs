@@ -1808,6 +1808,13 @@ fn params(
                         },
                     )
                     .learn_midi(session.learn_midi_menu(&target))
+                    .expose_to_host(if !session.is_plugin() {
+                        Automate::Hidden
+                    } else if session.project().graph().source(&target).is_some() {
+                        Automate::Refused("That parameter already has a wire")
+                    } else {
+                        Automate::Offered
+                    })
                     .show(ui);
                 if let Some(source) = &source {
                     out.response

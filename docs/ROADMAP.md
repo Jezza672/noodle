@@ -87,16 +87,6 @@ Seven features picked from a shortlist in November 2026. Each issue holds the de
 1. ~~The node, `Edit::MorphPresets`, the picker.~~ Done: see [features/preset-morph.md](features/preset-morph.md). Still open from this chunk: the node's panel listing the rows with A and B sliders, and the S13 route using the morph.
 2. The XY form for four presets with a pad widget, Set from current, Randomise. Size M.
 
-## Planned: Noodle as a plugin (#544)
-
-Noodle loaded in another DAW: the node editor, properties, library and Sounds panel in the host's window, no arrangement, with Host In, Host Out and Host MIDI nodes already in the graph. CLAP first; VST3 and AU are made from the CLAP with `clap-wrapper`. The issue holds the design and the open questions (whether an instance is a project or a group is the main one).
-
-Chunks 1 to 3 are built: see [features/noodle-as-a-plugin.md](features/noodle-as-a-plugin.md). Owed from them: the CLAP validator in CI.
-
-1. The window: the editor-only layout drawn in the host's window, focus, text, drag and drop, scaling. Size L, the main risk.
-2. More than one instance in a process: the UI waker and the other process-wide state. Size M.
-3. VST3 and AU through the wrapper, packaging, and an owed pass in real hosts on the Mac. Size M.
-
 ## Planned: low-latency monitoring (#548)
 
 The least delay the hardware allows while a track is armed or monitored, chosen automatically, and a larger device buffer when nobody is recording. One setting, Monitoring latency (Auto, Always low, Off). The engine block stays 128 so cache entries stay valid; the device buffer is what moves. (So the deferred idea below, of the engine block following the device period, is not part of this.)
@@ -106,6 +96,16 @@ Chunks 1 and 2 are built (`features/low-latency-monitoring.md`). Owed on the Mac
 3. Only the live cone runs in the device callback. Today a cluster with no entry plays live until the background `Freezing` render finishes and swaps in; this adds a streaming render that keeps just ahead of the playhead and is played while it fills, with an ADR for the change to that rule. Size L, and it may want two PRs (the streaming entry, then the hand-over on edits and shortfalls).
 
 ## Owed: needs a person on real hardware
+
+- **Noodle as a plugin in real hosts** (#544, built: [features/noodle-as-a-plugin.md](features/noodle-as-a-plugin.md)).
+  Build the VST3 and AU with `packaging/build.sh` (or take them from the
+  Plugin formats workflow), install them, and in Reaper, Live and Logic (Mac),
+  Reaper and Bitwig (Windows and Linux): the editor opens, takes mouse and
+  keys (type a value into a field), resizes, survives close and reopen and a
+  project reload, plays as an effect and as an instrument, follows the host's
+  transport and tempo, and Expose to host shows up as an automatable parameter.
+  Several instances at once. Retina and 4K scaling. Not built: files dragged
+  from the host onto the editor.
 
 - **AU on the Mac** after the shared plugin bridge (#242, #241): an Audio Unit
   instrument and an effect play, go quiet when idle (the unit sets

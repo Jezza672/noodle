@@ -10,15 +10,28 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+# Built as a static library for `clap-wrapper` (see `packaging/`): the entry is
+# three plain functions instead of the `clap_entry` symbol.
+wrapper = []
+
 [dependencies]
 noodle-app.workspace = true
 noodle-core.workspace = true
+noodle-engine.workspace = true
 noodle-io.workspace = true
 clack-plugin = "0.2.0"
-clack-extensions = { version = "0.2.0", features = ["clack-plugin", "params", "audio-ports", "note-ports", "state", "latency"] }
+clack-extensions = { version = "0.2.0", features = ["clack-plugin", "params", "audio-ports", "note-ports", "state", "latency", "gui", "clap-wrapper", "raw-window-handle_06"] }
+egui = "0.36.2"
+egui-baseview = { version = "0.8.0", default-features = false, features = ["wgpu", "tracing", "keyboard_focus_workaround"] }
 
 [dev-dependencies]
-noodle-engine.workspace = true
 noodle-nodes.workspace = true
 noodle-plugins.workspace = true
 base64 = "0.22"
+clack-host = "0.2.0"
+clack-extensions = { version = "0.2.0", features = ["clack-host", "gui", "state", "raw-window-handle_06"] }
+
+# The window test makes a host window to embed the editor in.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+x11rb = "0.13"
