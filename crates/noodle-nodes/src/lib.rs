@@ -74,6 +74,7 @@ mod swing;
 pub mod system_samples;
 mod tempo;
 mod time_stretch;
+mod tuning;
 mod vca;
 mod version_value;
 mod voice_mix;
@@ -215,6 +216,9 @@ pub use svf::{SVF_ID, Svf, svf_response};
 pub use swing::{GRID_NAMES as SWING_GRID_NAMES, GRID_TICKS as SWING_GRID_TICKS, SWING_ID, Swing};
 pub use tempo::{TEMPO_ID, Tempo};
 pub use time_stretch::{TIME_STRETCH_ID, TimeStretch};
+pub use tuning::{
+    HELD as TUNING_HELD, KBM_KEY, Mapping, SCL_KEY, Scale, TUNING_ID, Tuning, parse_kbm, parse_scl,
+};
 pub use vca::{VCA_ID, Vca};
 pub use version_value::{MAX_VERSION_SLOTS, VERSION_MAX, VERSION_MIN, VERSION_TAPER, VersionValue};
 pub use voice_mix::{VOICE_MIX_ID, VoiceMix};
@@ -328,6 +332,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(ToNotes);
     registry.register(Swing);
     registry.register(Humanise);
+    registry.register(Tuning);
     registry.register(Voices);
     registry.register(VoiceMix::new(&telemetry));
     registry.register(Reverse);

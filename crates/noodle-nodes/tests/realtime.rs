@@ -1533,6 +1533,19 @@ fn a_sampler_chain_with_dynamics_and_reverb_never_allocates_through_notes_edits_
     );
     // A Choke Gate before the split: the swung notes also arrive on its
     // `choke` input, so each cuts the ones still sounding.
+    let tuning = s.add(
+        Node::new("noodle.event.tuning").with_config(
+            Config::new().with(
+                "scl",
+                Value::Text(
+                    "24 steps\n24\n".to_string()
+                        + &(1..=24)
+                            .map(|d| format!("{}.0\n", d * 50))
+                            .collect::<String>(),
+                ),
+            ),
+        ),
+    );
     let gate = s.add(Node::new("noodle.event.choke_gate"));
     let split = s.add(
         Node::new("noodle.event.note_split")
@@ -1559,7 +1572,8 @@ fn a_sampler_chain_with_dynamics_and_reverb_never_allocates_through_notes_edits_
     s.wire(key, "out", arp, "in");
     s.wire(arp, "out", swing, "in");
     s.wire(swing, "out", humanise, "in");
-    s.wire(humanise, "out", gate, "in");
+    s.wire(humanise, "out", tuning, "in");
+    s.wire(tuning, "out", gate, "in");
     s.wire(swing, "out", gate, "choke");
     s.wire(gate, "out", split, "in");
     s.wire(split, "out1", low, "in");
