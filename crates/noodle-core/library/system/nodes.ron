@@ -1333,6 +1333,46 @@
         ),
     )),
     NodePreset((
+        name: "Quarter Tones (24-EDO)",
+        slug: "tuning-quarter-tones-24-edo",
+        node_type: "noodle.event.tuning",
+        values: (
+            config: {
+                "scl": "24 equal steps to the octave\n 24\n50.00000\n100.00000\n150.00000\n200.00000\n250.00000\n300.00000\n350.00000\n400.00000\n450.00000\n500.00000\n550.00000\n600.00000\n650.00000\n700.00000\n750.00000\n800.00000\n850.00000\n900.00000\n950.00000\n1000.00000\n1050.00000\n1100.00000\n1150.00000\n1200.00000\n",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "19-EDO",
+        slug: "tuning-19-edo",
+        node_type: "noodle.event.tuning",
+        values: (
+            config: {
+                "scl": "19 equal steps to the octave\n 19\n63.15789\n126.31579\n189.47368\n252.63158\n315.78947\n378.94737\n442.10526\n505.26316\n568.42105\n631.57895\n694.73684\n757.89474\n821.05263\n884.21053\n947.36842\n1010.52632\n1073.68421\n1136.84211\n1200.00000\n",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "31-EDO",
+        slug: "tuning-31-edo",
+        node_type: "noodle.event.tuning",
+        values: (
+            config: {
+                "scl": "31 equal steps to the octave\n 31\n38.70968\n77.41935\n116.12903\n154.83871\n193.54839\n232.25806\n270.96774\n309.67742\n348.38710\n387.09677\n425.80645\n464.51613\n503.22581\n541.93548\n580.64516\n619.35484\n658.06452\n696.77419\n735.48387\n774.19355\n812.90323\n851.61290\n890.32258\n929.03226\n967.74194\n1006.45161\n1045.16129\n1083.87097\n1122.58065\n1161.29032\n1200.00000\n",
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Just Major (5-limit)",
+        slug: "tuning-just-major-5-limit",
+        node_type: "noodle.event.tuning",
+        values: (
+            config: {
+                "scl": "Just major\n 7\n9/8\n5/4\n4/3\n3/2\n5/3\n15/8\n2/1\n",
+            },
+        ),
+    )),
+    NodePreset((
         name: "C Major",
         slug: "scale-quantise-c-major",
         node_type: "noodle.event.scale_quantise",

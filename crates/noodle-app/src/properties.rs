@@ -1021,6 +1021,10 @@ fn config(
             script_editor(ui, id, info, node, edits);
             continue;
         }
+        if node_type.info().id == noodle_nodes::TUNING_ID {
+            tuning_file(ui, id, info, node, edits);
+            continue;
+        }
         // Set by the first wire, not typed in.
         if matches!(
             node_type.info().id,
@@ -1380,6 +1384,71 @@ fn layout_picker(
             key: info.key.to_owned(),
             value: Some(noodle_core::Value::Text(chosen.name().to_owned())),
         }));
+    }
+}
+
+/// A Tuning node's `.scl` or `.kbm` text: what is loaded (the scale's name and
+/// degree count, or the mapping's size), a button that reads a file into the
+/// config as one undoable change, and Clear.
+fn tuning_file(
+    ui: &mut Ui,
+    id: NodeId,
+    info: &noodle_engine::ConfigInfo,
+    node: &Node,
+    edits: &mut Vec<Edit>,
+) {
+    let scale = info.key == noodle_nodes::SCL_KEY;
+    let text = info.get_text(&node.config);
+    let shown = if text.trim().is_empty() {
+        "none (12-tone equal temperament)".to_owned()
+    } else if scale {
+        match noodle_nodes::parse_scl(&text) {
+            Ok(s) => format!("{}, {} notes", s.description, s.degrees.len()),
+            Err(e) => format!("not valid: {e}"),
+        }
+    } else {
+        match noodle_nodes::parse_kbm(&text) {
+            Ok(m) if m.map.is_empty() => "linear mapping".to_owned(),
+            Ok(m) => format!("{} keys", m.map.len()),
+            Err(e) => format!("not valid: {e}"),
+        }
+    };
+    ui.label(format!("{}: {shown}", info.name));
+    ui.horizontal(|ui| {
+        let (label, ext) = if scale {
+            ("Load .scl…", "scl")
+        } else {
+            ("Load .kbm…", "kbm")
+        };
+        if ui.button(label).clicked()
+            && let Some(path) = crate::picker::pick_file(("Tuning", &[ext]))
+        {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    edits.push(Edit::Apply(Command::SetConfig {
+                        node: id,
+                        key: info.key.to_owned(),
+                        value: Some(noodle_core::Value::Text(text)),
+                    }));
+                }
+                Err(error) => ui.data_mut(|d| {
+                    d.insert_temp(egui::Id::new((id, "tuning_error")), error.to_string());
+                }),
+            }
+        }
+        if ui
+            .add_enabled(!text.trim().is_empty(), egui::Button::new("Clear"))
+            .clicked()
+        {
+            edits.push(Edit::Apply(Command::SetConfig {
+                node: id,
+                key: info.key.to_owned(),
+                value: None,
+            }));
+        }
+    });
+    if let Some(error) = ui.data(|d| d.get_temp::<String>(egui::Id::new((id, "tuning_error")))) {
+        ui.label(RichText::new(format!("Couldn't read the file: {error}")).weak());
     }
 }
 

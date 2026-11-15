@@ -784,6 +784,13 @@ fn table() -> Vec<Row> {
             "Sloppy",
             &[("timing", 30.0), ("velocity", 0.4)],
         ),
+        row("noodle.event.tuning", "Quarter Tones (24-EDO)", &[]).text("scl", &edo(24)),
+        row("noodle.event.tuning", "19-EDO", &[]).text("scl", &edo(19)),
+        row("noodle.event.tuning", "31-EDO", &[]).text("scl", &edo(31)),
+        row("noodle.event.tuning", "Just Major (5-limit)", &[]).text(
+            "scl",
+            "Just major\n 7\n9/8\n5/4\n4/3\n3/2\n5/3\n15/8\n2/1\n",
+        ),
         row(
             "noodle.event.scale_quantise",
             "C Major",
@@ -1286,4 +1293,13 @@ pub fn presets(registry: &Registry) -> Vec<Item> {
             Item::NodePreset(preset)
         })
         .collect()
+}
+
+/// A Scala file for `n` equal steps to the octave.
+fn edo(n: u32) -> String {
+    let mut text = format!("{n} equal steps to the octave\n {n}\n");
+    for d in 1..=n {
+        text.push_str(&format!("{:.5}\n", 1200.0 * f64::from(d) / f64::from(n)));
+    }
+    text
 }
