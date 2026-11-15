@@ -29,18 +29,21 @@ mod follower;
 mod freeze;
 mod fundamental;
 mod gain;
+mod grains;
 mod humanise;
 mod ladder;
 mod lag;
 mod launch_quantise;
 mod level;
 mod lfo;
+mod looper;
 mod math;
 mod meter;
 mod metronome;
 mod midi_in;
 mod midi_out;
 mod mix;
+mod morph;
 mod noise;
 mod normalize;
 mod note_split;
@@ -82,6 +85,7 @@ mod vca;
 mod version_value;
 mod voice_mix;
 mod voices;
+mod wavetable;
 
 pub use adsr::{ADSR_ID, Adsr, AdsrShape};
 pub use arpeggiator::{
@@ -144,17 +148,27 @@ pub use freeze::{
 };
 pub use fundamental::{LISTEN_SECONDS, fundamental, key_of};
 pub use gain::{GAIN_ID, Gain};
+pub use grains::{
+    DEFAULT_GRAINS, GRAINS_ID, GRAINS_KEY, Grains, MAX_GRAINS, MIN_GRAINS,
+    SAMPLE_KEY as GRAINS_SAMPLE_KEY,
+};
 pub use humanise::{HUMANISE_ID, Humanise, MAX_TIMING_MS as HUMANISE_MAX_TIMING_MS};
 pub use ladder::{LADDER_ID, LADDER_SELF_OSCILLATES, Ladder, ladder_response};
 pub use lag::{LAG_ID, Lag};
 pub use launch_quantise::{LAUNCH_QUANTISE_ID, LaunchQuantise};
 pub use lfo::{LFO_ID, Lfo, lfo_wave};
+pub use looper::{LOOPER_ID, Looper};
 pub use math::{MATH_ID, Math};
 pub use meter::{METER_ID, Meter};
 pub use metronome::{METRONOME_ID, METRONOME_ON, Metronome};
 pub use midi_in::{MIDI_IN_ID, MIDI_PORT, MIDI_PORT_KEY, MidiIn};
 pub use midi_out::{MIDI_OUT_ID, MIDI_OUT_PORT, MIDI_OUT_PORT_KEY, MidiOut};
 pub use mix::Mix;
+pub use morph::{
+    MAX_ROWS as MORPH_MAX_ROWS, MORPH_ID, MORPH_POSITION, MORPH_TARGETS, Morph, MorphRow,
+    morph_config, morph_output_key, rows_from_text as morph_rows_from_text,
+    rows_to_text as morph_rows_to_text,
+};
 pub use noise::WhiteNoise;
 pub use normalize::{NORMALIZE_ID, Normalize};
 pub use note_split::{NOTE_SPLIT_ID, NoteSplit, param_index as note_split_param};
@@ -231,6 +245,9 @@ pub use vca::{VCA_ID, Vca};
 pub use version_value::{MAX_VERSION_SLOTS, VERSION_MAX, VERSION_MIN, VERSION_TAPER, VersionValue};
 pub use voice_mix::{VOICE_MIX_ID, VoiceMix};
 pub use voices::{VOICES_ID, Voices};
+pub use wavetable::{
+    CYCLE_KEY, CYCLE_LENGTHS, DEFAULT_CYCLE, TABLE_KEY, Table, WAVETABLE_ID, Wavetable,
+};
 
 use std::path::Path;
 
@@ -295,6 +312,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Math);
     registry.register(Script);
     registry.register(Delay);
+    registry.register(Looper);
+    registry.register(Morph);
     registry.register(Dynamics::new(&telemetry));
     registry.register(ParametricEq);
     registry.register(Reverb);
@@ -368,6 +387,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
         Sampler::new(&samples, &telemetry)
     });
     registry.register(Slice::new(&samples));
+    registry.register(Wavetable::new(&samples));
+    registry.register(Grains::new(&samples));
     registry.register(Convolver::new(&samples));
     Library {
         telemetry,

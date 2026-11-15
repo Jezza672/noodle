@@ -3130,3 +3130,133 @@ fn the_new_spectral_nodes_and_the_convolver_never_allocate_through_edits_and_a_s
     }
     assert!(out.iter().any(|&x| x != 0.0), "should be making sound");
 }
+
+#[test]
+fn looper_never_allocates_in_any_state() {
+    // A saw into a Looper, driven through Recording (a fixed bar, so it ends
+    // by itself), Playing, Overdubbing, undo, a second overdub, mute and
+    // clear, then recorded again. 1000 frames a block, four blocks a round,
+    // 120 bpm: a bar is 24 rounds.
+    let mut s = Session::new();
+    let saw = s.add(Node::new("noodle.osc.saw").with_param("frequency", 110.0));
+    let looper = s.add(Node::new("noodle.util.looper").with_param("length", 1.0));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(saw, "out", looper, "in");
+    s.wire(looper, "out", output, "in");
+    s.update();
+
+    let pulses: [(usize, &str); 7] = [
+        (0, "record"),   // start recording one bar
+        (26, "record"),  // overdub from the next wrap
+        (30, "record"),  // and stop at the wrap after it
+        (80, "undo"),    // drop the layer
+        (85, "record"),  // overdub again
+        (140, "clear"),  // empty
+        (145, "record"), // record again
+    ];
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..200 {
+        for &(at, param) in &pulses {
+            if round == at {
+                s.controller.set_param(looper, param, 1.0);
+            }
+            if round == at + 1 {
+                s.controller.set_param(looper, param, 0.0);
+            }
+        }
+        if round == 100 {
+            s.controller.set_param(looper, "play", 0.0);
+        }
+        if round == 110 {
+            s.controller.set_param(looper, "play", 1.0);
+        }
+        s.controller.maintain();
+        s.render_realtime(&mut out, round);
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+        heard |= out.iter().any(|&x| x.abs() > 1e-3);
+    }
+    assert!(heard, "the loop never sounded");
+}
+
+#[test]
+fn wavetable_and_grains_never_allocate_with_every_parameter_modulated() {
+    use noodle_io::Audio;
+    use noodle_nodes::{Grains, SampleStore, Wavetable};
+
+    let mut s = Session::new();
+    let store = SampleStore::new();
+    s.registry.replace(Wavetable::new(&store));
+    s.registry.replace(Grains::new(&store));
+    let hash = store.insert(&Audio {
+        samples: (0..9600).map(|i| (i as f32 * 0.05).sin() * 0.5).collect(),
+        channels: 1,
+        sample_rate: 48_000,
+    });
+    let config = |cycle: i64| {
+        Config::new()
+            .with("table", Value::Text(hash.clone()))
+            .with("cycle", Value::Int(cycle))
+    };
+    let table = s.add(Node::new("noodle.osc.wavetable").with_config(config(512)));
+    let grains = s.add(
+        Node::new("noodle.instrument.grains")
+            .with_config(Config::new().with("sample", Value::Text(hash.clone())))
+            .with_param("density", 60.0)
+            .with_param("jitter", 0.5)
+            .with_param("spread", 0.5),
+    );
+    let mix = s.add(Node::new("noodle.util.mix"));
+    let output = s.add(Node::new(OUTPUT_ID));
+    // A slow LFO on every parameter that takes a wire.
+    let mut lfos = Vec::new();
+    for (node, port) in [
+        (table, "frequency"),
+        (table, "position"),
+        (table, "phase"),
+        (grains, "gate"),
+        (grains, "position"),
+        (grains, "spray"),
+        (grains, "size"),
+        (grains, "density"),
+        (grains, "jitter"),
+        (grains, "pitch"),
+        (grains, "frequency"),
+        (grains, "pitch_spray"),
+        (grains, "reverse"),
+        (grains, "spread"),
+        (grains, "shape"),
+    ] {
+        let lfo =
+            s.add(Node::new("noodle.osc.sine").with_param("frequency", 1.5 + lfos.len() as f32));
+        s.wire(lfo, "out", node, port);
+        lfos.push(lfo);
+    }
+    s.wire(table, "out", mix, "in1");
+    s.wire(grains, "out", mix, "in2");
+    s.wire(mix, "out", output, "in");
+    s.update();
+
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    for round in 0..8 {
+        // A new table build and a new grain limit happen off the audio thread.
+        if round % 2 == 1 {
+            let cycle = [256, 512, 1024, 2048][round / 2 % 4];
+            s.edit(Command::SetConfig {
+                node: table,
+                key: "cycle".into(),
+                value: Some(Value::Int(cycle)),
+            });
+            s.edit(Command::SetConfig {
+                node: grains,
+                key: "grains".into(),
+                value: Some(Value::Int(8 + 8 * round as i64)),
+            });
+            s.update();
+        }
+        s.controller.maintain();
+        s.render_realtime(&mut out, round);
+        assert!(out.iter().all(|x| x.is_finite()));
+    }
+    assert!(out.iter().any(|&x| x != 0.0));
+}

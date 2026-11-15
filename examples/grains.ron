@@ -1,0 +1,21 @@
+// A drone from a granular cloud: the Grains node plays a two-second chord
+// (a sample in `samples/`) as 40 short grains a second, starting them a little
+// before and after the position, which a slow LFO scans through the chord
+// (the wire offsets it along its slider). A few semitones of pitch spray and a
+// wide spread thicken it. Its gate is unwired, so it drones.
+(
+    format: 4,
+    graph: (
+        nodes: {
+            1: (type: "noodle.instrument.grains", config: {"sample": "ca8399b93c884e3e55c6acd146cac0c64108f34f09eeccde892882f8c3638a8a"}, params: {"position": 0.3, "spray": 0.05, "size": 0.12, "density": 40.0, "jitter": 0.6, "pitch_spray": 0.1, "spread": 0.8}, position: (x: 400.0, y: 0.0)),
+            2: (type: "noodle.mod.lfo", params: {"rate": 3.0, "depth": 0.3, "offset": 0.0}, position: (x: 200.0, y: -160.0)),
+            3: (type: "noodle.util.gain", params: {"gain": -6.0}, position: (x: 700.0, y: 0.0)),
+            4: (type: "noodle.io.output", position: (x: 900.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 2, port: "out"), to: (node: 1, port: "position")),
+            (from: (node: 1, port: "out"), to: (node: 3, port: "in")),
+            (from: (node: 3, port: "out"), to: (node: 4, port: "in")),
+        ],
+    ),
+)

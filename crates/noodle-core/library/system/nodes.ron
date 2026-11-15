@@ -1677,6 +1677,49 @@
         ),
     )),
     NodePreset((
+        name: "Freeze",
+        slug: "grains-freeze",
+        node_type: "noodle.instrument.grains",
+        values: (
+            params: {
+                "density": 20.0,
+                "jitter": 0.2,
+                "size": 0.3,
+                "spray": 0.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Texture",
+        slug: "grains-texture",
+        node_type: "noodle.instrument.grains",
+        values: (
+            params: {
+                "density": 60.0,
+                "jitter": 1.0,
+                "pitch_spray": 4.0,
+                "size": 0.08,
+                "spray": 0.5,
+                "spread": 1.0,
+            },
+        ),
+    )),
+    NodePreset((
+        name: "Scatter",
+        slug: "grains-scatter",
+        node_type: "noodle.instrument.grains",
+        values: (
+            params: {
+                "density": 30.0,
+                "jitter": 1.0,
+                "reverse": 0.5,
+                "size": 0.04,
+                "spray": 1.0,
+                "spread": 0.8,
+            },
+        ),
+    )),
+    NodePreset((
         name: "Eight Voices",
         slug: "voices-eight-voices",
         node_type: "noodle.poly.voices",
