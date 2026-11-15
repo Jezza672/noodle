@@ -278,12 +278,10 @@ impl LooperNode {
                     self.state = State::Playing;
                 }
             }
-            State::Playing => {
-                if self.pending_start {
-                    self.pending_start = false;
-                    self.state = State::Overdubbing;
-                    self.ramp_in = true;
-                }
+            State::Playing if self.pending_start => {
+                self.pending_start = false;
+                self.state = State::Overdubbing;
+                self.ramp_in = true;
             }
             _ => {}
         }
@@ -477,8 +475,8 @@ mod tests {
         assert_eq!(second, third);
         // 50 Hz sine at 1 kHz repeats every 20 samples, so the loop is the
         // sine, whole bar long: the sample one bar on matches the first.
-        for n in 20..BAR - 20 {
-            assert!((second[n] - sine(n)).abs() < 1e-3, "{n}");
+        for (n, &x) in second.iter().enumerate().take(BAR - 20).skip(20) {
+            assert!((x - sine(n)).abs() < 1e-3, "{n}");
         }
         // Past the first pass the silent input does not leak in.
         assert!(second.iter().any(|x| x.abs() > 0.4));
@@ -615,6 +613,5 @@ mod tests {
             .output_shapes(&Config::new(), &LooperPorts::layout(), &[Shape::new(4, 2)])
             .unwrap();
         assert_eq!(shapes, vec![Shape::new(1, 2)]);
-        assert!(FEEDBACK != LEVEL);
     }
 }

@@ -74,6 +74,9 @@ const WITHOUT_PRESETS: &[&str] = &[
     "noodle.event.control",
     "noodle.group.stage",
     "noodle.input.button",
+    // A recording, and rows made for one group.
+    "noodle.util.looper",
+    "noodle.mod.morph",
     "noodle.internal.automation",
     "noodle.io.input",
     "noodle.io.output",
