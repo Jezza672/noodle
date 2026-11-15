@@ -128,6 +128,7 @@ pub fn engine(settings: Settings) -> Result<(Controller, Processor), SettingsErr
             settings.sample_rate,
         )),
         live: None,
+        host_bpm: None,
         tempo_in,
         tempo_returns,
         seen_seek: 0,
@@ -551,6 +552,9 @@ pub struct Processor {
     table: Box<Tempos>,
     /// The beat clock while a live tempo is set.
     live: Option<LiveClock>,
+    /// The tempo a host gave (see [`Processor::set_host_tempo`]), which wins
+    /// over the controller's live tempo.
+    host_bpm: Option<f64>,
     tempo_in: Consumer<Box<Tempos>>,
     tempo_returns: Producer<Box<Tempos>>,
     /// The last seek counted.
@@ -842,16 +846,43 @@ impl Processor {
             } else {
                 self.table.timeline.tick_at(position)
             };
-            let rate = f64::from(self.settings.sample_rate);
-            self.live = live.map(|bpm| LiveClock {
-                sample: position,
-                tick,
-                ticks_per_sample: bpm * noodle_core::TICKS_PER_QUARTER as f64 / 60.0 / rate,
-                bpm,
-            });
+            self.live = self
+                .host_bpm
+                .or(live)
+                .map(|bpm| self.live_clock(bpm, position, tick));
         }
         // A table is still waiting only if the return queue is full.
         !self.tempo_in.is_empty()
+    }
+
+    fn live_clock(&self, bpm: f64, sample: u64, tick: f64) -> LiveClock {
+        let rate = f64::from(self.settings.sample_rate);
+        LiveClock {
+            sample,
+            tick,
+            ticks_per_sample: bpm * noodle_core::TICKS_PER_QUARTER as f64 / 60.0 / rate,
+            bpm,
+        }
+    }
+
+    /// Plays at the tempo a host reports, in quarter notes per minute, or
+    /// back at the controller's tempo with `None`. Called by a host backend
+    /// at the start of every block, from the audio thread: nothing here
+    /// allocates, and the beat clock carries on from the beat it is on, so
+    /// the tempo changes at the block's first frame. Like the live tempo
+    /// ([`Controller::set_live_tempo`]) it moves what reads the transport's
+    /// tempo, not the timeline, and it wins over a live tempo. The tempo is
+    /// clamped to 20 to 400.
+    pub fn set_host_tempo(&mut self, bpm: Option<f64>) {
+        let bpm = bpm.filter(|b| b.is_finite()).map(|b| b.clamp(20.0, 400.0));
+        if bpm == self.host_bpm {
+            return;
+        }
+        self.host_bpm = bpm;
+        let beat = self.beat_tick();
+        self.live = bpm
+            .or(self.table.live)
+            .map(|bpm| self.live_clock(bpm, self.position, beat));
     }
 
     /// The beat at the next frame: the timeline's, or the live clock's.

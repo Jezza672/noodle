@@ -18,7 +18,10 @@ impl Session {
 
     /// The live tempo, if the source is not the map and has given one.
     pub fn live_tempo(&self) -> Option<f64> {
-        self.live_bpm
+        match self.tempo_source {
+            TempoSource::Host => self.host_link.tempo(),
+            _ => self.live_bpm,
+        }
     }
 
     /// Chooses where the tempo comes from. Map goes back to the project's
@@ -32,7 +35,9 @@ impl Session {
         self.taps.clear();
         self.clock.reset();
         match source {
-            TempoSource::Map => self.live_bpm = None,
+            // The host's tempo goes straight to the engine, from its
+            // audio callback, so there is no live tempo to keep.
+            TempoSource::Map | TempoSource::Host => self.live_bpm = None,
             TempoSource::Tap | TempoSource::MidiClock => {
                 self.live_bpm = self
                     .live_bpm

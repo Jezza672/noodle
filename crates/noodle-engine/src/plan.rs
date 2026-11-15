@@ -14,7 +14,9 @@ use std::time::Instant;
 use noodle_core::NodeId;
 
 use crate::ChannelLayout;
-use crate::builtin::{INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID, OUTPUT_ROUTING, parse_routing};
+use crate::builtin::{
+    HOST_DEVICE, INPUT_DEVICE, INPUT_ID, OUTPUT_DEVICE, OUTPUT_ID, OUTPUT_ROUTING, parse_routing,
+};
 use crate::parallel::{StepGraph, Workers};
 use crate::render::TAP_ID;
 use crate::{
@@ -194,6 +196,9 @@ struct PlanNode {
     downmix: Option<Box<[f32]>>,
     /// An Input node, whose output the executor fills from the device input.
     is_input: bool,
+    /// An Input node that hears the input: not one tied to the host's input
+    /// when no host drives the engine.
+    input_live: bool,
     /// Reports the signals wired into parameters, by input index.
     probes: Vec<(usize, ParamWriter)>,
     /// Reports the level arriving at each wired audio input, by input index.
@@ -744,6 +749,8 @@ pub(crate) fn build(
                 Some(ChannelLayout::convert_matrix(from, to).into_boxed_slice())
             }),
             is_input: scheduled.node_type.info().id == INPUT_ID,
+            input_live: INPUT_DEVICE.get_text(&scheduled.config) != HOST_DEVICE
+                || main == Some(HOST_DEVICE),
             probes,
             input_meters,
             output_meters,
@@ -1385,7 +1392,14 @@ unsafe fn run_step(frame: &Frame<'_>, index: usize, mix_out: *mut f32, fresh: bo
         );
     }
     if node.is_input {
-        read_input(input, &mut outputs[0]);
+        read_input(
+            if node.input_live {
+                input
+            } else {
+                Interleaved::NONE
+            },
+            &mut outputs[0],
+        );
     }
     // Mixed now, not after the whole schedule: the compiler frees a buffer
     // after its last reader, so a later node may reuse it.

@@ -61,6 +61,8 @@ rewind only touch the transport:
   `Feed`, `Recorder`, loop splitting and latency alignment all run unchanged,
   so a story route can record for real. It is not a listed device.
 
+- **The host backend** (`noodle-io/src/host.rs`) is the fourth way to drive the engine, for a plugin: no stream and no thread, the host's callback calls `HostBackend::process`. It cuts the call into engine blocks (128), splitting at parameter changes, sets the block's `AudioClock` window, and follows the host's transport. Device ID and MIDI port `host`. See "Noodle as a plugin" in [plugins.md](plugins.md).
+
 ## Live input latency
 
 Input is its own cpal stream, so it crosses to the output callback through a

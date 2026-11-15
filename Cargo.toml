@@ -19,6 +19,7 @@ noodle-stems = { path = "crates/noodle-stems" }
 noodle-network = { path = "crates/noodle-network" }
 noodle-packs = { path = "crates/noodle-packs" }
 noodle-publish = { path = "crates/noodle-publish" }
+noodle-app = { path = "crates/noodle-app" }
 
 # Unoptimised DSP is too slow to listen to, even while debugging.
 [profile.dev]

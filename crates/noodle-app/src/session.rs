@@ -17,6 +17,7 @@ pub mod automate;
 pub mod convert;
 pub mod drum_rack;
 mod export;
+pub mod host;
 pub mod learn_midi;
 mod library;
 pub mod make_external;
@@ -275,6 +276,11 @@ pub struct Nodes {
     pub clips: ClipFeeds,
     /// Where the MIDI In nodes get their messages.
     pub midi: noodle_io::MidiBus,
+    /// Where the MIDI Out nodes send, which a host backend also reads.
+    pub midi_out: noodle_io::MidiOutHub,
+    /// The host's parameter bank and tempo, which the Host Parameter nodes
+    /// read.
+    pub host: Arc<noodle_io::HostLink>,
     /// Where the Sampler nodes get their samples, by hash.
     pub samples: noodle_nodes::SampleStore,
     /// The plugins whose node types are in `registry`. Renders (freeze,
@@ -295,15 +301,18 @@ impl Nodes {
             clips,
             midi,
             samples,
-            // The MIDI Out nodes hold the hub; the clock it shares with
-            // `midi` is how the device tells them when blocks are heard.
-            midi_out: _,
+            // The clock the hub shares with `midi` is how the device tells
+            // the MIDI Out nodes when blocks are heard.
+            midi_out,
+            host,
         } = noodle_nodes::register_library(&mut registry);
         Self {
             registry,
             telemetry,
             clips,
             midi,
+            midi_out,
+            host,
             samples,
             plugins: noodle_plugins::Catalog::default(),
             plugin_scan: None,
@@ -454,6 +463,12 @@ pub struct Session {
     clips: ClipFeeds,
     /// Where the MIDI input port's messages go, to reach the MIDI In nodes.
     midi: noodle_io::MidiBus,
+    /// Where the MIDI Out nodes send, and the host's bank (see `host.rs`).
+    midi_out: noodle_io::MidiOutHub,
+    host_link: Arc<noodle_io::HostLink>,
+    /// Whether a host calls the engine (a plugin instance): there is no
+    /// device to open, reopen or fall back from.
+    host_driven: bool,
     /// Where the transport's tempo comes from, and the tempo while it is not
     /// the map (see `tempo_source.rs`).
     tempo_source: crate::tempo_source::TempoSource,
@@ -820,6 +835,8 @@ impl Session {
             telemetry,
             clips,
             midi,
+            midi_out,
+            host,
             samples,
             plugins,
             plugin_scan,
@@ -848,6 +865,9 @@ impl Session {
             clips,
             clock_tap: midi.clock_tap(),
             midi,
+            midi_out,
+            host_link: host,
+            host_driven: false,
             tempo_source: Default::default(),
             live_bpm: None,
             taps: Default::default(),
@@ -3999,7 +4019,7 @@ impl Session {
             .nodes
             .retain(|&node| self.project.graph().node(node).is_some());
         let wanted = self.wanted_devices();
-        if self.audio.as_ref().is_some_and(|a| a.devices != wanted) {
+        if !self.host_driven && self.audio.as_ref().is_some_and(|a| a.devices != wanted) {
             self.reopen_stream();
             if self.audio.is_some() {
                 return;

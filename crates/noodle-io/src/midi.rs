@@ -364,6 +364,21 @@ impl MidiBus {
         }
     }
 
+    /// Hands `packet` from a host (the [`HOST_MIDI_PORT`](crate::HOST_MIDI_PORT)
+    /// port) to the receivers, stamped `micros`. For a plugin's audio
+    /// thread: it takes the subscribers' lock, which only a plan change
+    /// holds for a moment, and allocates nothing. MIDI learn's taps don't
+    /// hear it.
+    pub fn send_host(&self, packet: Packet, micros: u64) {
+        let mut subscribers = self.subscribers.lock().expect("subscribers lock");
+        deliver(
+            &mut subscribers,
+            Some(crate::host::HOST_MIDI_PORT),
+            packet,
+            micros,
+        );
+    }
+
     /// Releases every note on every channel (controller 123), for when the
     /// port that held them down goes away.
     pub fn all_notes_off(&self) {

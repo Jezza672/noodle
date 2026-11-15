@@ -28,6 +28,7 @@ mod follower;
 mod freeze;
 mod fundamental;
 mod gain;
+mod host_param;
 mod humanise;
 mod ladder;
 mod lag;
@@ -139,6 +140,10 @@ pub use freeze::{
 };
 pub use fundamental::{LISTEN_SECONDS, fundamental, key_of};
 pub use gain::{GAIN_ID, Gain};
+pub use host_param::{
+    HOST_PARAM_ID, HOST_PARAM_NAME, HOST_PARAM_NAME_KEY, HOST_PARAM_SLOT, HOST_PARAM_SLOT_KEY,
+    HostParam,
+};
 pub use humanise::{HUMANISE_ID, Humanise, MAX_TIMING_MS as HUMANISE_MAX_TIMING_MS};
 pub use ladder::{LADDER_ID, LADDER_SELF_OSCILLATES, Ladder, ladder_response};
 pub use lag::{LAG_ID, Lag};
@@ -240,6 +245,9 @@ pub struct Library {
     pub midi: noodle_io::MidiBus,
     /// Where MIDI Out nodes send their messages to.
     pub midi_out: noodle_io::MidiOutHub,
+    /// The host's parameter bank, tempo and play state: what the Host
+    /// Parameter nodes read. A plugin shell hands it to its host backend.
+    pub host: std::sync::Arc<noodle_io::HostLink>,
     /// Where Sampler nodes get their samples, by hash. Give it a folder
     /// ([`SampleStore::set_dir`]) to read them from disk.
     pub samples: SampleStore,
@@ -344,6 +352,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(MidiControl::new(&midi));
     let midi_out = noodle_io::MidiOutHub::new(std::sync::Arc::clone(midi.clock()));
     registry.register(MidiOut::new(&midi_out));
+    let host = noodle_io::HostLink::new();
+    registry.register(HostParam::new(&host));
     let samples = SampleStore::new();
     registry.register(if clips.is_blocking() {
         Sampler::blocking(&samples, &telemetry)
@@ -356,6 +366,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
         clips,
         midi,
         midi_out,
+        host,
         samples,
     }
 }
