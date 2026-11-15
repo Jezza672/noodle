@@ -1278,6 +1278,14 @@ impl ClipFeeds {
             || patterns.get(&node).is_some_and(|shared| shared.is_live())
     }
 
+    /// Whether any track input is being played live now, a held key of the
+    /// keyboard included.
+    pub fn any_live(&self) -> bool {
+        let hubs = self.inner.hubs.lock().expect("feeds lock");
+        let patterns = self.inner.patterns.lock().expect("feeds lock");
+        hubs.values().any(|shared| shared.is_live()) || patterns.values().any(|p| p.is_live())
+    }
+
     /// The track inputs that are monitored, by arming or by their `monitor`
     /// parameter (not a held key of the keyboard). Delay compensation leaves
     /// their paths alone so they sound at once.

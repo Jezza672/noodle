@@ -2954,7 +2954,7 @@ impl Session {
 
     /// Whether a track is armed or monitored, so live playing is heard.
     fn live_input(&self) -> bool {
-        !self.clips.monitored_nodes().is_empty()
+        self.clips.any_live()
     }
 
     /// The buffer tier the stream should be at. `current` is the tier it is
@@ -2995,17 +2995,21 @@ impl Session {
     /// reopened at another size only while stopped, never during a take, so a
     /// gap in the sound falls where nobody is playing.
     fn follow_monitoring(&mut self) {
+        // The live set changes only while stopped: remaking the plan with
+        // delay lines gone or added moves a track in time, which would click
+        // under a running transport.
         let live = self.clips.monitored_nodes();
-        let changed = self
-            .audio
-            .as_mut()
-            .is_some_and(|audio| audio.controller.set_live_nodes(live.clone()));
+        let changed = self.can_reopen()
+            && self
+                .audio
+                .as_mut()
+                .is_some_and(|audio| audio.controller.set_live_nodes(live.clone()));
         if changed {
             self.recompile_with(false);
         }
         let now = Instant::now();
         let idle = self.audio.is_some()
-            && live.is_empty()
+            && !self.live_input()
             && !self.transport_running()
             && self.recording.is_none();
         match (idle, self.idle_since) {
@@ -4130,10 +4134,12 @@ impl Session {
             }
         }
         let monitor = self.engine_monitor();
-        let live = self.clips.monitored_nodes();
+        let live = self.can_reopen().then(|| self.clips.monitored_nodes());
         if let Some(audio) = &mut self.audio {
             audio.controller.set_monitor(monitor);
-            audio.controller.set_live_nodes(live);
+            if let Some(live) = live {
+                audio.controller.set_live_nodes(live);
+            }
         }
         let plan = self.refresh_freezing(start);
         self.diagnostics = match (&mut self.audio, &plan) {
