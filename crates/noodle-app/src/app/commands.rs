@@ -230,6 +230,20 @@ pub static ENTRIES: &[Entry] = &[
         false,
     ),
     entry(
+        "view.browser",
+        "Show or Hide Browser",
+        Action::ToggleBrowser,
+        None,
+        false,
+    ),
+    entry(
+        "view.browser.collapse",
+        "Collapse or Expand Browser",
+        Action::CollapseBrowser,
+        None,
+        false,
+    ),
+    entry(
         "view.cache",
         "Show or Hide Playback Cache",
         Action::ToggleCache,

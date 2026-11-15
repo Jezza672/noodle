@@ -60,10 +60,11 @@ following is written once.
   whether or not the plugin said so. The test plugins count their `process`
   calls (`noodle_test_process_calls`) for `tests/quiet.rs`.
 - **Liveness.** A plugin node type does not set `always_runs`, so a plugin runs
-  only while something it feeds reaches an Output, like any other node.
-  (Its editor's own meters therefore freeze for a plugin nothing listens to, and
-  a VST3 editor's edits wait in the queue until the plugin is wired, as they are
-  applied inside `process`.)
+  only while something it feeds reaches an Output, like any other node, except
+  that while its editor is open it runs anyway (`always_runs_for`, answered
+  per node; the session builds the plan again when an editor opens or closes), so
+  the editor's meters move. A CLAP plugin that says its latency changed is asked
+  again and the plan follows (`current_latency`).
 - **Sandboxed plugins** don't use the bridge in the proxy (it ships buffers to
   the host process), but the host process runs a normal node, so the silence
   flags it sends back are real.

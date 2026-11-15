@@ -1,6 +1,6 @@
 //! S32: add a self-hosted source of sounds and use a sound from it.
 //!
-//! The Sounds panel starts with no sources, so it is empty. Its Sources
+//! The Sounds tab of the browser starts with no sources, so it is empty. Its Sources
 //! button opens Settings on the Sources page, where the address of a site and
 //! a token are typed and the source is added. The fake site refuses requests
 //! without that token, so the sound only arrives if the login was really
@@ -51,10 +51,10 @@ fn fixture(dir: &Path) -> App {
 }
 
 fn steps(h: &mut Handle, _size: usize) {
-    h.step("open the Sounds panel, which has no sources");
+    h.step("open the Browser, whose Sounds tab has no sources");
     let view = h.find("View");
     h.click(view, Modifiers::NONE);
-    let item = h.find("Sounds");
+    let item = h.find("Browser");
     h.click(item, Modifiers::NONE);
     h.probe().settle_sounds();
     h.step("open the Sources page from the panel");

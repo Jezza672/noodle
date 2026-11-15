@@ -15,6 +15,7 @@ mod lanes;
 mod live;
 mod looping;
 mod notes;
+mod requantise;
 
 use std::collections::BTreeSet;
 
@@ -27,6 +28,7 @@ use noodle_core::{
 
 use crate::session::{Edit, Session};
 use crate::theme::{self, timeline as colors};
+use crate::time_axis::{TimeAxis, zoom_about};
 use crate::timeline::{ClipAction, grid};
 use noodle_core::Command;
 
@@ -44,15 +46,17 @@ const LANES: usize = 2;
 const STATUS: usize = 3;
 const HUMANISE: usize = 4;
 const ARTICULATION: usize = 5;
-const SNAP: usize = 6;
-const HELP: usize = 7;
-const SLOTS: [crate::toolbar::Slot; 8] = [
+const REQUANTISE: usize = 6;
+const SNAP: usize = 7;
+const HELP: usize = 8;
+const SLOTS: [crate::toolbar::Slot; 9] = [
     crate::toolbar::Slot::left(crate::toolbar::segment_width(3), 3),
     crate::toolbar::Slot::left(88.0, 2),
     crate::toolbar::Slot::left(84.0, 4),
     crate::toolbar::Slot::left(112.0, 6).after_divider(),
     crate::toolbar::Slot::left(114.0, 5),
     crate::toolbar::Slot::left(122.0, 5),
+    crate::toolbar::Slot::left(126.0, 6),
     crate::toolbar::Slot::right(112.0, 7),
     crate::toolbar::Slot::right(crate::toolbar::SQUARE, 8),
 ];
@@ -152,7 +156,7 @@ pub struct Geometry {
 #[cfg(test)]
 impl Geometry {
     pub fn x(&self, tick: i64) -> f32 {
-        self.origin + tick as f32 / TICKS_PER_QUARTER as f32 * self.ppq
+        TimeAxis::new(self.origin, self.ppq).x(tick as f64 / TICKS_PER_QUARTER as f64)
     }
 
     /// The vertical centre of `key`'s row.
@@ -308,11 +312,11 @@ struct Axes {
 
 impl Axes {
     fn x(self, tick: i64) -> f32 {
-        self.origin + tick as f32 / TICKS_PER_QUARTER as f32 * self.ppq
+        TimeAxis::new(self.origin, self.ppq).x(tick as f64 / TICKS_PER_QUARTER as f64)
     }
 
     fn tick(self, x: f32) -> i64 {
-        ((x - self.origin) / self.ppq * TICKS_PER_QUARTER as f32).round() as i64
+        (TimeAxis::new(self.origin, self.ppq).at(x) * TICKS_PER_QUARTER as f64).round() as i64
     }
 
     fn y_top(self, key: u8) -> f32 {
@@ -417,6 +421,7 @@ pub fn show(
                 clip,
                 midi,
             ),
+            REQUANTISE => requantise::controls(ui, mode, &mut out, id, clip, midi),
             SNAP => crate::toolbar::chip(
                 ui,
                 mode,
@@ -1046,7 +1051,6 @@ fn navigate(ui: &egui::Ui, state: &mut PianoRoll, grid: Rect, length: i64) {
     if zoom != Vec2::splat(1.0) {
         // Don't let the same turn pan as well.
         let anchor = pointer.map_or(grid.left(), |p| p.x.max(grid.left()));
-        let quarters = (anchor - grid.left() + state.scroll_x) / state.ppq;
         // With no modifier a wheel or trackpad pinch is one number for both
         // ways, and means time.
         let uniform = zoom.x == zoom.y;
@@ -1062,8 +1066,13 @@ fn navigate(ui: &egui::Ui, state: &mut PianoRoll, grid: Rect, length: i64) {
         } else {
             zoom.y
         };
-        state.ppq = (state.ppq * across).clamp(MIN_PPQ, MAX_PPQ);
-        state.scroll_x = quarters * state.ppq - (anchor - grid.left());
+        zoom_about(
+            &mut state.ppq,
+            &mut state.scroll_x,
+            across,
+            anchor - grid.left(),
+            (MIN_PPQ, MAX_PPQ),
+        );
         if along != 1.0 {
             let anchor = pointer.map_or(grid.center().y, |p| p.y.clamp(grid.top(), grid.bottom()));
             let rows = (anchor - grid.top() + state.scroll_y) / state.key_h;

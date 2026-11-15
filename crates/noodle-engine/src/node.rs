@@ -134,6 +134,24 @@ pub trait NodeType: Send + Sync + 'static {
         false
     }
 
+    /// [`always_runs`](Self::always_runs) for the one node `node`, asked each
+    /// time a plan is built (off the audio thread). A type whose nodes need
+    /// to run only some of the time, such as a plugin while its editor is open
+    /// so the editor's meters move, answers here; whatever changes the answer
+    /// has to make the project compile again.
+    fn always_runs_for(&self, _node: NodeId) -> bool {
+        self.always_runs()
+    }
+
+    /// The latency, in samples, of the running instance of `node`, when it can
+    /// differ from what the instance reported as it was built (a plugin that
+    /// says its latency changed). Asked when a plan keeps the instance, so the
+    /// new plan compensates for what it is now; `None` keeps the old figure.
+    /// Whatever changes the answer has to make the project compile again.
+    fn current_latency(&self, _node: NodeId) -> Option<u32> {
+        None
+    }
+
     /// What the node editor draws in the node's body. Anything that reports
     /// to the UI (see [`always_runs`](Self::always_runs)) says here what it
     /// reports.

@@ -33,7 +33,6 @@ in the last one; the earlier batches are in the PRs the issues name.
   clip placed off the beat or a 6/8 bar snaps to the lines on screen. Literal
   `960`s in the piano roll and `snap.rs` use `TICKS_PER_QUARTER`.
 
-Left over: moving the arrangement's and the clip editor's axes onto a shared
-`TimeAxis` type (the piano roll part of #244 is done), a zero-wake sandbox
+Left over: a zero-wake sandbox
 monitor (it needs a way to wait on the child process that does not take the
-`Child`), and a single retry policy for files that fail to open.
+`Child`). The single retry policy is in `deferred-items-2.md`.

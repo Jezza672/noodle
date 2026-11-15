@@ -374,6 +374,22 @@ pub struct MidiNote {
     /// drawn at. `None` for a note that was never humanised.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub humanise: Option<(f32, f32)>,
+    /// A recorded note's raw take, so the clip can be quantised again after
+    /// recording. `None` for a note that was drawn, or recorded with nothing
+    /// to remember.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub played: Option<Played>,
+}
+
+/// Where a recorded note was played, and where recording put it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Played {
+    /// The start as played, from the start of the clip.
+    pub start: Tick,
+    /// The start recording gave it (quantised, or as played). A note whose
+    /// `start` is still this has not been moved by hand, so quantising again
+    /// may move it; one that has been moved is left where it was put.
+    pub put: Tick,
 }
 
 impl MidiNote {
@@ -387,6 +403,7 @@ impl MidiNote {
             expressions: Vec::new(),
             articulation: None,
             humanise: None,
+            played: None,
         }
     }
 
@@ -447,6 +464,39 @@ impl MidiNote {
 }
 
 impl MidiClip {
+    /// Quantises the recorded notes again from the take, to `grid` ticks on the
+    /// timeline's grid (`None` puts them back as played). `clip_start` is the
+    /// clip's place on the timeline, because the grid is the timeline's, not
+    /// the clip's. Notes the user has moved since, and notes that were never
+    /// recorded, stay where they are; lengths are kept. Returns how many notes
+    /// moved.
+    pub fn requantise(&mut self, grid: Option<i64>, clip_start: Tick) -> usize {
+        let mut moved = 0;
+        for note in &mut self.notes {
+            let Some(played) = note.played else { continue };
+            if note.start != played.put {
+                continue;
+            }
+            let start = match grid {
+                Some(grid) if grid > 0 => {
+                    let absolute = clip_start.0 + played.start.0;
+                    let snapped = (absolute as f64 / grid as f64).round() as i64 * grid;
+                    Tick((snapped - clip_start.0).max(0))
+                }
+                _ => played.start,
+            };
+            if start != note.start {
+                moved += 1;
+            }
+            note.start = start;
+            note.played = Some(Played {
+                start: played.start,
+                put: start,
+            });
+        }
+        moved
+    }
+
     pub fn new(length: Tick) -> Self {
         Self {
             length,

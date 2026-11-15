@@ -20,6 +20,7 @@ use noodle_nodes::Sample;
 
 use super::{MAX_COLUMNS, MAX_PPB, MIN_PPB, RULER, curve};
 use crate::theme::{self, timeline as colors};
+use crate::time_axis::{TimeAxis, zoom_about};
 
 /// How close, in points, a press is to an edge or a loop end to take it.
 const GRAB: f32 = 7.0;
@@ -122,7 +123,7 @@ pub(crate) struct Axis {
 
 impl Axis {
     pub fn x(self, seconds: f64) -> f32 {
-        self.origin + seconds as f32 * self.pps
+        TimeAxis::new(self.origin, self.pps).x(seconds)
     }
 }
 
@@ -407,9 +408,13 @@ pub(crate) fn navigate(ui: &Ui, view: &mut View, area: Rect, seconds: (f64, f64)
         // Ctrl+scroll and pinch zoom; the wheel's own delta goes no further,
         // so one turn cannot zoom and pan at once.
         let anchor = pointer.map_or(area.left(), |p| p.x.max(area.left()));
-        let at = (anchor - area.left() + view.scroll_x) / view.ppb;
-        view.ppb = (view.ppb * zoom).clamp(MIN_PPB, MAX_PPB);
-        view.scroll_x = at * view.ppb - (anchor - area.left());
+        zoom_about(
+            &mut view.ppb,
+            &mut view.scroll_x,
+            zoom,
+            anchor - area.left(),
+            (MIN_PPB, MAX_PPB),
+        );
     } else {
         // The wheel pans along the time axis; so does a middle-button drag.
         view.scroll_x -= scroll.x + middle.unwrap_or(0.0);

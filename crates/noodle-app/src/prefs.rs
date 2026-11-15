@@ -30,6 +30,9 @@ pub struct Prefs {
     pub sandbox_plugins: bool,
     /// The device node monitoring plays on; empty is the main output.
     pub monitor_device: String,
+    /// Whether the engine (the toolbar's Audio toggle) runs at launch. On
+    /// unless the user turned it off. About this machine, so not exported.
+    pub engine_on: bool,
     /// Whether the playback cache picks what to cache by itself. On unless
     /// turned off.
     pub auto_cache: bool,
@@ -52,6 +55,10 @@ pub struct Prefs {
     /// first-use popup). About this machine's downloads, so not exported.
     #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
     pub drum_models: std::collections::BTreeMap<String, bool>,
+    /// Split to stems models the user has switched off, by id. A model not
+    /// listed is on. About this machine's downloads, so not exported.
+    #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
+    pub stem_models_off: std::collections::BTreeSet<String>,
     /// The sources of sounds the user added (the built-in one is not listed).
     /// About this machine's folders and logins, so not exported.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -71,6 +78,7 @@ impl Default for Prefs {
             audio: AudioConfig::default(),
             sandbox_plugins: false,
             monitor_device: String::new(),
+            engine_on: true,
             auto_cache: true,
             count_in_bars: 0,
             pre_roll_bars: 0,
@@ -80,6 +88,7 @@ impl Default for Prefs {
             snap: crate::snap::DEFAULT,
             record_quantise: Default::default(),
             drum_models: Default::default(),
+            stem_models_off: Default::default(),
             sources: Default::default(),
             source_secrets: Default::default(),
             keymap: Default::default(),
@@ -95,8 +104,10 @@ impl Prefs {
         Self {
             audio: AudioConfig::default(),
             monitor_device: String::new(),
+            engine_on: true,
             sandbox_plugins: false,
             drum_models: Default::default(),
+            stem_models_off: Default::default(),
             sources: Default::default(),
             source_secrets: Default::default(),
             ..self.clone()
@@ -279,6 +290,33 @@ pub fn remember_drum_model(id: &str, enabled: bool) {
     });
 }
 
+/// The Split to stems models the user has switched off.
+pub fn stem_models_off() -> std::collections::BTreeSet<String> {
+    CURRENT.with_borrow(|current| {
+        current
+            .as_ref()
+            .map(|(_, prefs)| prefs.stem_models_off.clone())
+            .unwrap_or_default()
+    })
+}
+
+/// Saves whether a Split to stems model is enabled, if [`init`] has been called.
+pub fn remember_stem_model(id: &str, enabled: bool) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        if enabled {
+            prefs.stem_models_off.remove(id);
+        } else {
+            prefs.stem_models_off.insert(id.to_owned());
+        }
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
 /// The sources of sounds the user added.
 pub fn sources() -> Vec<crate::sounds::source::SourceSpec> {
     CURRENT.with_borrow(|current| {
@@ -405,8 +443,10 @@ pub fn adopt(imported: &Prefs) -> Prefs {
         *prefs = Prefs {
             audio: prefs.audio.clone(),
             monitor_device: prefs.monitor_device.clone(),
+            engine_on: prefs.engine_on,
             sandbox_plugins: prefs.sandbox_plugins,
             drum_models: prefs.drum_models.clone(),
+            stem_models_off: prefs.stem_models_off.clone(),
             sources: prefs.sources.clone(),
             source_secrets: prefs.source_secrets.clone(),
             ..imported.portable()
@@ -474,6 +514,20 @@ pub fn remember_monitor_device(device: &str) {
     });
 }
 
+/// Saves whether the engine runs at launch, with the other preferences, if
+/// [`init`] has been called.
+pub fn remember_engine_on(on: bool) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.engine_on = on;
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
 #[derive(Debug)]
 pub enum PrefsError {
     Io(PathBuf, io::Error),
@@ -524,6 +578,19 @@ mod tests {
 
     use super::*;
 
+    #[test]
+    fn the_engine_toggle_is_remembered_and_stays_on_this_machine() {
+        let dir = tempfile::tempdir().unwrap();
+        init(dir.path().join("prefs.ron"));
+        assert!(Prefs::default().engine_on);
+        remember_engine_on(false);
+        let saved = load(&dir.path().join("prefs.ron")).unwrap();
+        assert!(!saved.engine_on);
+        assert!(saved.portable().engine_on, "not exported");
+        remember_engine_on(true);
+        assert!(load(&dir.path().join("prefs.ron")).unwrap().engine_on);
+    }
+
     fn chosen() -> Prefs {
         Prefs {
             audio: AudioConfig {
@@ -540,6 +607,7 @@ mod tests {
             pre_roll_bars: 0,
             sandbox_plugins: false,
             monitor_device: String::new(),
+            engine_on: true,
             auto_cache: false,
             midi_record: crate::midi_take::MidiRecord::Takes,
             automation_mode: crate::session::record_automation::AutomationMode::Latch,
@@ -547,6 +615,7 @@ mod tests {
             snap: crate::snap::DEFAULT,
             record_quantise: Default::default(),
             drum_models: Default::default(),
+            stem_models_off: Default::default(),
             sources: Default::default(),
             source_secrets: Default::default(),
             keymap: Default::default(),
@@ -639,7 +708,7 @@ mod tests {
         let text = ron::ser::to_string(&chosen()).unwrap();
         assert_eq!(
             text,
-            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_inputs:["Keystation 49","Pad Controller"],threads:2),sandbox_plugins:false,monitor_device:"",auto_cache:false,count_in_bars:0,pre_roll_bars:0,midi_record:Takes,automation_mode:Latch,display:(performance:false,event_wires:true,audio_wires:true,input_meters:true,output_meters:true,clip_flash:true,silent_dim:true,param_motion:true,voice_leds:true,beat_pulse:true,cpu_heat:false),snap:960,record_quantise:Off)"#
+            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_inputs:["Keystation 49","Pad Controller"],threads:2),sandbox_plugins:false,monitor_device:"",engine_on:true,auto_cache:false,count_in_bars:0,pre_roll_bars:0,midi_record:Takes,automation_mode:Latch,display:(performance:false,event_wires:true,audio_wires:true,input_meters:true,output_meters:true,clip_flash:true,silent_dim:true,param_motion:true,voice_leds:true,beat_pulse:true,cpu_heat:false),snap:960,record_quantise:Off)"#
         );
         // Files from before the MIDI input was added still load.
         let old = r#"(audio:(host:Some("alsa"),output:None,input:Off,sample_rate:None,buffer_size:Some(256)))"#;

@@ -2,7 +2,7 @@
 
 The design is ADR 0012; the words are in CONTEXT.md ("Sample packs"). This file
 covers what is built: the pack definition, the site `noodle-publish` builds, and
-the CI workflow that uploads it. The downloader and the Sounds panel are not
+the CI workflow that uploads it. The downloader and the Sounds tab of the browser are not
 built yet.
 
 ## Making a pack

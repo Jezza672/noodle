@@ -5,6 +5,7 @@
 mod acceptance;
 mod app;
 mod autosave;
+mod browser;
 mod cache_panel;
 mod carry;
 mod clip_editor;
@@ -48,6 +49,7 @@ mod tempo_source;
 #[cfg(test)]
 mod testkit;
 mod theme;
+mod time_axis;
 mod timeline;
 mod toolbar;
 mod transport_widgets;
@@ -91,16 +93,21 @@ fn main() -> ExitCode {
         session.set_library(noodle_core::library::Library::open(Some(dir)));
     }
     session.set_templates_dir(prefs::templates_dir());
+    let mut engine_on = true;
     if let Some(path) = prefs::default_path() {
         let prefs = prefs::init(path);
+        engine_on = prefs.engine_on;
         session.set_audio_config(prefs.audio.clone());
         session.set_sandbox_plugins(prefs.sandbox_plugins);
         session.set_monitor_device(&prefs.monitor_device);
         session.apply_user_settings(&prefs);
     }
     // The engine runs from the start, as in Ableton, so live MIDI plays
-    // before anything else is done. The toolbar turns it off.
-    session.start_engine();
+    // before anything else is done. The toolbar turns it off, and stays off
+    // until it is turned on again.
+    if engine_on {
+        session.start_engine();
+    }
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("Noodle")

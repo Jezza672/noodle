@@ -10,6 +10,7 @@ use std::cell::Cell;
 use std::collections::{BTreeSet, HashMap};
 use std::fmt;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 pub mod automate;
@@ -30,7 +31,7 @@ mod to_sample;
 mod transport_tempo;
 pub mod versions;
 pub use export::{ExportChoice, ExportSummary};
-pub use library::LibraryEdit;
+pub use library::{LibraryEdit, PresetStatus};
 
 use crate::freezing::{Badge, Freezing, Look, Polled};
 use noodle_core::{
@@ -38,8 +39,8 @@ use noodle_core::{
     TICKS_PER_QUARTER, Tick,
 };
 use noodle_engine::{
-    Controller, Diagnostic, Pass, Registry, Settings, Telemetry, TempoTable, compile_replacing,
-    compile_with_lanes,
+    Controller, Diagnostic, Job, Pass, Registry, Settings, Telemetry, TempoTable,
+    compile_replacing, compile_with_lanes,
 };
 use noodle_io::{
     AudioConfig, AudioError, DeviceError, DeviceErrorKind, Playback, RecordError, Recorder, Stream,
@@ -216,6 +217,8 @@ pub enum Edit {
     /// Chooses how hard the next split works. Session state: not an undo
     /// step, not saved.
     SetStemsQuality(noodle_stems::Quality),
+    /// Chooses the model Split to stems uses, by id.
+    SetStemsModel(String),
     /// Renders a track or group to a clip (see [`Session::render_to_clip`]):
     /// the loop's span if `in_loop`, else the whole timeline. Not an edit
     /// itself: the track arrives as one undo step when the render is done.
@@ -351,6 +354,42 @@ type ListMidi = Box<dyn FnMut() -> Result<Vec<String>, noodle_io::MidiError>>;
 type OpenMidi =
     fn(&str, &noodle_io::MidiBus) -> Result<noodle_io::MidiConnection, noodle_io::MidiError>;
 
+/// How often to look for the saved audio device, while the engine is on a
+/// fallback.
+pub const DEVICE_WATCH_INTERVAL: Duration = Duration::from_secs(5);
+
+type ListDevices = Arc<dyn Fn(Option<&str>) -> Option<noodle_io::DeviceList> + Send + Sync>;
+
+/// What `watch_device` needs from the system, replaceable in tests. Listing
+/// the devices can be slow, so it runs on a background job.
+struct DeviceWatch {
+    checked: Option<Instant>,
+    list: ListDevices,
+    looking: Option<Job<Option<noodle_io::DeviceList>>>,
+    /// The list at which the saved device was listed but did not open, so
+    /// the engine is not restarted again until the list changes.
+    tried: Option<noodle_io::DeviceList>,
+}
+
+impl Default for DeviceWatch {
+    fn default() -> Self {
+        Self {
+            checked: None,
+            list: Arc::new(|host| noodle_io::devices(host).ok()),
+            looking: None,
+            tried: None,
+        }
+    }
+}
+
+/// Whether the output `config` asks for is among `devices`.
+fn saved_output_is_back(config: &AudioConfig, devices: &noodle_io::DeviceList) -> bool {
+    match &config.output {
+        Some(id) => devices.outputs.iter().any(|d| d.id == *id),
+        None => devices.outputs.iter().any(|d| d.is_default),
+    }
+}
+
 /// What `watch_midi` needs from the system, replaceable in tests.
 struct MidiWatch {
     checked: Option<Instant>,
@@ -392,6 +431,13 @@ pub struct Session {
     /// Plugin nodes whose editor was opened from here: when one closes, its
     /// state is stored.
     plugin_editors: std::collections::BTreeMap<NodeId, noodle_plugins::EditorKey>,
+    /// The plugins whose editor was open when the plan was last built: an
+    /// open editor keeps its plugin running (see `NodeType::always_runs_for`),
+    /// so the plan is built again when this changes.
+    editors_running: std::collections::BTreeSet<NodeId>,
+    /// The latency each running plugin reported when the plan was last built,
+    /// to notice one that changed it.
+    plugin_latencies: std::collections::BTreeMap<NodeId, u32>,
     /// What each open plugin editor last showed, to turn changes into edits.
     plugin_live: std::collections::BTreeMap<NodeId, LiveEditor>,
     /// Why a plugin's editor last failed to open, until it opens.
@@ -424,6 +470,7 @@ pub struct Session {
     learning: Option<learn_midi::Learning>,
     /// Watches for the chosen MIDI port being unplugged and plugged back in.
     midi_watch: MidiWatch,
+    device_watch: DeviceWatch,
     /// Watches the audio files clips play for being replaced on disk.
     /// The stamps of the clips' files as of the last look, to notice a file
     /// that was replaced (see [`noodle_io::AudioFiles`]).
@@ -789,6 +836,8 @@ impl Session {
             plugin_scan,
             plugin_files,
             plugin_editors: Default::default(),
+            editors_running: Default::default(),
+            plugin_latencies: Default::default(),
             plugin_live: Default::default(),
             plugin_editor_errors: Default::default(),
             param_learn: None,
@@ -807,6 +856,7 @@ impl Session {
             midi_connections: Vec::new(),
             learning: None,
             midi_watch: MidiWatch::default(),
+            device_watch: DeviceWatch::default(),
             file_stamps: HashMap::new(),
             exporting: None,
             rendering: None,
@@ -1353,7 +1403,49 @@ impl Session {
     /// Stores the state of each plugin whose editor has closed. The node
     /// stays on the list until that worked, or its plugin instance is gone
     /// (the graph was built again, which loses what the editor changed).
+    /// Builds the plan again when a running plugin says its latency changed,
+    /// so delay compensation follows it.
+    fn poll_plugin_latency(&mut self) {
+        if self.audio.is_none() {
+            self.plugin_latencies.clear();
+            return;
+        }
+        let mut changed = false;
+        let mut seen = std::collections::BTreeMap::new();
+        for (id, node) in self.project.graph().nodes() {
+            if self.plugins.get(&node.type_id).is_none() {
+                continue;
+            }
+            let Some(now) = noodle_plugins::node_latency(id) else {
+                continue;
+            };
+            if self
+                .plugin_latencies
+                .get(&id)
+                .is_some_and(|&old| old != now)
+            {
+                changed = true;
+            }
+            seen.insert(id, now);
+        }
+        self.plugin_latencies = seen;
+        if changed {
+            self.recompile();
+        }
+    }
+
     fn poll_plugin_editors(&mut self) {
+        self.poll_plugin_latency();
+        let open: std::collections::BTreeSet<NodeId> = self
+            .plugin_editors
+            .keys()
+            .copied()
+            .filter(|n| noodle_plugins::editor_is_open(*n))
+            .collect();
+        if open != self.editors_running {
+            self.editors_running = open;
+            self.recompile();
+        }
         self.sync_open_plugin_editors();
         let closed: Vec<(NodeId, noodle_plugins::EditorKey)> = self
             .plugin_editors
@@ -1468,6 +1560,62 @@ impl Session {
     /// The hook that gives a render's registry the plugin node types.
     pub(crate) fn extend_registry(&self) -> Option<noodle_plugins::ExtendRegistry> {
         (!self.plugins.is_empty()).then(|| self.plugins.extender())
+    }
+
+    /// Whether the engine is running on a fallback while the device that was
+    /// chosen is unavailable, so that it is worth looking for it.
+    fn watching_device(&self) -> bool {
+        self.recording.is_none()
+            && self.audio.as_ref().is_some_and(|a| a.fallback.is_some())
+            && self.audio_config.output.as_deref() != Some(noodle_io::VIRTUAL_OUTPUT)
+    }
+
+    /// Retries the saved output when the engine fell back from it: every few
+    /// seconds the devices are listed (on a job, as that can be slow), and
+    /// once the saved one is among them the engine reopens on it, keeping the
+    /// transport where it is.
+    fn watch_device(&mut self, now: Instant) {
+        if !self.watching_device() {
+            self.device_watch.looking = None;
+            return;
+        }
+        if let Some(job) = &mut self.device_watch.looking {
+            match job.poll() {
+                None => return,
+                Some(result) => {
+                    self.device_watch.looking = None;
+                    if let Ok(Some(devices)) = result {
+                        if !saved_output_is_back(&self.audio_config, &devices) {
+                            self.device_watch.tried = None;
+                        } else if self.device_watch.tried.as_ref() != Some(&devices) {
+                            self.reopen_stream();
+                            if self.engine_warning().is_none() {
+                                self.message = Some("The audio device is back".into());
+                            } else {
+                                // Listed but won't open (busy, or a rate it
+                                // doesn't take): leave the fallback alone
+                                // until the list changes.
+                                self.device_watch.tried = Some(devices);
+                            }
+                        }
+                    }
+                }
+            }
+            return;
+        }
+        if self
+            .device_watch
+            .checked
+            .is_some_and(|at| now.duration_since(at) < DEVICE_WATCH_INTERVAL)
+        {
+            return;
+        }
+        self.device_watch.checked = Some(now);
+        let (list, host) = (
+            Arc::clone(&self.device_watch.list),
+            self.audio_config.host.clone(),
+        );
+        self.device_watch.looking = Some(Job::spawn(move |_| list(host.as_deref())));
     }
 
     /// The chosen MIDI ports can each be unplugged and plugged back in, and
@@ -1815,6 +1963,10 @@ impl Session {
                 }
                 Edit::SetStemsQuality(quality) => {
                     self.set_stems_quality(quality);
+                    continue;
+                }
+                Edit::SetStemsModel(id) => {
+                    self.set_stems_model(&id);
                     continue;
                 }
                 Edit::RenderToClip { group, in_loop } => {
@@ -2665,6 +2817,12 @@ impl Session {
         if self.sandbox_plugins {
             at(now + HOST_WATCH_INTERVAL);
         }
+        if self.watching_device() {
+            at(self
+                .device_watch
+                .checked
+                .map_or(now, |c| c + DEVICE_WATCH_INTERVAL));
+        }
         soonest.map(|s| s.max(now))
     }
 
@@ -2699,6 +2857,7 @@ impl Session {
             }
         }
         self.watch_midi(Instant::now());
+        self.watch_device(Instant::now());
         self.watch_files();
         self.poll_export();
         self.poll_render();
@@ -7189,6 +7348,96 @@ mod tests {
         // The choice is kept for when the device is back.
         assert_eq!(session.audio_config(), &chosen);
         assert_eq!(session.message(), Some(warning.as_str()));
+    }
+
+    fn listing(ids: &[&str]) -> noodle_io::DeviceList {
+        let mut list = noodle_io::DeviceList::default();
+        for id in ids {
+            list.outputs.push(noodle_io::DeviceInfo {
+                id: (*id).to_owned(),
+                name: (*id).to_owned(),
+                is_default: false,
+                capabilities: noodle_io::virtual_output().capabilities,
+            });
+        }
+        list
+    }
+
+    #[test]
+    fn the_saved_output_is_back_when_it_is_listed() {
+        let config = AudioConfig {
+            output: Some("alsa:usb".into()),
+            ..AudioConfig::default()
+        };
+        assert!(!saved_output_is_back(&config, &listing(&["alsa:other"])));
+        assert!(saved_output_is_back(
+            &config,
+            &listing(&["alsa:other", "alsa:usb"])
+        ));
+        // No device chosen means the system default.
+        let mut with_default = listing(&["alsa:other"]);
+        with_default.outputs[0].is_default = true;
+        assert!(saved_output_is_back(&AudioConfig::default(), &with_default));
+        assert!(!saved_output_is_back(
+            &AudioConfig::default(),
+            &listing(&[])
+        ));
+    }
+
+    #[test]
+    fn a_fallback_looks_for_the_saved_device_every_few_seconds_and_a_real_choice_does_not() {
+        let mut session = Session::new(Nodes::all());
+        let looks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = Arc::clone(&looks);
+        session.device_watch.list = Arc::new(move |_| {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(listing(&["alsa:other"]))
+        });
+        let start = Instant::now();
+        // Nothing to look for while the saved device is in use.
+        session.set_audio_config(virtual_config());
+        session.start_engine();
+        session.watch_device(start);
+        assert_eq!(looks.load(std::sync::atomic::Ordering::SeqCst), 0);
+        // On a fallback from a device that is not there: one look, then none
+        // until the interval has passed.
+        session.stop_engine();
+        session.set_audio_config(AudioConfig {
+            output: Some("alsa:no such device".into()),
+            ..AudioConfig::default()
+        });
+        session.start_engine();
+        assert!(session.engine_warning().is_some());
+        let wait = |session: &mut Session, at: Instant| {
+            session.watch_device(at);
+            for _ in 0..200 {
+                if session.device_watch.looking.is_none() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(5));
+                session.watch_device(at);
+            }
+        };
+        wait(&mut session, start);
+        assert_eq!(looks.load(std::sync::atomic::Ordering::SeqCst), 1);
+        wait(&mut session, start + Duration::from_secs(1));
+        assert_eq!(looks.load(std::sync::atomic::Ordering::SeqCst), 1);
+        wait(&mut session, start + DEVICE_WATCH_INTERVAL);
+        assert_eq!(looks.load(std::sync::atomic::Ordering::SeqCst), 2);
+        // It is still on the fallback: the device was not listed.
+        assert!(session.engine_warning().is_some());
+        // Listed but unable to open: tried once, then left alone until the
+        // list changes.
+        session.device_watch.list = Arc::new(|_| Some(listing(&["alsa:no such device"])));
+        wait(&mut session, start + DEVICE_WATCH_INTERVAL * 2);
+        assert!(session.device_watch.tried.is_some());
+        wait(&mut session, start + DEVICE_WATCH_INTERVAL * 3);
+        assert!(session.device_watch.tried.is_some());
+        assert!(session.engine_warning().is_some());
+        // It goes away again: the next return is tried afresh.
+        session.device_watch.list = Arc::new(|_| Some(listing(&["alsa:other"])));
+        wait(&mut session, start + DEVICE_WATCH_INTERVAL * 4);
+        assert!(session.device_watch.tried.is_none());
     }
 
     #[test]

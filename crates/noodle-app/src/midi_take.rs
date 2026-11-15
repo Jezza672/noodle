@@ -289,6 +289,8 @@ impl MidiTake {
         struct Played {
             key: u8,
             start: i64,
+            /// Where it started before quantising.
+            raw: i64,
             end: i64,
             velocity: f32,
             expressions: Vec<NoteExpression>,
@@ -321,6 +323,7 @@ impl MidiTake {
                         open[c][key_index] = Some(Played {
                             key: key_index as u8,
                             start: tick,
+                            raw: tick,
                             end: tick,
                             velocity: f32::from(b) / 127.0,
                             expressions: Vec::new(),
@@ -426,6 +429,11 @@ impl MidiTake {
                         .collect(),
                     articulation: None,
                     humanise: None,
+                    // The raw take, so the clip can be quantised again.
+                    played: Some(noodle_core::Played {
+                        start: Tick((n.raw - clip_start).max(0)),
+                        put: Tick(from),
+                    }),
                 }
             })
             .collect();
@@ -825,6 +833,56 @@ mod tests {
             (e[0].tick, e[0].kind, e[0].value),
             (Tick(480), ExpressionKind::Pressure, 1.0)
         );
+    }
+
+    #[test]
+    fn a_take_keeps_each_notes_raw_start_so_it_can_be_quantised_again() {
+        let messages = [(520, [0x90, 60, 100]), (1000, [0x80, 60, 0])];
+        let snapped = take(&messages, 1200, Quantise::Quarter).unwrap();
+        let note = &snapped.notes[0];
+        assert_eq!(note.start, Tick(960));
+        let played = note.played.expect("the raw take is kept");
+        assert_eq!((played.start, played.put), (Tick(998), Tick(960)));
+        // Quantising again from the take: a finer grid, then as played.
+        let mut clip = snapped.clone();
+        assert_eq!(
+            clip.requantise(Quantise::Sixteenth.grid(), Tick(0)),
+            0,
+            "998 is nearest 960 on 240s too: nothing moves"
+        );
+        assert_eq!(clip.notes[0].start, Tick(960));
+        assert_eq!(clip.requantise(None, Tick(0)), 1);
+        assert_eq!(clip.notes[0].start, Tick(998));
+        assert_eq!(clip.notes[0].length, snapped.notes[0].length, "length kept");
+    }
+
+    #[test]
+    fn a_note_moved_by_hand_is_left_alone_when_quantising_again() {
+        let messages = [(520, [0x90, 60, 100]), (1000, [0x80, 60, 0])];
+        let mut clip = take(&messages, 1200, Quantise::Quarter).unwrap();
+        clip.notes[0].start = Tick(1500);
+        assert_eq!(clip.requantise(None, Tick(0)), 0);
+        assert_eq!(clip.notes[0].start, Tick(1500));
+        // A drawn note was never recorded: nothing to go back to.
+        clip.notes
+            .push(noodle_core::MidiNote::new(Tick(7), Tick(10), 61));
+        assert_eq!(clip.requantise(Quantise::Quarter.grid(), Tick(0)), 0);
+        assert_eq!(clip.notes[1].start, Tick(7));
+    }
+
+    #[test]
+    fn the_grid_is_the_timelines_not_the_clips() {
+        // A clip that starts 100 ticks off the beat: the note as played 900
+        // ticks into it is at 1000 on the timeline, and snaps to 960.
+        let mut clip = MidiClip::new(Tick(2000));
+        let mut note = noodle_core::MidiNote::new(Tick(900), Tick(100), 60);
+        note.played = Some(noodle_core::Played {
+            start: Tick(900),
+            put: Tick(900),
+        });
+        clip.notes.push(note);
+        assert_eq!(clip.requantise(Quantise::Quarter.grid(), Tick(100)), 1);
+        assert_eq!(clip.notes[0].start, Tick(860));
     }
 
     #[test]

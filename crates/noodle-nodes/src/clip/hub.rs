@@ -10,16 +10,16 @@
 //! playhead has moved on (see [`POSITION_STEP`]). It stops when the node is
 //! dropped.
 
-use std::collections::HashMap;
 use std::sync::atomic::{AtomicBool, AtomicU8, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::Instant;
 
 use noodle_core::ClipId;
 use noodle_io::pool::{self, Bell, Handle, Next, Task};
 use noodle_io::{ClipStream, StreamSpec, StreamWorker, open_stream};
 use rtrb::{Consumer, Producer, RingBuffer};
 
+use super::retry::Retry;
 use super::schedule::{ClipStatus, FileError, Notes, Schedule, ScheduledClip};
 
 /// Streams a node can hold at once: the clip playing and the ones about to.
@@ -36,9 +36,6 @@ pub(super) const LOOKAHEAD: f64 = 1.0;
 /// worker) to look again: a fraction of [`LOOKAHEAD`], which they have to keep
 /// room for in the streams they open.
 pub(super) const POSITION_STEP: f64 = LOOKAHEAD / 8.0;
-/// How long before a file that failed to open is tried again, so one that
-/// turns up later (restored, or a drive mounted) starts playing.
-pub(super) const RETRY: Duration = Duration::from_secs(2);
 /// The settings of a track input's `monitor` parameter, besides Off (0).
 pub(super) const MONITOR_AUTO: u8 = 1;
 pub(super) const MONITOR_IN: u8 = 2;
@@ -283,7 +280,7 @@ pub(super) fn spawn(shared: Arc<Shared>, rate: u32) -> Links {
         outstanding: 0,
         next_serial: 0,
         live: Vec::new(),
-        failed: HashMap::new(),
+        failed: Retry::new(),
         lookahead: (f64::from(rate) * LOOKAHEAD) as u64,
         rate,
     });
@@ -307,7 +304,7 @@ struct Hub {
     next_serial: u64,
     live: Vec<Live>,
     /// Streams that failed to open, and when.
-    failed: HashMap<(ClipId, u64), Instant>,
+    failed: Retry<(ClipId, u64)>,
     lookahead: u64,
 }
 
@@ -319,11 +316,11 @@ impl Task for Hub {
         let busy = self.pass();
         if busy {
             Next::Again
-        } else if self.failed.is_empty() {
-            Next::Idle
-        } else {
+        } else if let Some(wait) = self.failed.next_wait(Instant::now()) {
             // A file that failed to open may turn up later.
-            Next::After(RETRY)
+            Next::After(wait)
+        } else {
+            Next::Idle
         }
     }
 }
@@ -407,7 +404,7 @@ impl Hub {
                 if live.iter().any(|l| l.key == key && l.head == head) {
                     continue;
                 }
-                if failed.get(&key).is_some_and(|at| at.elapsed() < RETRY) {
+                if failed.backing_off(&key, Instant::now()) {
                     continue;
                 }
                 if *outstanding >= MAX_OUTSTANDING {
@@ -432,7 +429,7 @@ impl Hub {
                     chunks: STREAM_CHUNKS,
                 };
                 let mut fail = |message: String| {
-                    failed.insert(key, Instant::now());
+                    failed.failed(key, Instant::now());
                     shared.fail(
                         key,
                         FileError {
@@ -454,7 +451,7 @@ impl Hub {
                         };
                         if to_node.push(ToNode::Stream(Box::new(prepared))).is_ok() {
                             busy = true;
-                            if failed.remove(&key).is_some() {
+                            if failed.opened(&key) {
                                 shared
                                     .failed
                                     .lock()
