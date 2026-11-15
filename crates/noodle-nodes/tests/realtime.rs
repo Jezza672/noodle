@@ -3008,3 +3008,51 @@ fn version_values_and_articulation_maps_never_allocate_through_switches_and_edit
         assert!(out.iter().all(|x| x.is_finite()), "round {round}");
     }
 }
+
+#[test]
+fn looper_never_allocates_in_any_state() {
+    // A saw into a Looper, driven through Recording (a fixed bar, so it ends
+    // by itself), Playing, Overdubbing, undo, a second overdub, mute and
+    // clear, then recorded again. 1000 frames a block, four blocks a round,
+    // 120 bpm: a bar is 24 rounds.
+    let mut s = Session::new();
+    let saw = s.add(Node::new("noodle.osc.saw").with_param("frequency", 110.0));
+    let looper = s.add(Node::new("noodle.util.looper").with_param("length", 1.0));
+    let output = s.add(Node::new(OUTPUT_ID));
+    s.wire(saw, "out", looper, "in");
+    s.wire(looper, "out", output, "in");
+    s.update();
+
+    let pulses: [(usize, &str); 7] = [
+        (0, "record"),   // start recording one bar
+        (26, "record"),  // overdub from the next wrap
+        (30, "record"),  // and stop at the wrap after it
+        (80, "undo"),    // drop the layer
+        (85, "record"),  // overdub again
+        (140, "clear"),  // empty
+        (145, "record"), // record again
+    ];
+    let mut out = vec![0.0; 1000 * SETTINGS.channels];
+    let mut heard = false;
+    for round in 0..200 {
+        for &(at, param) in &pulses {
+            if round == at {
+                s.controller.set_param(looper, param, 1.0);
+            }
+            if round == at + 1 {
+                s.controller.set_param(looper, param, 0.0);
+            }
+        }
+        if round == 100 {
+            s.controller.set_param(looper, "play", 0.0);
+        }
+        if round == 110 {
+            s.controller.set_param(looper, "play", 1.0);
+        }
+        s.controller.maintain();
+        s.render_realtime(&mut out, round);
+        assert!(out.iter().all(|x| x.is_finite()), "round {round}");
+        heard |= out.iter().any(|&x| x.abs() > 1e-3);
+    }
+    assert!(heard, "the loop never sounded");
+}
