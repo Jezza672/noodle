@@ -97,7 +97,11 @@ impl Settings {
             ui.separator();
             match self.tab {
                 Tab::General => general(ui, session, &mut out),
-                Tab::Audio => out.audio = devices.body(ui, latency),
+                Tab::Audio => {
+                    crate::latency::monitoring_row(ui, session);
+                    ui.add_space(6.0);
+                    out.audio = devices.body(ui, latency);
+                }
                 Tab::Display => out.display_changed = crate::display::body(ui, display),
                 Tab::Models => models.body(ui),
                 Tab::Sources => {

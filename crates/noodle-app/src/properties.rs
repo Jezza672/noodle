@@ -617,7 +617,7 @@ fn sample_picker(
     edits: &mut Vec<Edit>,
 ) {
     use noodle_nodes::{SAMPLE_INPUT_ID, SampleRef};
-    let sampler = node.type_id != SAMPLE_INPUT_ID;
+    let sampler = node.type_id == noodle_nodes::SAMPLER_ID;
     let top = ui.cursor().top();
     let store = session.samples();
     // A Sample node's option can name a window of the sample.
@@ -626,10 +626,10 @@ fn sample_picker(
     ui.label(info.name);
     // A Sampler fed by a wire gets its sound from there, not from its own
     // sample.
-    let wired = sampler
+    let wired = (node.type_id != SAMPLE_INPUT_ID)
         .then(|| {
             let graph = session.project().graph();
-            let from = graph.source(&noodle_core::Endpoint::new(id, "sample"))?;
+            let from = graph.source(&noodle_core::Endpoint::new(id, info.key))?;
             graph.node(from.node)
         })
         .flatten();
@@ -663,7 +663,11 @@ fn sample_picker(
         ));
     }
     ui.label(RichText::new(status).weak());
-    crate::sample_view::preview(ui, session, id, 64.0);
+    if crate::sample_nodes::sample_key(&node.type_id).is_some() {
+        crate::sample_nodes::preview(ui, session, id);
+    } else {
+        crate::sample_view::preview(ui, session, id, 64.0);
+    }
     if node.type_id == noodle_nodes::SAMPLER_ID {
         crate::clip_panel::sampler_warp(ui, session, id, edits);
     }
@@ -736,7 +740,9 @@ fn sample_picker(
         crate::carry::take_drop(ui.ctx());
         match crate::sample_drop::from_clip(session, clip) {
             Ok(dropped) if sampler => {
-                edits.push(Edit::Apply(crate::sample_drop::onto_sampler(id, &dropped)));
+                edits.push(Edit::Apply(crate::sample_drop::onto_sampler(
+                    session, id, &dropped,
+                )));
             }
             Ok(dropped) => edits.push(Edit::Apply(Command::SetConfig {
                 node: id,
@@ -1062,10 +1068,11 @@ fn config(
                 _ => {}
             }
         }
-        if matches!(
+        if (matches!(
             node_type.info().id,
             noodle_nodes::SAMPLER_ID | noodle_nodes::SAMPLE_INPUT_ID
-        ) && info.key == noodle_nodes::SAMPLE_KEY
+        ) && info.key == noodle_nodes::SAMPLE_KEY)
+            || crate::sample_nodes::sample_key(node_type.info().id) == Some(info.key)
         {
             sample_picker(ui, session, id, info, node, edits);
             continue;

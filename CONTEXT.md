@@ -54,6 +54,13 @@ _Avoid_: Note stream, MIDI stream
 One lane of a polyphonic signal. Signals of different voice counts broadcast against each other.
 _Avoid_: Channel (a channel is left/right, not a voice), polyphony lane
 
+**Loop region**:
+The nodes on a feedback loop, which the engine runs together in chunks as short as the loop's shortest delay, so a loop can be as tight as the patch asks (a Delay of 48 samples is a loop that resonates at 1 kHz) while the rest of the graph runs a block at a time. Nothing to set: the chunk is the delay.
+_Avoid_: Feedback block, sub-block
+
+**Feedback node**:
+A one-sample delay (`noodle.util.feedback`) that closes loops a Delay's minimum would be too long for: feedback FM, filters built from integrators. Its loop runs sample by sample.
+
 ### Structure
 
 **Group**:

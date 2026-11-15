@@ -739,6 +739,8 @@ fn open_virtual_input(
 enum MainStream {
     Device(cpal::Stream),
     Virtual(VirtualClock),
+    /// A host calls the engine itself (see [`crate::HostBackend`]).
+    Host,
 }
 
 /// The virtual output: a thread that calls the writer once per block's
@@ -805,6 +807,9 @@ impl VirtualClock {
         let flag = Arc::clone(&stop);
         let tap = Arc::new(Mutex::<Option<Vec<f32>>>::new(None));
         let tapped = Arc::clone(&tap);
+        // The buffer size is known up front, so report it from the start
+        // rather than once the thread's first block has been written.
+        writer.fade.period.fetch_max(frames, Ordering::Relaxed);
         let period = Duration::from_secs_f64(f64::from(frames) / f64::from(rate));
         let thread = std::thread::Builder::new()
             .name("noodle virtual output".into())
@@ -867,6 +872,29 @@ pub struct OpenedOutput {
 }
 
 impl Playback {
+    /// The stand-in for a stream when a host drives the engine: nothing to
+    /// open, wait for or close. `name` is what the host calls itself.
+    pub fn host(settings: Settings, name: &str) -> Self {
+        let fade = Arc::new(Fade::default());
+        // Nothing to fade: the host owns the stream.
+        fade.done.store(true, Ordering::Release);
+        Self {
+            fade,
+            _stream: MainStream::Host,
+            recorder: None,
+            _input_stream: None,
+            _extra_streams: Vec::new(),
+            drained: Vec::new(),
+            outputs: Vec::new(),
+            device: name.to_owned(),
+            input: None,
+            input_meter: None,
+            input_problem: None,
+            settings,
+            health: Health::new(),
+        }
+    }
+
     /// How long after the audio thread renders a sample the device plays it,
     /// as the driver reports it: zero until the first callback.
     pub fn output_latency(&self) -> Duration {
@@ -882,7 +910,7 @@ impl Playback {
     pub fn virtual_capture(&self) -> Option<VirtualCapture> {
         match &self._stream {
             MainStream::Virtual(clock) => Some(VirtualCapture(Arc::clone(&clock.tap))),
-            MainStream::Device(_) => None,
+            MainStream::Device(_) | MainStream::Host => None,
         }
     }
 
@@ -1234,7 +1262,11 @@ fn open_playback(
             let host_id = host_for(choice.host.as_deref(), None, Direction::Output)?;
             // What `virtual_output()` advertises; a hand-edited setting
             // outside it is refused, not trusted.
-            let frames = choice.buffer_size.unwrap_or(VIRTUAL_BUFFER);
+            let frames = choice.buffer_size.unwrap_or_else(|| {
+                choice.live_buffer.map_or(VIRTUAL_BUFFER, |f| {
+                    f.clamp(VIRTUAL_BUFFERS.0, VIRTUAL_BUFFERS.1)
+                })
+            });
             if !(VIRTUAL_BUFFERS.0..=VIRTUAL_BUFFERS.1).contains(&frames) {
                 return Err(AudioError::UnsupportedBufferSize {
                     frames,
@@ -1281,7 +1313,7 @@ fn open_playback(
                 None => buffer_request(
                     &ranges,
                     choice.sample_rate.unwrap_or(default.sample_rate()),
-                    None,
+                    choice.live_buffer,
                 ),
             };
             let chosen = |buffer| {
@@ -1387,6 +1419,7 @@ fn open_playback(
                     id,
                     &settings,
                     choice.buffer_size,
+                    choice.live_buffer,
                     live_default,
                     &mut health,
                 )
@@ -1623,6 +1656,7 @@ fn open_input(
     id: Option<&str>,
     settings: &Settings,
     buffer_size: Option<u32>,
+    live_buffer: Option<u32>,
     live_default: bool,
     health: &mut Health,
 ) -> Result<(InputStream, String, usize, Feed, Recorder), AudioError> {
@@ -1641,7 +1675,7 @@ fn open_input(
     let buffer = if buffer_size.is_none() && !live_default {
         None
     } else {
-        buffer_request(&ranges, rate, buffer_size)
+        buffer_request(&ranges, rate, buffer_size.or(live_buffer))
     };
     let chosen = |buffer| choose_config(&ranges, default, Some(rate), buffer, None);
     let Chosen { config, format } = match buffer {
@@ -1674,7 +1708,7 @@ fn open_input(
     // builds: leave it to the device, unless the size was chosen.
     let stream = match stream {
         Err(_) if buffer.is_some() && buffer_size.is_none() => {
-            return open_input(host, id, settings, None, false, health);
+            return open_input(host, id, settings, None, None, false, health);
         }
         stream => stream?,
     };

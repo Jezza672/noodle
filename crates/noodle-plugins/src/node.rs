@@ -145,6 +145,11 @@ impl NodeType for PluginNodeType {
         self.info
     }
 
+    /// A plugin processes whole blocks, so a loop it is in runs whole blocks.
+    fn chunkable(&self, _config: &Config) -> bool {
+        false
+    }
+
     /// A plugin runs even when nothing listens to it while its editor is
     /// open, so the editor's meters and displays keep moving.
     fn always_runs_for(&self, node: NodeId) -> bool {
@@ -387,6 +392,9 @@ pub(crate) struct Shared(pub Arc<PluginNodeType>, pub bool);
 impl NodeType for Shared {
     fn info(&self) -> &NodeInfo {
         self.0.info()
+    }
+    fn chunkable(&self, _config: &Config) -> bool {
+        false
     }
     fn always_runs_for(&self, node: NodeId) -> bool {
         self.0.always_runs_for(node)

@@ -265,7 +265,9 @@ It has these views:
   - **Carrying out of the timeline** (`carry.rs`). Dragging an audio clip's
     body, or a track header, out of the timeline's area carries it: the clip
     goes back where it was, a label follows the pointer, and letting go
-    over a view hands that view the drop. Over a Sampler (its node, or the
+    over a view hands that view the drop. Over a Sampler, Grains or Wavetable
+    (a Grains or Wavetable takes the clip's part of the file as its sample; its
+    node, or the
     sample section of the properties panel) a clip sets the sample, `start` and
     `end` from the part of the file the clip plays, and the root from the
     sample's pitch, as one undo step. Over empty canvas a clip makes a `Sample`
@@ -373,7 +375,7 @@ It has these views:
     `SampleStore` is only given a file that is already there, so it stays
     offline, and the CLI and renders never download.
   - **Drag.** A row is carried like a clip (`carry::Item::Sound`). Dropped on a
-    Sampler or a drum pad it sets the hash (`sample_drop::choose`); on the
+    Sampler, Grains, Wavetable or a drum pad it sets the hash (`sample_drop::choose`); on the
     canvas it becomes a Sample node; on the timeline it is copied to
     `<project>/sounds/` and laid as a path-referenced clip whose
     `AudioClip::credit` carries the attribution (shown in the clip panel). A

@@ -50,6 +50,8 @@ pub struct Prefs {
     pub snap: i64,
     /// How the MIDI of the next take is snapped.
     pub record_quantise: crate::midi_take::Quantise,
+    /// What the device buffer does while tracks are armed or monitored.
+    pub monitoring_latency: crate::latency::MonitoringLatency,
     /// Drum separation models the user has answered for, by id: whether each
     /// is enabled. A model not listed has not been asked about yet (the
     /// first-use popup). About this machine's downloads, so not exported.
@@ -87,6 +89,7 @@ impl Default for Prefs {
             display: Default::default(),
             snap: crate::snap::DEFAULT,
             record_quantise: Default::default(),
+            monitoring_latency: Default::default(),
             drum_models: Default::default(),
             stem_models_off: Default::default(),
             sources: Default::default(),
@@ -220,6 +223,20 @@ pub fn remember_midi_record(mode: crate::midi_take::MidiRecord) {
             return;
         };
         prefs.midi_record = mode;
+        if let Err(error) = save(path, prefs) {
+            eprintln!("noodle: couldn't save preferences: {error}");
+        }
+    });
+}
+
+/// Saves what the device buffer does while tracks are armed, with the other
+/// preferences, if [`init`] has been called.
+pub fn remember_monitoring_latency(setting: crate::latency::MonitoringLatency) {
+    CURRENT.with_borrow_mut(|current| {
+        let Some((path, prefs)) = current else {
+            return;
+        };
+        prefs.monitoring_latency = setting;
         if let Err(error) = save(path, prefs) {
             eprintln!("noodle: couldn't save preferences: {error}");
         }
@@ -599,6 +616,7 @@ mod tests {
                 input: InputChoice::Device("alsa:hw:CARD=Mic".into()),
                 sample_rate: Some(48_000),
                 buffer_size: Some(256),
+                live_buffer: None,
                 channels: Some(6),
                 midi_inputs: vec!["Keystation 49".into(), "Pad Controller".into()],
                 threads: 2,
@@ -614,6 +632,7 @@ mod tests {
             display: Default::default(),
             snap: crate::snap::DEFAULT,
             record_quantise: Default::default(),
+            monitoring_latency: Default::default(),
             drum_models: Default::default(),
             stem_models_off: Default::default(),
             sources: Default::default(),
@@ -708,7 +727,7 @@ mod tests {
         let text = ron::ser::to_string(&chosen()).unwrap();
         assert_eq!(
             text,
-            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_inputs:["Keystation 49","Pad Controller"],threads:2),sandbox_plugins:false,monitor_device:"",engine_on:true,auto_cache:false,count_in_bars:0,pre_roll_bars:0,midi_record:Takes,automation_mode:Latch,display:(performance:false,event_wires:true,audio_wires:true,input_meters:true,output_meters:true,clip_flash:true,silent_dim:true,param_motion:true,voice_leds:true,beat_pulse:true,cpu_heat:false),snap:960,record_quantise:Off)"#
+            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_inputs:["Keystation 49","Pad Controller"],threads:2),sandbox_plugins:false,monitor_device:"",engine_on:true,auto_cache:false,count_in_bars:0,pre_roll_bars:0,midi_record:Takes,automation_mode:Latch,display:(performance:false,event_wires:true,audio_wires:true,input_meters:true,output_meters:true,clip_flash:true,silent_dim:true,param_motion:true,voice_leds:true,beat_pulse:true,cpu_heat:false),snap:960,record_quantise:Off,monitoring_latency:Auto)"#
         );
         // Files from before the MIDI input was added still load.
         let old = r#"(audio:(host:Some("alsa"),output:None,input:Off,sample_rate:None,buffer_size:Some(256)))"#;

@@ -17,6 +17,7 @@ pub mod automate;
 pub mod convert;
 pub mod drum_rack;
 mod export;
+pub mod host;
 pub mod learn_midi;
 mod library;
 pub mod make_external;
@@ -35,6 +36,7 @@ pub use export::{ExportChoice, ExportSummary};
 pub use library::{LibraryEdit, PresetStatus};
 
 use crate::freezing::{Badge, Freezing, Look, Polled};
+use crate::latency::{BufferTier, MonitoringLatency, RELAX_AFTER, wanted_tier};
 use noodle_core::{
     Clip, ClipId, Command, EditError, FrameId, History, MidiClip, NodeId, Project,
     TICKS_PER_QUARTER, Tick,
@@ -284,6 +286,11 @@ pub struct Nodes {
     pub clips: ClipFeeds,
     /// Where the MIDI In nodes get their messages.
     pub midi: noodle_io::MidiBus,
+    /// Where the MIDI Out nodes send, which a host backend also reads.
+    pub midi_out: noodle_io::MidiOutHub,
+    /// The host's parameter bank and tempo, which the Host Parameter nodes
+    /// read.
+    pub host: Arc<noodle_io::HostLink>,
     /// Where the Sampler nodes get their samples, by hash.
     pub samples: noodle_nodes::SampleStore,
     /// The plugins whose node types are in `registry`. Renders (freeze,
@@ -304,15 +311,18 @@ impl Nodes {
             clips,
             midi,
             samples,
-            // The MIDI Out nodes hold the hub; the clock it shares with
-            // `midi` is how the device tells them when blocks are heard.
-            midi_out: _,
+            // The clock the hub shares with `midi` is how the device tells
+            // the MIDI Out nodes when blocks are heard.
+            midi_out,
+            host,
         } = noodle_nodes::register_library(&mut registry);
         Self {
             registry,
             telemetry,
             clips,
             midi,
+            midi_out,
+            host,
             samples,
             plugins: noodle_plugins::Catalog::default(),
             plugin_scan: None,
@@ -463,6 +473,12 @@ pub struct Session {
     clips: ClipFeeds,
     /// Where the MIDI input port's messages go, to reach the MIDI In nodes.
     midi: noodle_io::MidiBus,
+    /// Where the MIDI Out nodes send, and the host's bank (see `host.rs`).
+    midi_out: noodle_io::MidiOutHub,
+    host_link: Arc<noodle_io::HostLink>,
+    /// Whether a host calls the engine (a plugin instance): there is no
+    /// device to open, reopen or fall back from.
+    host_driven: bool,
     /// Where the transport's tempo comes from, and the tempo while it is not
     /// the map (see `tempo_source.rs`).
     tempo_source: crate::tempo_source::TempoSource,
@@ -521,6 +537,15 @@ pub struct Session {
     latency: noodle_engine::LatencyReport,
     /// The device to play on.
     audio_config: AudioConfig,
+    /// What the device buffer does while tracks are armed (see
+    /// [`MonitoringLatency`]).
+    monitoring_latency: MonitoringLatency,
+    /// Since when nothing has been playing, armed or monitored, while the
+    /// engine runs; the buffer relaxes after a while.
+    idle_since: Option<Instant>,
+    /// The tier the last stream was at, so a stream reopened for another
+    /// reason keeps it.
+    tier_memory: Option<BufferTier>,
     /// The nodes being listened to, and how (see [`NodeMonitor`]).
     node_monitor: NodeMonitor,
     audio: Option<Audio>,
@@ -770,6 +795,9 @@ struct Audio {
     fallback: Option<String>,
     /// Output underruns since the stream opened, as of the last health check.
     underruns: u64,
+    /// The buffer tier the stream was opened at, `None` when monitoring
+    /// latency has no say in it.
+    tier: Option<BufferTier>,
 }
 
 /// Whether playback is coming from the cache, for the toolbar.
@@ -829,6 +857,8 @@ impl Session {
             telemetry,
             clips,
             midi,
+            midi_out,
+            host,
             samples,
             plugins,
             plugin_scan,
@@ -857,6 +887,9 @@ impl Session {
             clips,
             clock_tap: midi.clock_tap(),
             midi,
+            midi_out,
+            host_link: host,
+            host_driven: false,
             tempo_source: Default::default(),
             live_bpm: None,
             taps: Default::default(),
@@ -887,6 +920,9 @@ impl Session {
             diagnostics: Vec::new(),
             latency: noodle_engine::LatencyReport::default(),
             audio_config: AudioConfig::default(),
+            monitoring_latency: MonitoringLatency::default(),
+            idle_since: None,
+            tier_memory: None,
             node_monitor: NodeMonitor::default(),
             audio: None,
             reroutes: Reroutes::default(),
@@ -2407,6 +2443,7 @@ impl Session {
     /// Closes the audio stream, keeping the playhead for the next start.
     /// Nothing sounds, live MIDI included, and a drone falls silent.
     pub fn stop_engine(&mut self) {
+        self.idle_since = None;
         self.stop_recording();
         self.close_stream();
         self.feed_clips();
@@ -2429,8 +2466,14 @@ impl Session {
         }
         // Output nodes tied to other devices play on those as well.
         let devices = self.wanted_devices();
+        let tier = self.wanted_buffer_tier(self.tier_memory, self.idle_long());
+        let live_buffer = tier.and_then(BufferTier::request);
         let open = |config: &AudioConfig| {
-            noodle_io::play_with_outputs_stopped(config, &devices, MAX_FRAMES, &self.midi).map(
+            let config = AudioConfig {
+                live_buffer,
+                ..config.clone()
+            };
+            noodle_io::play_with_outputs_stopped(&config, &devices, MAX_FRAMES, &self.midi).map(
                 |(playback, controller)| {
                     if running {
                         controller.transport().play();
@@ -2479,7 +2522,9 @@ impl Session {
                     monitor: Monitor::default(),
                     fallback: fell_back,
                     underruns: 0,
+                    tier,
                 });
+                self.tier_memory = tier;
                 self.recompile();
                 if let Some(audio) = &mut self.audio {
                     audio.controller.set_tempo_map(self.project.tempo_map());
@@ -2820,6 +2865,10 @@ impl Session {
                 at(frame);
             }
             at(now + HEALTH_INTERVAL);
+            // The buffer relaxes once nothing has been going on for a while.
+            if let Some(since) = self.idle_since {
+                at(since + RELAX_AFTER);
+            }
         }
         if self.learning.is_some() {
             at(now + FRAME);
@@ -2889,6 +2938,9 @@ impl Session {
         self.poll_learn_midi();
         self.poll_plugin_hosts(Instant::now());
         self.maintain_automation_recording();
+        if self.audio.is_some() {
+            self.follow_monitoring();
+        }
         let Some(audio) = &mut self.audio else {
             return;
         };
@@ -2939,6 +2991,96 @@ impl Session {
         }
     }
 
+    /// Whether a track is armed or monitored, so live playing is heard.
+    fn live_input(&self) -> bool {
+        self.clips.any_live()
+    }
+
+    /// The buffer tier the stream should be at. `current` is the tier it is
+    /// at and `idle_long` whether it has idled for [`RELAX_AFTER`]. `None`
+    /// when a size was chosen in the audio settings, which stays, or the
+    /// setting is Off.
+    fn wanted_buffer_tier(
+        &self,
+        current: Option<BufferTier>,
+        idle_long: bool,
+    ) -> Option<BufferTier> {
+        if self.audio_config.buffer_size.is_some() {
+            return None;
+        }
+        wanted_tier(
+            self.monitoring_latency,
+            self.live_input(),
+            idle_long,
+            current,
+        )
+    }
+
+    /// Whether nothing has been going on for [`RELAX_AFTER`].
+    fn idle_long(&self) -> bool {
+        self.idle_since
+            .is_some_and(|since| Instant::now().duration_since(since) >= RELAX_AFTER)
+    }
+
+    /// Whether the stream can be closed and opened again without cutting
+    /// something off: nothing plays or records.
+    fn can_reopen(&self) -> bool {
+        !self.transport_running() && self.recording.is_none() && self.counting_in.is_none()
+    }
+
+    /// Keeps the engine's live set and the device buffer in step with arming.
+    /// A change to which tracks are heard live remakes the plan, so the
+    /// others' plugin latency doesn't hold them back. The buffer is
+    /// reopened at another size only while stopped, never during a take, so a
+    /// gap in the sound falls where nobody is playing.
+    fn follow_monitoring(&mut self) {
+        // The live set changes only while stopped: remaking the plan with
+        // delay lines gone or added moves a track in time, which would click
+        // under a running transport.
+        let live = self.clips.monitored_nodes();
+        let changed = self.can_reopen()
+            && self
+                .audio
+                .as_mut()
+                .is_some_and(|audio| audio.controller.set_live_nodes(live.clone()));
+        if changed {
+            self.recompile_with(false);
+        }
+        let now = Instant::now();
+        let idle = self.audio.is_some()
+            && !self.live_input()
+            && !self.transport_running()
+            && self.recording.is_none();
+        match (idle, self.idle_since) {
+            (true, None) => self.idle_since = Some(now),
+            (false, _) => self.idle_since = None,
+            _ => {}
+        }
+        let idle_long = self.idle_long();
+        let Some(current) = self.audio.as_ref().map(|audio| audio.tier) else {
+            return;
+        };
+        let wanted = self.wanted_buffer_tier(current, idle_long);
+        if wanted != current && self.can_reopen() {
+            self.reopen_stream();
+        }
+    }
+
+    /// What the device buffer does while tracks are armed or monitored.
+    pub fn monitoring_latency(&self) -> MonitoringLatency {
+        self.monitoring_latency
+    }
+
+    pub fn set_monitoring_latency(&mut self, setting: MonitoringLatency) {
+        self.monitoring_latency = setting;
+    }
+
+    /// The tier the open stream's buffer was asked for, if monitoring latency
+    /// has a say in it.
+    pub fn buffer_tier(&self) -> Option<BufferTier> {
+        self.audio.as_ref()?.tier
+    }
+
     /// The output was rerouted, say when headphones are unplugged. Some
     /// backends reroute the stream by themselves but leave it silent, so
     /// start again on whatever is now the default, and say so.
@@ -2979,6 +3121,11 @@ impl Session {
             // Auto monitoring hears the input of an audio-armed track.
             ArmKind::Audio => self.clips.set_audio_armed(track, on),
         }
+        // Reopening the stream at a small buffer comes now, before anything
+        // is played, not a frame later when a note may already be held.
+        if self.audio.is_some() {
+            self.follow_monitoring();
+        }
     }
 
     /// Arms or disarms a track for both kinds of input.
@@ -3014,6 +3161,7 @@ impl Session {
         self.set_record_midi(prefs.midi_record);
         self.set_automation_mode(prefs.automation_mode);
         self.set_snap(prefs.snap);
+        self.set_monitoring_latency(prefs.monitoring_latency);
         self.set_record_quantise(prefs.record_quantise);
     }
 
@@ -4018,15 +4166,19 @@ impl Session {
             .nodes
             .retain(|&node| self.project.graph().node(node).is_some());
         let wanted = self.wanted_devices();
-        if self.audio.as_ref().is_some_and(|a| a.devices != wanted) {
+        if !self.host_driven && self.audio.as_ref().is_some_and(|a| a.devices != wanted) {
             self.reopen_stream();
             if self.audio.is_some() {
                 return;
             }
         }
         let monitor = self.engine_monitor();
+        let live = self.can_reopen().then(|| self.clips.monitored_nodes());
         if let Some(audio) = &mut self.audio {
             audio.controller.set_monitor(monitor);
+            if let Some(live) = live {
+                audio.controller.set_live_nodes(live);
+            }
         }
         let plan = self.refresh_freezing(start);
         self.diagnostics = match (&mut self.audio, &plan) {
@@ -5702,6 +5854,7 @@ mod tests {
             input: noodle_io::InputChoice::Default,
             sample_rate: Some(96_000),
             buffer_size: Some(64),
+            live_buffer: None,
             channels: Some(6),
             midi_inputs: vec!["Keys".into()],
             threads: 3,
@@ -7610,6 +7763,103 @@ mod tests {
         session.arm(track, true);
         session.midi_bus().send([0x90, 69, 100]);
         assert!(loudness(&mut session, meter, true) > 0.01);
+    }
+
+    /// A session on the virtual output with one track, so arming has a track
+    /// input to arm.
+    fn monitoring_session(dir: &Path) -> (Session, NodeId) {
+        let (mut session, _tap, tracks) = recording_session(dir, 1);
+        session.set_audio_config(crate::testkit::virtual_audio());
+        session.start_engine();
+        assert!(
+            session.latency_report().is_some(),
+            "{:?}",
+            session.message()
+        );
+        (session, tracks[0])
+    }
+
+    fn buffer(session: &Session) -> u32 {
+        session.latency_report().unwrap().output_buffer_frames
+    }
+
+    #[test]
+    fn arming_a_track_while_stopped_reopens_the_stream_with_a_small_buffer() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, track) = monitoring_session(dir.path());
+        assert_eq!(session.buffer_tier(), Some(BufferTier::Normal));
+        assert_eq!(buffer(&session), 256);
+        session.arm_kind(track, ArmKind::Midi, true);
+        session.maintain();
+        assert_eq!(session.buffer_tier(), Some(BufferTier::Low));
+        assert_eq!(buffer(&session), 64);
+        // Disarming does not bounce it back at once.
+        session.arm_kind(track, ArmKind::Midi, false);
+        session.maintain();
+        assert_eq!(session.buffer_tier(), Some(BufferTier::Low));
+    }
+
+    #[test]
+    fn the_buffer_relaxes_when_idle_and_wakes_when_armed() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, track) = monitoring_session(dir.path());
+        session.maintain();
+        assert_eq!(session.buffer_tier(), Some(BufferTier::Normal));
+        assert!(session.idle_since.is_some(), "idle clock is running");
+        session.idle_since = Some(Instant::now() - RELAX_AFTER);
+        session.maintain();
+        assert_eq!(session.buffer_tier(), Some(BufferTier::Relaxed));
+        assert_eq!(buffer(&session), 1024);
+        session.arm_kind(track, ArmKind::Midi, true);
+        session.maintain();
+        assert_eq!(buffer(&session), 64);
+    }
+
+    #[test]
+    fn the_stream_is_not_reopened_while_the_transport_runs() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, track) = monitoring_session(dir.path());
+        session.play();
+        session.arm_kind(track, ArmKind::Midi, true);
+        session.maintain();
+        assert_eq!(session.buffer_tier(), Some(BufferTier::Normal));
+        assert_eq!(buffer(&session), 256);
+        session.stop();
+        session.maintain();
+        assert_eq!(session.buffer_tier(), Some(BufferTier::Low));
+    }
+
+    #[test]
+    fn a_chosen_buffer_size_and_the_off_setting_leave_the_buffer_alone() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, track) = monitoring_session(dir.path());
+        session.set_monitoring_latency(MonitoringLatency::Off);
+        session.arm_kind(track, ArmKind::Midi, true);
+        session.maintain();
+        assert_eq!(session.buffer_tier(), None);
+        assert_eq!(buffer(&session), 256);
+
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, track) = monitoring_session(dir.path());
+        session.set_audio_config(AudioConfig {
+            buffer_size: Some(128),
+            ..crate::testkit::virtual_audio()
+        });
+        session.start_engine();
+        session.arm_kind(track, ArmKind::Midi, true);
+        session.maintain();
+        assert_eq!(session.buffer_tier(), None);
+        assert_eq!(buffer(&session), 128);
+    }
+
+    #[test]
+    fn always_low_opens_small_from_the_start() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mut session, _tap, _tracks) = recording_session(dir.path(), 1);
+        session.set_audio_config(crate::testkit::virtual_audio());
+        session.set_monitoring_latency(MonitoringLatency::AlwaysLow);
+        session.start_engine();
+        assert_eq!(buffer(&session), 64);
     }
 }
 

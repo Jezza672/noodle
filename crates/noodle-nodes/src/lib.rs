@@ -11,6 +11,7 @@ mod bitcrush;
 mod button;
 mod cached;
 mod choke_gate;
+mod chord;
 mod chorus;
 mod clip;
 mod clock;
@@ -25,10 +26,14 @@ mod envelope;
 mod eq;
 mod event_delay;
 mod export;
+mod feedback;
 mod follower;
 mod freeze;
 mod fundamental;
 mod gain;
+mod grains;
+mod held_notes;
+mod host_param;
 mod humanise;
 mod ladder;
 mod lag;
@@ -64,10 +69,12 @@ mod sample_input;
 mod sample_set;
 mod sampler;
 mod sampler_stretch;
+mod scale_quantise;
 mod scope;
 mod script;
 mod selector;
 mod slice;
+mod song_key;
 mod spectral;
 mod spectral_dynamics;
 mod spectral_pitch;
@@ -79,10 +86,12 @@ mod swing;
 pub mod system_samples;
 mod tempo;
 mod time_stretch;
+mod transpose;
 mod vca;
 mod version_value;
 mod voice_mix;
 mod voices;
+mod wavetable;
 
 pub use adsr::{ADSR_ID, Adsr, AdsrShape};
 pub use arpeggiator::{
@@ -105,6 +114,7 @@ pub use bitcrush::{BITCRUSHER_ID, Bitcrusher, quantise};
 pub use button::{BUTTON_ID, BUTTON_STATE, Button};
 pub use cached::{CACHED_ID, CachedPlayer};
 pub use choke_gate::{CHOKE_GATE_ID, ChokeGate};
+pub use chord::{CHORD_ID, CHORDS, Chord, MAX_STRUM_MS as CHORD_MAX_STRUM_MS};
 pub use chorus::{CHORUS_ID, Chorus};
 pub use clip::{
     ClipFeeds, ClipProblem, ClipSource, ClipStatus, FileError, Schedule, ScheduledClip,
@@ -138,6 +148,7 @@ pub use export::{
     ExportJobError, ExportReport, ExportRequest, TrackExport, export, spawn_export,
     spawn_export_all,
 };
+pub use feedback::{FEEDBACK_ID, Feedback};
 pub use follower::{EnvelopeFollower, FOLLOWER_ID};
 pub use freeze::{
     FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,
@@ -145,6 +156,14 @@ pub use freeze::{
 };
 pub use fundamental::{LISTEN_SECONDS, fundamental, key_of};
 pub use gain::{GAIN_ID, Gain};
+pub use grains::{
+    DEFAULT_GRAINS, GRAINS_ID, GRAINS_KEY, Grains, MAX_GRAINS, MIN_GRAINS,
+    SAMPLE_KEY as GRAINS_SAMPLE_KEY,
+};
+pub use host_param::{
+    HOST_PARAM_ID, HOST_PARAM_NAME, HOST_PARAM_NAME_KEY, HOST_PARAM_SLOT, HOST_PARAM_SLOT_KEY,
+    HostParam,
+};
 pub use humanise::{HUMANISE_ID, Humanise, MAX_TIMING_MS as HUMANISE_MAX_TIMING_MS};
 pub use ladder::{LADDER_ID, LADDER_SELF_OSCILLATES, Ladder, ladder_response};
 pub use lag::{LAG_ID, Lag};
@@ -196,6 +215,7 @@ pub use sample_set::{
     velocity_layer,
 };
 pub use sampler::{GAIN_ENV_KEY, GAIN_ENV_SCALE, SAMPLE_KEY, SAMPLER_ID, Sampler, WARP_KEY};
+pub use scale_quantise::{ROOT_NAMES, SCALE_QUANTISE_ID, SCALES, ScaleQuantise};
 pub use scope::{SCOPE_ID, Scope};
 pub use script::{
     DEFAULT_SCRIPT, MAX_INPUTS as SCRIPT_MAX_INPUTS, MAX_OUTPUTS as SCRIPT_MAX_OUTPUTS, SCRIPT_ID,
@@ -208,6 +228,7 @@ pub use slice::{
     MAX_SLICES, SLICE_EDITS_KEY, SLICE_FIRST_KEY, SLICE_ID, SLICE_SENSITIVITY_KEY, Slice,
     cuts as slice_cuts, slice_set,
 };
+pub use song_key::{SONG_KEY_ID, SongKey};
 pub use spectral::{
     ANALYZE_ID, Analyze, CROSS_ID, Cross, FORMANT_SHIFT_ID, FormantShift, SPECTRAL_BLUR_ID,
     SPECTRAL_FILTER_ID, SPECTRAL_FREEZE_ID, SPECTRAL_GATE_ID, SPECTRAL_SHIFT_ID, SYNTHESIZE_ID,
@@ -231,10 +252,14 @@ pub use svf::{SVF_ID, Svf, svf_response};
 pub use swing::{GRID_NAMES as SWING_GRID_NAMES, GRID_TICKS as SWING_GRID_TICKS, SWING_ID, Swing};
 pub use tempo::{TEMPO_ID, Tempo};
 pub use time_stretch::{TIME_STRETCH_ID, TimeStretch};
+pub use transpose::{TRANSPOSE_ID, Transpose};
 pub use vca::{VCA_ID, Vca};
 pub use version_value::{MAX_VERSION_SLOTS, VERSION_MAX, VERSION_MIN, VERSION_TAPER, VersionValue};
 pub use voice_mix::{VOICE_MIX_ID, VoiceMix};
 pub use voices::{VOICES_ID, Voices};
+pub use wavetable::{
+    CYCLE_KEY, CYCLE_LENGTHS, DEFAULT_CYCLE, TABLE_KEY, Table, WAVETABLE_ID, Wavetable,
+};
 
 use std::path::Path;
 
@@ -256,6 +281,9 @@ pub struct Library {
     pub midi: noodle_io::MidiBus,
     /// Where MIDI Out nodes send their messages to.
     pub midi_out: noodle_io::MidiOutHub,
+    /// The host's parameter bank, tempo and play state: what the Host
+    /// Parameter nodes read. A plugin shell hands it to its host backend.
+    pub host: std::sync::Arc<noodle_io::HostLink>,
     /// Where Sampler nodes get their samples, by hash. Give it a folder
     /// ([`SampleStore::set_dir`]) to read them from disk.
     pub samples: SampleStore,
@@ -299,6 +327,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Math);
     registry.register(Script);
     registry.register(Delay);
+    registry.register(Feedback);
     registry.register(Looper::new(&telemetry));
     registry.register(Morph);
     registry.register(Dynamics::new(&telemetry));
@@ -350,6 +379,10 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(ToNotes);
     registry.register(Swing);
     registry.register(Humanise);
+    registry.register(ScaleQuantise);
+    registry.register(Chord);
+    registry.register(Transpose);
+    registry.register(SongKey);
     registry.register(Voices);
     registry.register(VoiceMix::new(&telemetry));
     registry.register(Reverse);
@@ -366,6 +399,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(MidiControl::new(&midi));
     let midi_out = noodle_io::MidiOutHub::new(std::sync::Arc::clone(midi.clock()));
     registry.register(MidiOut::new(&midi_out));
+    let host = noodle_io::HostLink::new();
+    registry.register(HostParam::new(&host));
     let samples = SampleStore::new();
     registry.register(if clips.is_blocking() {
         Sampler::blocking(&samples, &telemetry)
@@ -373,12 +408,15 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
         Sampler::new(&samples, &telemetry)
     });
     registry.register(Slice::new(&samples));
+    registry.register(Wavetable::new(&samples));
+    registry.register(Grains::new(&samples, &telemetry));
     registry.register(Convolver::new(&samples));
     Library {
         telemetry,
         clips,
         midi,
         midi_out,
+        host,
         samples,
     }
 }

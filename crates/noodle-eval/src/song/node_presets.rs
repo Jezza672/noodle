@@ -785,6 +785,45 @@ fn table() -> Vec<Row> {
             &[("timing", 30.0), ("velocity", 0.4)],
         ),
         row(
+            "noodle.event.scale_quantise",
+            "C Major",
+            &[("root", 0.0), ("scale", 0.0)],
+        ),
+        row(
+            "noodle.event.scale_quantise",
+            "A Minor Pentatonic",
+            &[("root", 9.0), ("scale", 10.0)],
+        ),
+        row(
+            "noodle.event.scale_quantise",
+            "D Dorian Up",
+            &[("root", 2.0), ("scale", 2.0), ("direction", 2.0)],
+        ),
+        row("noodle.event.chord", "Triad", &[("type", 0.0)]),
+        row(
+            "noodle.event.chord",
+            "Minor Seventh Strum",
+            &[("type", 9.0), ("strum", 40.0)],
+        ),
+        row(
+            "noodle.event.chord",
+            "Open Fifth",
+            &[("type", 11.0), ("spread", 1.0)],
+        ),
+        row(
+            "noodle.event.transpose",
+            "Octave Up",
+            &[("semitones", 12.0)],
+        ),
+        row(
+            "noodle.event.transpose",
+            "Octave Down",
+            &[("semitones", -12.0)],
+        ),
+        row("noodle.event.transpose", "Fifth Up", &[("semitones", 7.0)]),
+        row("noodle.mod.key", "Written in C Major", &[("from", 0.0)]),
+        row("noodle.mod.key", "Written in A Minor", &[("from", 21.0)]),
+        row(
             "noodle.event.note_split",
             "Keyboard Split at C3",
             &[("high1", 59.0), ("low2", 60.0)],
@@ -908,6 +947,40 @@ fn table() -> Vec<Row> {
             "noodle.instrument.sampler",
             "Fixed Pitch Hit",
             &[("mode", 0.0), ("keytrack", 0.0), ("release", 0.05)],
+        ),
+        row(
+            "noodle.instrument.grains",
+            "Freeze",
+            &[
+                ("spray", 0.0),
+                ("size", 0.3),
+                ("density", 20.0),
+                ("jitter", 0.2),
+            ],
+        ),
+        row(
+            "noodle.instrument.grains",
+            "Texture",
+            &[
+                ("spray", 0.5),
+                ("size", 0.08),
+                ("density", 60.0),
+                ("jitter", 1.0),
+                ("pitch_spray", 4.0),
+                ("spread", 1.0),
+            ],
+        ),
+        row(
+            "noodle.instrument.grains",
+            "Scatter",
+            &[
+                ("spray", 1.0),
+                ("size", 0.04),
+                ("density", 30.0),
+                ("jitter", 1.0),
+                ("reverse", 0.5),
+                ("spread", 0.8),
+            ],
         ),
         // Voices and mixing.
         row(

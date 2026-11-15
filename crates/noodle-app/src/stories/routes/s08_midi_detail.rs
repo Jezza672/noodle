@@ -11,7 +11,8 @@
 //!   the instrument, with its `timing` and `velocity` parameters. To
 //!   humanise only some notes, automate its `timing` over them (the
 //!   automation lane is not routed here, so the route sets the amount and
-//!   halves it by hand).
+//!   halves it by hand). "Transpose the part down a tone" is a Transpose
+//!   node between the Humanise node and the instrument, at -2 semitones.
 //!
 //! Recording the piano part and redrawing the sustain pedal's lane are not
 //! routed.
@@ -21,7 +22,7 @@ use super::super::{LateChange, Route, Tag};
 use super::roll::{BEAT, clip_of, hit, new_clip, one_track, select};
 use egui::{Key, Modifiers};
 use noodle_core::{Command, Endpoint, Node, NodeId, Project};
-use noodle_nodes::{HUMANISE_ID, TRACK_INPUT_ID};
+use noodle_nodes::{HUMANISE_ID, TRACK_INPUT_ID, TRANSPOSE_ID};
 
 use super::patch::{Op, Ref, run};
 
@@ -317,6 +318,77 @@ fn wire_halved(p: &mut Probe, _size: usize) -> Result<(), String> {
     Ok(())
 }
 
+const TRANSPOSE: Ref = Ref("event.transpose", 0);
+
+/// The late change "transpose the part down a tone" on the wire: a Transpose
+/// node between the Humanise node and the instrument, set to -2 semitones.
+fn wire_transpose(h: &mut Handle, _size: usize) {
+    run(
+        h,
+        &[
+            Op::Step("add a Transpose node"),
+            Op::Add(TRANSPOSE, 540.0, 460.0),
+            Op::Step("set it down a tone"),
+            Op::Set(TRANSPOSE, "semitones", -2.0),
+        ],
+    );
+    h.step("put it between the Humanise node and the instrument");
+    let (human, transpose, out) = {
+        let p = h.probe();
+        let project = p.project();
+        let find = |type_id: &str| {
+            project
+                .graph()
+                .nodes()
+                .find(|(_, n)| n.type_id == type_id)
+                .map(|(id, _)| id)
+        };
+        (
+            human_node(project).expect("the Humanise node"),
+            find(TRANSPOSE_ID).expect("the Transpose node"),
+            find(noodle_nodes::SAMPLER_ID).expect("the instrument"),
+        )
+    };
+    for (from, to) in [
+        ((human, "out"), (transpose, "in")),
+        ((transpose, "out"), (out, "in")),
+    ] {
+        let a = h.socket(from.0, true, from.1);
+        let b = h.socket(to.0, false, to.1);
+        h.drag(Modifiers::NONE, &[a, b]);
+    }
+}
+
+fn wire_transposed(p: &mut Probe, _size: usize) -> Result<(), String> {
+    let project = p.project();
+    let graph = project.graph();
+    let instrument = graph
+        .nodes()
+        .find(|(_, n)| n.type_id == noodle_nodes::SAMPLER_ID)
+        .map(|(id, _)| id)
+        .ok_or("no instrument")?;
+    let source = graph
+        .source(&Endpoint::new(instrument, "in"))
+        .ok_or("nothing feeds the instrument")?;
+    let node = graph.node(source.node).ok_or("no node")?;
+    if node.type_id != TRANSPOSE_ID {
+        return Err("a Transpose node does not feed the instrument".into());
+    }
+    let semitones = node.params.get("semitones").copied().unwrap_or(0.0);
+    if (semitones + 2.0).abs() > 0.2 {
+        return Err(format!("semitones is {semitones}, wanted -2"));
+    }
+    // The part still goes through the Humanise node.
+    let fed = graph
+        .source(&Endpoint::new(source.node, "in"))
+        .and_then(|s| graph.node(s.node))
+        .is_some_and(|n| n.type_id == HUMANISE_ID);
+    if !fed {
+        return Err("the Transpose node is not fed by the Humanise node".into());
+    }
+    Ok(())
+}
+
 pub fn wire_route() -> Route {
     Route {
         story: "S08",
@@ -326,11 +398,19 @@ pub fn wire_route() -> Route {
         size: None,
         steps: wire_steps,
         done: wire_done,
-        late: &[LateChange {
-            name: "halve the humanise amount",
-            steps: wire_halve,
-            done: wire_halved,
-            keep: &[],
-        }],
+        late: &[
+            LateChange {
+                name: "halve the humanise amount",
+                steps: wire_halve,
+                done: wire_halved,
+                keep: &[],
+            },
+            LateChange {
+                name: "transpose the part down a tone",
+                steps: wire_transpose,
+                done: wire_transposed,
+                keep: &[],
+            },
+        ],
     }
 }

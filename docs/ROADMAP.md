@@ -81,43 +81,26 @@ Seven features picked from a shortlist in November 2026 (the looper and the pres
 
 **Harmony and chance nodes (#538).** Scale Quantise, Chord, Transpose, Euclidean and Chance on the events wire, and a Song Key source node (named apart from the existing Key node, which makes notes from a gate) that puts the timeline's key on a wire (the pattern of ADR 0008).
 
-1. Scale Quantise, Chord, Transpose, the Song Key node and `Transport::key`. Size M.
-2. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M.
+1. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M. (Scale Quantise, Chord, Transpose, Song Key and `Transport::key` are built: [features/harmony-nodes.md](features/harmony-nodes.md).)
 
-**Wavetable oscillator (#536).** `noodle.osc.wavetable`: a table is a sample in the store, `position` is a parameter, band-limited copies are built off the audio thread.
-
-1. The oscillator, the table builder, an example with a golden render. Size M.
-2. Generated CC0 tables committed as system samples with their generator, the Wavetable Synth template and presets, the cycle drawn on the node, drop a table on the node. Size M.
-
-**Grains (#537).** `noodle.instrument.grains`: a granular sample player with position, spray, size, density, pitch and scatter as parameters, one cloud per voice.
-
-1. The node, an example with a golden render. Size M to L.
-2. The Grain Pad and Grain Freeze templates, the waveform and grains drawn on the node, the S17 route. Size M.
+**Wavetable follow-ups.** `cycle` guessed from the file (a `clm ` chunk, or a length that is a multiple of 2048) with the config overriding it; a `wavetable` tag on the shipped tables and the Sounds panel listing system samples so it can filter for them; a grain delay (Grains from live input) as a second node. Size S each.
 
 ## Planned: Noodle as a plugin (#544)
 
 Noodle loaded in another DAW: the node editor, properties, library and Sounds panel in the host's window, no arrangement, with Host In, Host Out and Host MIDI nodes already in the graph. CLAP first; VST3 and AU are made from the CLAP with `clap-wrapper`. The issue holds the design and the open questions (whether an instance is a project or a group is the main one).
 
-1. Shell split and host backend: `noodle-app` as a library with a desktop shell, a host audio backend in `noodle-io`, Host devices and ports on the io nodes. Size M.
-2. A headless CLAP (`noodle-plugin`): ports, process, state, latency, default projects, tested by Noodle hosting Noodle. Size L.
-3. Transport and tempo from the host, and a 64-slot bank of host parameters surfaced as Host Parameter nodes. Size M.
-4. The window: the editor-only layout drawn in the host's window, focus, text, drag and drop, scaling. Size L, the main risk.
-5. More than one instance in a process: the UI waker and the other process-wide state. Size M.
-6. VST3 and AU through the wrapper, packaging, and an owed pass in real hosts on the Mac. Size M.
+Chunks 1 to 3 are built: see [features/noodle-as-a-plugin.md](features/noodle-as-a-plugin.md). Owed from them: the CLAP validator in CI.
 
-## Planned: feedback regions (#547)
-
-A wired feedback loop as tight as the patch asks for, with no setting. The compiler groups the nodes on a loop into a region and runs only those in chunks as short as the loop's shortest delay, so a long echo costs what it does today and a plucked string above 375 Hz becomes possible as a group. A one-sample Feedback node makes delay-free loops legal.
-
-1. Regions and Delay: the region step in the compiler and the plan, `Node::loop_chunk`, Delay without its one-block floor inside a region, events, silence, meters and parallel processing through a region. Size L.
-2. The Feedback node (`noodle.util.feedback`), and the Plucked String, Comb and Flanger templates with examples and golden renders. Size M.
+1. The window: the editor-only layout drawn in the host's window, focus, text, drag and drop, scaling. Size L, the main risk.
+2. More than one instance in a process: the UI waker and the other process-wide state. Size M.
+3. VST3 and AU through the wrapper, packaging, and an owed pass in real hosts on the Mac. Size M.
 
 ## Planned: low-latency monitoring (#548)
 
 The least delay the hardware allows while a track is armed or monitored, chosen automatically, and a larger device buffer when nobody is recording. One setting, Monitoring latency (Auto, Always low, Off). The engine block stays 128 so cache entries stay valid; the device buffer is what moves. (So the deferred idea below, of the engine block following the device period, is not part of this.)
 
-1. The monitored path is not held back by other tracks' plugin latency (`plan::compensate` leaves the live cone out), with the readout and the setting. Size M.
-2. The device buffer follows arming: Low (64) while armed or monitored, Normal (256), Relaxed (1024) when idle; the stream reopens only when stopped and never during a take. Owed on the Mac: the gap on arming and a power measurement. Size M.
+Chunks 1 and 2 are built (`features/low-latency-monitoring.md`). Owed on the Mac: the gap when arming reopens the stream, and a power measurement of the relaxed buffer.
+
 3. Only the live cone runs in the device callback. Today a cluster with no entry plays live until the background `Freezing` render finishes and swaps in; this adds a streaming render that keeps just ahead of the playhead and is played while it fills, with an ADR for the change to that rule. Size L, and it may want two PRs (the streaming entry, then the hand-over on edits and shortfalls).
 
 ## Owed: needs a person on real hardware

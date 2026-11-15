@@ -16,6 +16,7 @@ it in step.
 | `steel-drum-60` ... `steel-drum-81` (8) | Steel Drum | [jlearman.SteelDrum](https://github.com/sfzinstruments/jlearman.SteelDrum) at `dc15a36`, by Jeff Learman: a hand-made oil-drum steel drum, FLAC files `SteelDrum_0NN_*_4.flac` (velocity layer 4, first take) for C4, D#4, F#4, A4, C5, D#5, F#5 and A5 | The Unlicense (public domain) |
 | `banjo-Ds3` ... `banjo-Cs5` (8) | Banjo | [ganjo](https://github.com/sfzinstruments/ganjo) at `ccff5cd`: samples of an SX six-string guitar banjo, recorded, edited and mapped by "itsclipping" (`Banjo_Common - *.wav`, first take) | CC0 1.0 |
 | `body-*` (8) | Body Percussion Kit | [body_percussion](https://github.com/sfzinstruments/body_percussion) at `4ac9d89`, open-source body percussion (readme: "CC 0 license"; git author D. Smolken) (stomp, chest slap, handclap, finger snap, snap, belly, chest thump, cheek pop), loud layer, first round robin | CC0 1.0 |
+| `wt-*` (5) | Wavetable Synth tables | Made by code, not recorded: `crates/noodle-nodes/examples/wavetables.rs` writes them (basic shapes, pulse width, harmonic sweep, formant sweep, digital), 16 cycles of 2048 samples each, 32-bit float. Run it to remake them; it is deterministic | CC0 1.0 (ours) |
 
 | `ir-room`, `ir-hall`, `ir-plate` (3) | Convolution Reverb | Made for Noodle by `make-impulse-responses.py` in this folder: decaying band-split noise with a few early reflections (stereo, 44.1 kHz, 16-bit). Not a recording of anything, so there is no source to credit | Noodle's own licence (GPLv3), and free to reuse |
 

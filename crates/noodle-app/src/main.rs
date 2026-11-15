@@ -1,66 +1,12 @@
 //! Noodle, the desktop app. `noodle-app [project.ron]` opens a project, or an
-//! empty one.
-
-#[cfg(test)]
-mod acceptance;
-mod app;
-mod autosave;
-mod browser;
-mod cache_panel;
-mod carry;
-mod clip_editor;
-mod clip_panel;
-mod clipboard;
-mod devices;
-mod dialog;
-mod display;
-mod drum_rack_dialog;
-mod editor;
-mod export_dialog;
-mod freezing;
-mod inline_result;
-mod keyboard;
-mod latency;
-mod looper_panel;
-mod metronome;
-mod midi_ports;
-mod midi_take;
-mod mixer;
-mod models;
-mod morph_panel;
-mod outputs;
-mod pattern_panel;
-mod piano_roll;
-mod picker;
-mod pill_buttons;
-mod plugin_browser;
-mod prefs;
-mod properties;
-mod sample_drop;
-mod sample_set_dialog;
-mod sample_view;
-mod session;
-mod settings;
-mod snap;
-mod sounds;
-mod stems_dialog;
-#[cfg(test)]
-mod stories;
-mod tempo;
-mod tempo_source;
-#[cfg(test)]
-mod testkit;
-mod theme;
-mod time_axis;
-mod timeline;
-mod toolbar;
-mod transport_widgets;
-mod widgets;
+//! empty one. This is the desktop shell: it opens the window with `eframe`
+//! and runs `noodle_app::App` in it.
 
 use std::process::ExitCode;
 
-use crate::app::App;
-use crate::session::{Nodes, Session};
+use noodle_app::app::App;
+use noodle_app::session::{Nodes, Session};
+use noodle_app::{autosave, prefs, theme};
 
 /// The window's context, for waking the UI thread when another thread asks
 /// something of the plugins it hosts.

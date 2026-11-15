@@ -137,7 +137,7 @@ pub const STORIES: [Story; 31] = [
         id: "S17",
         title: "Resample and mangle audio",
         status: Status::Partial,
-        missing: "The live chain through a To Sample node is not built; rendering to a clip and bouncing a selection to a Sample node are not routed (they are background renders). Slicing is routed two ways: Slice to Sampler, and picking hits in the clip editor to convert to a sampler.",
+        missing: "The live chain through a To Sample node is not built; rendering to a clip and bouncing a selection to a Sample node are not routed (they are background renders). Slicing is routed two ways: Slice to Sampler, and picking hits in the clip editor to convert to a sampler. A clip dropped on a Grains node (to scan, freeze or scatter it) is an app test, not a route: it does not shorten the slicing route.",
     },
     Story {
         id: "S18",
