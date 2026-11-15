@@ -145,6 +145,11 @@ fn a_reset_node_sounds_like_a_new_one() {
     let mut checked = 0;
     for node_type in registry.iter() {
         let id = node_type.info().id;
+        // The Looper's recording is session state that survives a seek: a
+        // reset keeps the loop on purpose (see `looper.rs`).
+        if id == "noodle.util.looper" {
+            continue;
+        }
         let config = default_config(node_type);
         for params in [Params::Default, Params::Middle, Params::Max] {
             let Some(mut used) = build(node_type, &config, params, 0) else {
