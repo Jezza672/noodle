@@ -174,9 +174,49 @@ fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut 
             if available.is_empty() {
                 ui.weak("None fit yet. Save its values below.");
             }
+            if is_group && available.len() >= 2 {
+                morph_picker(ui, id, &available, edits);
+            }
             save_preset(ui, id, is_group, &status, edits);
         });
     ui.separator();
+}
+
+/// "Morph between presets...": two presets of the group to pick, and a button
+/// that adds a Morph node wired into everything that differs between them
+/// (see `session::morph`).
+fn morph_picker(ui: &mut Ui, id: NodeId, available: &[(&str, &str)], edits: &mut Vec<Edit>) {
+    egui::CollapsingHeader::new("Morph between presets...")
+        .id_salt(("morph presets", id))
+        .default_open(false)
+        .show(ui, |ui| {
+            ui.weak("Adds one Morph node, wired into every parameter that differs, and a `morph` group input.");
+            let key = ui.id().with(("morph pick", id));
+            let (mut a, mut b): (usize, usize) = ui.data(|d| d.get_temp(key)).unwrap_or((0, 1));
+            a = a.min(available.len() - 1);
+            b = b.min(available.len() - 1);
+            for (label, index) in [("A", &mut a), ("B", &mut b)] {
+                egui::ComboBox::from_label(label)
+                    .selected_text(available[*index].1)
+                    .show_ui(ui, |ui| {
+                        for (i, (_, name)) in available.iter().enumerate() {
+                            ui.selectable_value(index, i, *name);
+                        }
+                    });
+            }
+            ui.data_mut(|d| d.insert_temp(key, (a, b)));
+            if ui
+                .add_enabled(a != b, egui::Button::new("Morph"))
+                .on_hover_text("One undo step. Applies A, then wires the differences to a Morph node")
+                .clicked()
+            {
+                edits.push(Edit::MorphPresets {
+                    group: id,
+                    a: available[a].0.to_owned(),
+                    b: available[b].0.to_owned(),
+                });
+            }
+        });
 }
 
 /// The Save and Save as… buttons of the Presets section, and the box that
@@ -558,7 +598,7 @@ fn sample_picker(
     edits: &mut Vec<Edit>,
 ) {
     use noodle_nodes::{SAMPLE_INPUT_ID, SampleRef};
-    let sampler = node.type_id != SAMPLE_INPUT_ID;
+    let sampler = node.type_id == noodle_nodes::SAMPLER_ID;
     let top = ui.cursor().top();
     let store = session.samples();
     // A Sample node's option can name a window of the sample.
@@ -567,10 +607,10 @@ fn sample_picker(
     ui.label(info.name);
     // A Sampler fed by a wire gets its sound from there, not from its own
     // sample.
-    let wired = sampler
+    let wired = (node.type_id != SAMPLE_INPUT_ID)
         .then(|| {
             let graph = session.project().graph();
-            let from = graph.source(&noodle_core::Endpoint::new(id, "sample"))?;
+            let from = graph.source(&noodle_core::Endpoint::new(id, info.key))?;
             graph.node(from.node)
         })
         .flatten();
@@ -604,7 +644,11 @@ fn sample_picker(
         ));
     }
     ui.label(RichText::new(status).weak());
-    crate::sample_view::preview(ui, session, id, 64.0);
+    if crate::sample_nodes::sample_key(&node.type_id).is_some() {
+        crate::sample_nodes::preview(ui, session, id);
+    } else {
+        crate::sample_view::preview(ui, session, id, 64.0);
+    }
     if node.type_id == noodle_nodes::SAMPLER_ID {
         crate::clip_panel::sampler_warp(ui, session, id, edits);
     }
@@ -677,7 +721,9 @@ fn sample_picker(
         crate::carry::take_drop(ui.ctx());
         match crate::sample_drop::from_clip(session, clip) {
             Ok(dropped) if sampler => {
-                edits.push(Edit::Apply(crate::sample_drop::onto_sampler(id, &dropped)));
+                edits.push(Edit::Apply(crate::sample_drop::onto_sampler(
+                    session, id, &dropped,
+                )));
             }
             Ok(dropped) => edits.push(Edit::Apply(Command::SetConfig {
                 node: id,
@@ -1003,10 +1049,11 @@ fn config(
                 _ => {}
             }
         }
-        if matches!(
+        if (matches!(
             node_type.info().id,
             noodle_nodes::SAMPLER_ID | noodle_nodes::SAMPLE_INPUT_ID
-        ) && info.key == noodle_nodes::SAMPLE_KEY
+        ) && info.key == noodle_nodes::SAMPLE_KEY)
+            || crate::sample_nodes::sample_key(node_type.info().id) == Some(info.key)
         {
             sample_picker(ui, session, id, info, node, edits);
             continue;

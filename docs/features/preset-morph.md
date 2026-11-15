@@ -1,0 +1,8 @@
+# Preset morph (#543), node and command
+
+- **Morph node** (`noodle.mod.morph`, Modulation, `noodle-nodes/src/morph.rs`): config `targets` is a list of rows (output name, `min`, `max`, taper, `a` and `b` as positions 0 to 1 along the range, stepped), one control output per row; parameter `position`. Interpolation is in position space, so a log parameter morphs along its taper; a choice switches at the midpoint; an offset parameter uses -1 to 1 with 0.5 as no move. Stateless, evaluated per sample.
+- **`Edit::MorphPresets { group, a, b }`** (`noodle-app/src/session/morph.rs`): one `Command::Batch`, one undo step. It applies preset A, adds the Morph node inside the group in a frame "Morph A to B", wires an output into every parameter whose value differs between A and B, and exposes `position` as the group input `morph` (so it shows in the group's Controls). Parameters that already have a wire stay out, as does all config; the status bar names what was left out and why. Taking a parameter out is deleting its wire. `GroupPreset::paired` (noodle-core) lines the two presets up by node.
+- **Picker:** the group's Presets section has "Morph between presets..." with A and B drop-downs.
+- **Tests:** the node at A, B and between on linear, log, offset and stepped rows; the command wires exactly the differing parameters and skips a wired one; undo restores the graph in one step; position 0 renders like preset A and position 1 like preset B. Shown to fail by interpolating in value space and by wiring an already wired parameter.
+
+Not done (ROADMAP.md): the node's panel with the rows and A/B sliders, a lane check test, the XY form with four corners, Set from current and Randomise, the S13 route.

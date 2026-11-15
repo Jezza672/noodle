@@ -37,6 +37,27 @@ reference to a sample instead of signal:
     signal (0 to 1, pitch bend -1 to 1) with a `glide`; MIDI 2.0 values arrive
     at 32 bits (as far as an `f32` signal holds them), a MIDI 1.0 controller
     pair (n and n+32) at 14 bits, a single controller at 7.
+    `Scale Quantise` (`noodle.event.scale_quantise`), `Chord` (`noodle.event.chord`)
+    and `Transpose` (`noodle.event.transpose`) work on pitch. Scale Quantise snaps
+    each note-on to a scale (`root`, `scale`, `direction`: nearest, down or up; a
+    tie goes down) from a fixed table of pitch-class masks; Major is index 0 and
+    Minor index 1. Chord turns a note into up to 8 (`type`, `inversion`, `spread`,
+    `strum`), the lowest keeping the played note's ID and the rest getting IDs
+    derived from it. Transpose shifts by `semitones` (-48 to 48), dropping a note
+    shifted outside 0 to 127. All three read their parameters at the note-on and
+    remember what each note-on became (`held_notes.rs`), so a note-off or
+    expression goes to that and a parameter change never strands a note; a chord
+    that does not fit the node's queue is dropped whole and not recorded. Their
+    `root`, `scale`, `type` and `semitones` are whole-number parameters, so a wire
+    is the value. `Song Key` (`noodle.mod.key`, ADR 0008's pattern for the key)
+    puts the timeline's key on a wire: `root` (0 to 11), `scale` (0 major, 1
+    minor, the index Scale Quantise uses) and `shift` (semitones from its `from`
+    key, a parameter, to the timeline's key, by `Key::shift_to` as clip Transpose
+    does). Wire `root` and `scale` into Scale Quantise and `shift` into
+    Transpose to follow the key at each marker. The key reaches nodes as
+    `Transport::key`, from a `KeyTable` the controller builds beside the
+    `TempoTable` (a change lands at the next block, like tempo); only Song Key
+    reads it, so nothing follows the key without a wire.
     `Voices` (`noodle.poly.voices`) plays many notes at once: its `voices`
     config (1 to 64, default 8; config because it is the outputs' shape) sets
     the lanes of its `pitch`, `gate` and `velocity` outputs, one voice per

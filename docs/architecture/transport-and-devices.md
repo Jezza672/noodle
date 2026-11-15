@@ -79,6 +79,10 @@ output's delay.
   stream. If the device refuses the automatic size when the stream is built, the output
   and the input each retry once with the device's own choice; a size the user
   chose fails loudly instead.
+- **Monitoring latency.** The device buffer follows arming (Low 64 while a
+  track is armed or monitored, Relaxed 1024 after ten idle seconds), reopening
+  the stream only while stopped, and the live cone is left out of plugin delay
+  compensation. See [features/low-latency-monitoring.md](../features/low-latency-monitoring.md).
 - **Margin.** The feed's controller (see "Live input") holds the smallest
   backlog at what is needed: one input callback plus one engine block
   (`Feed::margin`), so a large input buffer isn't forced to sit a block behind
@@ -288,6 +292,16 @@ transport is stopped, or recording inside the take's span, so the player hears
 the old take in the pre-roll and themselves from the punch-in. Offline renders
 have no tap and play clips only. The cue mix on the headphone channels is a send
 to a second Mix and is not routed.
+
+## The timeline's key
+
+`Transport::key` is the key at the block's start: the project's, or the last
+marker's at or before the playhead that sets one (`Project::key_at`). The
+controller builds a `KeyTable` (`tempo.rs`) from the project beside the
+`TempoTable` and sends it inside the same `Tempos`, so a key edit goes to the
+audio thread the way a tempo edit does, without touching the playhead; the
+processor looks up the key at each block's tick. Only the Song Key node reads
+it. A change at a marker lands at the next block.
 
 ## Tempo source
 

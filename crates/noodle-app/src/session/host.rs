@@ -72,6 +72,7 @@ impl Session {
             monitor: Default::default(),
             fallback: None,
             underruns: 0,
+            tier: None,
         });
         self.set_tempo_source(TempoSource::Host);
         self.recompile();

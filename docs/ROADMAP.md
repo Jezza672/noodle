@@ -81,27 +81,18 @@ Seven features picked from a shortlist in November 2026. Each issue holds the de
 
 **Harmony and chance nodes (#538).** Scale Quantise, Chord, Transpose, Euclidean and Chance on the events wire, and a Song Key source node (named apart from the existing Key node, which makes notes from a gate) that puts the timeline's key on a wire (the pattern of ADR 0008).
 
-1. Scale Quantise, Chord, Transpose, the Song Key node and `Transport::key`. Size M.
-2. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M.
+1. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M. (Scale Quantise, Chord, Transpose, Song Key and `Transport::key` are built: [features/harmony-nodes.md](features/harmony-nodes.md).)
 
-**Wavetable oscillator (#536).** `noodle.osc.wavetable`: a table is a sample in the store, `position` is a parameter, band-limited copies are built off the audio thread.
-
-1. The oscillator, the table builder, an example with a golden render. Size M.
-2. Generated CC0 tables committed as system samples with their generator, the Wavetable Synth template and presets, the cycle drawn on the node, drop a table on the node. Size M.
-
-**Grains (#537).** `noodle.instrument.grains`: a granular sample player with position, spray, size, density, pitch and scatter as parameters, one cloud per voice.
-
-1. The node, an example with a golden render. Size M to L.
-2. The Grain Pad and Grain Freeze templates, the waveform and grains drawn on the node, the S17 route. Size M.
+**Wavetable follow-ups.** `cycle` guessed from the file (a `clm ` chunk, or a length that is a multiple of 2048) with the config overriding it; a `wavetable` tag on the shipped tables and the Sounds panel listing system samples so it can filter for them; a grain delay (Grains from live input) as a second node. Size S each.
 
 **Looper (#541).** `noodle.util.looper`: record, loop on the bar, overdub, undo the last layer and clear, driven by gate parameters. The recording is session state and survives a seek, so the node is exempt from the reset-equals-fresh tests.
 
-1. The node. Size L.
+1. ~~The node.~~ Done: see [features/looper.md](features/looper.md).
 2. The Looper template (Buttons, Launch Quantise, Mono Note for the gate), the state display, the S27 route. Size M.
 
 **Preset morph (#543).** "Morph between presets…" on a group adds one Morph node (`noodle.mod.morph`) with an output wired into every parameter that differs between two group presets, and exposes its `position` as a group input. Nothing is modulated without a wire; a parameter that already has a wire or a lane, and all config, stay out.
 
-1. The node, `Edit::MorphPresets`, the menu entry and picker, the rows in the node's panel. Size M.
+1. ~~The node, `Edit::MorphPresets`, the picker.~~ Done: see [features/preset-morph.md](features/preset-morph.md). Still open from this chunk: the node's panel listing the rows with A and B sliders, and the S13 route using the morph.
 2. The XY form for four presets with a pad widget, Set from current, Randomise. Size M.
 
 ## Planned: Noodle as a plugin (#544)
@@ -125,8 +116,8 @@ A wired feedback loop as tight as the patch asks for, with no setting. The compi
 
 The least delay the hardware allows while a track is armed or monitored, chosen automatically, and a larger device buffer when nobody is recording. One setting, Monitoring latency (Auto, Always low, Off). The engine block stays 128 so cache entries stay valid; the device buffer is what moves. (So the deferred idea below, of the engine block following the device period, is not part of this.)
 
-1. The monitored path is not held back by other tracks' plugin latency (`plan::compensate` leaves the live cone out), with the readout and the setting. Size M.
-2. The device buffer follows arming: Low (64) while armed or monitored, Normal (256), Relaxed (1024) when idle; the stream reopens only when stopped and never during a take. Owed on the Mac: the gap on arming and a power measurement. Size M.
+Chunks 1 and 2 are built (`features/low-latency-monitoring.md`). Owed on the Mac: the gap when arming reopens the stream, and a power measurement of the relaxed buffer.
+
 3. Only the live cone runs in the device callback. Today a cluster with no entry plays live until the background `Freezing` render finishes and swaps in; this adds a streaming render that keeps just ahead of the playhead and is played while it fills, with an ADR for the change to that rule. Size L, and it may want two PRs (the streaming entry, then the hand-over on edits and shortfalls).
 
 ## Owed: needs a person on real hardware

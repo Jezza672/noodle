@@ -1,0 +1,10 @@
+# Harmony and chance nodes
+
+Issue #538, chunk 1: the pitch nodes and the key on the transport.
+
+- **Scale Quantise, Chord, Transpose (events wire).** Parameters only, no config. Scale Quantise: `root`, `scale` (14 scales, Major 0 and Minor 1), `direction`. Chord: `type` (13 chords), `inversion`, `spread`, `strum` (0 to 100 ms across the chord, lowest note first). Transpose: `semitones` (-48 to 48). A note-on's result is remembered in `held_notes.rs`, so the note-off follows it whatever the parameters are now; a chord that does not fit the queue is dropped whole.
+- **Song Key (`noodle.mod.key`).** A source node: `root`, `scale` and `shift` outputs from the timeline's key, with a `from` parameter for the key the part was written in. The outputs are the values themselves, which the whole-number parameters of Scale Quantise and Transpose take as they are, so no conversion node is needed (the choice the issue left to the implementer). `scale` reports major or minor only, because markers name only those; `shift` treats relative keys as equal, as clip Transpose does.
+- **`Transport::key`.** From a `KeyTable` built by the controller and sent with the tempo table (`Tempos`). The Song Key node's cache key holds the project's key and every marker's.
+- **Decisions.** Chord's strum delays only later notes, so the node reports no latency (as Swing); the issue suggested reporting latency like Humanise, but nothing needs holding back for an early note. Scale Quantise has no memory of its own: it keeps the note's ID, so a note-off needs nothing.
+
+Tests: unit tests in each node file (note-off after a parameter change, held across it for Chord and Transpose); `tests/song_key.rs` renders a project whose marker changes the key and checks the outputs move at the marker; `tests/realtime.rs` runs all four in `busy_session`; `reset_matches_fresh.rs` covers every registered node. The S08 route has a late change, "transpose the part down a tone", with a Transpose node. Checked by breaking the code: a key table that ignores markers fails the marker test, and note-offs that use the current type or shift fail the Chord and Transpose held-note tests.

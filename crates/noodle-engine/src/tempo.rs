@@ -4,7 +4,7 @@
 //! The project's [`TempoMap`] is for editing; this is its compiled copy for
 //! one sample rate. The controller builds it and sends it over like a plan.
 
-use noodle_core::{TICKS_PER_QUARTER, TempoMap, Tick, TimeSignature};
+use noodle_core::{Key, Project, TICKS_PER_QUARTER, TempoMap, Tick, TimeSignature};
 
 /// A stretch of constant tempo.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -139,6 +139,42 @@ impl TempoTable {
     /// The sample position of a project tick.
     pub fn sample_at_tick(&self, tick: Tick) -> u64 {
         self.sample_at(tick.0 as f64)
+    }
+}
+
+/// The timeline's key as the audio thread reads it: the project's key and
+/// the keys the markers set, in order, so a lookup does not allocate. Built
+/// beside the [`TempoTable`] and sent with it.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct KeyTable {
+    initial: Key,
+    /// The ticks where the key changes and the key from there on, in order.
+    changes: Box<[(i64, Key)]>,
+}
+
+impl KeyTable {
+    pub fn new(project: &Project) -> Self {
+        let mut changes: Vec<(i64, Key)> = Vec::new();
+        let mut current = project.key();
+        for marker in project.markers() {
+            if let Some(key) = marker.key.filter(|&k| k != current) {
+                current = key;
+                changes.push((marker.at.0, key));
+            }
+        }
+        Self {
+            initial: project.key(),
+            changes: changes.into(),
+        }
+    }
+
+    /// The key at `tick`, as [`Project::key_at`] says.
+    pub fn at(&self, tick: f64) -> Key {
+        let upto = self.changes.partition_point(|&(at, _)| at as f64 <= tick);
+        match upto {
+            0 => self.initial,
+            n => self.changes[n - 1].1,
+        }
     }
 }
 
