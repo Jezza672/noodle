@@ -55,8 +55,8 @@ fn every_system_preset_fits_its_template() {
         assert!(fitting.len() >= 3, "{} has its presets", template.name);
     }
     assert_eq!(
-        templates, 39,
-        "the instruments, the subtractive voice, two synced effects, the rack, the loop pads, the pattern templates, the playable instruments the five spectral and convolution effects the wavetable and grain instruments and the feedback templates"
+        templates, 40,
+        "the instruments, the subtractive voice, two synced effects, the rack, the loop pads, the pattern templates, the playable instruments the five spectral and convolution effects the wavetable and grain instruments the feedback templates and the looper"
     );
     assert!(
         library

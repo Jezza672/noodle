@@ -139,17 +139,12 @@ impl Session {
     pub(super) fn morph_presets(
         &mut self,
         group: NodeId,
-        a: &str,
-        b: &str,
+        presets: &[String],
     ) -> Result<noodle_core::Command, String> {
-        let first = self
-            .library
-            .group_preset(a)
-            .ok_or("the first preset is gone")?;
-        let second = self
-            .library
-            .group_preset(b)
-            .ok_or("the second preset is gone")?;
+        let found = presets
+            .iter()
+            .map(|id| self.library.group_preset(id).ok_or("a preset is gone"))
+            .collect::<Result<Vec<_>, _>>()?;
         let ids = super::morph::Ids {
             morph: self.new_node_id(),
             frame: self.new_frame_id(),
@@ -159,8 +154,8 @@ impl Session {
             &self.project,
             &self.registry,
             group,
-            (a, first),
-            second,
+            (&presets[0], found[0]),
+            &found[1..],
             &ids,
         )?;
         self.message = Some(morphed.notice());

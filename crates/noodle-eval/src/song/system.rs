@@ -400,6 +400,22 @@ fn families() -> Vec<Family> {
             })
             .collect(),
         ),
+        effect_family(
+            "looper",
+            "Looper",
+            [
+                // grid (Bar), length (Auto), feedback
+                ("Bar Loop", 3.0, 0.0, 1.0),
+                ("Four Bars", 3.0, 3.0, 1.0),
+                ("Fading Layers", 3.0, 0.0, 0.7),
+            ]
+            .into_iter()
+            .map(|(name, grid, length, feedback)| {
+                let build: Build = Box::new(move |p: &mut Patch| looper(p, grid, length, feedback));
+                (name, build)
+            })
+            .collect(),
+        ),
     ];
     families.extend(super::instruments::families());
     families.extend(super::feedback::families());
@@ -737,6 +753,65 @@ fn loop_pads(p: &mut Patch, grid: f32, mode: f32) -> NodeId {
         p.connect(looping, (sampler, "loop"));
         p.connect((sampler, "out"), (mix, in_key));
     }
+    p.leave(group);
+    group
+}
+
+/// A looper pedal: the Looper node with a Button each for record, undo and
+/// clear. Record goes through a Key, a Launch Quantise and a Mono Note, so
+/// the press lands on the bar line (its `grid`) and the loop is whole bars;
+/// undo and clear act at once. Inputs: `in`, `record`, `undo`, `clear`
+/// (button states), `play`, `grid`, `length`, `feedback` and `level`; the
+/// output is `out`, the loop alone.
+fn looper(p: &mut Patch, grid: f32, length: f32, feedback: f32) -> NodeId {
+    let group = p.enter("Looper", 0.0, 0.0);
+    let audio = p.input("in");
+    let record_in = p.input("record");
+    let undo_in = p.input("undo");
+    let clear_in = p.input("clear");
+    let play_in = p.input("play");
+    let grid_in = p.input("grid");
+    let length_in = p.input("length");
+    let feedback_in = p.input("feedback");
+    let level_in = p.input("level");
+    let looper = p.add(
+        spec("noodle.util.looper")
+            .param("length", length)
+            .param("feedback", feedback),
+        6.0,
+        0.0,
+    );
+    let out = p.output("out");
+    p.connect(audio, (looper, "in"));
+    p.connect((looper, "out"), out);
+    p.connect(play_in, (looper, "play"));
+    p.connect(length_in, (looper, "length"));
+    p.connect(feedback_in, (looper, "feedback"));
+    p.connect(level_in, (looper, "level"));
+    // Record: Button, Key, Launch Quantise on the grid, Mono Note's gate.
+    let record = p.add(spec("noodle.input.button"), 1.0, 0.0);
+    let key = p.add(spec("noodle.event.key").param("note", 60.0), 2.0, 0.0);
+    let quantise = p.add(
+        spec("noodle.event.launch_quantise")
+            .param("grid", grid)
+            .param("mode", 0.0),
+        3.0,
+        0.0,
+    );
+    let mono = p.add(spec("noodle.event.mono"), 4.0, 0.0);
+    p.connect(record_in, (record, "state"));
+    p.connect((record, "out"), (key, "gate"));
+    p.connect((key, "out"), (quantise, "in"));
+    p.connect(grid_in, (quantise, "grid"));
+    p.connect((quantise, "out"), (mono, "in"));
+    p.connect((mono, "gate"), (looper, "record"));
+    // Undo and clear act at once.
+    let undo = p.add(spec("noodle.input.button"), 4.0, 1.0);
+    p.connect(undo_in, (undo, "state"));
+    p.connect((undo, "out"), (looper, "undo"));
+    let clear = p.add(spec("noodle.input.button"), 4.0, 2.0);
+    p.connect(clear_in, (clear, "state"));
+    p.connect((clear, "out"), (looper, "clear"));
     p.leave(group);
     group
 }

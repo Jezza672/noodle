@@ -69,7 +69,7 @@ deliberately deferred items.
 
 ## Planned: new nodes and MIDI files
 
-Seven features picked from a shortlist in November 2026. Each issue holds the design, the tests and the open questions; the chunks below are one PR each. Every instrument here ships as a group template built from the new primitive, never as a synth node. They are independent of each other, so the order is only a suggestion: quick wins first, then the two sound primitives, the looper and the morph.
+Seven features picked from a shortlist in November 2026 (the looper and the preset morph are built; see [features/looper.md](features/looper.md) and [features/preset-morph.md](features/preset-morph.md)). Each issue holds the design, the tests and the open questions; the chunks below are one PR each. Every instrument here ships as a group template built from the new primitive, never as a synth node. They are independent of each other, so the order is only a suggestion: quick wins first, then the two sound primitives.
 
 **Harmony and chance nodes (#538).** Scale Quantise, Chord, Transpose, Euclidean and Chance on the events wire, and a Song Key source node (named apart from the existing Key node, which makes notes from a gate) that puts the timeline's key on a wire (the pattern of ADR 0008).
 
@@ -77,15 +77,15 @@ Seven features picked from a shortlist in November 2026. Each issue holds the de
 
 **Wavetable follow-ups.** `cycle` guessed from the file (a `clm ` chunk, or a length that is a multiple of 2048) with the config overriding it; a `wavetable` tag on the shipped tables and the Sounds panel listing system samples so it can filter for them; a grain delay (Grains from live input) as a second node. Size S each.
 
-**Looper (#541).** `noodle.util.looper`: record, loop on the bar, overdub, undo the last layer and clear, driven by gate parameters. The recording is session state and survives a seek, so the node is exempt from the reset-equals-fresh tests.
+## Planned: Noodle as a plugin (#544)
 
-1. ~~The node.~~ Done: see [features/looper.md](features/looper.md).
-2. The Looper template (Buttons, Launch Quantise, Mono Note for the gate), the state display, the S27 route. Size M.
+Noodle loaded in another DAW: the node editor, properties, library and Sounds panel in the host's window, no arrangement, with Host In, Host Out and Host MIDI nodes already in the graph. CLAP first; VST3 and AU are made from the CLAP with `clap-wrapper`. The issue holds the design and the open questions (whether an instance is a project or a group is the main one).
 
-**Preset morph (#543).** "Morph between presets…" on a group adds one Morph node (`noodle.mod.morph`) with an output wired into every parameter that differs between two group presets, and exposes its `position` as a group input. Nothing is modulated without a wire; a parameter that already has a wire or a lane, and all config, stay out.
+Chunks 1 to 3 are built: see [features/noodle-as-a-plugin.md](features/noodle-as-a-plugin.md). Owed from them: the CLAP validator in CI.
 
-1. ~~The node, `Edit::MorphPresets`, the picker.~~ Done: see [features/preset-morph.md](features/preset-morph.md). Still open from this chunk: the node's panel listing the rows with A and B sliders, and the S13 route using the morph.
-2. The XY form for four presets with a pad widget, Set from current, Randomise. Size M.
+1. The window: the editor-only layout drawn in the host's window, focus, text, drag and drop, scaling. Size L, the main risk.
+2. More than one instance in a process: the UI waker and the other process-wide state. Size M.
+3. VST3 and AU through the wrapper, packaging, and an owed pass in real hosts on the Mac. Size M.
 
 ## Planned: low-latency monitoring (#548)
 

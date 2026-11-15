@@ -133,6 +133,8 @@ struct Channels {
     cpu: HashMap<NodeId, Vec<Arc<CpuCells>>>,
     /// Where a sampling node's voices are in their sample.
     positions: HashMap<NodeId, Vec<Arc<PositionCells>>>,
+    /// What a looping node is doing and where in its loop it is.
+    loops: HashMap<NodeId, Vec<Arc<LoopCells>>>,
     /// How many events each event output has sent, by node and port key.
     events: HashMap<(NodeId, String), Vec<Arc<EventCells>>>,
     /// What each node did last block.
@@ -174,6 +176,10 @@ impl Channels {
             !list.is_empty()
         });
         self.positions.retain(|_, list| {
+            list.retain(|cells| Arc::strong_count(cells) > 1);
+            !list.is_empty()
+        });
+        self.loops.retain(|_, list| {
             list.retain(|cells| Arc::strong_count(cells) > 1);
             !list.is_empty()
         });
@@ -478,6 +484,48 @@ impl Telemetry {
             .map(|cell| f32::from_bits(cell.load(Ordering::Relaxed)))
             .filter(|at| *at >= 0.0)
             .collect()
+    }
+
+    /// Opens a channel for what the looping node `node` is doing. Call this
+    /// when building a plan, not on the audio thread.
+    pub fn open_loop(&self, node: NodeId) -> LoopWriter {
+        let cells = Arc::new(LoopCells {
+            state: AtomicU32::new(0),
+            at: AtomicU32::new(0.0f32.to_bits()),
+            written: AtomicBool::new(false),
+            activity: self.activity.clone(),
+        });
+        self.lock()
+            .loops
+            .entry(node)
+            .or_default()
+            .push(cells.clone());
+        LoopWriter { cells }
+    }
+
+    /// What `node`'s loop was doing as of the latest block, or `None` if no
+    /// looping node has reported for it. When several instances exist (a new
+    /// plan is ready but not yet running), the newest that has reported is
+    /// read.
+    pub fn read_loop(&self, node: NodeId) -> Option<LoopReading> {
+        let channels = self.lock();
+        let list = channels.loops.get(&node)?;
+        let cells = live(list, |c| c.written.load(Ordering::Acquire))?;
+        if !cells.written.load(Ordering::Acquire) {
+            return None;
+        }
+        let bits = cells.state.load(Ordering::Relaxed);
+        Some(LoopReading {
+            state: match bits & 3 {
+                0 => LoopState::Empty,
+                1 => LoopState::Recording,
+                2 => LoopState::Playing,
+                _ => LoopState::Overdubbing,
+            },
+            has_layer: bits & 4 != 0,
+            queued: bits & 8 != 0,
+            at: f32::from_bits(cells.at.load(Ordering::Relaxed)),
+        })
     }
 
     /// Opens a channel for `node`'s processing time. Call this when building
@@ -926,6 +974,65 @@ impl PositionWriter {
     pub fn publish(&self) {
         let stamp = self.clock.fetch_add(1, Ordering::Relaxed) + 1;
         self.cells.stamp.store(stamp, Ordering::Relaxed);
+        self.cells.written.store(true, Ordering::Release);
+    }
+}
+
+/// What a looping node is doing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LoopState {
+    Empty,
+    Recording,
+    Playing,
+    Overdubbing,
+}
+
+/// A looping node's state as last reported, see [`Telemetry::read_loop`].
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct LoopReading {
+    pub state: LoopState,
+    /// The last overdub pass can be undone.
+    pub has_layer: bool,
+    /// A change (an overdub start or stop, an undo) waits for the loop's end.
+    pub queued: bool,
+    /// How far through the loop it is, from 0 to 1. While recording, how far
+    /// through the fixed length, or through the most it can hold when the
+    /// length is not known yet.
+    pub at: f32,
+}
+
+struct LoopCells {
+    state: AtomicU32,
+    at: AtomicU32,
+    written: AtomicBool,
+    activity: Arc<AtomicU64>,
+}
+
+/// The audio thread's end of a loop channel.
+pub struct LoopWriter {
+    cells: Arc<LoopCells>,
+}
+
+impl LoopWriter {
+    /// Reports the loop's state and place in it. Lock-free.
+    pub fn write(&self, state: LoopState, has_layer: bool, queued: bool, at: f32) {
+        let bits = match state {
+            LoopState::Empty => 0,
+            LoopState::Recording => 1,
+            LoopState::Playing => 2,
+            LoopState::Overdubbing => 3,
+        } | (u32::from(has_layer) << 2)
+            | (u32::from(queued) << 3);
+        let at = if at.is_finite() {
+            at.clamp(0.0, 1.0)
+        } else {
+            0.0
+        };
+        let moved = self.cells.state.swap(bits, Ordering::Relaxed) != bits
+            || self.cells.at.swap(at.to_bits(), Ordering::Relaxed) != at.to_bits();
+        if moved {
+            self.cells.activity.fetch_add(1, Ordering::Relaxed);
+        }
         self.cells.written.store(true, Ordering::Release);
     }
 }
