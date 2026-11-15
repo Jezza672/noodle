@@ -861,6 +861,12 @@ mod tests {
         let tap = playback.virtual_capture().unwrap();
         tap.start();
         send_project(&mut controller, &library, &project, &registry, &dir);
+        eprintln!(
+            "diag: tracked {} runs {} dir {}",
+            library.clips.tracked(),
+            library.clips.background_runs(track),
+            dir.display()
+        );
         // The clip's file is read in the background, so on a slow machine the
         // sound can start late: wait for it rather than for a fixed time.
         let mut peak = 0.0f32;
@@ -869,6 +875,11 @@ mod tests {
             thread::sleep(Duration::from_millis(100));
             peak = tap.take().iter().fold(peak, |peak, s| peak.max(s.abs()));
         }
+        eprintln!(
+            "diag after: tracked {} runs {}",
+            library.clips.tracked(),
+            library.clips.background_runs(track)
+        );
         assert!(
             peak > 0.2,
             "noodle play is silent on a clip: peak {peak}, at {} of {} Hz, {:?}",
