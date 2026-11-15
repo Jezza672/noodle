@@ -665,7 +665,7 @@ impl Probe<'_> {
     pub fn settle_until_like(&mut self, word: &str) {
         for _ in 0..200 {
             self.h.run_steps(5);
-            if self.h.get_all_by_label_contains(word).next().is_some() {
+            if self.h.query_all_by_label_contains(word).next().is_some() {
                 return;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));

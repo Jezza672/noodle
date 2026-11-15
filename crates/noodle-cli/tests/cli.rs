@@ -20,7 +20,13 @@ fn renders_a_project_to_wav() {
         "0.1",
     ]);
     assert!(result.status.success(), "{result:?}");
-    assert!(result.stderr.is_empty(), "{result:?}");
+    // Progress lines appear only if the render is still running at a poll,
+    // which depends on how fast the machine is; anything else is a problem.
+    let stderr = String::from_utf8_lossy(&result.stderr);
+    assert!(
+        stderr.lines().all(|line| line.starts_with("rendering: ")),
+        "{result:?}"
+    );
 
     let audio = noodle_io::read_wav(&output).unwrap();
     assert_eq!((audio.channels, audio.sample_rate), (2, 48_000));
