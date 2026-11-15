@@ -3332,7 +3332,7 @@ fn the_scene_is_built_again_only_when_the_project_changes() {
     h.run();
     h.run();
     assert!(
-        std::rc::Rc::ptr_eq(&first, &cached(&h)),
+        std::sync::Arc::ptr_eq(&first, &cached(&h)),
         "no edit, so the same scene"
     );
     h.state_mut().session.edit([Edit::Apply(Command::SetParam {
@@ -3342,7 +3342,7 @@ fn the_scene_is_built_again_only_when_the_project_changes() {
     })]);
     h.run();
     assert!(
-        !std::rc::Rc::ptr_eq(&first, &cached(&h)),
+        !std::sync::Arc::ptr_eq(&first, &cached(&h)),
         "an edit builds it again"
     );
 }

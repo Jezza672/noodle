@@ -223,6 +223,10 @@ before the start, keys and velocities in range).
   before ids), and the selection is a set of ids, so it follows its notes
   through undo and redo.
 
+## MIDI files
+
+`noodle-io/src/smf.rs` reads and writes Standard MIDI Files (format 0 and 1, metrical time, rescaled to 960 ticks per quarter) and maps them to `MidiClip` and `TempoMap`; see [../features/midi-file.md](../features/midi-file.md). The app side is `timeline/midi_file.rs` (drop, File > Import MIDI…, File > Export MIDI…); the CLI has `noodle midi-export`.
+
 ## Recording into the arrangement
 
 A track is armed in the session, which is app state and not saved with the

@@ -69,9 +69,10 @@ fn main() -> ExitCode {
             theme::apply(&cc.egui_ctx);
             let _ = UI.set(cc.egui_ctx.clone());
             let ctx = cc.egui_ctx.clone();
-            noodle_engine::wake::set_waker(Some(std::sync::Arc::new(move || {
-                ctx.request_repaint()
-            })));
+            // For the life of the process.
+            std::mem::forget(noodle_engine::wake::register(std::sync::Arc::new(
+                move || ctx.request_repaint(),
+            )));
             let mut app = App::new(session);
             if let Some(dir) = autosave::default_dir() {
                 app.set_autosave(autosave::Autosave::new(dir));

@@ -46,7 +46,7 @@ impl TimeSignature {
         denominator: 4,
     };
 
-    fn is_valid(self) -> bool {
+    pub fn is_valid(self) -> bool {
         (1..=32).contains(&self.numerator)
             && self.denominator.is_power_of_two()
             && self.denominator <= 32

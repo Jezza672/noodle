@@ -47,7 +47,7 @@ mod view;
 mod wire;
 
 use std::collections::{BTreeMap, BTreeSet};
-use std::rc::Rc;
+use std::sync::Arc;
 
 use egui::{Event, Key, Modifiers, MouseWheelUnit, PointerButton, Pos2, Rect, Sense, Vec2};
 use noodle_core::group::{self, GROUP, GROUP_INPUT, GROUP_OUTPUT};
@@ -122,7 +122,7 @@ pub struct EditorState {
     bodies: body::Bodies,
     /// The last scene built, and what it was built from. It is reused while
     /// none of that changes.
-    scene_cache: Option<(SceneKey, Rc<Scene>)>,
+    scene_cache: Option<(SceneKey, Arc<Scene>)>,
     /// What Copy and Cut last took, for Paste.
     /// Set by the Arrange menu item, done on the next frame, when the
     /// editor has the scene to work from.
@@ -191,25 +191,25 @@ type SceneKey = (u64, u64, Option<NodeId>);
 impl EditorState {
     /// The scene for the group being shown, rebuilt only if the project, the
     /// registry or the group changed since the last one.
-    fn scene(&mut self, project: &Project, registry: &Registry) -> Rc<Scene> {
+    fn scene(&mut self, project: &Project, registry: &Registry) -> Arc<Scene> {
         let key = (project.revision(), registry.generation(), self.group);
         if let Some((cached, scene)) = &self.scene_cache
             && *cached == key
         {
             return scene.clone();
         }
-        let scene = Rc::new(Scene::build(project, registry, self.group));
+        let scene = Arc::new(Scene::build(project, registry, self.group));
         self.scene_cache = Some((key, scene.clone()));
         scene
     }
 
     /// Like [`scene`](Self::scene), without remembering a new one.
     #[cfg(test)]
-    fn peek_scene(&self, project: &Project, registry: &Registry) -> Rc<Scene> {
+    fn peek_scene(&self, project: &Project, registry: &Registry) -> Arc<Scene> {
         let key = (project.revision(), registry.generation(), self.group);
         match &self.scene_cache {
             Some((cached, scene)) if *cached == key => scene.clone(),
-            _ => Rc::new(Scene::build(project, registry, self.group)),
+            _ => Arc::new(Scene::build(project, registry, self.group)),
         }
     }
 }
@@ -753,7 +753,7 @@ impl Problems {
 struct Frame_<'a> {
     project: &'a Project,
     registry: &'a Registry,
-    scene: Rc<Scene>,
+    scene: Arc<Scene>,
     t: Transform,
     /// Indices into `scene.nodes`, bottom first. Selected nodes are on top.
     order: Vec<usize>,

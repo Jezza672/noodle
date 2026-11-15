@@ -71,14 +71,6 @@ deliberately deferred items.
 
 Seven features picked from a shortlist in November 2026 (the looper and the preset morph are built; see [features/looper.md](features/looper.md) and [features/preset-morph.md](features/preset-morph.md)). Each issue holds the design, the tests and the open questions; the chunks below are one PR each. Every instrument here ships as a group template built from the new primitive, never as a synth node. They are independent of each other, so the order is only a suggestion: quick wins first, then the two sound primitives.
 
-**MIDI file import and export (#540).** Drop a .mid on the timeline or use File > Import MIDI; export a clip, a track or the arrangement.
-
-1. Reader and writer in `noodle-io` (`smf.rs`, on `midly`), the mapping to `MidiClip` and `TempoMap`, timeline drop and menu import as one undo step, export, and `noodle midi-export`. Size L.
-
-**Microtuning (#539).** A Tuning node on the events wire retunes notes from a Scala file by adding a per-note pitch expression, so Voices, Mono Note, the Sampler and plugins that honour tuning follow it.
-
-1. The node, the `.scl` and `.kbm` parser, the loader in the properties panel, an example with a golden render. Size M.
-
 **Harmony and chance nodes (#538).** Scale Quantise, Chord, Transpose, Euclidean and Chance on the events wire, and a Song Key source node (named apart from the existing Key node, which makes notes from a gate) that puts the timeline's key on a wire (the pattern of ADR 0008).
 
 1. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M. (Scale Quantise, Chord, Transpose, Song Key and `Transport::key` are built: [features/harmony-nodes.md](features/harmony-nodes.md).)
@@ -104,6 +96,16 @@ Chunks 1 and 2 are built (`features/low-latency-monitoring.md`). Owed on the Mac
 3. Only the live cone runs in the device callback. Today a cluster with no entry plays live until the background `Freezing` render finishes and swaps in; this adds a streaming render that keeps just ahead of the playhead and is played while it fills, with an ADR for the change to that rule. Size L, and it may want two PRs (the streaming entry, then the hand-over on edits and shortfalls).
 
 ## Owed: needs a person on real hardware
+
+- **Noodle as a plugin in real hosts** (#544, built: [features/noodle-as-a-plugin.md](features/noodle-as-a-plugin.md)).
+  Build the VST3 and AU with `packaging/build.sh` (or take them from the
+  Plugin formats workflow), install them, and in Reaper, Live and Logic (Mac),
+  Reaper and Bitwig (Windows and Linux): the editor opens, takes mouse and
+  keys (type a value into a field), resizes, survives close and reopen and a
+  project reload, plays as an effect and as an instrument, follows the host's
+  transport and tempo, and Expose to host shows up as an automatable parameter.
+  Several instances at once. Retina and 4K scaling. Not built: files dragged
+  from the host onto the editor.
 
 - **AU on the Mac** after the shared plugin bridge (#242, #241): an Audio Unit
   instrument and an effect play, go quiet when idle (the unit sets

@@ -1,4 +1,4 @@
-# Noodle as a plugin (#544), chunks 1 to 3
+# Noodle as a plugin (#544)
 
 The design and the later chunks are in #544 and `docs/ROADMAP.md`; how it works is "Noodle as a plugin" in [../architecture/plugins.md](../architecture/plugins.md).
 
@@ -10,4 +10,10 @@ The design and the later chunks are in #544 and `docs/ROADMAP.md`; how it works 
 
 **Decisions made on the open questions:** one binary with two plugin entries (effect and instrument); 64 parameters; an instance holds a full project (the group-as-instance idea is not built).
 
-**Owed:** the CLAP validator in CI, then the chunks 4 to 6 of the roadmap.
+**Chunk 4, the window.** `noodle-plugin/src/gui.rs`: the CLAP `gui` extension, embedded, with `egui-baseview` (wgpu) running the app in a child window of the host's. `App::new_plugin` is the editor-only layout. The app is shared with the host's main thread through a mutex (so `App` is `Send` now: `Rc` became `Arc` in the editor's and the timeline's caches, and two trait objects gained `Send`). Right-click a parameter in the properties panel: **Expose to host**. Tested on Linux in a host window of the test's own (X11, `xvfb-run`, lavapipe): it embeds, draws, resizes, hides, goes, and comes back. Checked that the tests fail: with `destroy` doing nothing the three tests that close an editor time out, and with the minimum size removed the resize test fails.
+
+**Chunk 5, more than one instance.** The UI waker was one global; it is a list now (`wake::register`), and an editor registers its own. The window test opens an effect and an instrument at once and closes one without disturbing the other. Checked that it fails: with the registration never removed the registry test fails.
+
+**Chunk 6, VST3 and AU.** `packaging/` (CMake, `build.sh`, `entry.cpp`) and `.github/workflows/plugin.yml`: `noodle-plugin` as a static library with `--features wrapper`, `clap-wrapper` v0.17.0 in "CLAP first" mode, the VST3 on Linux, macOS and Windows and the AUv2 on macOS (checked with `auval` in CI). The factory gives the wrapper the AU codes. **The CLAP validator** now runs in CI on Linux.
+
+**Owed:** the pass in real hosts on the Mac and Windows (Reaper, Logic and Live for AU, Bitwig on Linux): the editor opens, takes keys and the mouse, resizes, survives close and reopen, plays, keeps its state and its parameters. The Mac and Windows windows, and the macOS and Windows package builds, are built by CI but nobody has opened them. See ROADMAP.

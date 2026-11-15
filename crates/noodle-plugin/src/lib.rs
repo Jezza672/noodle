@@ -4,25 +4,36 @@
 //! [`Session`](noodle_app::session::Session), driven by the host's audio
 //! callback through `noodle-io`'s host backend.
 //!
-//! This is the headless plugin: ports, process, state, latency and the 64
-//! host parameters. The window comes later; until then a host shows its own
-//! generic parameter list.
+//! Ports, process, state, latency, the 64 host parameters, and the editor
+//! window (the [`gui`] module).
 //!
-//! Threads. The main thread owns the session (edits, undo, compiling the
-//! graph); the audio thread owns the [`HostBackend`](noodle_io::HostBackend)
-//! and calls the engine, reading the host's parameters and playing its notes
-//! as they arrive. They share the engine's channels and the
-//! [`HostLink`](noodle_io::HostLink) bank, and nothing else.
+//! Threads. An instance's [`App`] (its session and its UI state) sits behind
+//! a mutex that the host's main thread and the editor's window share: on
+//! Linux the window has a thread of its own, elsewhere it runs on the host's
+//! main thread, and either way only one of them is in the app at a time. The
+//! audio thread owns the [`HostBackend`](noodle_io::HostBackend) and calls
+//! the engine, reading the host's parameters and playing its notes as they
+//! arrive. It shares the engine's channels and the
+//! [`HostLink`](noodle_io::HostLink) bank with the session, and nothing else,
+//! so it never waits for a frame to be drawn.
+//!
+//! Nothing here is process-wide, so a host can load any number of instances:
+//! each has its own app, engine and window, and the one thing they share, the
+//! repaint waker, is a list (see `noodle_engine::wake`).
 
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 use std::ffi::CStr;
 use std::marker::PhantomData;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex, MutexGuard, PoisonError};
 
 use clack_extensions::audio_ports::{
     AudioPortFlags, AudioPortInfo, AudioPortInfoWriter, AudioPortType, PluginAudioPorts,
     PluginAudioPortsImpl,
 };
+use clack_extensions::clap_wrapper::auv2::{
+    PluginFactoryAsAUv2Impl, PluginFactoryAsAUv2Wrapper, PluginInfoAsAUv2,
+};
+use clack_extensions::gui::PluginGui;
 use clack_extensions::latency::{PluginLatency, PluginLatencyImpl};
 use clack_extensions::note_ports::{
     NoteDialect, NoteDialects, NotePortInfo, NotePortInfoWriter, PluginNotePorts,
@@ -39,6 +50,7 @@ use clack_plugin::events::spaces::CoreEventSpace;
 use clack_plugin::plugin::features::{AUDIO_EFFECT, INSTRUMENT, STEREO, SYNTHESIZER};
 use clack_plugin::prelude::*;
 use clack_plugin::stream::{InputStream, OutputStream};
+use noodle_app::app::App;
 use noodle_app::session::host::{Flavour, HostSettings};
 use noodle_app::session::{Nodes, Session};
 use noodle_io::{
@@ -46,9 +58,11 @@ use noodle_io::{
 };
 use std::io::{Read, Write};
 
+pub mod gui;
+
 /// What a state chunk starts with, so a chunk that isn't ours is refused
 /// rather than parsed.
-const STATE_MAGIC: &[u8] = b"noodle-plugin 1\n";
+const STATE_MAGIC: &[u8] = b"noodle-plugin 2\n";
 
 /// The ID of the effect, as hosts list it.
 pub const EFFECT_ID: &str = "org.noodle.noodle";
@@ -100,7 +114,8 @@ impl<K: Kind> Plugin for NoodlePlugin<K> {
             .register::<PluginNotePorts>()
             .register::<PluginParams>()
             .register::<PluginState>()
-            .register::<PluginLatency>();
+            .register::<PluginLatency>()
+            .register::<PluginGui>();
     }
 }
 
@@ -108,9 +123,14 @@ impl<K: Kind> Plugin for NoodlePlugin<K> {
 pub struct MainThread<'a> {
     host: HostMainThreadHandle<'a>,
     flavour: Flavour,
-    session: RefCell<Session>,
+    /// The app, shared with the editor's window.
+    app: Arc<Mutex<App>>,
     /// The names the host has been told, to see when it needs telling again.
     names: RefCell<[Option<String>; HOST_PARAMS]>,
+    /// The editor, from `gui.create` to `gui.destroy`.
+    editor: RefCell<Option<gui::Editor>>,
+    /// The host's scale for the editor, if it gave one.
+    scale: Cell<Option<f64>>,
 }
 
 impl<'a> MainThread<'a> {
@@ -121,26 +141,37 @@ impl<'a> MainThread<'a> {
         Self {
             host,
             flavour,
-            session: RefCell::new(session),
+            app: Arc::new(Mutex::new(App::new_plugin(session))),
             names,
+            editor: RefCell::new(None),
+            scale: Cell::new(None),
         }
     }
 
-    /// Tells the host if the parameters' names or which of them exist have
-    /// changed since it last asked.
+    /// The app. The window holds it while it draws a frame, which is quick;
+    /// nothing here holds it across a call into the host.
+    fn app(&self) -> MutexGuard<'_, App> {
+        self.app.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Tells the host what a state load changed: the values of the parameters
+    /// (always, since the load sets all 64), and their names if they differ
+    /// from what it last asked for.
     fn rescan_params(&self) {
-        let now = self.session.borrow().host_param_names();
+        let now = self.app().session().host_param_names();
+        let mut flags = ParamRescanFlags::VALUES;
         if *self.names.borrow() != now {
             *self.names.borrow_mut() = now;
-            if let Some(params) = self.host.get_extension::<HostParams>() {
-                params.rescan(&self.host, ParamRescanFlags::INFO | ParamRescanFlags::TEXT);
-            }
+            flags |= ParamRescanFlags::INFO | ParamRescanFlags::TEXT;
+        }
+        if let Some(params) = self.host.get_extension::<HostParams>() {
+            params.rescan(&self.host, flags);
         }
     }
 
-    /// The session, for tests and the window shell.
-    pub fn session(&self) -> &RefCell<Session> {
-        &self.session
+    /// The app, for tests.
+    pub fn shared_app(&self) -> &Arc<Mutex<App>> {
+        &self.app
     }
 }
 
@@ -189,7 +220,7 @@ impl PluginNotePortsImpl for MainThread<'_> {
 
 impl PluginLatencyImpl for MainThread<'_> {
     fn get(&self) -> u32 {
-        self.session.borrow().host_latency()
+        self.app().session().host_latency()
     }
 }
 
@@ -226,7 +257,7 @@ impl PluginMainThreadParams for MainThread<'_> {
         let slot = usize::try_from(id.get())
             .ok()
             .filter(|&s| s < HOST_PARAMS)?;
-        Some(f64::from(self.session.borrow().host_link().value(slot)))
+        Some(f64::from(self.app().session().host_link().value(slot)))
     }
 
     fn value_to_text(
@@ -244,8 +275,8 @@ impl PluginMainThreadParams for MainThread<'_> {
     }
 
     fn flush(&self, input: &InputEvents, _output: &mut OutputEvents) {
-        let session = self.session.borrow();
-        let link = session.host_link();
+        let app = self.app();
+        let link = app.session().host_link();
         for event in input {
             if let Some(CoreEventSpace::ParamValue(change)) = event.as_core_event()
                 && let Some(id) = change.param_id()
@@ -258,7 +289,7 @@ impl PluginMainThreadParams for MainThread<'_> {
 
 impl PluginStateImpl for MainThread<'_> {
     fn save(&self, output: &mut OutputStream) -> Result<(), PluginError> {
-        let text = self.session.borrow().host_state();
+        let text = self.app().session().host_state();
         output.write_all(STATE_MAGIC)?;
         output.write_all(text.as_bytes())?;
         Ok(())
@@ -271,8 +302,8 @@ impl PluginStateImpl for MainThread<'_> {
             return Err(PluginError::Message("not Noodle's state"));
         };
         let text = std::str::from_utf8(body)?;
-        self.session
-            .borrow_mut()
+        self.app()
+            .session_mut()
             .load_host_state(text)
             .map_err(|reason| PluginError::Error(reason.into()))?;
         self.rescan_params();
@@ -305,7 +336,8 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioThread {
             0
         };
         let capacity = config.max_frames_count as usize;
-        let mut session = main_thread.session.borrow_mut();
+        let mut app = main_thread.app();
+        let session = app.session_mut();
         let backend = session
             .start_host_engine(HostSettings {
                 sample_rate: config.sample_rate as f32,
@@ -460,7 +492,7 @@ impl<'a> PluginAudioProcessor<'a, Shared, MainThread<'a>> for AudioThread {
     }
 
     fn deactivate(self, main_thread: &MainThread<'a>) {
-        main_thread.session.borrow_mut().stop_host_engine();
+        main_thread.app().session_mut().stop_host_engine();
     }
 
     fn reset(&mut self) {}
@@ -563,21 +595,94 @@ impl PluginFactoryImpl for Factory {
     }
 }
 
+/// What `clap-wrapper` needs to make the Audio Units: the four-character
+/// codes, since a name alone can't make them. The manufacturer has an upper
+/// case letter because Apple keeps the all lower case codes for itself.
+const AU_MANUFACTURER_CODE: &CStr = c"Nood";
+const AU_MANUFACTURER_NAME: &CStr = c"Noodle";
+/// The effect is an `aufx` and the instrument an `aumu`.
+const AU_EFFECT: (&str, &str) = ("aufx", "Nefx");
+const AU_INSTRUMENT: (&str, &str) = ("aumu", "Nins");
+
+struct AuCodes;
+
+impl PluginFactoryAsAUv2Impl for AuCodes {
+    fn get_auv2_info(&self, index: u32) -> Option<PluginInfoAsAUv2> {
+        let (kind, subtype) = match index {
+            0 => AU_EFFECT,
+            1 => AU_INSTRUMENT,
+            _ => return None,
+        };
+        Some(PluginInfoAsAUv2::new(kind, subtype))
+    }
+}
+
 /// The entry a host loads.
 pub struct NoodleEntry {
     factory: PluginFactoryWrapper<Factory>,
+    au: PluginFactoryAsAUv2Wrapper<AuCodes>,
 }
 
 impl Entry for NoodleEntry {
     fn new(_plugin_path: Option<&CStr>) -> Result<Self, EntryLoadError> {
         Ok(Self {
             factory: PluginFactoryWrapper::new(Factory::new()),
+            au: PluginFactoryAsAUv2Wrapper::new(
+                AU_MANUFACTURER_CODE,
+                AU_MANUFACTURER_NAME,
+                AuCodes,
+            ),
         })
     }
 
     fn declare_factories<'a>(&'a self, builder: &mut EntryFactories<'a>) {
-        builder.register_factory(&self.factory);
+        builder
+            .register_factory(&self.factory)
+            .register_factory(&self.au);
     }
 }
 
+#[cfg(not(feature = "wrapper"))]
 clack_export_entry!(NoodleEntry);
+
+/// The entry points `clap-wrapper` links when it makes the VST3 and the AU:
+/// the same entry as `clap_entry`, as the three plain functions its
+/// "CLAP first" mode takes from a static library (`packaging/`). With the
+/// `wrapper` feature this crate is built as a static library, and the
+/// wrapper's own tiny source file makes `clap_entry` from them.
+#[cfg(feature = "wrapper")]
+pub mod wrapper {
+    use super::NoodleEntry;
+    use clack_plugin::entry::EntryDescriptor;
+    use std::ffi::{c_char, c_void};
+
+    static ENTRY: EntryDescriptor = clack_plugin::clack_entry!(NoodleEntry);
+
+    /// # Safety
+    /// As `clap_plugin_entry.init`: called once, with the plugin's path.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn clap_init(plugin_path: *const c_char) -> bool {
+        // SAFETY: the entry's own function, called as CLAP says.
+        ENTRY.init.is_some_and(|init| unsafe { init(plugin_path) })
+    }
+
+    /// # Safety
+    /// As `clap_plugin_entry.deinit`: called once, after `clap_init`.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn clap_deinit() {
+        if let Some(deinit) = ENTRY.deinit {
+            // SAFETY: as above.
+            unsafe { deinit() }
+        }
+    }
+
+    /// # Safety
+    /// As `clap_plugin_entry.get_factory`: a factory ID as a C string.
+    #[unsafe(no_mangle)]
+    pub unsafe extern "C" fn clap_getfactory(identifier: *const c_char) -> *const c_void {
+        // SAFETY: as above.
+        ENTRY
+            .get_factory
+            .map_or(std::ptr::null(), |get| unsafe { get(identifier) })
+    }
+}

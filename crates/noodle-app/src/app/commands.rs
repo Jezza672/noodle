@@ -117,6 +117,13 @@ pub static ENTRIES: &[Entry] = &[
         false,
     ),
     entry(
+        "file.import_midi",
+        "Import MIDI…",
+        Action::ImportMidi,
+        None,
+        false,
+    ),
+    entry(
         "view.sounds",
         "Browse Sounds…",
         Action::OpenSounds,
@@ -127,6 +134,13 @@ pub static ENTRIES: &[Entry] = &[
         "file.export",
         "Export Audio…",
         Action::ExportAudio,
+        None,
+        false,
+    ),
+    entry(
+        "file.export_midi",
+        "Export MIDI…",
+        Action::ExportMidi,
         None,
         false,
     ),

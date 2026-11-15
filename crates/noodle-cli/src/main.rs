@@ -29,6 +29,14 @@ struct Cli {
 
 #[derive(Subcommand)]
 enum Command {
+    /// Write the MIDI clips of a project to a Standard MIDI File (format 1,
+    /// one file track per project track, with the tempo map).
+    MidiExport {
+        /// The project file (.ron).
+        project: PathBuf,
+        /// The .mid file to write.
+        output: PathBuf,
+    },
     /// Render a project to a 32-bit float WAV file, without an audio device.
     Render {
         /// The project file (.ron).
@@ -278,6 +286,21 @@ fn main() -> ExitCode {
 
 fn run(command: Command) -> Result<(), String> {
     match command {
+        Command::MidiExport { project, output } => {
+            let project = load(&project)?;
+            let tracks = noodle_io::project_tracks(&project, |_, _| true);
+            if tracks.is_empty() {
+                return Err("the project has no MIDI clips to export".into());
+            }
+            let (file, left_out) = noodle_io::export_smf(&tracks, project.tempo_map());
+            std::fs::write(&output, noodle_io::write_smf(&file))
+                .map_err(|error| format!("can't write {}: {error}", output.display()))?;
+            for note in left_out {
+                eprintln!("noodle: left out: {note}");
+            }
+            println!("wrote {} tracks to {}", tracks.len(), output.display());
+            Ok(())
+        }
         Command::Render {
             project,
             output,
