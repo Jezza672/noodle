@@ -27,17 +27,21 @@ fn param(node: &Node, key: &str) -> f32 {
     node.params.get(key).copied().unwrap_or(0.0)
 }
 
-/// The samples of the cycle at `position` (0 to 1) of a table cut every `n`
-/// samples, `points` of them evenly spaced across the cycle. Neighbouring
-/// cycles are blended as the node blends them; a file shorter than `n` is one
-/// cycle, stretched.
-pub fn cycle_points(sample: &Sample, n: usize, position: f32, points: usize) -> Vec<f32> {
-    let mono: Vec<f32> = sample
+/// The two channels of a sample averaged, for [`cycle_points`].
+fn mono_of(sample: &Sample) -> Vec<f32> {
+    sample
         .left
         .iter()
         .zip(sample.right.iter())
         .map(|(l, r)| (l + r) * 0.5)
-        .collect();
+        .collect()
+}
+
+/// The samples of the cycle at `position` (0 to 1) of a table (mono) cut every `n`
+/// samples, `points` of them evenly spaced across the cycle. Neighbouring
+/// cycles are blended as the node blends them; a file shorter than `n` is one
+/// cycle, stretched.
+pub fn cycle_points(mono: &[f32], n: usize, position: f32, points: usize) -> Vec<f32> {
     if mono.is_empty() || n == 0 || points == 0 {
         return vec![0.0; points];
     }
@@ -155,12 +159,13 @@ pub fn preview(ui: &mut Ui, session: &Session, id: NodeId) {
                 .collect();
             painter.add(egui::Shape::line(shape, stroke));
         };
+        let mono = mono_of(&sample);
         // The stack faintly, the cycle in force brightly.
         for step in 0..=8 {
-            let faint = cycle_points(&sample, n, step as f32 / 8.0, points);
+            let faint = cycle_points(&mono, n, step as f32 / 8.0, points);
             line(&faint, Stroke::new(1.0, theme::ACCENT.gamma_multiply(0.15)));
         }
-        let now = cycle_points(&sample, n, param(node, "position"), points);
+        let now = cycle_points(&mono, n, param(node, "position"), points);
         line(&now, Stroke::new(1.5, theme::ACCENT));
         response.on_hover_text("The cycle at the position");
     }
@@ -183,7 +188,7 @@ mod tests {
         let mut data = vec![0.0; 8];
         data.extend(vec![1.0; 8]);
         data.extend(vec![-1.0; 8]);
-        let s = sample(data);
+        let s = mono_of(&sample(data));
         assert_eq!(cycle_points(&s, 8, 0.0, 4), [0.0; 4]);
         assert_eq!(cycle_points(&s, 8, 0.25, 4), [0.5; 4]);
         assert_eq!(cycle_points(&s, 8, 0.5, 4), [1.0; 4]);
@@ -192,9 +197,12 @@ mod tests {
 
     #[test]
     fn a_short_file_is_one_cycle_and_an_empty_one_is_flat() {
-        let s = sample(vec![0.0, 1.0, 0.0, -1.0]);
+        let s = mono_of(&sample(vec![0.0, 1.0, 0.0, -1.0]));
         let points = cycle_points(&s, 2048, 0.7, 4);
         assert_eq!(points, [0.0, 1.0, 0.0, -1.0]);
-        assert_eq!(cycle_points(&sample(Vec::new()), 2048, 0.0, 3), [0.0; 3]);
+        assert_eq!(
+            cycle_points(&mono_of(&sample(Vec::new())), 2048, 0.0, 3),
+            [0.0; 3]
+        );
     }
 }
