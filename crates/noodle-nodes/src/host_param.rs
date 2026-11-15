@@ -25,7 +25,7 @@ pub const HOST_PARAM_NAME: ConfigInfo = ConfigInfo::text(HOST_PARAM_NAME_KEY, "N
 static INFO: NodeInfo = NodeInfo {
     id: HOST_PARAM_ID,
     version: 1,
-    name: "Host Parameter",
+    name: "Host Param",
     category: "Input/Output",
 };
 
