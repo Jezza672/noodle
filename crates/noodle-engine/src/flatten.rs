@@ -34,15 +34,18 @@ const STAGE_OUT: &str = "out";
 /// real node in the flat graph under the port's [`stage_id`], as does one
 /// with a wire into its gain or mute. The rest are dropped, so a group left
 /// at its defaults costs nothing and renders like the flat patch.
-pub fn flatten(graph: &Graph) -> Cow<'_, Graph> {
-    flatten_keeping(graph, &track_output_stages(graph))
+pub fn flatten<'a>(graph: &'a Graph, registry: &crate::Registry) -> Cow<'a, Graph> {
+    let tracks = track_output_stages(graph);
+    let keep = output_stages(graph, registry)
+        .filter(|stage| tracks.contains(stage))
+        .collect();
+    flatten_keeping(graph, &keep)
 }
 
 /// The stage of every output port of every track, which a track's mute
-/// drives. The compiler asks for the signal ones only (see
-/// [`output_stages`]): a port that carries notes has no stage, or the notes
-/// would end at a node that only passes signal. This keeps all of them, for
-/// callers with no registry to tell the two apart.
+/// drives. [`flatten`] keeps only the signal ones (see [`output_stages`]): a
+/// port that carries notes has no stage, or the notes would end at a node
+/// that only passes signal.
 fn track_output_stages(graph: &Graph) -> BTreeSet<NodeId> {
     graph
         .nodes()
@@ -459,7 +462,10 @@ mod tests {
     #[test]
     fn a_graph_without_groups_is_untouched() {
         let (project, _, _) = chain();
-        assert!(matches!(flatten(project.graph()), Cow::Borrowed(_)));
+        assert!(matches!(
+            flatten(project.graph(), &crate::Registry::new()),
+            Cow::Borrowed(_)
+        ));
     }
 
     #[test]
@@ -470,7 +476,10 @@ mod tests {
             group_nodes(&project.clone(), &[gain], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
         assert_ne!(project.graph(), &flat_before);
-        assert_eq!(flatten(project.graph()).as_ref(), &flat_before);
+        assert_eq!(
+            flatten(project.graph(), &crate::Registry::new()).as_ref(),
+            &flat_before
+        );
     }
 
     #[test]
@@ -483,7 +492,10 @@ mod tests {
         let (_, command) =
             group_nodes(&project.clone(), &[inner], || project.new_node_id()).unwrap();
         history.apply(&mut project, command).unwrap();
-        assert_eq!(flatten(project.graph()).as_ref(), &flat_before);
+        assert_eq!(
+            flatten(project.graph(), &crate::Registry::new()).as_ref(),
+            &flat_before
+        );
     }
 
     #[test]
@@ -502,7 +514,7 @@ mod tests {
         history
             .apply(&mut project, Command::Disconnect { input })
             .unwrap();
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         assert!(flat.source(&Endpoint::new(gain, "in")).is_none());
         assert!(flat.node(osc).is_some());
     }
@@ -524,7 +536,7 @@ mod tests {
             (output, &port_key(1)),
         );
         wire(&mut project, &mut history, (group, "b"), (out, "in"));
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         assert_eq!(flat.nodes().count(), 2);
         assert_eq!(
             flat.source(&Endpoint::new(out, "in")),
@@ -549,7 +561,7 @@ mod tests {
             (output, &port_key(1)),
         );
         wire(&mut project, &mut history, (group, "b"), (out, "in"));
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         assert!(flat.source(&Endpoint::new(out, "in")).is_none());
     }
 
@@ -577,7 +589,7 @@ mod tests {
     #[test]
     fn controls_nobody_touched_cost_nothing() {
         let (project, _, _, _, _) = grouped();
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         assert_eq!(flat.nodes().count(), 3);
         assert!(flat.nodes().all(|(_, n)| n.type_id != GROUP_STAGE));
     }
@@ -608,7 +620,7 @@ mod tests {
             &control_key(MUTE, 1),
             0.0,
         );
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         for id in [input, output] {
             let stage = flat.node(stage_id(id, 1)).expect("kept");
             assert_eq!((stage.params[GAIN], stage.params[MUTE]), (0.0, 0.0));
@@ -631,7 +643,7 @@ mod tests {
             &control_key(GAIN, 1),
             -6.0,
         );
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         let stage = flat
             .node(stage_id(output, 1))
             .expect("kept under the port's stage ID");
@@ -663,7 +675,7 @@ mod tests {
             &control_key(MUTE, 1),
             1.0,
         );
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         assert_eq!(flat.node(stage_id(input, 1)).unwrap().type_id, GROUP_STAGE);
         assert_eq!(flat.node(stage_id(input, 1)).unwrap().params[MUTE], 1.0);
         // osc -> stage -> gain
@@ -691,7 +703,7 @@ mod tests {
         history
             .apply(&mut project, Command::Disconnect { input })
             .unwrap();
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         assert!(flat.node(stage_id(output, 1)).is_some());
         assert!(flat.source(&Endpoint::new(NodeId(2), "in")).is_none());
     }
@@ -734,9 +746,14 @@ mod tests {
     #[test]
     fn soloing_a_track_mutes_the_others_at_their_outputs() {
         let (mut project, mut history, _, [a, b]) = two_tracks();
-        assert_eq!(flatten(project.graph()).nodes().count(), 4);
+        assert_eq!(
+            flatten(project.graph(), &crate::Registry::new())
+                .nodes()
+                .count(),
+            4
+        );
         set(&mut project, &mut history, a, &control_key(SOLO, 1), 1.0);
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         let muted = |id| flat.node(stage_id(id, 1)).map(|n| n.params[SOLO_MUTE]);
         assert_eq!(muted(b), Some(1.0), "the other track is muted");
         assert_eq!(muted(a), Some(0.0), "the soloed track has a stage, open");
@@ -755,13 +772,13 @@ mod tests {
         let (mut project, mut history, _, [a, b]) = two_tracks();
         set(&mut project, &mut history, a, &control_key(SOLO, 1), 1.0);
         let shape = |project: &Project| {
-            let flat = flatten(project.graph());
+            let flat = flatten(project.graph(), &crate::Registry::new());
             let ids: Vec<_> = flat.nodes().map(|(id, _)| id).collect();
             (ids, flat.connections().collect::<Vec<_>>())
         };
         let soloed = shape(&project);
         set(&mut project, &mut history, a, &control_key(SOLO, 1), 0.0);
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         assert_eq!(shape(&project), soloed);
         assert_eq!(flat.node(stage_id(b, 1)).unwrap().params[SOLO_MUTE], 0.0);
     }
@@ -771,7 +788,7 @@ mod tests {
         let (mut project, mut history, _, [a, b]) = two_tracks();
         set(&mut project, &mut history, a, &control_key(SOLO, 1), 1.0);
         set(&mut project, &mut history, b, &control_key(SOLO, 1), 1.0);
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         assert_eq!(flat.node(stage_id(a, 1)).unwrap().params[SOLO_MUTE], 0.0);
         assert_eq!(flat.node(stage_id(b, 1)).unwrap().params[SOLO_MUTE], 0.0);
     }
@@ -781,7 +798,7 @@ mod tests {
         let (mut project, mut history, _, [a, _]) = two_tracks();
         set(&mut project, &mut history, a, &control_key(SOLO, 1), 1.0);
         set(&mut project, &mut history, a, &control_key(MUTE, 1), 1.0);
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         assert_eq!(flat.node(stage_id(a, 1)).unwrap().params[MUTE], 1.0);
     }
 
@@ -808,7 +825,7 @@ mod tests {
             &control_key(GAIN, 2),
             -6.0,
         );
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         assert!(
             flat.node(stage_id(output, 1)).is_none(),
             "port 1 costs nothing"
@@ -831,7 +848,7 @@ mod tests {
             Node::new("const").in_group(group),
         );
         wire_into_mute(&mut project, &mut history, mute_source, output);
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         assert_eq!(
             flat.source(&Endpoint::new(stage_id(output, 2), "mute")),
             Some(&Endpoint::new(mute_source, "out"))
@@ -855,7 +872,7 @@ mod tests {
             to: Endpoint::new(input, control_key(MUTE, 1)),
         };
         history.apply(&mut project, Command::Connect(c)).unwrap();
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &crate::Registry::new());
         assert_eq!(
             flat.source(&Endpoint::new(stage_id(input, 1), "mute")),
             Some(&Endpoint::new(lfo, "out"))

@@ -2075,7 +2075,7 @@ mod monitor_in_groups {
 
     fn taps(project: &Project, node: NodeId) -> usize {
         let graph = project.graph();
-        let flat = crate::flatten::flatten(graph);
+        let flat = crate::flatten::flatten(graph, &crate::Registry::new());
         let monitor = Monitor {
             nodes: vec![node],
             ..Monitor::default()
