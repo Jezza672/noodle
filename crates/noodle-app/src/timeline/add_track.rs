@@ -306,7 +306,7 @@ mod tests {
         let (mut project, mut history) = (Project::new(), History::new());
         apply(&mut project, &mut history);
         apply(&mut project, &mut history);
-        let flat = flatten(project.graph());
+        let flat = flatten(project.graph(), &noodle_engine::Registry::new());
         let mut reached = 0;
         for connection in flat.connections() {
             let to = flat.node(connection.to.node).unwrap();

@@ -3008,8 +3008,12 @@ fn loop_controls(
     let bar_of = |tick: Tick| map.position(tick).bar + 1;
     let (mut start, mut end) = (bar_of(current.start), bar_of(current.end));
     ui.scope_builder(egui::UiBuilder::new().max_rect(corner), |ui| {
+        // Never draw over the track headers below the ruler.
+        ui.set_clip_rect(corner.expand2(vec2(0.0, 3.0)).intersect(ui.clip_rect()));
         ui.horizontal(|ui| {
             ui.spacing_mut().item_spacing.x = 4.0;
+            ui.spacing_mut().interact_size.y = corner.height();
+            ui.spacing_mut().button_padding.y = 0.0;
             let toggle = egui::Button::new("⟲").small().selected(current.on);
             if ui
                 .add(toggle)

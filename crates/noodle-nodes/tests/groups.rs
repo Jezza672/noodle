@@ -336,7 +336,7 @@ fn a_fresh_track_compiles_and_keeps_its_shape_when_a_control_moves() {
 
     // The output already has its stage; solo and mute act there too.
     let shape = |project: &Project| {
-        let flat = noodle_engine::flatten(project.graph());
+        let flat = noodle_engine::flatten(project.graph(), &registry);
         let stages = flat
             .nodes()
             .filter(|(_, n)| n.type_id == GROUP_STAGE)
@@ -420,7 +420,7 @@ fn muting_a_track_silences_everything_leaving_it_with_no_wire_for_the_mute() {
     assert!(playing[2_400..].iter().any(|&x| x.abs() > 0.1));
 
     let shape = |project: &Project| {
-        let flat = noodle_engine::flatten(project.graph());
+        let flat = noodle_engine::flatten(project.graph(), &noodle_engine::Registry::new());
         let ids: Vec<NodeId> = flat.nodes().map(|(id, _)| id).collect();
         (ids, flat.connections().collect::<Vec<_>>())
     };

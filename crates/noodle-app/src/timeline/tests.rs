@@ -3048,3 +3048,19 @@ fn clicking_a_signature_label_or_a_marker_name_edits_it_in_place() {
         vec![(0, "4/4".to_string()), (2, "6/8".to_string())]
     );
 }
+
+#[test]
+fn the_loop_controls_stay_inside_the_ruler_corner() {
+    let (h, _) = grouped();
+    let ruler_bottom = 8.0 + super::colors::RULER_HEIGHT;
+    let track_top = h.get_by_label("Track 1").rect().top();
+    for rect in std::iter::once(h.get_by_label("⟲").rect()).chain(
+        h.query_all_by_role(egui::accesskit::Role::SpinButton)
+            .map(|n| n.rect()),
+    ) {
+        assert!(
+            rect.bottom() <= ruler_bottom && rect.bottom() <= track_top,
+            "{rect:?}"
+        );
+    }
+}
