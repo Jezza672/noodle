@@ -58,6 +58,12 @@ pub fn candidates(session: &Session) -> Vec<Candidate> {
         .collect()
 }
 
+/// The licence an origin's label names. Only SPDX labels get this far: the
+/// others are blocked from being shared.
+fn label_licence(label: &str) -> noodle_packs::Licence {
+    noodle_packs::Licence::Spdx(label.to_owned())
+}
+
 /// The pack being made.
 #[derive(Clone, Default)]
 pub struct Draft {
@@ -126,6 +132,9 @@ pub fn prepare(
     let mut items = Vec::new();
     // The sounds the entries use, each once, with what uses it.
     let mut needed: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    // The terms of an entry that came from another pack, which follow it (and
+    // the sounds it brings) into this one.
+    let mut inherited: BTreeMap<String, noodle_core::library::Origin> = BTreeMap::new();
     for c in from.iter().filter(|c| draft.picked.contains(&c.id)) {
         if let Some(why) = &c.blocked {
             return Err(format!("{}: {why}", c.item.name()));
@@ -136,6 +145,9 @@ pub fn prepare(
         write(&scratch.join(&file), text.as_bytes())?;
         let needs = item_samples(&c.item);
         for h in &needs {
+            if let Some(o) = c.item.origin() {
+                inherited.entry(h.clone()).or_insert_with(|| o.clone());
+            }
             needed
                 .entry(h.clone())
                 .or_default()
@@ -146,10 +158,13 @@ pub fn prepare(
             name: c.item.name().to_owned(),
             kind: kind_of(&c.item),
             file: Some(file),
-            author: None,
-            licence: None,
+            author: c.item.origin().map(|o| o.author.clone()),
+            licence: c.item.origin().map(|o| label_licence(&o.licence)),
             tags: tags.clone(),
-            credit: credit(c.item.name()),
+            credit: match c.item.origin() {
+                Some(o) => o.credit.clone(),
+                None => credit(c.item.name()),
+            },
             needs,
         });
     }
@@ -170,14 +185,18 @@ pub fn prepare(
         noodle_io::write_wav(&path, &audio.samples, audio.channels, audio.sample_rate)
             .map_err(|e| e.to_string())?;
         let name = format!("Sound {}", &hash[..8]);
+        let origin = inherited.get(hash);
         sounds.push(SampleDef {
             hash: hash.clone(),
             file: Some(file),
             tags: tags.clone(),
-            credit: credit(&name),
+            credit: match origin {
+                Some(o) => o.credit.clone(),
+                None => credit(&name),
+            },
             name,
-            author: None,
-            licence: None,
+            author: origin.map(|o| o.author.clone()),
+            licence: origin.map(|o| label_licence(&o.licence)),
         });
     }
 

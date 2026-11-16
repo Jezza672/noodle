@@ -653,6 +653,43 @@ mod library_packs {
     }
 
     #[test]
+    fn re_sharing_keeps_the_original_author_licence_and_credit() {
+        let (mut mine, _) = author("Boom");
+        let mut library = Library::in_memory();
+        let mut item = mine.library().all().last().unwrap().item.clone();
+        item.set_origin(Some(Origin {
+            hash: "d".repeat(64),
+            pack: "Theirs".into(),
+            author: "Bo".into(),
+            licence: "CC-BY-4.0".into(),
+            credit: Some("Boom by Bo (CC-BY-4.0)".into()),
+        }));
+        library.save(item).unwrap();
+        mine.set_library(library);
+        let mut d = draft(&mine);
+        d.licence = Choice::default();
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("o");
+        export(&mine, &d, &out);
+        let manifest = noodle_packs::Manifest::from_json(
+            &std::fs::read_to_string(out.join("packs/my-boom/manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let (i, s) = (&manifest.items[0], &manifest.samples[0]);
+        assert_eq!(
+            (i.author.as_str(), i.licence.label().as_str()),
+            ("Bo", "CC-BY-4.0")
+        );
+        assert_eq!(i.credit.as_deref(), Some("Boom by Bo (CC-BY-4.0)"));
+        // The sound it brings carries the same terms, not the new pack's.
+        assert_eq!(
+            (s.author.as_str(), s.licence.label().as_str()),
+            ("Bo", "CC-BY-4.0")
+        );
+        assert_eq!(s.credit.as_deref(), Some("Boom by Bo (CC-BY-4.0)"));
+    }
+
+    #[test]
     fn a_draft_says_what_is_missing() {
         let mut d = Draft::default();
         assert_eq!(d.problems().len(), 4);
