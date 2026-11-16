@@ -155,8 +155,8 @@ struct InputStage {
 }
 
 /// The stage of every port of every group's output node, for the meters.
-/// A port that carries events (notes, say) has none: a stage is a signal
-/// node, and metering has nothing to measure on events. Whether a port does
+/// A port that carries events (notes, say), spectra or samples has none: a
+/// stage is a signal node, and metering has nothing to measure on them. Whether a port does
 /// is read from the node that feeds it inside the group.
 pub(crate) fn output_stages<'a>(
     graph: &'a Graph,
@@ -200,7 +200,13 @@ pub(crate) fn output_stages<'a>(
                         .get(&node.type_id)
                         .and_then(|t| t.layout(&node.config).ok())
                         .is_some_and(|layout| {
-                            layout.event_outputs.iter().any(|p| p.key == from.port)
+                            [
+                                &layout.event_outputs,
+                                &layout.spectral_outputs,
+                                &layout.sample_outputs,
+                            ]
+                            .iter()
+                            .any(|ports| ports.iter().any(|p| p.key == from.port))
                         });
                 }
             }
@@ -857,7 +863,8 @@ mod tests {
     }
 
     /// A node with one event output, to stand for a note source.
-    struct Notes;
+    /// 0 notes, 1 spectrum, 2 samples.
+    struct Notes(u8);
 
     struct Idle;
 
@@ -882,7 +889,12 @@ mod tests {
         }
 
         fn layout(&self, _: &noodle_core::Config) -> Result<crate::Layout, crate::NodeError> {
-            Ok(crate::Layout::realtime().event_output("out", "Notes"))
+            let layout = crate::Layout::realtime();
+            Ok(match self.0 {
+                0 => layout.event_output("out", "Notes"),
+                1 => layout.spectral_output("out", "Notes"),
+                _ => layout.sample_output("out", "Notes"),
+            })
         }
 
         fn instantiate(&self, _: &crate::Setup<'_>) -> Result<crate::Instance, crate::NodeError> {
@@ -892,8 +904,18 @@ mod tests {
 
     #[test]
     fn a_group_output_that_carries_notes_has_no_meter_stage_however_deep_the_source() {
+        no_meter_stage(0);
+    }
+
+    #[test]
+    fn a_group_output_that_carries_spectra_or_samples_has_no_meter_stage_either() {
+        no_meter_stage(1);
+        no_meter_stage(2);
+    }
+
+    fn no_meter_stage(kind: u8) {
         let mut registry = crate::Registry::new();
-        registry.register(Notes);
+        registry.register(Notes(kind));
         let mut project = Project::new();
         let mut history = History::new();
         let notes = add(&mut project, &mut history, Node::new("test.notes"));
@@ -922,7 +944,7 @@ mod tests {
     fn notes_pass_out_of_a_track_without_a_stage_in_the_way() {
         use noodle_core::group::TRACK_INPUT;
         let mut registry = crate::Registry::new();
-        registry.register(Notes);
+        registry.register(Notes(0));
         let mut project = Project::new();
         let mut history = History::new();
         let group = add(&mut project, &mut history, Node::new(GROUP));
