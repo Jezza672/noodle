@@ -555,6 +555,105 @@ pub fn guess(f: &HitFeatures) -> (DrumKind, f32) {
 /// The confidence a guess needs, or the bin is labelled Unknown.
 pub const CONFIDENT: f32 = 0.4;
 
+/// Something that says what a hit is, and how sure (0 to 1). Under the
+/// labeller's own threshold the answer is [`DrumKind::Unknown`]. The rules
+/// ([`Rules`]) are the default; a learned model replaces them when its file is
+/// installed (`noodle-stems`).
+pub trait HitLabeller: Send + Sync + std::fmt::Debug {
+    fn label(&self, hit: &Hit) -> (DrumKind, f32);
+}
+
+/// The hand-written rules of [`guess`].
+#[derive(Clone, Copy, Debug, Default)]
+pub struct Rules;
+
+impl HitLabeller for Rules {
+    fn label(&self, hit: &Hit) -> (DrumKind, f32) {
+        guess(&hit.features)
+    }
+}
+
+/// The classes of the learned classifier, in the order of its output.
+pub const CLASSES: [&str; 9] = [
+    "kick",
+    "snare",
+    "clap",
+    "closed_hat",
+    "open_hat",
+    "crash",
+    "ride",
+    "tom",
+    "other",
+];
+
+/// The length of [`feature_vector`].
+pub const FEATURE_COUNT: usize = BANDS + 12;
+
+/// The probability the learned classifier's top class needs, or the answer is
+/// [`DrumKind::Unknown`].
+pub const LEARNED_CONFIDENT: f32 = 0.5;
+
+/// The key number between a low tom and a high one.
+pub const TOM_SPLIT_KEY: f32 = 52.0;
+
+/// What the learned classifier is given, raw (it normalises inside): the bands,
+/// the centroid in Hz, flatness, the three-way split, the decay in seconds,
+/// how pitched, the pitch's key (0 when none) and whether there is one, the
+/// attack's bursts, and whether the hit is mixed and whether it is truncated.
+/// `tools/drum-classifier/train.py` builds the same vector, in this order.
+pub fn feature_vector(hit: &Hit) -> [f32; FEATURE_COUNT] {
+    let f = &hit.features;
+    let mut v = [0.0; FEATURE_COUNT];
+    v[..BANDS].copy_from_slice(&f.bands);
+    v[BANDS..].copy_from_slice(&[
+        f.centroid,
+        f.flatness,
+        f.split[0],
+        f.split[1],
+        f.split[2],
+        f.decay,
+        f.pitched,
+        f.pitch_key.unwrap_or(0.0),
+        f32::from(u8::from(f.pitch_key.is_some())),
+        f32::from(f.attack_peaks),
+        f32::from(u8::from(hit.mixed)),
+        f32::from(u8::from(hit.truncated)),
+    ]);
+    v
+}
+
+/// The answer for a hit from the classifier's probabilities (one for each of
+/// [`CLASSES`]): the top class if it is sure enough, `Unknown` if it is not or
+/// if the top class is `other`. A tom is low or high by its pitch.
+pub fn kind_from_probabilities(probs: &[f32], hit: &Hit) -> (DrumKind, f32) {
+    let Some((top, &p)) = probs
+        .iter()
+        .take(CLASSES.len())
+        .enumerate()
+        .max_by(|a, b| a.1.total_cmp(b.1))
+    else {
+        return (DrumKind::Unknown, 0.0);
+    };
+    if p < LEARNED_CONFIDENT {
+        return (DrumKind::Unknown, p);
+    }
+    let kind = match CLASSES[top] {
+        "kick" => DrumKind::Kick,
+        "snare" => DrumKind::Snare,
+        "clap" => DrumKind::Clap,
+        "closed_hat" => DrumKind::ClosedHat,
+        "open_hat" => DrumKind::OpenHat,
+        // The app has no ride.
+        "crash" | "ride" => DrumKind::Crash,
+        "tom" => match hit.features.pitch_key {
+            Some(k) if k >= TOM_SPLIT_KEY => DrumKind::HighTom,
+            _ => DrumKind::LowTom,
+        },
+        _ => DrumKind::Unknown,
+    };
+    (kind, p)
+}
+
 /// A group of hits that sound alike.
 #[derive(Clone, Debug, PartialEq)]
 pub struct DrumBin {
@@ -569,6 +668,13 @@ pub struct DrumBin {
     /// How many velocity layers the bin's hits are offered as, 1 to
     /// [`MAX_LAYERS`] (see [`layer_split`]). One until the user asks for more.
     pub layers: u8,
+}
+
+impl DrumBin {
+    /// Labels the bin again with `labeller`, from its medoid.
+    pub fn relabel(&mut self, hits: &[Hit], labeller: &dyn HitLabeller) {
+        (self.kind, self.confidence) = labeller.label(&hits[self.medoid]);
+    }
 }
 
 /// The most velocity layers a group is split into.
@@ -590,6 +696,15 @@ pub fn layer_split(hits: &[Hit], members: &[usize], layers: u8) -> Vec<Vec<usize
         layer.sort_by_key(|h| members.iter().position(|m| m == h));
     }
     out
+}
+
+impl Binning {
+    /// Labels every bin again with `labeller`.
+    pub fn relabel(&mut self, hits: &[Hit], labeller: &dyn HitLabeller) {
+        for bin in &mut self.bins {
+            bin.relabel(hits, labeller);
+        }
+    }
 }
 
 /// The result of binning.
@@ -1429,5 +1544,88 @@ mod tests {
         let cancelled = cache.get_or_analyse(HitKey::new("x", 0, 1), || Err(Cancelled));
         assert_eq!(cancelled.err(), Some(Cancelled));
         assert!(cache.get(&HitKey::new("x", 0, 1)).is_none());
+    }
+
+    #[derive(Debug)]
+    struct Always(DrumKind);
+    impl HitLabeller for Always {
+        fn label(&self, _: &Hit) -> (DrumKind, f32) {
+            (self.0, 0.9)
+        }
+    }
+
+    #[test]
+    fn a_labeller_relabels_the_bins() {
+        let k = kick();
+        let hits = run(&track(1.0, &[(&k, 0.3, 1.0), (&k, 0.6, 1.0)]));
+        let mut binning = bin_hits(&hits, DEFAULT_MERGE);
+        binning.relabel(&hits, &Always(DrumKind::Clap));
+        assert!(!binning.bins.is_empty());
+        assert!(
+            binning
+                .bins
+                .iter()
+                .all(|b| b.kind == DrumKind::Clap && b.confidence == 0.9)
+        );
+    }
+
+    #[test]
+    fn probabilities_become_a_kind_by_confidence_and_tom_pitch() {
+        let k = kick();
+        let mut hit = run(&track(1.0, &[(&k, 0.3, 1.0)])).remove(0);
+        let at = |class: &str, p: f32| {
+            let mut probs = [0.0; 9];
+            probs[CLASSES.iter().position(|c| *c == class).unwrap()] = p;
+            probs
+        };
+        assert_eq!(
+            kind_from_probabilities(&at("snare", 0.9), &hit).0,
+            DrumKind::Snare
+        );
+        assert_eq!(
+            kind_from_probabilities(&at("ride", 0.9), &hit).0,
+            DrumKind::Crash
+        );
+        assert_eq!(
+            kind_from_probabilities(&at("snare", 0.3), &hit).0,
+            DrumKind::Unknown
+        );
+        assert_eq!(
+            kind_from_probabilities(&at("other", 0.99), &hit).0,
+            DrumKind::Unknown
+        );
+        hit.features.pitch_key = Some(45.0);
+        assert_eq!(
+            kind_from_probabilities(&at("tom", 0.9), &hit).0,
+            DrumKind::LowTom
+        );
+        hit.features.pitch_key = Some(60.0);
+        assert_eq!(
+            kind_from_probabilities(&at("tom", 0.9), &hit).0,
+            DrumKind::HighTom
+        );
+    }
+
+    #[test]
+    fn the_feature_vector_is_in_the_order_training_uses() {
+        let k = kick();
+        let mut hit = run(&track(1.0, &[(&k, 0.3, 1.0)])).remove(0);
+        hit.mixed = true;
+        hit.features.pitch_key = None;
+        let v = feature_vector(&hit);
+        assert_eq!(v.len(), FEATURE_COUNT);
+        assert_eq!(v[..BANDS], hit.features.bands);
+        assert_eq!(v[BANDS], hit.features.centroid);
+        assert_eq!(v[BANDS + 5], hit.features.decay);
+        assert_eq!(
+            v[BANDS + 7..],
+            [
+                0.0,
+                0.0,
+                f32::from(hit.features.attack_peaks),
+                1.0,
+                f32::from(u8::from(hit.truncated))
+            ]
+        );
     }
 }

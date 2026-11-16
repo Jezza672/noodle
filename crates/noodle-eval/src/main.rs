@@ -559,7 +559,17 @@ fn drum_dataset(args: &[&str]) -> Result<(), String> {
                 other => return Err(format!("--split: {other}")),
             };
             let rows = drum_data::read_rows(&data.join("hits.csv"))?;
-            let report = drum_data::baseline(&rows, split);
+            let (labeller, name): (Box<dyn noodle_io::HitLabeller>, &str) = match flag("--model") {
+                Some(model) => (
+                    Box::new(
+                        noodle_stems::drum::OnnxLabeller::open(Path::new(model), None)
+                            .map_err(|e| e.to_string())?,
+                    ),
+                    "Learned classifier",
+                ),
+                None => (Box::new(noodle_io::Rules), "Rule labeller baseline"),
+            };
+            let report = drum_data::baseline(&rows, split, labeller.as_ref(), name);
             match flag("--out") {
                 Some(path) => std::fs::write(path, report).map_err(|e| e.to_string()),
                 None => {

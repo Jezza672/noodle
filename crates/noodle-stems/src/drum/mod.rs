@@ -16,6 +16,8 @@
 //! implementations are in `onnx.rs` and run only against real files.
 
 mod analyse;
+#[cfg(feature = "onnx")]
+mod classifier;
 mod hybrid;
 mod manifest;
 mod mapping;
@@ -28,6 +30,8 @@ mod store;
 use std::fmt;
 
 pub use analyse::{ACTIVE_WITHIN_DB, HitSeparation, HitWindow, Separation, separate_hits};
+#[cfg(feature = "onnx")]
+pub use classifier::OnnxLabeller;
 pub use hybrid::{HybridNet, HybridOutput, HybridSeparator};
 pub use manifest::{
     ALL_MODELS, Chunking, DRUMSEP, DrumModelManifest, LARSNET, Layout, MaskOutput, ModelFile,

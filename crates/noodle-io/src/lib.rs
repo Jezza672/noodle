@@ -42,9 +42,10 @@ pub use devices::{
     choose_config, devices, hosts, virtual_output,
 };
 pub use drum_bins::{
-    Binning, Cancelled as DrumCancelled, DEFAULT_MERGE, DETECTOR_VERSION, DrumBin, DrumKind, Hit,
-    HitCache, HitFeatures, HitKey, MAX_LAYERS, analyse_hits, bin_hits, guess, layer_split,
-    make_bin, split_bin,
+    Binning, CLASSES as DRUM_CLASSES, Cancelled as DrumCancelled, DEFAULT_MERGE, DETECTOR_VERSION,
+    DrumBin, DrumKind, FEATURE_COUNT as DRUM_FEATURES, Hit, HitCache, HitFeatures, HitKey,
+    HitLabeller, MAX_LAYERS, Rules, analyse_hits, bin_hits, feature_vector, guess,
+    kind_from_probabilities, layer_split, make_bin, split_bin,
 };
 pub use export::{
     ExportError, ExportFormat, ExportMetadata, ExportWriter, FLAC_MAX_CHANNELS, cue_sheet,

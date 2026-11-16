@@ -193,6 +193,9 @@ pub struct DrumAnalysis {
     /// The hash of the clip's source file.
     pub hash: String,
     pub hits: Arc<[Hit]>,
+    /// What says which drum each bin is: the learned classifier when its file
+    /// is installed, else the rules.
+    pub labeller: Arc<dyn noodle_io::HitLabeller>,
     /// What the separation analyser found in each hit, once it has run (see
     /// [`Session::separate_drum_hits`]).
     pub separation: Option<Arc<Separation>>,
@@ -226,6 +229,7 @@ impl DrumAnalysis {
             clip,
             hash: "synthetic".into(),
             hits: hits.into(),
+            labeller: Arc::new(noodle_io::Rules),
             separation: None,
             taken: Default::default(),
             origin: 0,
@@ -290,9 +294,38 @@ pub(super) struct DrumRack {
     cache: Arc<HitCache>,
     /// The hit being auditioned, playing straight to the device.
     preview: Option<noodle_io::Preview>,
+    /// The labeller, once opened (see [`Session::drum_labeller`]).
+    labeller: Option<Arc<dyn noodle_io::HitLabeller>>,
 }
 
+/// Where the learned classifier's file is looked for, under the models folder.
+pub const CLASSIFIER_FILE: &str = "classifier/classifier.onnx";
+
 impl Session {
+    /// What labels the bins: the learned classifier when
+    /// [`CLASSIFIER_FILE`] is in the models folder and opens, else the rules.
+    /// Opened once; a file that will not open is said so and the rules are
+    /// used.
+    pub fn drum_labeller(&mut self) -> Arc<dyn noodle_io::HitLabeller> {
+        if let Some(l) = &self.drum_rack.labeller {
+            return l.clone();
+        }
+        let mut labeller: Arc<dyn noodle_io::HitLabeller> = Arc::new(noodle_io::Rules);
+        if let Some(path) = crate::models::default_drum_store()
+            .map(|s| s.dir().join(CLASSIFIER_FILE))
+            .filter(|p| p.exists())
+        {
+            match noodle_stems::drum::OnnxLabeller::open(&path, None) {
+                Ok(l) => labeller = Arc::new(l),
+                Err(e) => {
+                    self.message = Some(format!("Using the built-in drum labels: {e}"));
+                }
+            }
+        }
+        self.drum_rack.labeller = Some(labeller.clone());
+        labeller
+    }
+
     /// Starts finding the hits of audio clip `clip`.
     pub fn analyse_drum_clip(&mut self, clip: ClipId) {
         if self.drum_rack.run.is_some() {
@@ -651,6 +684,7 @@ impl Session {
                     clip: run.clip,
                     hash: run.hash,
                     hits,
+                    labeller: self.drum_labeller(),
                     separation: None,
                     taken: Default::default(),
                     origin: run.origin,
@@ -1183,7 +1217,8 @@ mod tests {
     /// The plan the default binning suggests: a bin each, on kick and hat keys.
     fn plan_of(session: &Session) -> DrumRackPlan {
         let analysis = session.drum_analysis().expect("an analysis");
-        let binning = noodle_io::bin_hits(&analysis.hits, noodle_io::DEFAULT_MERGE);
+        let mut binning = noodle_io::bin_hits(&analysis.hits, noodle_io::DEFAULT_MERGE);
+        binning.relabel(&analysis.hits, analysis.labeller.as_ref());
         let bins: Vec<PlannedBin> = binning
             .bins
             .iter()

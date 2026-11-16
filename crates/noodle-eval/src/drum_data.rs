@@ -20,7 +20,7 @@
 //! that carries the CC BY credit. `noodle-eval drum-dataset baseline` scores
 //! the current rule labeller ([`noodle_io::guess`]) on those rows.
 
-use noodle_io::{DrumKind, Hit, HitFeatures, analyse_hits, decode_file, guess, resample};
+use noodle_io::{DrumKind, Hit, HitFeatures, HitLabeller, analyse_hits, decode_file, resample};
 use std::collections::{BTreeMap, HashMap};
 use std::fmt::Write as _;
 use std::path::{Path, PathBuf};
@@ -31,6 +31,9 @@ pub const RATE: u32 = 44_100;
 pub const DATASET_VERSION: u32 = 1;
 /// The longest a one-shot is kept, in seconds (cymbals ring a long time).
 const MAX_SAMPLE: f64 = 3.0;
+/// A loop hit labelled from a placed hit mixed further down than this (dB) is
+/// mostly something else's tail, so it is not scored or trained on.
+pub const MIN_GAIN_DB: f32 = -35.0;
 /// How near a detected onset must be to a placed hit to take its label.
 const MATCH: f64 = 0.025;
 
@@ -189,13 +192,31 @@ fn fnv(s: &str) -> u64 {
     })
 }
 
+/// What close-mic, room and overhead versions of one hit share, so they land
+/// in the same split: the library and the name without mic and folder words.
+pub fn split_key(file: &str, library: &str) -> String {
+    const MIC: [&str; 12] = [
+        "room", "oh", "btm", "top", "cl", "close", "tip", "shank", "rcshank", "rctip", "m", "mj",
+    ];
+    let stem = file.rsplit('/').next().unwrap_or(file);
+    let stem = stem
+        .rsplit_once('.')
+        .map_or(stem, |(s, _)| s)
+        .to_lowercase();
+    let kept: Vec<&str> = stem
+        .split(['-', '_'])
+        .filter(|t| !MIC.contains(t) && !t.is_empty())
+        .collect();
+    format!("{library}|{}", kept.join("-"))
+}
+
 /// Which split a sample is in. `holdout` (a library tag) goes entirely to
 /// test, which asks "does it work on a kit it has never heard".
 pub fn split_of(file: &str, library: &str, holdout: Option<&str>) -> Split {
     if holdout == Some(library) {
         return Split::Test;
     }
-    match fnv(file) % 100 {
+    match fnv(&split_key(file, library)) % 100 {
         0..=69 => Split::Train,
         70..=84 => Split::Val,
         _ => Split::Test,
@@ -528,12 +549,16 @@ pub struct Row {
     pub label: String,
     pub onset_s: f32,
     pub level_db: f32,
+    /// How loud the placed hit it is labelled from was mixed (dB; 0 for a
+    /// one-shot). A hit labelled from a placed hit far under the loudest
+    /// thing around is mostly something else's tail.
+    pub gain_db: f32,
     pub mixed: bool,
     pub truncated: bool,
     pub features: HitFeatures,
 }
 
-const CSV_HEAD: &str = "split,source,origin,label,onset_s,level_db,mixed,truncated,centroid,flatness,low,mid,high,decay,pitched,pitch_key,attack_peaks";
+const CSV_HEAD: &str = "split,source,origin,label,onset_s,level_db,gain_db,mixed,truncated,centroid,flatness,low,mid,high,decay,pitched,pitch_key,attack_peaks";
 
 fn csv_header() -> String {
     let mut s = CSV_HEAD.to_string();
@@ -546,13 +571,14 @@ fn csv_header() -> String {
 fn csv_row(r: &Row) -> String {
     let f = &r.features;
     let mut s = format!(
-        "{},{},{},{},{:.4},{:.2},{},{},{:.2},{:.5},{:.5},{:.5},{:.5},{:.4},{:.4},{},{}",
+        "{},{},{},{},{:.4},{:.2},{:.1},{},{},{:.2},{:.5},{:.5},{:.5},{:.5},{:.4},{:.4},{},{}",
         r.split.name(),
         r.source,
         r.origin.replace(',', "_"),
         r.label,
         r.onset_s,
         r.level_db,
+        r.gain_db,
         u8::from(r.mixed),
         u8::from(r.truncated),
         f.centroid,
@@ -577,7 +603,7 @@ pub fn read_rows(path: &Path) -> Result<Vec<Row>, String> {
     let mut rows = Vec::new();
     for (n, line) in text.lines().enumerate().skip(1) {
         let c: Vec<&str> = line.split(',').collect();
-        if c.len() != 17 + 24 {
+        if c.len() != 18 + 24 {
             return Err(format!("line {}: {} columns", n + 1, c.len()));
         }
         let num = |i: usize| -> Result<f32, String> {
@@ -585,7 +611,7 @@ pub fn read_rows(path: &Path) -> Result<Vec<Row>, String> {
         };
         let mut bands = [0.0; 24];
         for (b, band) in bands.iter_mut().enumerate() {
-            *band = num(17 + b)?;
+            *band = num(18 + b)?;
         }
         rows.push(Row {
             split: match c[0] {
@@ -598,21 +624,22 @@ pub fn read_rows(path: &Path) -> Result<Vec<Row>, String> {
             label: c[3].to_string(),
             onset_s: num(4)?,
             level_db: num(5)?,
-            mixed: c[6] == "1",
-            truncated: c[7] == "1",
+            gain_db: num(6)?,
+            mixed: c[7] == "1",
+            truncated: c[8] == "1",
             features: HitFeatures {
                 bands,
-                centroid: num(8)?,
-                flatness: num(9)?,
-                split: [num(10)?, num(11)?, num(12)?],
-                decay: num(13)?,
-                pitched: num(14)?,
-                pitch_key: if c[15].is_empty() {
+                centroid: num(9)?,
+                flatness: num(10)?,
+                split: [num(11)?, num(12)?, num(13)?],
+                decay: num(14)?,
+                pitched: num(15)?,
+                pitch_key: if c[16].is_empty() {
                     None
                 } else {
-                    Some(num(15)?)
+                    Some(num(16)?)
                 },
-                attack_peaks: num(16)? as u8,
+                attack_peaks: num(17)? as u8,
             },
         });
     }
@@ -660,6 +687,7 @@ pub fn build(opts: &BuildOptions) -> Result<String, String> {
             "oneshot",
             s.file.clone(),
             s.class.name().into(),
+            0.0,
             hit,
         ));
     }
@@ -688,24 +716,38 @@ pub fn build(opts: &BuildOptions) -> Result<String, String> {
             };
             let hits = detect(&lp.audio);
             placed_total += lp.placed.len();
-            let mut found = vec![false; lp.placed.len()];
-            for h in &hits {
-                let near = lp
-                    .placed
-                    .iter()
-                    .enumerate()
-                    .filter(|(_, p)| {
-                        (p.at as f64 - h.onset as f64).abs() <= MATCH * f64::from(RATE)
-                    })
-                    .max_by(|a, b| a.1.gain_db.total_cmp(&b.1.gain_db));
-                let label = match near {
-                    Some((k, p)) => {
-                        found[k] = true;
-                        p.class.name()
+            // Each detection takes the nearest placed hit within MATCH; of
+            // several detections near one placed hit only the nearest is
+            // labelled, and the rest are spurious.
+            let window = MATCH * f64::from(RATE);
+            let nearest: Vec<Option<(usize, f64)>> = hits
+                .iter()
+                .map(|h| {
+                    lp.placed
+                        .iter()
+                        .enumerate()
+                        .map(|(k, p)| (k, (p.at as f64 - h.onset as f64).abs()))
+                        .filter(|&(_, d)| d <= window)
+                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                })
+                .collect();
+            let mut owner: Vec<Option<usize>> = vec![None; lp.placed.len()];
+            for (j, n) in nearest.iter().enumerate() {
+                if let Some((k, d)) = *n
+                    && owner[k].is_none_or(|o| d < nearest[o].map_or(f64::MAX, |x| x.1))
+                {
+                    owner[k] = Some(j);
+                }
+            }
+            let found: Vec<bool> = owner.iter().map(Option::is_some).collect();
+            for (j, h) in hits.iter().enumerate() {
+                let (label, gain) = match nearest[j] {
+                    Some((k, _)) if owner[k] == Some(j) => {
+                        (lp.placed[k].class.name(), lp.placed[k].gain_db)
                     }
-                    None => {
+                    _ => {
                         spurious += 1;
-                        "spurious"
+                        ("spurious", 0.0)
                     }
                 };
                 rows.push(row_of(
@@ -713,6 +755,7 @@ pub fn build(opts: &BuildOptions) -> Result<String, String> {
                     "loop",
                     format!("{}-{i}", split.name()),
                     label.into(),
+                    gain,
                     h,
                 ));
             }
@@ -741,7 +784,14 @@ pub fn build(opts: &BuildOptions) -> Result<String, String> {
     Ok(summary)
 }
 
-fn row_of(split: Split, source: &'static str, origin: String, label: String, h: &Hit) -> Row {
+fn row_of(
+    split: Split,
+    source: &'static str,
+    origin: String,
+    label: String,
+    gain_db: f32,
+    h: &Hit,
+) -> Row {
     Row {
         split,
         source,
@@ -749,6 +799,7 @@ fn row_of(split: Split, source: &'static str, origin: String, label: String, h: 
         label,
         onset_s: (h.onset as f64 / f64::from(RATE)) as f32,
         level_db: h.level_db,
+        gain_db,
         mixed: h.mixed,
         truncated: h.truncated,
         features: h.features.clone(),
@@ -896,11 +947,20 @@ impl Confusion {
     }
 }
 
-/// What the rule labeller said, as a class name (`Unknown` for no guess). The
-/// two toms are both `tom`; a crash guess is `crash` and is also counted right
-/// for a ride (the app has no ride).
-fn rule_guess(f: &HitFeatures) -> &'static str {
-    match guess(f).0 {
+/// What the labeller said, as a class name (`Unknown` for no guess). The two
+/// toms are both `tom`; a crash guess is `crash` and is also counted right for
+/// a ride (the app has no ride).
+fn guess_class(labeller: &dyn HitLabeller, row: &Row) -> &'static str {
+    let hit = Hit {
+        onset: 0,
+        start: 0,
+        end: 0,
+        truncated: row.truncated,
+        mixed: row.mixed,
+        level_db: row.level_db,
+        features: row.features.clone(),
+    };
+    match labeller.label(&hit).0 {
         DrumKind::Kick => "kick",
         DrumKind::Snare => "snare",
         DrumKind::ClosedHat => "closed_hat",
@@ -912,15 +972,16 @@ fn rule_guess(f: &HitFeatures) -> &'static str {
     }
 }
 
-/// Scores the rule labeller on `rows` of `split` and writes a markdown report.
-pub fn baseline(rows: &[Row], split: Split) -> String {
+/// Scores `labeller` on `rows` of `split` and writes a markdown report.
+pub fn baseline(rows: &[Row], split: Split, labeller: &dyn HitLabeller, name: &str) -> String {
     let mut out = String::new();
     writeln!(
         out,
-        "# Rule labeller baseline (`{}` split)\n\n\
-         The current `guess` in `noodle-io/src/drum_bins.rs`, run on the features of every detected hit.\n\
+        "# {} (`{}` split)\n\n\
+         Run on the features of every detected hit.\n\
          A ride is right when the rules say `crash` (the app has no ride); `other` is right when they say `Unknown`.\n\
-         Hits quieter than {} dB are left out (the app drops them), and so are `mixed` hits in the clean columns.\n",
+         Hits quieter than {} dB are left out (the app drops them), as are loop hits labelled from a placed hit mixed more than 35 dB down, and `mixed` or `truncated` hits in the clean column.\n",
+        name,
         split.name(),
         -45
     )
@@ -937,7 +998,10 @@ pub fn baseline(rows: &[Row], split: Split) -> String {
             .iter()
             .filter(|r| r.split == split && r.source == source)
         {
-            if r.level_db < -45.0 || (only_clean && (r.mixed || r.truncated)) {
+            if r.level_db < -45.0
+                || r.gain_db < MIN_GAIN_DB
+                || (only_clean && (r.mixed || r.truncated))
+            {
                 continue;
             }
             if r.label == "spurious" {
@@ -947,7 +1011,7 @@ pub fn baseline(rows: &[Row], split: Split) -> String {
             let Some(class) = Class::from_name(&r.label) else {
                 continue;
             };
-            let predicted = rule_guess(&r.features);
+            let predicted = guess_class(labeller, r);
             let predicted = match (class, predicted) {
                 (Class::Ride, "crash") => "ride",
                 (_, p) => p,
@@ -1013,6 +1077,17 @@ mod tests {
     }
 
     #[test]
+    fn mic_versions_of_one_hit_share_a_split() {
+        let a = split_key("audio/m-snare/mj-snare-3-oh.wav", "muldjordkit");
+        let b = split_key("audio/m-room-snare/mj-snare-3-room.wav", "muldjordkit");
+        assert_eq!(a, b);
+        assert_ne!(
+            a,
+            split_key("audio/m-snare/mj-snare-4-oh.wav", "muldjordkit")
+        );
+    }
+
+    #[test]
     fn splits_are_stable_and_the_holdout_library_is_all_test() {
         assert_eq!(
             split_of("a/b.wav", "x", None),
@@ -1065,7 +1140,14 @@ mod tests {
         assert!(lp.placed.iter().all(|p| p.at < lp.audio.len()));
         let hits = detect(&lp.audio);
         assert!(!hits.is_empty(), "the detector found nothing");
-        let row = row_of(Split::Val, "loop", "v-0".into(), "kick".into(), &hits[0]);
+        let row = row_of(
+            Split::Val,
+            "loop",
+            "v-0".into(),
+            "kick".into(),
+            -3.0,
+            &hits[0],
+        );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hits.csv");
         std::fs::write(&path, format!("{}\n{}\n", csv_header(), csv_row(&row))).unwrap();

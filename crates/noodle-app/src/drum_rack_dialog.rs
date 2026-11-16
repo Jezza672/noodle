@@ -105,10 +105,12 @@ struct State {
 
 impl State {
     fn new(analysis: &DrumAnalysis) -> Self {
+        let mut binning = bin_hits(&analysis.hits, DEFAULT_MERGE);
+        binning.relabel(&analysis.hits, analysis.labeller.as_ref());
         let mut state = Self {
             clip: analysis.clip,
             merge: DEFAULT_MERGE,
-            binning: bin_hits(&analysis.hits, DEFAULT_MERGE),
+            binning,
             pads: BTreeMap::new(),
             show_all: false,
             groove: false,
@@ -124,6 +126,8 @@ impl State {
     /// they point at are no longer there.
     fn rebin(&mut self, analysis: &DrumAnalysis) {
         self.binning = bin_hits(&analysis.hits, self.merge);
+        self.binning
+            .relabel(&analysis.hits, analysis.labeller.as_ref());
         self.separation_applied = false;
         self.undo.clear();
         self.guess_pads();
@@ -172,6 +176,7 @@ impl State {
     fn reset_bin(&mut self, analysis: &DrumAnalysis, bin: usize, members: Vec<usize>) {
         let layers = self.binning.bins[bin].layers;
         let mut remade = make_bin(&analysis.hits, &self.binning.mixed, members);
+        remade.relabel(&analysis.hits, analysis.labeller.as_ref());
         remade.layers = layers.min(remade.members.len().min(usize::from(MAX_LAYERS)) as u8);
         self.binning.bins[bin] = remade;
         for p in self.pads.values_mut().filter(|p| p.bin == bin) {
@@ -219,7 +224,8 @@ impl State {
                 self.reset_bin(analysis, bin, members);
             }
             Target::NewBin => {
-                let bin = make_bin(&analysis.hits, &self.binning.mixed, vec![hit]);
+                let mut bin = make_bin(&analysis.hits, &self.binning.mixed, vec![hit]);
+                bin.relabel(&analysis.hits, analysis.labeller.as_ref());
                 self.binning.bins.push(bin);
             }
             Target::Other => self.binning.other.push(hit),
@@ -271,6 +277,9 @@ impl State {
         };
         self.remember();
         let mut parts: Vec<DrumBin> = parts;
+        for part in &mut parts {
+            part.relabel(&analysis.hits, analysis.labeller.as_ref());
+        }
         let first = parts.remove(0);
         self.binning.bins[bin] = first;
         self.binning.bins.extend(parts);
