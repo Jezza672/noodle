@@ -29,7 +29,9 @@ mod store;
 
 use std::fmt;
 
-pub use analyse::{ACTIVE_WITHIN_DB, HitSeparation, HitWindow, Separation, separate_hits};
+pub use analyse::{
+    ACTIVE_WITHIN_DB, HitSeparation, HitWindow, Separation, separate_and_find_hits, separate_hits,
+};
 #[cfg(feature = "onnx")]
 pub use classifier::OnnxLabeller;
 pub use hybrid::{HybridNet, HybridOutput, HybridSeparator};

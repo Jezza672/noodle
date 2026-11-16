@@ -149,9 +149,11 @@ All three chunks are built (`features/low-latency-monitoring.md`). Owed on the M
   (about 600 MB for 5 minutes at 4096/1024).
 - **Drum separation analyser, listening on real kits** (#501, built;
   `docs/features/drum-separation-analyser.md`): run Find overlapping drums on the same
-  kits. Check that hits with two drums are marked and clean ones are not, and that
-  Use part… sounds like the one drum. The 20 dB `ACTIVE_WITHIN_DB` margin was set on
-  synthetic parts and may need tuning. Ask before making sound.
+  kits. Hits are now found per part (a hat over a kick is two hits, each playing its
+  own part): check that each pad sounds like the one drum, that leakage does not make
+  duplicate hits, and that hits with two drums are marked and clean ones are not. The
+  10 dB `ACTIVE_WITHIN_DB` and 20 dB `KEEP_WITHIN_DB` margins came from drumsep on real
+  songs, not from listening. Ask before making sound.
 - **Recording with a real microphone**, to check the latency compensation, and
   that the Audio Settings round-trip estimate matches what you hear.
 - **Stem separation on the real HT-Demucs weights** (M10), and listening to the
