@@ -67,7 +67,11 @@ impl Choice {
     }
 
     /// The combo box: Default, each SPDX id, Custom text.
-    fn pick(ui: &mut Ui, salt: impl std::hash::Hash + std::fmt::Debug, choice: &mut Choice) {
+    pub(super) fn pick(
+        ui: &mut Ui,
+        salt: impl std::hash::Hash + std::fmt::Debug,
+        choice: &mut Choice,
+    ) {
         egui::ComboBox::from_id_salt(salt)
             .selected_text(choice.label())
             .show_ui(ui, |ui| {
@@ -183,7 +187,7 @@ pub fn slug(name: &str) -> String {
     out.trim_end_matches('-').to_owned()
 }
 
-fn tags_of_text(text: &str) -> Vec<String> {
+pub(super) fn tags_of_text(text: &str) -> Vec<String> {
     text.split(',')
         .map(|t| t.trim().to_lowercase())
         .filter(|t| !t.is_empty())
@@ -250,6 +254,7 @@ impl Draft {
                     credit: Some(r.credit.trim().to_owned()).filter(|c| !c.is_empty()),
                 })
                 .collect(),
+            items: Vec::new(),
         }
     }
 

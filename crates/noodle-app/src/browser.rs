@@ -30,15 +30,18 @@ const STRIP: f32 = 28.0;
 pub enum Tab {
     Sounds,
     Nodes,
+    /// Groups and presets that sources offer, to install.
+    Library,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 2] = [Tab::Sounds, Tab::Nodes];
+    pub const ALL: [Tab; 3] = [Tab::Sounds, Tab::Nodes, Tab::Library];
 
     pub fn name(self) -> &'static str {
         match self {
             Tab::Sounds => "Sounds",
             Tab::Nodes => "Nodes",
+            Tab::Library => "Library",
         }
     }
 
@@ -46,6 +49,7 @@ impl Tab {
         match self {
             Tab::Sounds => "Sounds from packs and folders",
             Tab::Nodes => "Every node and saved group, with their presets, to add to the canvas",
+            Tab::Library => "Groups and presets from packs, to install into your library",
         }
     }
 }
@@ -176,6 +180,7 @@ impl Browser {
                 ui.separator();
                 match self.tab {
                     Tab::Sounds => sounds.show(ui),
+                    Tab::Library => sounds.show_library(ui),
                     Tab::Nodes => nodes(ui, &mut self.nodes, &mut self.unfolded, session, editor),
                 }
             });

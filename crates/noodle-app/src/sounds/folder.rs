@@ -136,6 +136,7 @@ pub fn scan(source: &Source, local: &Folder, known: &[Entry]) -> Result<Vec<Entr
         }
         entries.push(Entry {
             kind: Kind::Sound,
+            needs: Vec::new(),
             key,
             name: path
                 .file_stem()

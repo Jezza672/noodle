@@ -28,7 +28,8 @@ fn settle(sounds: &mut Sounds, session: &Session) -> Vec<Done> {
     let deadline = Instant::now() + Duration::from_secs(10);
     loop {
         arrived.extend(sounds.poll(session));
-        if sounds.refreshing.is_none() && sounds.fetching.is_empty() {
+        if sounds.refreshing.is_none() && sounds.fetching.is_empty() && sounds.installing.is_empty()
+        {
             return arrived;
         }
         assert!(Instant::now() < deadline, "the jobs never finished");
@@ -447,4 +448,255 @@ fn an_exported_site_is_added_as_a_source_and_read_from_disk() {
     let arrived = settle(&mut s, &session());
     assert!(arrived[0].result.is_ok(), "{:?}", arrived[0].result);
     assert!(s.add_site(&out, "Kit").is_err(), "twice is refused");
+}
+
+// Groups and presets travel in packs like sounds do.
+mod library_packs {
+    use super::*;
+    use crate::sounds::share::{self, Draft};
+    use crate::sounds::wizard::{Choice, Exported, Format, Kind as LicenceKind};
+    use noodle_core::library::{Item, Library, NodePreset, Origin};
+    use noodle_core::{Config, Node, Value};
+    use noodle_io::Audio;
+
+    /// A session whose store holds a 24-bit-exact tone and whose library holds
+    /// a Sampler preset that uses it, saved by the user.
+    fn author(preset: &str) -> (Session, String) {
+        let session = session();
+        let samples = (0..3000)
+            .map(|i| ((i as f32 * 0.05).sin() * 0.5 * 8_388_608.0).round() / 8_388_608.0)
+            .collect();
+        let hash = session.samples().insert(&Audio {
+            samples,
+            channels: 1,
+            sample_rate: 48_000,
+        });
+        let node = Node::new(noodle_nodes::SAMPLER_ID)
+            .with_config(Config::new().with(noodle_nodes::SAMPLE_KEY, Value::Text(hash.clone())));
+        let mut library = Library::in_memory();
+        library
+            .save(Item::NodePreset(NodePreset::capture(&node, preset)))
+            .unwrap();
+        let mut session = session;
+        session.set_library(library);
+        (session, hash)
+    }
+
+    fn draft(session: &Session) -> Draft {
+        let mut d = Draft::default();
+        d.set_name("My boom".into());
+        d.author = "Ada".into();
+        d.picked = share::candidates(session)
+            .into_iter()
+            .map(|c| c.id)
+            .collect();
+        d
+    }
+
+    fn export(session: &Session, d: &Draft, out: &std::path::Path) -> Exported {
+        let from = share::candidates(session);
+        share::export(d, &from, session.samples(), Format::Folder, out).unwrap()
+    }
+
+    #[test]
+    fn a_shared_preset_is_installed_with_the_sound_it_uses() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mine, hash) = author("Boom");
+        let out = dir.path().join("site");
+        let done = export(&mine, &draft(&mine), &out);
+        assert_eq!(done.samples, 2, "the preset and the sound it uses");
+
+        // Someone else adds the pack as a source and installs from it.
+        let source = Source::remote("mine", "Mine", source::file_url(&out), None);
+        let mut s = Sounds::with(Net::http(), Some(dir.path().join("data")), vec![source]);
+        let mut theirs = session();
+        s.refresh();
+        settle(&mut s, &theirs);
+        let listed = entry(&s, "Boom").clone();
+        assert_eq!(listed.kind, catalogue::Kind::NodePreset);
+        assert_eq!(listed.needs, std::slice::from_ref(&hash));
+        // The Sounds tab lists the sound and not the preset, the Library tab the reverse.
+        let sounds_tab = catalogue::list(s.entries(), &s.filter, &s.cached);
+        let library_tab = catalogue::list(s.entries(), &s.library_filter, &s.installed);
+        assert!(sounds_tab.iter().all(|e| e.kind.is_sound()) && sounds_tab.len() == 1);
+        assert_eq!(library_tab.len(), 1);
+        assert_eq!(library_tab[0].name, "Boom");
+
+        s.install(listed.clone());
+        settle(&mut s, &theirs);
+        let arrived = s.take_installs();
+        assert_eq!(arrived.len(), 1);
+        crate::sounds::apply::install(&mut theirs, arrived.into_iter().next().unwrap());
+        let id = theirs
+            .library()
+            .installed(&listed.key)
+            .expect("installed")
+            .to_owned();
+        let stored = theirs.library().get(&id).unwrap();
+        let origin = stored.item.origin().unwrap();
+        assert_eq!(
+            (origin.pack.as_str(), origin.author.as_str()),
+            ("My boom", "Ada")
+        );
+        // The sound came with it, by the hash the preset names.
+        assert!(theirs.samples().get(&hash).is_some());
+        assert!(theirs.installed_hashes().contains(&listed.key));
+
+        // Installing again changes nothing.
+        s.set_installed(theirs.installed_hashes());
+        s.install(listed);
+        assert!(s.installing.is_empty());
+    }
+
+    #[test]
+    fn what_a_source_serves_must_be_what_its_hash_and_manifest_say() {
+        let dir = tempfile::tempdir().unwrap();
+        let (mine, _) = author("Boom");
+        let out = dir.path().join("site");
+        export(&mine, &draft(&mine), &out);
+        let source = Source::remote("mine", "Mine", source::file_url(&out), None);
+        let mut s = Sounds::with(Net::http(), Some(dir.path().join("data")), vec![source]);
+        let theirs = session();
+        s.refresh();
+        settle(&mut s, &theirs);
+        let listed = entry(&s, "Boom").clone();
+
+        // Another entry's bytes under this name are not accepted.
+        let object = out.join(noodle_packs::item_object(&listed.key));
+        std::fs::write(&object, "not what its name says").unwrap();
+        s.install(listed.clone());
+        settle(&mut s, &theirs);
+        let got = s.take_installs().pop().unwrap();
+        assert!(got.result.is_err());
+
+        // A manifest that leaves out a sound the entry uses is refused too.
+        let mut lies = listed;
+        lies.needs.clear();
+        let text = noodle_publish::item_file(&Item::NodePreset(NodePreset::capture(
+            &Node::new(noodle_nodes::SAMPLER_ID).with_config(
+                Config::new().with(noodle_nodes::SAMPLE_KEY, Value::Text("c".repeat(64))),
+            ),
+            "Boom",
+        )));
+        std::fs::write(&object, &text).unwrap();
+        lies.key = noodle_publish::sha256_hex(text.as_bytes());
+        std::fs::copy(&object, out.join(noodle_packs::item_object(&lies.key))).unwrap();
+        s.install(lies);
+        settle(&mut s, &theirs);
+        let err = s.take_installs().pop().unwrap().result.err().unwrap();
+        assert!(err.contains("doesn't list"), "{err}");
+    }
+
+    #[test]
+    fn an_entry_that_came_from_a_restricted_pack_cannot_be_shared_and_a_missing_sound_is_said() {
+        let (mut mine, _) = author("Boom");
+        // Installed from a pack under the default licence: not passed on.
+        let mut library = Library::in_memory();
+        let mut item = mine.library().all().last().unwrap().item.clone();
+        item.set_origin(Some(Origin {
+            hash: "d".repeat(64),
+            pack: "Theirs".into(),
+            author: "Bo".into(),
+            licence: "Default".into(),
+            credit: None,
+        }));
+        library.save(item).unwrap();
+        mine.set_library(library);
+        let c = share::candidates(&mine);
+        assert!(c[0].blocked.as_deref().unwrap().contains("Theirs"));
+        let dir = tempfile::tempdir().unwrap();
+        let err = share::export(
+            &draft(&mine),
+            &c,
+            mine.samples(),
+            Format::Folder,
+            &dir.path().join("o"),
+        )
+        .unwrap_err();
+        assert!(err.contains("Theirs"), "{err}");
+
+        // A sound that isn't on this computer is named, not skipped.
+        let (mine, _) = author("Boom");
+        let empty = noodle_nodes::SampleStore::new();
+        let err = share::export(
+            &draft(&mine),
+            &share::candidates(&mine),
+            &empty,
+            Format::Folder,
+            &dir.path().join("o2"),
+        )
+        .unwrap_err();
+        assert!(err.contains("isn't on this computer"), "{err}");
+
+        // The licence that asks for a credit gets one made for it.
+        let (mine, _) = author("Boom");
+        let mut d = draft(&mine);
+        d.licence = Choice {
+            kind: LicenceKind::Spdx,
+            spdx: "CC-BY-4.0".into(),
+            text: String::new(),
+        };
+        let out = dir.path().join("o3");
+        export(&mine, &d, &out);
+        let index = noodle_packs::Index::from_json(
+            &std::fs::read_to_string(out.join("index.json")).unwrap(),
+        )
+        .unwrap();
+        let manifest = noodle_packs::Manifest::from_json(
+            &std::fs::read_to_string(out.join(&index.packs[0].manifest)).unwrap(),
+        )
+        .unwrap();
+        assert_eq!(
+            manifest.items[0].credit.as_deref(),
+            Some("Boom by Ada (CC-BY-4.0)")
+        );
+    }
+
+    #[test]
+    fn re_sharing_keeps_the_original_author_licence_and_credit() {
+        let (mut mine, _) = author("Boom");
+        let mut library = Library::in_memory();
+        let mut item = mine.library().all().last().unwrap().item.clone();
+        item.set_origin(Some(Origin {
+            hash: "d".repeat(64),
+            pack: "Theirs".into(),
+            author: "Bo".into(),
+            licence: "CC-BY-4.0".into(),
+            credit: Some("Boom by Bo (CC-BY-4.0)".into()),
+        }));
+        library.save(item).unwrap();
+        mine.set_library(library);
+        let mut d = draft(&mine);
+        d.licence = Choice::default();
+        let dir = tempfile::tempdir().unwrap();
+        let out = dir.path().join("o");
+        export(&mine, &d, &out);
+        let manifest = noodle_packs::Manifest::from_json(
+            &std::fs::read_to_string(out.join("packs/my-boom/manifest.json")).unwrap(),
+        )
+        .unwrap();
+        let (i, s) = (&manifest.items[0], &manifest.samples[0]);
+        assert_eq!(
+            (i.author.as_str(), i.licence.label().as_str()),
+            ("Bo", "CC-BY-4.0")
+        );
+        assert_eq!(i.credit.as_deref(), Some("Boom by Bo (CC-BY-4.0)"));
+        // The sound it brings carries the same terms, not the new pack's.
+        assert_eq!(
+            (s.author.as_str(), s.licence.label().as_str()),
+            ("Bo", "CC-BY-4.0")
+        );
+        assert_eq!(s.credit.as_deref(), Some("Boom by Bo (CC-BY-4.0)"));
+    }
+
+    #[test]
+    fn a_draft_says_what_is_missing() {
+        let mut d = Draft::default();
+        assert_eq!(d.problems().len(), 4);
+        d.set_name("A pack".into());
+        d.author = "Me".into();
+        d.picked.insert("user:node:x".into());
+        assert!(d.problems().is_empty());
+        assert_eq!(d.id, "a-pack");
+    }
 }

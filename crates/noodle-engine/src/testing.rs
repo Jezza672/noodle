@@ -358,6 +358,11 @@ impl Harness {
         self.playing = playing;
     }
 
+    /// The samples run so far, which is where the next block starts.
+    pub fn position(&self) -> u64 {
+        self.position
+    }
+
     /// Moves the playhead to `position` and resets the node, as a seek does
     /// in the engine.
     pub fn seek(&mut self, position: u64) {

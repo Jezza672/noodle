@@ -55,6 +55,30 @@ impl Session {
         self.library = library;
     }
 
+    /// The hashes of the entries in the user's library that came from a pack.
+    pub fn installed_hashes(&self) -> std::collections::HashSet<String> {
+        self.library
+            .all()
+            .filter(|e| !e.is_system())
+            .filter_map(|e| e.item.origin().map(|o| o.hash.clone()))
+            .collect()
+    }
+
+    /// Adds an entry that came from a pack to the user's library. Not an undo
+    /// step, like any save to the library.
+    pub fn install_library_item(&mut self, mut item: Item, origin: library::Origin) {
+        let name = item.name().to_string();
+        if self.library.installed(&origin.hash).is_some() {
+            self.message = Some(format!("{name} is already in your library"));
+            return;
+        }
+        item.set_origin(Some(origin));
+        self.message = Some(match self.library.save(item) {
+            Ok(_) => format!("Added {name} to your library"),
+            Err(e) => format!("Couldn't save {name} to the library: {e}"),
+        });
+    }
+
     /// A node's port layout, as presets compare it.
     fn layout_of(&self) -> impl Fn(&Node) -> Option<String> + '_ {
         |node| self.registry.layout_signature(node)

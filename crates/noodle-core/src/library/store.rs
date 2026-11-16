@@ -28,6 +28,8 @@ const EMBEDDED: &[&str] = &[
     include_str!("../../library/system/drum-rack.ron"),
     include_str!("../../library/system/step-sequencer.ron"),
     include_str!("../../library/system/step-gate.ron"),
+    include_str!("../../library/system/harmoniser.ron"),
+    include_str!("../../library/system/euclid-hat.ron"),
     include_str!("../../library/system/pattern-pads.ron"),
     include_str!("../../library/system/loop-pads.ron"),
     include_str!("../../library/system/looper.ron"),
@@ -224,6 +226,14 @@ impl Library {
             Item::GroupPreset(p) => Some(p),
             _ => None,
         }
+    }
+
+    /// The ID of the user entry installed from a pack under this hash.
+    pub fn installed(&self, hash: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|e| !e.is_system() && e.item.origin().is_some_and(|o| o.hash == hash))
+            .map(|e| e.id.as_str())
     }
 
     fn unique_slug(&self, kind: Kind, base: &str) -> String {

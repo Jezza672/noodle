@@ -114,7 +114,7 @@ Terms are in `CONTEXT.md`; the decisions are ADRs 0004 and 0005.
 - **System templates** are the song kit's instruments (`Mono Synth`,
   `Poly Synth`, `Pad`, `Kick`, `Snare`, `Hat`, `Clap`), the subtractive
   example's `Subtractive Voice`, the tempo-synced `Tempo Echo` and `Tempo
-  Tremolo` (Tempo into a Delay or an LFO), the `Step Sequencer`, `Step Gate` and
+  Tremolo` (Tempo into a Delay or an LFO), the `Harmoniser` (Song Key, Transpose, Scale Quantise and Chord) and `Euclid Hat` (Euclidean, Chance and a hat), the `Step Sequencer`, `Step Gate` and
   `Pattern Pads` around the Pattern Player, and an empty `Drum Rack` (a Note
   Swing in front of eight named Drum Pads on General MIDI keys, samples dropped
   on the pads, ADR 0009), each with three or more group presets. They are

@@ -12,10 +12,10 @@ mod pack;
 mod published;
 mod validate;
 
-pub use error::{Error, Problem, ProblemKind};
+pub use error::{Error, ItemFault, Problem, ProblemKind};
 pub use licence::{Licence, SPDX_IDS};
-pub use pack::{PackDef, SampleDef};
-pub use published::{Index, IndexEntry, Manifest, ManifestSample};
+pub use pack::{ItemDef, PackDef, SampleDef};
+pub use published::{Index, IndexEntry, Manifest, ManifestItem, ManifestSample};
 pub use validate::{validate, validate_dir};
 
 /// The version of every file format in this crate. Bump it on any change a
@@ -25,6 +25,29 @@ pub const FORMAT_VERSION: u32 = 1;
 /// Whether `s` is a sample hash: 64 lowercase hex digits.
 pub fn is_hash(s: &str) -> bool {
     s.len() == 64 && s.bytes().all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
+}
+
+/// What a library entry is.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+pub enum ItemKind {
+    Template,
+    NodePreset,
+    GroupPreset,
+}
+
+impl ItemKind {
+    pub fn label(self) -> &'static str {
+        match self {
+            ItemKind::Template => "Group",
+            ItemKind::NodePreset => "Node preset",
+            ItemKind::GroupPreset => "Group preset",
+        }
+    }
+}
+
+/// The path of a library entry's object, relative to a site's root.
+pub fn item_object(hash: &str) -> String {
+    format!("items/{hash}.ron")
 }
 
 /// Whether `s` is a pack id: lowercase letters, digits and single hyphens.

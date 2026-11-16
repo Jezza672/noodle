@@ -49,6 +49,22 @@ pub(crate) fn has_input(layout: &str, key: &str) -> bool {
     layout.split(';').any(|token| token == want)
 }
 
+/// Where an entry that came from a pack was found, and the terms it came
+/// under. Kept with the entry so the credit and the licence travel with it.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub struct Origin {
+    /// The SHA-256 of the entry's file in the pack, which is what a source
+    /// names it by: two installs of the same entry are the same hash.
+    pub hash: String,
+    pub pack: String,
+    pub author: String,
+    /// The licence's label, e.g. `CC-BY-4.0` or `Default`.
+    pub licence: String,
+    /// The attribution line, if the licence needs one.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit: Option<String>,
+}
+
 /// What a library file holds.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub enum Item {
@@ -93,7 +109,7 @@ impl Item {
         }
     }
 
-    pub(crate) fn slug(&self) -> &str {
+    pub fn slug(&self) -> &str {
         match self {
             Item::Template(t) => &t.slug,
             Item::NodePreset(p) => &p.slug,
@@ -101,7 +117,7 @@ impl Item {
         }
     }
 
-    pub(crate) fn set_slug(&mut self, slug: String) {
+    pub fn set_slug(&mut self, slug: String) {
         match self {
             Item::Template(t) => t.slug = slug,
             Item::NodePreset(p) => p.slug = slug,
@@ -112,6 +128,47 @@ impl Item {
     /// Whether the library lists this entry.
     pub fn hidden(&self) -> bool {
         matches!(self, Item::Template(t) if t.hidden)
+    }
+
+    pub fn origin(&self) -> Option<&Origin> {
+        match self {
+            Item::Template(t) => t.origin.as_ref(),
+            Item::NodePreset(p) => p.origin.as_ref(),
+            Item::GroupPreset(p) => p.origin.as_ref(),
+        }
+    }
+
+    pub fn set_origin(&mut self, origin: Option<Origin>) {
+        match self {
+            Item::Template(t) => t.origin = origin,
+            Item::NodePreset(p) => p.origin = origin,
+            Item::GroupPreset(p) => p.origin = origin,
+        }
+    }
+
+    /// Every text setting the entry stores, which is where a sample is named
+    /// (by hash, alone or in a set). A caller that knows the node types finds
+    /// the samples in them.
+    pub fn config_texts(&self) -> Vec<String> {
+        fn texts(config: &crate::Config) -> impl Iterator<Item = String> + '_ {
+            config.iter().filter_map(|(_, v)| match v {
+                crate::Value::Text(t) => Some(t.clone()),
+                _ => None,
+            })
+        }
+        match self {
+            Item::Template(t) => t
+                .graph()
+                .nodes()
+                .flat_map(|(_, n)| texts(&n.config).collect::<Vec<_>>())
+                .collect(),
+            Item::NodePreset(p) => texts(&p.values.config).collect(),
+            Item::GroupPreset(p) => p
+                .nodes
+                .iter()
+                .flat_map(|v| texts(&v.config).collect::<Vec<_>>())
+                .collect(),
+        }
     }
 
     /// RON, as a library file holds it.

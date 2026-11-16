@@ -1,6 +1,6 @@
 //! Drawing the Sounds panel.
 
-use egui::{Context, Sense, Ui, text::LayoutJob};
+use egui::{Context, RichText, Sense, Ui, text::LayoutJob};
 
 use super::catalogue::{self, Entry};
 use super::{Reach, Sounds, Then};
@@ -10,6 +10,138 @@ pub(super) fn show(sounds: &mut Sounds, ui: &mut Ui) {
     let ctx = ui.ctx().clone();
     contents(sounds, ui, &ctx);
     confirm(sounds, &ctx);
+}
+
+/// The Library tab: the groups and presets the sources offer, to install into
+/// the user's library.
+pub(super) fn show_library(sounds: &mut Sounds, ui: &mut Ui) {
+    // The search and the filters are the Sounds tab's own widgets, over the
+    // library's filter.
+    std::mem::swap(&mut sounds.filter, &mut sounds.library_filter);
+    ui.horizontal(|ui| {
+        ui.add(
+            egui::TextEdit::singleline(&mut sounds.filter.query)
+                .hint_text("Search name, tag, pack or author")
+                .desired_width(ui.available_width() - 70.0),
+        );
+        let refreshing = sounds.refreshing.is_some();
+        if ui
+            .add_enabled(!refreshing, egui::Button::new("Refresh"))
+            .on_hover_text("Ask every source what it has now")
+            .clicked()
+        {
+            sounds.refresh();
+        }
+    });
+    filters(sounds, ui);
+    std::mem::swap(&mut sounds.filter, &mut sounds.library_filter);
+
+    if ui
+        .button("Share my groups and presets…")
+        .on_hover_text("Make a pack of the groups and presets in your library")
+        .clicked()
+    {
+        sounds.share_library();
+    }
+    for source in sounds.sources.clone() {
+        if let Some(Reach::Unreachable(why)) = sounds.reach.get(&source.id) {
+            ui.colored_label(
+                crate::theme::MUTE,
+                format!("⚠ {} can't be reached: {why}", source.name),
+            );
+        }
+    }
+    let mut cancel = None;
+    for (i, install) in sounds.installing.iter().enumerate() {
+        ui.horizontal(|ui| {
+            ui.add(
+                egui::ProgressBar::new(install.job.fraction())
+                    .desired_width(160.0)
+                    .text(format!("Installing {}", install.entry.name)),
+            );
+            if ui.small_button("Cancel").clicked() {
+                cancel = Some(i);
+            }
+        });
+    }
+    if let Some(i) = cancel {
+        sounds.installing.remove(i);
+    }
+    if let Some(message) = sounds.message.clone() {
+        ui.horizontal(|ui| {
+            ui.colored_label(crate::theme::MUTE, message);
+            if ui.small_button("Dismiss").clicked() {
+                sounds.message = None;
+            }
+        });
+    }
+
+    let total = sounds.entries.iter().filter(|e| !e.kind.is_sound()).count();
+    let found = catalogue::list(&sounds.entries, &sounds.library_filter, &sounds.installed);
+    ui.weak(format!("{} of {total} groups and presets", found.len()));
+    if total == 0 && sounds.refreshing.is_none() {
+        ui.label("No groups or presets in any source yet.");
+    }
+    let mut install = None;
+    egui::ScrollArea::vertical()
+        .max_height(ui.available_height() - 6.0)
+        .auto_shrink([false, false])
+        .scroll_bar_visibility(egui::containers::scroll_area::ScrollBarVisibility::AlwaysVisible)
+        .show(ui, |ui| {
+            for entry in found {
+                let reachable = matches!(sounds.reach.get(&entry.source), Some(Reach::Reachable));
+                let have = sounds.installed.contains(&entry.key);
+                let busy = sounds.installing.iter().any(|i| i.entry.key == entry.key);
+                if library_row(ui, entry, have, busy, reachable) {
+                    install = Some(entry.clone());
+                }
+            }
+        });
+    if let Some(entry) = install {
+        sounds.install(entry);
+    }
+}
+
+/// One group or preset of a source. Returns whether Install was pressed.
+fn library_row(ui: &mut Ui, entry: &Entry, have: bool, busy: bool, reachable: bool) -> bool {
+    let mut pressed = false;
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| {
+            ui.label(&entry.name);
+            let uses = match entry.needs.len() {
+                0 => String::new(),
+                1 => " · 1 sound".to_owned(),
+                n => format!(" · {n} sounds"),
+            };
+            let by = if entry.author.is_empty() {
+                String::new()
+            } else {
+                format!(" · {}", entry.author)
+            };
+            ui.small(
+                RichText::new(format!(
+                    "{} · {}{by} · {}{uses}",
+                    entry.kind.label(),
+                    entry.pack,
+                    entry.licence.label()
+                ))
+                .color(ui.visuals().weak_text_color()),
+            )
+            .on_hover_text(entry.tags.join(", "));
+        });
+        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+            if have {
+                ui.weak("✓ In your library");
+            } else if ui
+                .add_enabled(reachable && !busy, egui::Button::new("Install"))
+                .on_hover_text("Add it to your library. Its sounds are downloaded too.")
+                .clicked()
+            {
+                pressed = true;
+            }
+        });
+    });
+    pressed
 }
 
 fn contents(sounds: &mut Sounds, ui: &mut Ui, ctx: &Context) {
@@ -43,9 +175,9 @@ fn contents(sounds: &mut Sounds, ui: &mut Ui, ctx: &Context) {
     ui.weak(format!(
         "{} of {} sounds",
         found.len(),
-        sounds.entries.len()
+        sounds.entries.iter().filter(|e| e.kind.is_sound()).count()
     ));
-    if sounds.entries.is_empty() && sounds.refreshing.is_none() {
+    if sounds.entries.iter().all(|e| !e.kind.is_sound()) && sounds.refreshing.is_none() {
         ui.label("No sounds yet. Refresh when this computer is online.");
     }
     let mut clicked = None;
