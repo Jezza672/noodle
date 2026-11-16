@@ -350,9 +350,9 @@ pub(crate) fn compile_with(
     options: &Options<'_>,
 ) -> (Schedule, Vec<Diagnostic>) {
     let mut diagnostics = Vec::new();
-    let mut keep = crate::automation::boundary_targets(graph, lanes, &mut diagnostics);
+    let wanted = crate::automation::boundary_targets(graph, lanes, &mut diagnostics);
     // A group's outputs keep their stages, which meter what leaves the group.
-    keep.extend(crate::flatten::output_stages(graph, registry));
+    let keep = crate::flatten::Keep::new(graph, registry, wanted);
     let retargeted = crate::automation::retarget_lanes(graph, lanes);
     let lanes: Vec<_> = retargeted.iter().map(|(id, lane)| (*id, lane)).collect();
     let original = graph;

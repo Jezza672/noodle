@@ -11,7 +11,7 @@ use std::collections::{BTreeMap, BTreeSet};
 
 use noodle_core::group::{
     GAIN, GROUP, GROUP_INPUT, GROUP_OUTPUT, GROUP_STAGE, MUTE, SOLO, SOLO_MUTE, control_key,
-    parse_control_key, parse_port_key, stage_id,
+    parse_control_key, parse_port_key, port_key, stage_id,
 };
 use noodle_core::{Connection, Endpoint, Graph, Node, NodeId};
 
@@ -35,37 +35,12 @@ const STAGE_OUT: &str = "out";
 /// with a wire into its gain or mute. The rest are dropped, so a group left
 /// at its defaults costs nothing and renders like the flat patch.
 pub fn flatten<'a>(graph: &'a Graph, registry: &crate::Registry) -> Cow<'a, Graph> {
-    let tracks = track_output_stages(graph);
-    let keep = output_stages(graph, registry)
-        .filter(|stage| tracks.contains(stage))
-        .collect();
-    flatten_keeping(graph, &keep)
-}
-
-/// The stage of every output port of every track, which a track's mute
-/// drives. [`flatten`] keeps only the signal ones (see [`output_stages`]): a
-/// port that carries notes has no stage, or the notes would end at a node
-/// that only passes signal.
-fn track_output_stages(graph: &Graph) -> BTreeSet<NodeId> {
-    graph
-        .nodes()
-        .filter(|(_, node)| {
-            node.type_id == GROUP_OUTPUT
-                && node
-                    .parent
-                    .is_some_and(|group| graph.track_input(group).is_some())
-        })
-        .flat_map(|(id, node)| {
-            node.boundary_ports()
-                .into_iter()
-                .map(move |(port, _)| stage_id(id, port))
-        })
-        .collect()
+    flatten_keeping(graph, &Keep::tracks(graph, registry))
 }
 
 /// [`flatten`], also keeping a stage for each boundary port in `keep` (by
 /// stage ID), so an automation lane has a gain or mute port to drive.
-pub(crate) fn flatten_keeping<'a>(graph: &'a Graph, keep: &BTreeSet<NodeId>) -> Cow<'a, Graph> {
+pub(crate) fn flatten_keeping<'a>(graph: &'a Graph, keep: &Keep) -> Cow<'a, Graph> {
     if !has_groups(graph) {
         return Cow::Borrowed(graph);
     }
@@ -157,74 +132,196 @@ struct InputStage {
     name: String,
 }
 
-/// The stage of every port of every group's output node, for the meters.
-/// A port that carries events (notes, say), spectra or samples has none: a
-/// stage is a signal node, and metering has nothing to measure on them. Whether a port does
-/// is read from the node that feeds it inside the group.
+/// The stage of every port of every group's output node, for the meters,
+/// except the ports that carry something a stage can't (see [`Keep`]).
 pub(crate) fn output_stages<'a>(
     graph: &'a Graph,
-    registry: &'a crate::Registry,
+    registry: &crate::Registry,
 ) -> impl Iterator<Item = NodeId> + 'a {
-    let carries_events = move |boundary: NodeId, port: u32| {
-        let mut at = graph
-            .source(&Endpoint::new(boundary, noodle_core::group::port_key(port)))
-            .cloned();
-        // Each endpoint is crossed once, so a loop of pass-through groups ends.
-        let mut seen = BTreeSet::new();
-        while let Some(from) = at.take() {
-            if !seen.insert(from.clone()) {
-                return false;
-            }
-            let Some(node) = graph.node(from.node) else {
-                return false;
-            };
-            match node.type_id.as_str() {
-                // Out of a nested group: what feeds that output inside it.
-                GROUP => {
-                    at = graph
-                        .group_ports(from.node)
-                        .output(&from.port)
-                        .and_then(|p| graph.source(&Endpoint::new(p.node, p.key())).cloned());
-                }
-                // Passed through from the group's own input: what feeds it.
-                GROUP_INPUT => {
-                    let name = parse_port_key(&from.port).and_then(|id| {
-                        node.boundary_ports()
-                            .into_iter()
-                            .find(|&(port, _)| port == id)
-                            .map(|(_, name)| name)
-                    });
-                    at = node.parent.zip(name).and_then(|(group, name)| {
-                        graph.source(&Endpoint::new(group, name)).cloned()
-                    });
-                }
-                _ => {
-                    return registry
-                        .get(&node.type_id)
-                        .and_then(|t| t.layout(&node.config).ok())
-                        .is_some_and(|layout| {
-                            [
-                                &layout.event_outputs,
-                                &layout.spectral_outputs,
-                                &layout.sample_outputs,
-                            ]
-                            .iter()
-                            .any(|ports| ports.iter().any(|p| p.key == from.port))
-                        });
-                }
-            }
-        }
-        false
-    };
+    let unstageable = unstageable_ports(graph, registry);
     graph
         .nodes()
         .filter(|(_, node)| node.type_id == GROUP_OUTPUT && node.parent.is_some())
-        .flat_map(move |(id, node)| {
+        .flat_map(|(id, node)| {
             node.boundary_ports()
                 .into_iter()
-                .filter(move |&(port, _)| !carries_events(id, port))
                 .map(move |(port, _)| stage_id(id, port))
         })
+        .filter(move |stage| !unstageable.contains(stage))
+}
+
+/// Which boundary ports get a stage in the flat graph, besides the ones
+/// whose gain, mute or solo ask for one.
+///
+/// A stage is a signal node: audio in, audio out. A boundary port that
+/// carries notes, spectra or samples must never get one, whatever its
+/// controls say, or the wire would end at a node that can't pass it on. So
+/// [`Keep`] holds the stages to keep, as asked for by the meters and
+/// automation, and the ports that are never staged.
+#[derive(Default)]
+pub(crate) struct Keep {
+    stages: BTreeSet<NodeId>,
+    unstageable: BTreeSet<NodeId>,
+}
+
+impl Keep {
+    /// Only the stages a track's mute drives, which every track output has
+    /// (unless it carries something a stage can't): what [`flatten`] keeps,
+    /// with no meters and no automation.
+    pub(crate) fn tracks(graph: &Graph, registry: &crate::Registry) -> Self {
+        let unstageable = unstageable_ports(graph, registry);
+        let stages = graph
+            .nodes()
+            .filter(|(_, node)| {
+                node.type_id == GROUP_OUTPUT
+                    && node
+                        .parent
+                        .is_some_and(|group| graph.track_input(group).is_some())
+            })
+            .flat_map(|(id, node)| {
+                node.boundary_ports()
+                    .into_iter()
+                    .map(move |(port, _)| stage_id(id, port))
+            })
+            .filter(|stage| !unstageable.contains(stage))
+            .collect();
+        Self {
+            stages,
+            unstageable,
+        }
+    }
+
+    /// `wanted` stages (automation targets, say) plus every group output's
+    /// meter stage, less the unstageable ones.
+    pub(crate) fn new(graph: &Graph, registry: &crate::Registry, wanted: BTreeSet<NodeId>) -> Self {
+        let unstageable = unstageable_ports(graph, registry);
+        let mut stages = wanted;
+        stages.extend(output_stages(graph, registry));
+        stages.retain(|stage| !unstageable.contains(stage));
+        Self {
+            stages,
+            unstageable,
+        }
+    }
+}
+
+/// What a wire carries, as far as a stage cares.
+#[derive(Clone, Copy, PartialEq)]
+enum Carries {
+    Signal,
+    Other,
+}
+
+fn carries(ports: &[&[crate::Port]], key: &str) -> Carries {
+    if ports.iter().any(|list| list.iter().any(|p| p.key == key)) {
+        Carries::Other
+    } else {
+        Carries::Signal
+    }
+}
+
+/// The stage IDs of the boundary ports that carry events, spectra or samples,
+/// found from the nodes at the ends of every wire that passes through them:
+/// a source that makes one, or a consumer that takes one. A port nothing is
+/// wired to on either side counts as signal, and costs nothing.
+fn unstageable_ports(graph: &Graph, registry: &crate::Registry) -> BTreeSet<NodeId> {
+    let mut found = BTreeSet::new();
+    if !has_groups(graph) {
+        return found;
+    }
+    let layout = |node: NodeId| {
+        let node = graph.node(node)?;
+        registry.get(&node.type_id)?.layout(&node.config).ok()
+    };
+    let output_kind = |at: &Endpoint| match layout(at.node) {
+        Some(l) => carries(
+            &[
+                l.event_outputs.as_slice(),
+                l.spectral_outputs.as_slice(),
+                l.sample_outputs.as_slice(),
+            ],
+            &at.port,
+        ),
+        None => Carries::Signal,
+    };
+    let input_kind = |at: &Endpoint| match layout(at.node) {
+        Some(l) => carries(
+            &[
+                l.event_inputs.as_slice(),
+                l.spectral_inputs.as_slice(),
+                l.sample_inputs.as_slice(),
+            ],
+            &at.port,
+        ),
+        None => Carries::Signal,
+    };
+    let mut mark = |visited: Vec<NodeId>, kinds: [Carries; 2]| {
+        if kinds.contains(&Carries::Other) {
+            found.extend(visited);
+        }
+    };
+    // Every wire that ends at a real node, followed back to its real source.
+    for c in graph.connections() {
+        let is_boundary = graph
+            .node(c.to.node)
+            .is_some_and(|n| matches!(n.type_id.as_str(), GROUP | GROUP_INPUT | GROUP_OUTPUT));
+        if is_boundary {
+            continue;
+        }
+        let mut visited = Vec::new();
+        let source = walk(graph, &c.to, &mut visited);
+        let from = source.as_ref().map_or(Carries::Signal, output_kind);
+        mark(visited, [from, input_kind(&c.to)]);
+    }
+    // Every boundary port, followed back to its source, for the ports that
+    // nothing consumes.
+    for (id, node) in graph.nodes() {
+        let Some(group) = node.parent else { continue };
+        for (port, name) in node.boundary_ports() {
+            let mut visited = vec![stage_id(id, port)];
+            let source = match node.type_id.as_str() {
+                GROUP_OUTPUT => walk(graph, &Endpoint::new(id, port_key(port)), &mut visited),
+                GROUP_INPUT => walk(graph, &Endpoint::new(group, name), &mut visited),
+                _ => continue,
+            };
+            let from = source.as_ref().map_or(Carries::Signal, output_kind);
+            mark(visited, [from, Carries::Signal]);
+        }
+    }
+    found
+}
+
+/// [`resolve`] with no stages, noting the stage ID of every boundary port the
+/// wire crosses on the way back to its source.
+fn walk(graph: &Graph, input: &Endpoint, visited: &mut Vec<NodeId>) -> Option<Endpoint> {
+    let mut at = graph.source(input)?.clone();
+    let mut seen = BTreeSet::new();
+    loop {
+        if !seen.insert(at.clone()) {
+            return None;
+        }
+        let node = graph.node(at.node)?;
+        match node.type_id.as_str() {
+            GROUP => {
+                let port = graph.group_ports(at.node).output(&at.port)?.clone();
+                visited.push(port.stage());
+                at = graph.source(&Endpoint::new(port.node, port.key()))?.clone();
+            }
+            GROUP_INPUT => {
+                let id = parse_port_key(&at.port)?;
+                visited.push(stage_id(at.node, id));
+                let group = node.parent?;
+                let name = node
+                    .boundary_ports()
+                    .into_iter()
+                    .find(|&(port, _)| port == id)?
+                    .1;
+                at = graph.source(&Endpoint::new(group, name))?.clone();
+            }
+            GROUP_OUTPUT => return None,
+            _ => return Some(at),
+        }
+    }
 }
 
 /// The boundary ports that stay in the flat graph, as the stage nodes that
@@ -237,7 +334,7 @@ pub(crate) fn output_stages<'a>(
 /// then moving it is only a parameter change. Soloing works the same way:
 /// the muted tracks get their stages at their outputs, and while solo is in
 /// use on a level, every group on it keeps one.
-fn stages(graph: &Graph, keep: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Stage> {
+fn stages(graph: &Graph, keep: &Keep) -> BTreeMap<NodeId, Stage> {
     let muted_by_solo = graph.solo_muted();
     let mut found = BTreeMap::new();
     for (node_id, node) in graph.nodes() {
@@ -248,6 +345,10 @@ fn stages(graph: &Graph, keep: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Stage> {
         let Some(group) = node.parent else { continue };
         for (port, name) in node.boundary_ports() {
             let stage = stage_id(node_id, port);
+            // Notes, spectra and samples pass straight through the boundary.
+            if keep.unstageable.contains(&stage) {
+                continue;
+            }
             let controls = node.port_controls(port);
             // Solo mutes at a group's outputs, which is enough to silence
             // it. A group with none is muted at its inputs.
@@ -265,7 +366,7 @@ fn stages(graph: &Graph, keep: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Stage> {
                 || mute
                 || keep_for_solo
                 || wired
-                || keep.contains(&stage))
+                || keep.stages.contains(&stage))
             {
                 continue;
             }
@@ -315,11 +416,7 @@ fn stage_input(graph: &Graph, stages: &BTreeMap<NodeId, Stage>, to: &Endpoint) -
 /// The nodes' outputs in the flat graph that feed a group's outputs: what
 /// freezing the group renders. A port with nothing wired inside, or whose
 /// source chain ends at a group input, has none.
-pub(crate) fn group_outputs(
-    graph: &Graph,
-    keep: &BTreeSet<NodeId>,
-    group: NodeId,
-) -> Vec<Endpoint> {
+pub(crate) fn group_outputs(graph: &Graph, keep: &Keep, group: NodeId) -> Vec<Endpoint> {
     let stages = stages(graph, keep);
     let mut sources = Vec::new();
     for port in graph.group_ports(group).outputs {
@@ -342,11 +439,7 @@ pub(crate) fn group_outputs(
 /// The playback cache stores this, so moving a fader or soloing a track
 /// doesn't invalidate the track's render. Stages of groups nested inside
 /// still count; they are part of the group's sound.
-pub(crate) fn group_sources(
-    graph: &Graph,
-    keep: &BTreeSet<NodeId>,
-    group: NodeId,
-) -> Vec<Endpoint> {
+pub(crate) fn group_sources(graph: &Graph, keep: &Keep, group: NodeId) -> Vec<Endpoint> {
     let stages = stages(graph, keep);
     let mut sources = Vec::new();
     for port in graph.group_ports(group).outputs {
@@ -361,11 +454,7 @@ pub(crate) fn group_sources(
 
 /// The node output in the flat graph that feeds a group's first output (its
 /// stage's, if it has one), which is what monitoring the group listens to.
-pub(crate) fn group_first_output(
-    graph: &Graph,
-    keep: &BTreeSet<NodeId>,
-    group: NodeId,
-) -> Option<Endpoint> {
+pub(crate) fn group_first_output(graph: &Graph, keep: &Keep, group: NodeId) -> Option<Endpoint> {
     let stages = stages(graph, keep);
     let port = graph.group_ports(group).outputs.into_iter().next()?;
     if stages.contains_key(&port.stage()) {
@@ -992,7 +1081,7 @@ mod tests {
         wire(&mut project, &mut history, (group, "out1"), (sink, "notes"));
 
         let graph = project.graph();
-        let keep = output_stages(graph, &registry).collect();
+        let keep = Keep::new(graph, &registry, BTreeSet::new());
         let flat = flatten_keeping(graph, &keep);
         assert_eq!(
             flat.source(&Endpoint::new(sink, "notes")),
@@ -1000,5 +1089,186 @@ mod tests {
             "the notes should reach the sink directly"
         );
         assert!(flat.node(stage_id(output, 2)).is_none());
+    }
+
+    #[test]
+    fn notes_pass_a_track_boundary_whatever_its_controls_say() {
+        use noodle_core::group::TRACK_INPUT;
+        let mut registry = crate::Registry::new();
+        registry.register(Notes(0));
+        let mut project = Project::new();
+        let mut history = History::new();
+        let group = add(&mut project, &mut history, Node::new(GROUP));
+        let notes = add(
+            &mut project,
+            &mut history,
+            Node::new("test.notes").in_group(group),
+        );
+        add(
+            &mut project,
+            &mut history,
+            Node::new(TRACK_INPUT).in_group(group),
+        );
+        let output = add(
+            &mut project,
+            &mut history,
+            Node::new(GROUP_OUTPUT)
+                .with_config(ports_config(&[(1, "out".into()), (2, "out1".into())]))
+                .in_group(group),
+        );
+        let sink = add(&mut project, &mut history, Node::new("sink"));
+        wire(
+            &mut project,
+            &mut history,
+            (notes, "out"),
+            (output, &port_key(2)),
+        );
+        wire(&mut project, &mut history, (group, "out1"), (sink, "notes"));
+
+        // Gain, mute and a wire into the gain all want a stage on the port, and
+        // the notes have no use for one.
+        set(
+            &mut project,
+            &mut history,
+            output,
+            &control_key(GAIN, 2),
+            -6.0,
+        );
+        set(
+            &mut project,
+            &mut history,
+            output,
+            &control_key(MUTE, 2),
+            1.0,
+        );
+        let lfo = add(
+            &mut project,
+            &mut history,
+            Node::new("const").in_group(group),
+        );
+        wire(
+            &mut project,
+            &mut history,
+            (lfo, "out"),
+            (output, &control_key(GAIN, 2)),
+        );
+        let graph = project.graph();
+        let keep = Keep::new(graph, &registry, [stage_id(output, 2)].into());
+        let flat = flatten_keeping(graph, &keep);
+        assert_eq!(
+            flat.source(&Endpoint::new(sink, "notes")),
+            Some(&Endpoint::new(notes, "out")),
+            "the notes should reach the sink directly"
+        );
+        assert!(flat.node(stage_id(output, 2)).is_none());
+    }
+
+    /// A small, seeded random number generator, so failures reproduce.
+    struct XorShift(u64);
+
+    impl XorShift {
+        fn below(&mut self, n: usize) -> usize {
+            self.0 ^= self.0 << 13;
+            self.0 ^= self.0 >> 7;
+            self.0 ^= self.0 << 17;
+            (self.0 % n as u64) as usize
+        }
+    }
+
+    /// The graph with each stage taken out and its wires joined end to end.
+    fn without_stages(graph: &Graph) -> Graph {
+        let is_stage = |id: NodeId| graph.node(id).is_some_and(|n| n.type_id == GROUP_STAGE);
+        let through = |mut from: Endpoint| loop {
+            if !is_stage(from.node) {
+                return Some(from);
+            }
+            from = graph.source(&Endpoint::new(from.node, STAGE_IN))?.clone();
+        };
+        let nodes = graph
+            .nodes()
+            .filter(|&(id, _)| !is_stage(id))
+            .map(|(id, n)| (id, n.clone()));
+        let wires = graph.connections().filter_map(|c| {
+            if is_stage(c.to.node) {
+                return None;
+            }
+            Some(Connection {
+                from: through(c.from)?,
+                to: c.to,
+            })
+        });
+        Graph::from_parts(nodes, wires).unwrap()
+    }
+
+    /// Random wiring, folded up into random nested groups: flattening gives
+    /// the original back (less the meter stages), and so does flattening with
+    /// every boundary port's gain and mute set.
+    #[test]
+    fn random_groupings_flatten_to_the_original_wiring() {
+        for seed in 1..=60u64 {
+            let mut rng = XorShift(seed.wrapping_mul(0x9e37_79b9_7f4a_7c15) | 1);
+            let mut project = Project::new();
+            let mut history = History::new();
+            let nodes: Vec<NodeId> = (0..4 + rng.below(8))
+                .map(|_| add(&mut project, &mut history, Node::new("n")))
+                .collect();
+            for _ in 0..rng.below(nodes.len() * 2) {
+                let (from, to) = (nodes[rng.below(nodes.len())], nodes[rng.below(nodes.len())]);
+                let port = ["in", "b", "c"][rng.below(3)];
+                wire(&mut project, &mut history, (from, "out"), (to, port));
+            }
+            let flat = project.graph().clone();
+            for _ in 0..1 + rng.below(4) {
+                let level: Vec<Option<NodeId>> = std::iter::once(None)
+                    .chain(
+                        project
+                            .graph()
+                            .nodes()
+                            .filter(|(_, n)| n.type_id == GROUP)
+                            .map(|(id, _)| Some(id)),
+                    )
+                    .collect();
+                let level = level[rng.below(level.len())];
+                let picked: Vec<NodeId> = project
+                    .graph()
+                    .children(level)
+                    .filter(|(_, n)| !matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT))
+                    .map(|(id, _)| id)
+                    .filter(|_| rng.below(2) == 0)
+                    .collect();
+                if picked.is_empty() {
+                    continue;
+                }
+                let (_, command) =
+                    group_nodes(&project.clone(), &picked, || project.new_node_id()).unwrap();
+                history.apply(&mut project, command).unwrap();
+            }
+            let registry = crate::Registry::new();
+            // A group's outputs always keep a stage, for the meters.
+            let got = flatten(project.graph(), &registry);
+            assert_eq!(&without_stages(&got), &flat, "seed {seed}");
+
+            let boundaries: Vec<(NodeId, Vec<u32>)> = project
+                .graph()
+                .nodes()
+                .filter(|(_, n)| matches!(n.type_id.as_str(), GROUP_INPUT | GROUP_OUTPUT))
+                .map(|(id, n)| (id, n.boundary_ports().into_iter().map(|(p, _)| p).collect()))
+                .collect();
+            for (id, ports) in boundaries {
+                for port in ports {
+                    for control in [GAIN, MUTE] {
+                        set(
+                            &mut project,
+                            &mut history,
+                            id,
+                            &control_key(control, port),
+                            0.0,
+                        );
+                    }
+                }
+            }
+            let staged = flatten(project.graph(), &registry);
+            assert_eq!(&without_stages(&staged), &flat, "seed {seed}, controls set");
+        }
     }
 }

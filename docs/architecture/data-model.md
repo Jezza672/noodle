@@ -43,6 +43,13 @@ The **Project** is the single source of truth. It holds one global graph:
     the group in one step. The ID never changes, so nothing inside moves: the
     wires and lanes inside use the ID, not the name. They are structure only,
     so they need no registry entry and flatten drops them.
+  - **Only signal ports get a stage.** A stage is an audio node, so a boundary
+    port that carries notes, spectra or samples never gets one, whatever its
+    gain, mute or solo say, however a wire or lane drives them, and whichever
+    end of the port is a group output or input. The kind is read from the
+    nodes at the ends of the wires that pass through the port, at any nesting
+    depth (`flatten::Keep`). Those ports pass straight through, and a mute on
+    them does nothing (a muted track stops its MIDI at the track input).
   - **Boundary parameters.** Every port carries gain (dB), mute and solo as
     parameters of its boundary node, keyed `gain.<id>`, `mute.<id>` and
     `solo.<id>` (`Node::port_controls`, `Graph::group_controls`). Flatten

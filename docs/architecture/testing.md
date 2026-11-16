@@ -5,6 +5,15 @@
 - **Compiler tests:** cycle detection, shape inference and buffer reuse, plus
   property tests that generate random graphs and check that the plans are
   valid.
+- **Group boundaries are invisible.** `noodle-nodes/tests/group_boundaries.rs`
+  sends every wire of four example projects (audio, modulation, events,
+  voices, spectra) through 1 and 3 nested groups, with the boundary controls
+  untouched and set, and folds random selections into random nested groups.
+  Each must render sample for sample like the flat project, with no
+  diagnostics, and survive a save, a load and an undo. `flatten.rs` has the
+  same property on random wiring, with no audio. `noodle-core/tests/random_edits.rs`
+  applies random edits (add, wire, move into a group, remove, group), checking
+  that undo and redo reach every state exactly and a save loads back equal.
 - **Real-time safety:** the audio-thread allocation check runs in all
   debug builds and tests. `tests/parallel.rs` does the same for a plan on
   worker threads, counting allocations on every thread, and checks it sounds
