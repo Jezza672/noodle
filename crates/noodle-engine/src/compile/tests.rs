@@ -12,6 +12,9 @@ struct TestType {
     layout: Layout,
     outputs: Outputs,
     loop_input: Option<&'static str>,
+    /// The FFT size this type's spectral outputs run at, if it sets one
+    /// (like Analyze's `size`).
+    fft: Option<usize>,
 }
 
 #[derive(Clone, Copy)]
@@ -38,6 +41,22 @@ impl NodeType for TestType {
 
     fn loop_input(&self, _config: &Config) -> Option<&'static str> {
         self.loop_input
+    }
+
+    fn spectral_size(&self, config: &Config, inputs: &[Option<usize>]) -> Result<usize, NodeError> {
+        if let Some(size) = self.fft {
+            return Ok(size);
+        }
+        // Otherwise the default rule: the inputs agree, or the standard size.
+        let mut sizes = inputs.iter().flatten().copied();
+        let first = sizes.next().unwrap_or(crate::FFT_SIZE);
+        let _ = config;
+        if sizes.any(|s| s != first) {
+            return Err(NodeError::config(
+                "spectral inputs have different frame sizes",
+            ));
+        }
+        Ok(first)
     }
 
     fn output_shapes(
@@ -80,6 +99,7 @@ fn registry() -> Registry {
             layout,
             outputs,
             loop_input: None,
+            fft: None,
         });
     };
     let out = || Layout::realtime().output("out", "Out");
@@ -174,6 +194,22 @@ fn registry() -> Registry {
             .event_output("echo", "Echo"),
         outputs: Outputs::Broadcast,
         loop_input: Some("in"),
+        fft: None,
+    });
+    // An analysis at another frame size, so two spectral wires can differ.
+    registry.register(TestType {
+        info: NodeInfo {
+            id: "analyse_big",
+            version: 1,
+            name: "analyse_big",
+            category: "Test",
+        },
+        layout: Layout::realtime()
+            .input("in", "In")
+            .spectral_output("out", "Out"),
+        outputs: Outputs::Broadcast,
+        loop_input: None,
+        fft: Some(crate::FFT_SIZE * 2),
     });
     registry
 }
@@ -734,6 +770,7 @@ fn random_graphs_compile_to_valid_schedules() {
         "notes",
         "delayish",
         "analyse",
+        "analyse_big",
         "spectral",
         "resynth",
     ];

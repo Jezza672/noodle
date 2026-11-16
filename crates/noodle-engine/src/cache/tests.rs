@@ -914,21 +914,36 @@ fn a_group_fader_moves_keys_after_the_group_and_none_inside_it() {
             value: Some(-6.0),
         });
         let faded = all_keys(&rig, &ids);
-        for (n, &id) in ids.iter().enumerate() {
-            // (Unless it reads something that left the group and came back.)
-            if picked.contains(&id) && !after_group.contains(&id) {
-                assert_eq!(
-                    faded[n], grouped[n],
-                    "patch {patch}: the fader moved {id} inside"
-                );
+        // What the fader's stage feeds, however far on, in the flattened
+        // graph (the group node itself is no path from its inputs to outputs).
+        let stage = noodle_core::group::stage_id(output, 1);
+        let flat = crate::flatten::flatten(rig.project.graph(), &registry());
+        let wires: Vec<Connection> = flat.connections().collect();
+        let mut moved = std::collections::BTreeSet::from([stage]);
+        loop {
+            let before = moved.len();
+            for c in &wires {
+                if moved.contains(&c.from.node) {
+                    moved.insert(c.to.node);
+                }
+            }
+            if moved.len() == before {
+                break;
             }
         }
-        if ids
-            .iter()
-            .enumerate()
-            .any(|(n, id)| !picked.contains(id) && faded[n] != grouped[n])
-        {
-            faders += 1;
+        for (n, &id) in ids.iter().enumerate() {
+            // (A node inside that reads something that left the group and came
+            // back is after the group too.)
+            let inside = picked.contains(&id) && !after_group.contains(&id);
+            if moved.contains(&id) {
+                assert_ne!(faded[n], grouped[n], "patch {patch}: {id} reads the fader");
+                faders += 1;
+            } else if inside || !picked.contains(&id) {
+                assert_eq!(
+                    faded[n], grouped[n],
+                    "patch {patch}: the fader moved {id}, which doesn't read it"
+                );
+            }
         }
     }
     assert!(faders > 5, "{faders}");
