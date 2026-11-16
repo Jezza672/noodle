@@ -156,8 +156,9 @@ pub use export::{
 pub use feedback::{FEEDBACK_ID, Feedback};
 pub use follower::{EnvelopeFollower, FOLLOWER_ID};
 pub use freeze::{
-    FreezeError, FreezePlan, FreezeReport, Freezer, TargetState, default_cache_dir, freeze,
-    freeze_passes, spawn_freeze, spawn_freeze_passes,
+    AHEAD_JOIN_SECONDS, AHEAD_KEEP_SECONDS, Ahead, FreezeError, FreezePlan, FreezeReport, Freezer,
+    TargetState, Watch, default_cache_dir, freeze, freeze_passes, spawn_freeze,
+    spawn_freeze_passes,
 };
 pub use fundamental::{LISTEN_SECONDS, fundamental, key_of};
 pub use gain::{GAIN_ID, Gain};

@@ -125,6 +125,10 @@ pub fn status_line(status: CacheStatus) -> (String, egui::Color32) {
             theme::timeline::TEXT,
         ),
         CacheStatus::Cached => ("Playing from the cache".into(), theme::ACCENT),
+        CacheStatus::Ahead => (
+            "Playing from the cache as it renders ahead".into(),
+            theme::ACCENT,
+        ),
     }
 }
 

@@ -57,7 +57,7 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [browser-tabs.md](browser-tabs.md) | The browser: the collapsible side panel with Sounds and Nodes tabs, presets that unfold, the properties Presets section |
 | [drum-separation-models.md](drum-separation-models.md) | Drum separation runtimes: manifests, N-part separator trait, LarsNet, Timbrica and drumsep, pad mapping (#518) |
 | [deferred-items-1.md](deferred-items-1.md) | Stem model controls, beat view gain envelope, one TimeAxis, engine toggle remembered, saved device retried |
-| [low-latency-monitoring.md](low-latency-monitoring.md) | Low-latency monitoring, chunks 1 and 2: the live cone left out of delay compensation, the Monitoring latency setting, the device buffer following arming (#548) |
+| [low-latency-monitoring.md](low-latency-monitoring.md) | Low-latency monitoring: the live cone left out of delay compensation, the Monitoring latency setting, the device buffer following arming, clusters played from the entry while it renders ahead (#548) |
 | [deferred-items-2.md](deferred-items-2.md) | Plugin editors keep the plugin running, CLAP latency changes, one retry policy for files, re-quantise a recorded MIDI clip |
 | [midi-file.md](midi-file.md) | MIDI file import and export, Tuning node (microtuning) |
 | [harmony-nodes.md](harmony-nodes.md) | Scale Quantise, Chord, Transpose, Song Key, the key on the transport, Euclidean, Chance, the Harmoniser and Euclid Hat templates |

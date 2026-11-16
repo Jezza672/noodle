@@ -15,6 +15,7 @@
 //!   chain costs each only its own work.
 
 use std::cell::RefCell;
+use std::collections::HashSet;
 use std::io;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -26,7 +27,7 @@ use noodle_engine::{
     Settings, StreamError, Tap, Target, TargetKind, TempoTable, Uncacheable, analyze, apply_offset,
     render_offline_node, render_taps,
 };
-use noodle_io::{CacheInfo, CacheStore, CacheWriter, FileHasher, Peek};
+use noodle_io::{CacheInfo, CacheStore, CacheWriter, FileHasher, Growth, Peek};
 
 use crate::cached::CachedPlayer;
 use crate::{Library, RenderRequest, register_library_blocking};
@@ -39,6 +40,9 @@ pub enum TargetState {
     /// No render yet. A frozen target plays live meanwhile, and an offline
     /// node plays silence.
     Missing,
+    /// The render is under way and far enough ahead of the playhead to be
+    /// played as it grows (see [`Ahead`]).
+    Streaming,
     /// It can't be rendered, and why.
     Blocked(Uncacheable),
 }
@@ -49,9 +53,94 @@ pub struct FreezePlan {
     /// [`Controller::update_project_replacing`](noodle_engine::Controller::update_project_replacing).
     pub replacements: Replacements,
     pub states: Vec<(TargetKind, TargetState)>,
+    /// The renders under way that the plan looked at, whether it plays them
+    /// or not, so the caller can tell when that should change.
+    pub watches: Vec<Watch>,
     /// Problems with offline nodes that can't be cached, to show with the
     /// compile's own.
     pub diagnostics: Vec<Diagnostic>,
+}
+
+/// Seconds of render a cluster needs ahead of the playhead before it is
+/// played from the entry while it fills.
+pub const AHEAD_JOIN_SECONDS: f32 = 2.0;
+/// Seconds of lead below which a cluster played from a growing entry goes
+/// back to playing live: the render is not keeping up.
+pub const AHEAD_KEEP_SECONDS: f32 = 0.4;
+
+/// Where the playhead is and what it has done with the renders under way, for
+/// [`Freezer::plan_at`]: an entry that is still being written is played once
+/// the render is [`AHEAD_JOIN_SECONDS`] in front of the playhead, and given
+/// up if the lead falls below [`AHEAD_KEEP_SECONDS`]. A cluster that has been
+/// given up stays live until its entry is whole, so a render that is slower
+/// than the playhead doesn't flap between the two.
+#[derive(Clone, Debug, Default)]
+pub struct Ahead {
+    /// The transport's position, in frames.
+    pub playhead: u64,
+    pub join: u64,
+    pub keep: u64,
+    /// The entries (the key of a target's first output) played now.
+    pub joined: HashSet<CacheKey>,
+    /// The entries given up.
+    pub lost: HashSet<CacheKey>,
+}
+
+impl Ahead {
+    pub fn new(playhead: u64, sample_rate: f32) -> Self {
+        Self {
+            playhead,
+            join: (AHEAD_JOIN_SECONDS * sample_rate) as u64,
+            keep: (AHEAD_KEEP_SECONDS * sample_rate) as u64,
+            joined: HashSet::new(),
+            lost: HashSet::new(),
+        }
+    }
+}
+
+/// What [`Freezer::stream`] found.
+struct Streamed {
+    watch: Watch,
+    keys: Vec<CacheKey>,
+}
+
+impl std::ops::Deref for Streamed {
+    type Target = Watch;
+    fn deref(&self) -> &Watch {
+        &self.watch
+    }
+}
+
+/// An entry being rendered that a plan looked at.
+#[derive(Clone, Debug)]
+pub struct Watch {
+    /// The key of the target's first output entry, which names the watch.
+    pub key: CacheKey,
+    /// How far each output's entry has got.
+    pub growths: Vec<Arc<Growth>>,
+    /// The timeline frame the entry begins at.
+    pub start: u64,
+    /// Whether the plan plays it.
+    pub joined: bool,
+}
+
+impl Watch {
+    /// How many frames the render has written beyond `playhead`, negative
+    /// if the playhead has passed what is written.
+    pub fn lead(&self, playhead: u64) -> i64 {
+        let written = self.growths.iter().map(|g| g.frames()).min().unwrap_or(0);
+        written as i64 - playhead.saturating_sub(self.start) as i64
+    }
+
+    /// Whether the render has stopped without finishing.
+    pub fn abandoned(&self) -> bool {
+        self.growths.iter().any(|g| g.abandoned())
+    }
+
+    /// Whether the entry is whole.
+    pub fn finished(&self) -> bool {
+        self.growths.iter().all(|g| g.finished())
+    }
 }
 
 impl FreezePlan {
@@ -195,6 +284,55 @@ impl Freezer {
             && info.frames >= frames as u64
     }
 
+    /// What a render under way is making for an automatic target that has no
+    /// whole entry: its watch, and whether it is far enough ahead of the
+    /// playhead to play now. `None` when no render is writing it, or it is
+    /// not one entry that can be played as it grows.
+    fn stream(
+        &self,
+        analysis: &Analysis,
+        target: &Target,
+        required: &[Vec<EntrySpec>],
+        ahead: &Ahead,
+        settings: Settings,
+    ) -> Option<(Streamed, bool)> {
+        let [specs] = required else { return None };
+        let spec = specs.first()?;
+        if spec.looping.is_some() {
+            return None;
+        }
+        let mut keys = Vec::new();
+        let mut growths = Vec::new();
+        for &(node, output) in &target.outputs {
+            let base = analysis.output_key(node, output).ok()?;
+            let key = spec.key(&base);
+            let growth = self.store.growth(&key)?;
+            let lanes = analysis.nodes[&node].output_shapes[output].lanes();
+            if growth.channels() != lanes
+                || growth.sample_rate() != settings.sample_rate.round() as u32
+            {
+                return None;
+            }
+            keys.push(key);
+            growths.push(growth);
+        }
+        let first = *keys.first()?;
+        let joined = ahead.joined.contains(&first);
+        let watch = Watch {
+            key: first,
+            growths,
+            start: spec.start,
+            joined,
+        };
+        let need = if joined { ahead.keep } else { ahead.join };
+        let play = !ahead.lost.contains(&first)
+            && !watch.abandoned()
+            && watch.lead(ahead.playhead) >= need as i64;
+        let mut watch = watch;
+        watch.joined = play;
+        Some((Streamed { watch, keys }, play))
+    }
+
     /// Whether the cache holds `spec`'s entry for every output of an
     /// automatic target, long enough.
     pub fn entry_ready(
@@ -231,9 +369,26 @@ impl Freezer {
         blocking: bool,
         pass: Option<&Pass>,
     ) -> FreezePlan {
+        self.plan_at(analysis, settings, frames, blocking, pass, None)
+    }
+
+    /// [`plan`](Self::plan) that also plays an automatic target's entry while
+    /// a render is still writing it, if the render is far enough ahead of the
+    /// playhead (`ahead`). Only for a single entry: a loop's laps wait for
+    /// their renders to finish. The state is [`TargetState::Streaming`].
+    pub fn plan_at(
+        &self,
+        analysis: &Analysis,
+        settings: Settings,
+        frames: usize,
+        blocking: bool,
+        pass: Option<&Pass>,
+        ahead: Option<&Ahead>,
+    ) -> FreezePlan {
         let mut plan = FreezePlan {
             replacements: Replacements::new(),
             states: Vec::new(),
+            watches: Vec::new(),
             diagnostics: Vec::new(),
         };
         for target in &analysis.targets {
@@ -249,10 +404,13 @@ impl Freezer {
                            start_frame: u64,
                            laps: Vec<(CacheKey, u64)>,
                            node: NodeId,
-                           output: usize| {
+                           output: usize,
+                           growing: bool| {
                 let info = &analysis.nodes[&node];
                 let shape = info.output_shapes[output];
                 let mut player = match key {
+                    Some(key) if growing => CachedPlayer::growing(self.store.clone(), key, shape)
+                        .starting_at(start_frame),
                     Some(key) => {
                         CachedPlayer::new(self.store.clone(), key, shape).starting_at(start_frame)
                     }
@@ -282,7 +440,7 @@ impl Freezer {
                         problem: Problem::NotCacheable(why.to_string()),
                     });
                     for &(node, output) in &target.outputs {
-                        replace(&mut plan, None, 0, Vec::new(), node, output);
+                        replace(&mut plan, None, 0, Vec::new(), node, output, false);
                     }
                 }
                 plan.states.push((target.kind, TargetState::Blocked(why)));
@@ -313,11 +471,53 @@ impl Freezer {
                                 .expect("a target that isn't blocked has keys");
                             let mut specs = ready.iter().map(|spec| (spec.key(&base), spec.start));
                             let (first, start) = specs.next().expect("one entry at least");
-                            replace(&mut plan, Some(first), start, specs.collect(), node, output);
+                            replace(
+                                &mut plan,
+                                Some(first),
+                                start,
+                                specs.collect(),
+                                node,
+                                output,
+                                false,
+                            );
                         }
                         plan.states.push((target.kind, TargetState::Ready));
                     }
-                    None => plan.states.push((target.kind, TargetState::Missing)),
+                    None => {
+                        let streaming = ahead.and_then(|ahead| {
+                            self.stream(analysis, target, &required, ahead, settings)
+                        });
+                        match streaming {
+                            Some((watch, play)) => {
+                                if play {
+                                    let start = watch.start;
+                                    for (&(node, output), key) in
+                                        target.outputs.iter().zip(&watch.keys)
+                                    {
+                                        replace(
+                                            &mut plan,
+                                            Some(*key),
+                                            start,
+                                            Vec::new(),
+                                            node,
+                                            output,
+                                            true,
+                                        );
+                                    }
+                                }
+                                plan.states.push((
+                                    target.kind,
+                                    if play {
+                                        TargetState::Streaming
+                                    } else {
+                                        TargetState::Missing
+                                    },
+                                ));
+                                plan.watches.push(watch.watch);
+                            }
+                            None => plan.states.push((target.kind, TargetState::Missing)),
+                        }
+                    }
                 }
                 continue;
             }
@@ -339,13 +539,13 @@ impl Freezer {
             });
             if ready {
                 for &(node, output, key) in &keys {
-                    replace(&mut plan, Some(key), 0, Vec::new(), node, output);
+                    replace(&mut plan, Some(key), 0, Vec::new(), node, output, false);
                 }
                 plan.states.push((target.kind, TargetState::Ready));
             } else {
                 if offline {
                     for &(node, output, _) in &keys {
-                        replace(&mut plan, None, 0, Vec::new(), node, output);
+                        replace(&mut plan, None, 0, Vec::new(), node, output, false);
                     }
                 }
                 plan.states.push((target.kind, TargetState::Missing));

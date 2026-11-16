@@ -1457,3 +1457,168 @@ fn a_render_writes_the_entries_of_the_cuts_inside_it() {
         "group over a stored cut",
     );
 }
+
+/// What a plan makes of a render that is still writing the entry of `auto`'s
+/// pass: it plays from it once the render is two seconds ahead of the
+/// playhead, and stops when the lead is down to under half a second.
+#[test]
+fn a_cluster_plays_from_an_entry_still_being_written_once_the_render_is_ahead() {
+    use noodle_nodes::Ahead;
+
+    let mut rig = setup("ahead");
+    let (group, _, _) = synth_group(&mut rig);
+    let auto = TargetKind::Auto(group);
+    let pass = pass_at(&rig, 0);
+    // The whole render, to read the sound back and to play against.
+    rig.freeze_passes(&[pass]);
+    let analysis = rig.analyze();
+    let target = analysis.target(auto).unwrap();
+    let spec = analysis.requirements(target, &pass)[0][0];
+    assert_eq!(target.outputs.len(), 1);
+    let (node, output) = target.outputs[0];
+    let key = spec.key(&analysis.output_key(node, output).unwrap());
+    let store = rig.freezer.store().clone();
+    let mut whole = store.get(&key).unwrap();
+    let info = whole.info();
+    let mut all = vec![0.0; info.frames as usize * info.channels];
+    assert_eq!(whole.read_frames(0, &mut all).unwrap() as u64, info.frames);
+    drop(whole);
+    let live = rig.play_pass(&pass, false);
+    assert!(live.iter().any(|&s| s.abs() > 0.01));
+
+    // Written again from the start, 100 000 frames of it so far.
+    store.remove(&key).unwrap();
+    let mut writer = store.writer(&key, info.channels, info.sample_rate).unwrap();
+    let at = |playhead: u64| Ahead::new(playhead, SETTINGS.sample_rate);
+    let plan = |ahead: &Ahead| {
+        rig.freezer
+            .plan_at(&analysis, SETTINGS, FRAMES, false, Some(&pass), Some(ahead))
+    };
+    let missing = &TargetState::Missing;
+    // Nothing published yet: the render is watched, and nothing plays.
+    let early = plan(&at(0));
+    assert_eq!(early.state(auto), Some(missing));
+    assert_eq!(early.watches.len(), 1);
+    assert!(early.replacements.is_empty());
+
+    writer.write(&all[..100_000 * info.channels]).unwrap();
+    // Without the playhead's position a growing entry is not played.
+    let none = rig
+        .freezer
+        .plan(&analysis, SETTINGS, FRAMES, false, Some(&pass));
+    assert_eq!(none.state(auto), Some(missing));
+    assert!(none.watches.is_empty() && none.replacements.is_empty());
+
+    let streaming = plan(&at(0));
+    assert_eq!(streaming.state(auto), Some(&TargetState::Streaming));
+    assert_eq!(streaming.replacements.len(), 1);
+    assert!(streaming.watches[0].joined);
+    // Not far enough ahead of a playhead at 50 000: 50 000 frames of lead is
+    // under two seconds.
+    let close = plan(&at(50_000));
+    assert_eq!(close.state(auto), Some(missing));
+    assert!(close.replacements.is_empty() && !close.watches[0].joined);
+    // Once playing it carries on down to half a second.
+    let mut joined = at(50_000);
+    joined.joined.insert(streaming.watches[0].key);
+    assert_eq!(plan(&joined).state(auto), Some(&TargetState::Streaming));
+    let mut short = at(90_000);
+    short.joined = joined.joined.clone();
+    assert_eq!(plan(&short).state(auto), Some(missing));
+    // A cluster given up stays live until its entry is whole.
+    let mut lost = at(0);
+    lost.lost = joined.joined.clone();
+    assert_eq!(plan(&lost).state(auto), Some(missing));
+
+    // What it plays is what the engine plays live.
+    let mut registry = Registry::with_builtins();
+    let library = register_library_blocking(&mut registry);
+    let table = TempoTable::new(rig.project.tempo_map(), SETTINGS.sample_rate);
+    library.clips.update(&rig.project, &table, RATE, &rig.base);
+    let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+    controller.update_project_replacing(&rig.project, &registry, &streaming.replacements);
+    controller.transport().seek(pass.tick);
+    let heard = run(
+        &mut controller,
+        &mut processor,
+        Some(Duration::from_millis(5)),
+    )[FADE_SKIP..]
+        .to_vec();
+    assert_eq!(heard.len(), live.len());
+    // Past what the render had written there is silence, never other sound.
+    for (i, (&h, &l)) in heard.iter().zip(&live).enumerate() {
+        assert!(h == 0.0 || (h - l).abs() < 1e-5, "at {i}: {h} against {l}");
+    }
+    assert!(
+        heard.iter().filter(|&&s| s.abs() > 0.01).count() > live.len() / 2,
+        "it played"
+    );
+
+    // The render ending leaves a whole entry, which a plan without the
+    // playhead plays as it always did, under the same config.
+    writer.write(&all[100_000 * info.channels..]).unwrap();
+    writer.commit().unwrap();
+    let done = rig
+        .freezer
+        .plan(&analysis, SETTINGS, FRAMES, false, Some(&pass));
+    assert_eq!(done.state(auto), Some(&TargetState::Ready));
+    let config =
+        |plan: &noodle_nodes::FreezePlan| plan.replacements.values().next().unwrap().config.clone();
+    assert_eq!(config(&done), config(&streaming));
+
+    // A loop's laps wait for their renders to finish.
+    let looped = pass_at(&rig, 0).looping(Tick(0), Tick(3840));
+    let plan = rig.freezer.plan_at(
+        &analysis,
+        SETTINGS,
+        FRAMES,
+        false,
+        Some(&looped),
+        Some(&at(0)),
+    );
+    assert!(plan.watches.is_empty());
+}
+
+/// A render that is dropped without finishing leaves nothing to play.
+#[test]
+fn an_abandoned_render_is_not_played() {
+    use noodle_nodes::Ahead;
+
+    let mut rig = setup("ahead-abandoned");
+    let (group, _, _) = synth_group(&mut rig);
+    let auto = TargetKind::Auto(group);
+    let pass = pass_at(&rig, 0);
+    let analysis = rig.analyze();
+    let target = analysis.target(auto).unwrap();
+    let spec = analysis.requirements(target, &pass)[0][0];
+    let (node, output) = target.outputs[0];
+    let key = spec.key(&analysis.output_key(node, output).unwrap());
+    let store = rig.freezer.store().clone();
+    let lanes = analysis.nodes[&node].output_shapes[output].lanes();
+    let mut writer = store.writer(&key, lanes, RATE).unwrap();
+    writer.write(&vec![0.0; lanes * 200_000]).unwrap();
+    let ahead = Ahead::new(0, SETTINGS.sample_rate);
+    let plan = rig.freezer.plan_at(
+        &analysis,
+        SETTINGS,
+        FRAMES,
+        false,
+        Some(&pass),
+        Some(&ahead),
+    );
+    assert_eq!(plan.state(auto), Some(&TargetState::Streaming));
+    let growth = plan.watches[0].growths[0].clone();
+    drop(writer);
+    assert!(growth.abandoned());
+    let plan = rig.freezer.plan_at(
+        &analysis,
+        SETTINGS,
+        FRAMES,
+        false,
+        Some(&pass),
+        Some(&ahead),
+    );
+    assert_eq!(plan.state(auto), Some(&TargetState::Missing));
+    assert!(plan.replacements.is_empty() && plan.watches.is_empty());
+    let _ = &mut rig;
+}

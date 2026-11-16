@@ -242,6 +242,23 @@ stream opens; pausing and playing again carries on the same pass.
   entries for another start are playing recompiles at once; otherwise the cache
   is looked at when the seeking pauses (the same 250 ms debounce an edit uses),
   so dragging the playhead doesn't compile per step.
+- **Rendered ahead** (ADR 0014). A cluster with no whole entry does not have to
+  play live until its render ends. The render writes the entry as it goes
+  (`CacheWriter::publish` every 4096 frames makes what is written readable
+  through `CacheStore::get_growing`; `Growth` is how far it has got, and whether
+  it finished or was abandoned), and `Freezer::plan_at` takes the playhead
+  (`Ahead`): a single, non-looping entry whose render is two seconds ahead of it
+  is played by `CachedPlayer::growing`, state `TargetState::Streaming`, and
+  given up again under 0.4 s of lead. The player's worker only makes a chunk
+  once the render has written past its end, so what is heard is never a stale
+  or short chunk; behind the render it is silent for a moment and the plan is
+  made again. `Freezing::poll(playhead, playing)` watches the leads
+  (`FreezePlan::watches`) and asks the session to compile again when one is
+  made or lost; a cluster given up stays live until its render ends or is
+  started again. The player's config names the entry, not whether it was
+  whole, so the render ending swaps nothing. The toolbar says **Ahead** and the
+  cache panel "Playing from the cache as it renders ahead". Monitoring latency
+  Off turns it off (`Session::ahead_playhead`).
 - **Rendering.** While a stream is open, `Freezing` renders the entries that
   are missing for the pass that is playing and the hot starts, 0 and the loop's
   start, in that order (`freeze_passes`; one job). Explicit freezes and offline

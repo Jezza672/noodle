@@ -521,6 +521,9 @@ pub struct Session {
     /// The pass start whose cached entries the playing plan was built from,
     /// if it was built from any.
     serving: Option<Tick>,
+    /// The start of the pass whose entry is being played while a render is
+    /// still writing it, if one is (ADR 0014).
+    ahead: Option<Tick>,
     /// The loop as of the last look, to notice it changing.
     seen_loop: Option<(Tick, Tick)>,
     /// Where the playhead is while no stream is open, so it can be set and
@@ -819,6 +822,9 @@ pub enum CacheStatus {
     Rendering(f32),
     /// Playing groups from the cache, with no DSP in them.
     Cached,
+    /// Playing groups from an entry the render is still writing, a little
+    /// ahead of the playhead, with no DSP in them yet.
+    Ahead,
 }
 
 /// Running totals of audible trouble since playback started.
@@ -918,6 +924,7 @@ impl Session {
             auto_cache: true,
             pass_start: Tick(0),
             serving: None,
+            ahead: None,
             seen_loop: None,
             parked: Tick(0),
             loop_open: false,
@@ -2678,7 +2685,7 @@ impl Session {
         if !self.auto_possible() || self.serving == Some(tick) {
             return;
         }
-        if self.serving.is_some() {
+        if self.serving.is_some() || self.ahead.is_some() {
             self.recompile_with(false);
         }
         self.freezing.touch();
@@ -2935,7 +2942,9 @@ impl Session {
         }
         self.follow_clock();
         self.watch_punch();
-        match self.freezing.poll() {
+        let playhead = self.ahead_playhead();
+        let playing = self.transport_running();
+        match self.freezing.poll(playhead, playing) {
             Polled::Nothing => {
                 if self.freezing.due() {
                     self.recompile();
@@ -2977,7 +2986,7 @@ impl Session {
         // A loop decides which passes the cache can serve.
         if looping != self.seen_loop {
             self.seen_loop = looping;
-            if self.serving.is_some() {
+            if self.serving.is_some() || self.ahead.is_some() {
                 self.recompile_with(false);
             }
             self.freezing.touch();
@@ -4069,6 +4078,7 @@ impl Session {
             live: &|node| clips.is_live(node),
             pass,
             passes,
+            playhead: self.ahead_playhead(),
         };
         let plan = match self.freezing.refresh(&look) {
             Ok(plan) => plan,
@@ -4086,7 +4096,29 @@ impl Session {
                 })
             })
             .map(|(_, pass)| pass.tick);
+        self.ahead = plan
+            .as_ref()
+            .zip(pass)
+            .filter(|(plan, _)| {
+                plan.states.iter().any(|(kind, state)| {
+                    kind.is_auto() && *state == noodle_nodes::TargetState::Streaming
+                })
+            })
+            .map(|(_, pass)| pass.tick);
         plan
+    }
+
+    /// Where the transport is, when clusters may play from the entry a render
+    /// is still writing: with a stream open, and unless Monitoring latency is
+    /// Off (which keeps the callback doing the work until the render is done,
+    /// as before).
+    fn ahead_playhead(&self) -> Option<u64> {
+        if self.monitoring_latency == MonitoringLatency::Off {
+            return None;
+        }
+        self.audio
+            .as_ref()
+            .map(|audio| audio.controller.transport().position())
     }
 
     /// The start of the pass whose cached entries are playing in place of
@@ -4109,6 +4141,8 @@ impl Session {
             CacheStatus::Idle
         } else if self.serving.is_some() {
             CacheStatus::Cached
+        } else if self.ahead.is_some() {
+            CacheStatus::Ahead
         } else if let Some(fraction) = self.freezing.progress() {
             CacheStatus::Rendering(fraction)
         } else {
@@ -4830,7 +4864,7 @@ mod tests {
         // The first pass is computed; the cache fills in behind it.
         assert!(matches!(
             session.cache_status(),
-            CacheStatus::Live | CacheStatus::Rendering(_)
+            CacheStatus::Live | CacheStatus::Rendering(_) | CacheStatus::Ahead
         ));
         until(&mut session, "the group is cached", |s| {
             s.cached_pass() == Some(Tick(0))
@@ -4913,6 +4947,27 @@ mod tests {
         assert_eq!(session.cached_pass(), None);
         assert_eq!(session.cache_status(), CacheStatus::Off);
         assert!(!session.auto_cache());
+    }
+
+    #[test]
+    fn clusters_play_ahead_of_their_render_unless_monitoring_latency_is_off() {
+        let dir = tempfile::tempdir().unwrap();
+        let mut session = Session::new(Nodes::all());
+        session.use_cache_dir(dir.path().to_owned());
+        grouped_sine(&mut session);
+        // No stream: nothing to look ahead of.
+        assert_eq!(session.ahead_playhead(), None);
+        session.set_audio_config(virtual_config());
+        session.start_engine();
+        assert!(session.engine_running(), "{:?}", session.message());
+        assert_eq!(session.ahead_playhead(), Some(0));
+        session.set_monitoring_latency(MonitoringLatency::Off);
+        assert_eq!(session.ahead_playhead(), None);
+        // Off still caches, as before: the entry swaps in when it is whole.
+        until(&mut session, "the group is cached", |s| {
+            s.cached_pass() == Some(Tick(0))
+        });
+        assert_ne!(session.cache_status(), CacheStatus::Ahead);
     }
 
     #[test]
