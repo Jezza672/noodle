@@ -561,6 +561,44 @@ pub const CONFIDENT: f32 = 0.4;
 /// installed (`noodle-stems`).
 pub trait HitLabeller: Send + Sync + std::fmt::Debug {
     fn label(&self, hit: &Hit) -> (DrumKind, f32);
+
+    /// The probability of each of [`PURITY`] for the hit as a sample, when the
+    /// labeller can tell. `None` for one that cannot (the rules).
+    fn purity(&self, _hit: &Hit) -> Option<Vec<f32>> {
+        None
+    }
+
+    /// Whether the hit is pure enough for a bin of single hits: one hit that
+    /// finishes ringing before the end of its cut. A labeller with no purity
+    /// answer falls back on the detector's own flags.
+    fn is_clean(&self, hit: &Hit) -> bool {
+        match self.purity(hit) {
+            Some(p) => clean_accepted(&p, CLEAN_GATE),
+            None => !hit.mixed && !hit.truncated,
+        }
+    }
+}
+
+/// The classes of the purity output of the learned classifier, in order.
+pub const PURITY: [&str; 6] = [
+    "clean",
+    "double",
+    "truncated",
+    "malformed",
+    "mixed",
+    "spurious",
+];
+
+/// The probability of `clean` a hit needs to enter a clean bin. A clean hit
+/// turned away costs one sample; a double let in is the failure to avoid, so
+/// this is high. Tuned on the validation split (`tools/drum-classifier`).
+pub const CLEAN_GATE: f32 = 0.77;
+
+/// Whether `probs` (one for each of [`PURITY`]) put the hit in a clean bin: it
+/// is the likeliest class and at least `gate` sure.
+pub fn clean_accepted(probs: &[f32], gate: f32) -> bool {
+    let clean = probs.first().copied().unwrap_or(0.0);
+    clean >= gate && probs.iter().take(PURITY.len()).all(|&p| p <= clean)
 }
 
 /// The hand-written rules of [`guess`].
@@ -674,6 +712,9 @@ impl DrumBin {
     /// Labels the bin again with `labeller`, from its medoid.
     pub fn relabel(&mut self, hits: &[Hit], labeller: &dyn HitLabeller) {
         (self.kind, self.confidence) = labeller.label(&hits[self.medoid]);
+        // Hits the labeller takes for pure come first, so a bin's first hit is
+        // never a double or a damaged one while a clean one is there.
+        self.members.sort_by_key(|&m| !labeller.is_clean(&hits[m]));
     }
 }
 
@@ -1552,6 +1593,49 @@ mod tests {
         fn label(&self, _: &Hit) -> (DrumKind, f32) {
             (self.0, 0.9)
         }
+    }
+
+    /// Calls a hit clean when its level is above -20 dB, through the purity output.
+    #[derive(Debug)]
+    struct LoudIsClean;
+    impl HitLabeller for LoudIsClean {
+        fn label(&self, _: &Hit) -> (DrumKind, f32) {
+            (DrumKind::Kick, 0.9)
+        }
+        fn purity(&self, hit: &Hit) -> Option<Vec<f32>> {
+            let clean = if hit.level_db > -20.0 { 0.95 } else { 0.02 };
+            Some(vec![clean, 0.0, 0.0, 0.0, 0.0, 0.0])
+        }
+    }
+
+    #[test]
+    fn the_clean_gate_needs_clean_to_win_with_enough_probability() {
+        assert!(clean_accepted(
+            &[0.95, 0.02, 0.01, 0.0, 0.02, 0.0],
+            CLEAN_GATE
+        ));
+        // Not sure enough.
+        assert!(!clean_accepted(&[0.6, 0.3, 0.1, 0.0, 0.0, 0.0], CLEAN_GATE));
+        // A double that is likelier than clean never gets in, whatever the gate.
+        assert!(!clean_accepted(&[0.45, 0.5, 0.05, 0.0, 0.0, 0.0], 0.3));
+        assert!(!clean_accepted(&[], CLEAN_GATE));
+    }
+
+    #[test]
+    fn relabelling_puts_the_hits_the_gate_accepts_first() {
+        let k = kick();
+        let mut hits = run(&track(
+            1.0,
+            &[(&k, 0.3, 1.0), (&k, 0.6, 1.0), (&k, 0.9, 1.0)],
+        ));
+        // Make the first hit the one the gate turns away.
+        hits[0].level_db = -40.0;
+        let mut bin = bin_hits(&hits, DEFAULT_MERGE).bins.remove(0);
+        bin.members = vec![0, 1, 2];
+        bin.relabel(&hits, &LoudIsClean);
+        assert_eq!(*bin.members.last().unwrap(), 0);
+        // With no purity output, the detector's flags decide.
+        assert!(Rules.is_clean(&hits[1]) == (!hits[1].mixed && !hits[1].truncated));
     }
 
     #[test]

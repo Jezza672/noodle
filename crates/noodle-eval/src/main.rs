@@ -569,7 +569,17 @@ fn drum_dataset(args: &[&str]) -> Result<(), String> {
                 ),
                 None => (Box::new(noodle_io::Rules), "Rule labeller baseline"),
             };
-            let report = drum_data::baseline(&rows, split, labeller.as_ref(), name);
+            let mut report = drum_data::baseline(&rows, split, labeller.as_ref(), name);
+            if let Some(g) = flag("--gate") {
+                let gate: f32 = g.parse().map_err(|e| format!("--gate: {e}"))?;
+                report.push('\n');
+                report.push_str(&drum_data::purity_report(
+                    &rows,
+                    split,
+                    labeller.as_ref(),
+                    gate,
+                ));
+            }
             match flag("--out") {
                 Some(path) => std::fs::write(path, report).map_err(|e| e.to_string()),
                 None => {
