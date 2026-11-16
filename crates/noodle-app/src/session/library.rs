@@ -169,18 +169,15 @@ impl Session {
             .iter()
             .map(|id| self.library.group_preset(id).ok_or("a preset is gone"))
             .collect::<Result<Vec<_>, _>>()?;
-        let ids = super::morph::Ids {
-            morph: self.new_node_id(),
-            frame: self.new_frame_id(),
-            boundary: self.new_node_id(),
-        };
+        let levels = super::morph::Ids::levels(self.project.graph(), group);
+        let ids = super::morph::Ids::new(levels, || self.new_node_id(), || self.new_frame_id());
         let morphed = super::morph::command(
             &self.project,
             &self.registry,
             group,
             (&presets[0], found[0]),
             &found[1..],
-            &ids,
+            ids,
         )?;
         self.message = Some(morphed.notice());
         Ok(morphed.command)
