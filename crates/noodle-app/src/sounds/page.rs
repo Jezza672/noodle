@@ -1,4 +1,4 @@
-//! The Sources page of Settings: where sounds come from (ADR 0012).
+//! The Sound sources page of Settings: where sounds come from (ADR 0012).
 //!
 //! Lists the sources with whether each can be reached and what it takes up,
 //! adds a self-hosted source (an address and optional login) or a folder, and
@@ -44,6 +44,10 @@ pub struct Form {
     pub user: String,
     pub password: String,
     pub error: Option<String>,
+    /// The Add a web source popup is open.
+    pub open: bool,
+    /// The source just added, while it is being asked whether it answers.
+    pub checking: Option<String>,
     /// Whether Clean up is asking to be sure.
     pub confirm_clean: bool,
 }
@@ -77,20 +81,68 @@ enum Do {
     Licence(String, Licence),
 }
 
+/// The colour of a source's status dot.
+fn dot(ui: &mut Ui, reach: Option<&Reach>) {
+    let colour = match reach {
+        Some(Reach::Reachable) => egui::Color32::from_rgb(90, 190, 120),
+        Some(Reach::Unreachable(_)) => ui.visuals().warn_fg_color,
+        _ => ui.visuals().weak_text_color(),
+    };
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(10.0, 14.0), egui::Sense::hover());
+    ui.painter().circle_filled(rect.center(), 4.0, colour);
+}
+
 impl Sounds {
-    /// The body of the Sources tab.
+    /// Whether any source could not be reached the last time it was asked.
+    pub fn has_unreachable(&self) -> bool {
+        self.reach
+            .values()
+            .any(|r| matches!(r, Reach::Unreachable(_)))
+    }
+
+    /// The Add source menu, shared by the Sounds panel and Settings: a web
+    /// source opens the popup, a folder goes straight to the picker.
+    pub fn add_menu(&mut self, ui: &mut Ui, manage: bool) {
+        ui.menu_button("+ Add source", |ui| {
+            if ui.button("Web source…").clicked() {
+                self.form.open = true;
+                ui.close();
+            }
+            if ui
+                .button("Folder on this computer…")
+                .on_hover_text("Use a folder of audio files as a source, read where it is")
+                .clicked()
+            {
+                if let Some(path) = crate::picker::pick_folder()
+                    && let Err(why) = self.add_folder(path)
+                {
+                    self.note = Some(why);
+                }
+                ui.close();
+            }
+            if manage {
+                ui.separator();
+                if ui.button("Manage sources in Settings…").clicked() {
+                    self.wants_sources = true;
+                    ui.close();
+                }
+                if ui.button("Make shareable pack…").clicked() {
+                    self.choose_pack_folder();
+                    ui.close();
+                }
+            }
+        });
+    }
+
+    /// The body of the Sound sources tab.
     pub fn body(&mut self, ui: &mut Ui) {
         // Opening the page is the first time a source may be asked.
         if !self.asked {
             self.refresh();
         }
-        ui.weak(
-            "Where the Sounds panel gets its sounds. What a source has already offered stays \
-             listed when this computer is offline.",
-        );
         ui.horizontal(|ui| {
             if ui
-                .add_enabled(self.refreshing.is_none(), egui::Button::new("Refresh all"))
+                .add_enabled(self.refreshing.is_none(), egui::Button::new("Refresh"))
                 .on_hover_text("Ask every source what it has now, and rescan the folders")
                 .clicked()
             {
@@ -99,6 +151,7 @@ impl Sounds {
             if self.refreshing.is_some() {
                 ui.spinner();
             }
+            self.add_menu(ui, false);
         });
         if let Some(note) = self.note.clone() {
             ui.horizontal(|ui| {
@@ -112,7 +165,7 @@ impl Sounds {
         let mut todo = Vec::new();
         for source in self.sources.clone() {
             ui.separator();
-            self.source_block(ui, &source, &mut todo);
+            self.source_row(ui, &source, &mut todo);
         }
         for action in todo {
             match action {
@@ -122,58 +175,75 @@ impl Sounds {
         }
 
         ui.separator();
-        self.add_form(ui);
-        ui.separator();
         self.storage(ui);
     }
 
-    fn source_block(&self, ui: &mut Ui, source: &Source, todo: &mut Vec<Do>) {
+    fn source_row(&self, ui: &mut Ui, source: &Source, todo: &mut Vec<Do>) {
+        let reach = self.reach.get(&source.id);
         ui.horizontal(|ui| {
-            ui.label(RichText::new(&source.name).strong());
+            dot(ui, reach);
+            let place = match &source.folder {
+                Some(folder) => folder.path.display().to_string(),
+                None => source.url.clone(),
+            };
+            ui.label(RichText::new(&source.name).strong())
+                .on_hover_text(place);
             if source.folder.is_some() {
-                ui.weak("Folder on this computer");
+                ui.weak("Folder");
             } else if source.is_self_hosted() {
-                ui.colored_label(ui.visuals().warn_fg_color, "⚠ Self-hosted");
+                ui.colored_label(ui.visuals().warn_fg_color, "⚠ Self-hosted")
+                    .on_hover_text("Noodle can't vouch for what this source contains.");
             } else {
                 ui.weak("Built in");
             }
-        });
-        let place = match &source.folder {
-            Some(folder) => folder.path.display().to_string(),
-            None => source.url.clone(),
-        };
-        ui.label(RichText::new(place).monospace().small());
-        ui.horizontal(|ui| {
-            match self.reach.get(&source.id) {
-                Some(Reach::Reachable) => ui.label("Reachable"),
-                Some(Reach::Unreachable(why)) => {
-                    ui.colored_label(crate::theme::MUTE, format!("⚠ Can't be reached: {why}"))
-                }
-                _ => ui.weak("Asking…"),
-            };
-            let usage = self.usage(&source.id);
-            if source.folder.is_some() {
-                ui.weak(format!(
-                    "{} sounds, read in place: nothing copied",
-                    usage.sounds
-                ));
-            } else {
-                ui.weak(format!(
-                    "{} sounds, {} downloaded, {} on this computer",
-                    usage.sounds,
-                    usage.downloaded,
-                    size(usage.bytes)
-                ));
+            if !source.is_built_in() {
+                ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                    ui.menu_button("⋯", |ui| {
+                        if ui
+                            .button("Remove source")
+                            .on_hover_text(if source.folder.is_some() {
+                                "Stop listing this folder. Its files are not touched"
+                            } else {
+                                "Forget this source and its login. Sounds already downloaded stay until Clean up"
+                            })
+                            .clicked()
+                        {
+                            todo.push(Do::Remove(source.id.clone()));
+                            ui.close();
+                        }
+                    });
+                });
             }
         });
-        if source.is_self_hosted() {
-            ui.colored_label(
-                ui.visuals().warn_fg_color,
-                "Noodle can't vouch for what this source contains.",
-            );
-        }
+        ui.horizontal(|ui| {
+            ui.add_space(16.0);
+            let usage = self.usage(&source.id);
+            match reach {
+                Some(Reach::Unreachable(why)) => {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        format!("Can't be reached: {why}"),
+                    );
+                }
+                Some(Reach::Reachable) if source.folder.is_some() => {
+                    ui.weak(format!("{} sounds, read in place", usage.sounds));
+                }
+                Some(Reach::Reachable) => {
+                    ui.weak(format!(
+                        "{} sounds, {} downloaded ({})",
+                        usage.sounds,
+                        usage.downloaded,
+                        size(usage.bytes)
+                    ));
+                }
+                _ => {
+                    ui.weak("Asking…");
+                }
+            }
+        });
         if let Some(folder) = &source.folder {
             ui.horizontal(|ui| {
+                ui.add_space(16.0);
                 ui.label("Licence of these sounds");
                 let mut choice = folder.licence.clone();
                 egui::ComboBox::from_id_salt(("folder licence", &source.id))
@@ -195,111 +265,155 @@ impl Sounds {
                 }
             });
         }
-        if !source.is_built_in()
-            && ui
-                .button("Remove")
-                .on_hover_text(if source.folder.is_some() {
-                    "Stop listing this folder. Its files are not touched"
-                } else {
-                    "Forget this source and its login. Sounds already downloaded stay until Clean up"
-                })
-                .clicked()
-        {
-            todo.push(Do::Remove(source.id.clone()));
-        }
     }
 
-    fn add_form(&mut self, ui: &mut Ui) {
-        ui.label(RichText::new("Add a source").strong());
-        ui.colored_label(ui.visuals().warn_fg_color, NO_PROMISE);
-        ui.weak(
-            "A source is a folder of files on any web host: an index.json, a manifest for each \
-             pack and the audio.",
-        );
-        egui::Grid::new("add source").num_columns(2).show(ui, |ui| {
-            ui.label("Name");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.form.name)
-                    .hint_text("Optional")
-                    .desired_width(260.0),
+    /// The Add a web source popup, over whatever is open (Settings or the
+    /// Sounds panel). "Check and add" adds the source, waits until it has
+    /// answered, and only then closes: an address that does not work stays
+    /// in the popup with the reason, and the source is not kept.
+    pub fn show_add_dialog(&mut self, ctx: &egui::Context) {
+        if !self.form.open {
+            return;
+        }
+        if let Some(id) = self.form.checking.clone() {
+            match self.reach.get(&id).cloned() {
+                Some(Reach::Unreachable(why)) => {
+                    self.remove_source(&id);
+                    self.note = None;
+                    self.form.checking = None;
+                    self.form.error = Some(format!(
+                        "Couldn't reach it: {why}. Check the address and the login."
+                    ));
+                }
+                Some(Reach::Reachable) => {
+                    self.form = Form::default();
+                    self.persist();
+                    return;
+                }
+                _ => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
+            }
+        }
+        let mut submit = false;
+        let mut cancel = false;
+        let modal = crate::dialog::modal(ctx, "add web source", |ui| {
+            ui.set_max_width(440.0);
+            ui.heading("Add a web source");
+            ui.add_space(4.0);
+            ui.colored_label(ui.visuals().warn_fg_color, NO_PROMISE);
+            ui.weak(
+                "A source is a folder of files on any web host: an index.json, a manifest for \
+                 each pack and the audio.",
             );
-            ui.end_row();
-            ui.label("Address");
-            ui.add(
-                egui::TextEdit::singleline(&mut self.form.url)
-                    .hint_text("https://example.com/sounds")
-                    .desired_width(260.0),
-            );
-            ui.end_row();
-            ui.label("Login");
-            egui::ComboBox::from_id_salt("source login")
-                .selected_text(match self.form.login {
-                    LoginChoice::None => "None",
-                    LoginChoice::Bearer => "Token",
-                    LoginChoice::Basic => "User and password",
-                })
-                .show_ui(ui, |ui| {
-                    ui.selectable_value(&mut self.form.login, LoginChoice::None, "None");
-                    ui.selectable_value(&mut self.form.login, LoginChoice::Bearer, "Token");
-                    ui.selectable_value(
-                        &mut self.form.login,
-                        LoginChoice::Basic,
-                        "User and password",
+            ui.add_space(6.0);
+            let busy = self.form.checking.is_some();
+            ui.add_enabled_ui(!busy, |ui| {
+                egui::Grid::new("add source").num_columns(2).show(ui, |ui| {
+                    ui.label("Address");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.form.url)
+                            .hint_text("https://example.com/sounds")
+                            .desired_width(300.0),
                     );
+                    ui.end_row();
+                    ui.label("Name");
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.form.name)
+                            .hint_text("Optional")
+                            .desired_width(300.0),
+                    );
+                    ui.end_row();
                 });
-            ui.end_row();
-            match self.form.login {
-                LoginChoice::None => {}
-                LoginChoice::Bearer => {
-                    ui.label("Token");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.form.token)
-                            .password(true)
-                            .desired_width(260.0),
-                    );
-                    ui.end_row();
+                let login = egui::CollapsingHeader::new("This source needs a login")
+                    .default_open(self.form.login != LoginChoice::None)
+                    .show(ui, |ui| {
+                        ui.horizontal(|ui| {
+                            ui.selectable_value(
+                                &mut self.form.login,
+                                LoginChoice::Bearer,
+                                "Access token",
+                            );
+                            ui.selectable_value(
+                                &mut self.form.login,
+                                LoginChoice::Basic,
+                                "User name and password",
+                            );
+                        });
+                        egui::Grid::new("add source login").num_columns(2).show(
+                            ui,
+                            |ui| match self.form.login {
+                                LoginChoice::Basic => {
+                                    ui.label("User");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.form.user)
+                                            .desired_width(260.0),
+                                    );
+                                    ui.end_row();
+                                    ui.label("Password");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.form.password)
+                                            .password(true)
+                                            .desired_width(260.0),
+                                    );
+                                    ui.end_row();
+                                }
+                                _ => {
+                                    ui.label("Token");
+                                    ui.add(
+                                        egui::TextEdit::singleline(&mut self.form.token)
+                                            .password(true)
+                                            .desired_width(260.0),
+                                    );
+                                    ui.end_row();
+                                }
+                            },
+                        );
+                        ui.weak(format!(
+                            "The login is kept in {}, and sent only to this address.",
+                            self.vault.home().name()
+                        ));
+                    });
+                // A closed disclosure means no login.
+                match login.body_response {
+                    None => self.form.login = LoginChoice::None,
+                    Some(_) if self.form.login == LoginChoice::None => {
+                        self.form.login = LoginChoice::Bearer;
+                    }
+                    Some(_) => {}
                 }
-                LoginChoice::Basic => {
-                    ui.label("User");
-                    ui.add(egui::TextEdit::singleline(&mut self.form.user).desired_width(260.0));
-                    ui.end_row();
-                    ui.label("Password");
-                    ui.add(
-                        egui::TextEdit::singleline(&mut self.form.password)
-                            .password(true)
-                            .desired_width(260.0),
-                    );
-                    ui.end_row();
-                }
+            });
+            if let Some(error) = &self.form.error {
+                ui.colored_label(ui.visuals().error_fg_color, error);
             }
+            ui.add_space(6.0);
+            ui.horizontal(|ui| {
+                submit = ui
+                    .add_enabled(!busy, egui::Button::new("Check and add"))
+                    .clicked();
+                cancel = ui.button("Cancel").clicked();
+                if busy {
+                    ui.spinner();
+                    ui.weak("Checking the address…");
+                }
+            });
         });
-        if self.form.login != LoginChoice::None {
-            ui.weak(format!(
-                "The login is kept in {}, and sent only to this address.",
-                self.vault.home().name()
-            ));
-        }
-        if let Some(error) = &self.form.error {
-            ui.colored_label(ui.visuals().error_fg_color, error);
-        }
-        ui.horizontal(|ui| {
-            if ui.button("Add source").clicked() {
-                let login = self.form.login();
-                match self.add_remote(&self.form.name.clone(), &self.form.url.clone(), login) {
-                    Ok(_) => self.form = Form::default(),
-                    Err(why) => self.form.error = Some(why),
-                }
+        if cancel || modal.should_close() {
+            if let Some(id) = self.form.checking.take() {
+                self.remove_source(&id);
+                self.note = None;
             }
-            if ui
-                .button("Add folder…")
-                .on_hover_text("Use a folder of audio files as a source, read where it is")
-                .clicked()
-                && let Some(path) = crate::picker::pick_folder()
-                && let Err(why) = self.add_folder(path)
-            {
-                self.form.error = Some(why);
+            self.form = Form::default();
+        } else if submit {
+            self.form.error = None;
+            let (name, url, login) = (
+                self.form.name.clone(),
+                self.form.url.clone(),
+                self.form.login(),
+            );
+            match self.add_remote(&name, &url, login) {
+                Ok(id) => self.form.checking = Some(id),
+                Err(why) => self.form.error = Some(why),
             }
-        });
+        }
     }
 
     fn storage(&mut self, ui: &mut Ui) {

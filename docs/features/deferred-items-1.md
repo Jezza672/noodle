@@ -3,16 +3,16 @@
 Small items that had been left on the roadmap, built together.
 
 - **Model controls for Split to stems.** The Models tab of Settings has a
-  *Split to stems* section under the drum models: an enable checkbox, Download
+  *Split to stems* row beside the drum models: Download
   (ONNX Runtime first when the machine has none, then the weights, with a
   progress bar and Cancel), Remove, size on disk, licence and credit, and where
   the files are kept. `noodle_stems::ModelSpec::all()` lists the models and
   `ModelSpec::info()` describes them; `ModelStore::remove` and `size_on_disk`
-  are the store's side. Only HT-Demucs exists today. A model is on unless the
-  user switched it off (`Prefs::stem_models_off`, per machine, not exported). The
+  are the store's side. Only HT-Demucs exists today. The
   clip panel has a **Stem model** drop-down beside Stem quality
-  (`Edit::SetStemsModel`, session state like the quality), listing the models
-  that are switched on; splitting with one that is off says where to turn it on.
+  (`Edit::SetStemsModel`, session state like the quality). (The per-model
+  enable switch this batch added was removed by the settings redesign: a
+  downloaded model is offered, Remove turns it off.)
 - **Beat view gain envelope.** The warped (beat) view of the clip editor draws
   the gain line and its handles (`clip_editor::beat_gain`, over the same
   `gain_line` as the plain view): a clip's points are ticks from its start, which

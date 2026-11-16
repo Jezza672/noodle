@@ -24,8 +24,9 @@ drags it into the project, with a usability story (S31) and route.
 
 ## Chunk 6: Sources settings (#513)
 
-A Sources tab in Settings, reached from the panel's "Sources…" button, with
-story S32 and its route.
+A Sound sources tab in Settings, with story S32 and its route. (Reworked by the
+settings redesign: the panel's "+ Add source" menu opens the Web source popup
+in place; "Manage sources in Settings…" is on the same menu.)
 
 - **Self-hosted sources:** an address and an optional token or user and
   password. The address is tidied (`index.json` and a trailing slash dropped),
@@ -45,13 +46,14 @@ story S32 and its route.
   space they take. Clean up removes downloads no source lists (after a
   confirm). Removing a source forgets its login and leaves downloads for
   Clean up.
-- The panel's source filter is now a row of chips, with the add-a-folder
-  command on the right-click menu of "Sources…". Everything works offline from
+- The panel's source filter is now a row of chips, followed by the "+ Add source"
+  menu (Web source…, Folder on this computer…, Manage sources in Settings…, Make
+  shareable pack…) and a notice when a source can't be reached. Everything works offline from
   the saved catalogues.
 - Tests: a local HTTP server that wants a token, folder scans, the cache.
 
 **Owed.** No file browser exists in Noodle, so there is no right-click on a
-folder there; "Add folder…" is on the Sources page. The macOS and Windows
+folder there; "Folder on this computer…" is on the Add source menu. The macOS and Windows
 keychain code is untested here (CI builds it) and needs a hand check on the
 Mac.
 
@@ -72,7 +74,7 @@ Mac.
 ## Chunk 7: Make shareable pack (#514)
 
 - A wizard (`sounds/wizard.rs`), from File ▸ Make Shareable Pack… or the
-  right-click menu of a folder source (or of "Sources…") in the Sounds panel.
+  right-click menu of a folder source (or the Add source menu) in the Sounds panel.
   It reads and hashes a folder on a worker, then sets name, id, author, licence
   (default, an SPDX id or the author's own text), tags and credit for the pack
   or per sound, with bulk apply (author, tag, licence) over the included sounds.

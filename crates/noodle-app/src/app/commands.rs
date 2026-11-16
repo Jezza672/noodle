@@ -279,6 +279,20 @@ pub static ENTRIES: &[Entry] = &[
         false,
     ),
     entry(
+        "view.cpu_heat",
+        "Show or Hide CPU Heat Tint",
+        Action::ToggleCpuHeat,
+        None,
+        false,
+    ),
+    entry(
+        "view.performance",
+        "Turn Performance Mode On or Off",
+        Action::TogglePerformance,
+        None,
+        false,
+    ),
+    entry(
         "view.tempo_lane",
         "Show or Hide Tempo Lane",
         Action::ToggleTempoLane,

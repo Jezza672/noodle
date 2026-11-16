@@ -40,7 +40,7 @@ panel's width can be dragged.
 Tests: `app.rs` (the panel shows and collapses and opens again, a request for
 sounds opens it out of the strip, a click on a node and on a group, a preset
 unfolded from a group and from a node adds it with the preset applied, both
-lists scroll with the wheel, the Sounds tab's Sources… opens Settings) and
+lists scroll with the wheel, the Sounds tab's Add source menu opens Settings on Manage sources) and
 `properties.rs` (the section). Story routes S31 to S33 open the sounds from
 View > Browser. The lists' scroll bars are always shown, so they can be dragged.
 

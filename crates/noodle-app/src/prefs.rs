@@ -52,15 +52,6 @@ pub struct Prefs {
     pub record_quantise: crate::midi_take::Quantise,
     /// What the device buffer does while tracks are armed or monitored.
     pub monitoring_latency: crate::latency::MonitoringLatency,
-    /// Drum separation models the user has answered for, by id: whether each
-    /// is enabled. A model not listed has not been asked about yet (the
-    /// first-use popup). About this machine's downloads, so not exported.
-    #[serde(skip_serializing_if = "std::collections::BTreeMap::is_empty")]
-    pub drum_models: std::collections::BTreeMap<String, bool>,
-    /// Split to stems models the user has switched off, by id. A model not
-    /// listed is on. About this machine's downloads, so not exported.
-    #[serde(skip_serializing_if = "std::collections::BTreeSet::is_empty")]
-    pub stem_models_off: std::collections::BTreeSet<String>,
     /// The sources of sounds the user added (the built-in one is not listed).
     /// About this machine's folders and logins, so not exported.
     #[serde(skip_serializing_if = "Vec::is_empty")]
@@ -90,8 +81,6 @@ impl Default for Prefs {
             snap: crate::snap::DEFAULT,
             record_quantise: Default::default(),
             monitoring_latency: Default::default(),
-            drum_models: Default::default(),
-            stem_models_off: Default::default(),
             sources: Default::default(),
             source_secrets: Default::default(),
             keymap: Default::default(),
@@ -109,8 +98,6 @@ impl Prefs {
             monitor_device: String::new(),
             engine_on: true,
             sandbox_plugins: false,
-            drum_models: Default::default(),
-            stem_models_off: Default::default(),
             sources: Default::default(),
             source_secrets: Default::default(),
             ..self.clone()
@@ -282,58 +269,6 @@ pub fn remember_display(display: crate::display::Display) {
     });
 }
 
-/// The drum separation models answered for, and whether each is enabled.
-pub fn drum_models() -> std::collections::BTreeMap<String, bool> {
-    CURRENT.with_borrow(|current| {
-        current
-            .as_ref()
-            .map(|(_, prefs)| prefs.drum_models.clone())
-            .unwrap_or_default()
-    })
-}
-
-/// Saves whether a drum separation model is enabled (which also records that
-/// it has been answered for), with the other preferences, if [`init`] has
-/// been called.
-pub fn remember_drum_model(id: &str, enabled: bool) {
-    CURRENT.with_borrow_mut(|current| {
-        let Some((path, prefs)) = current else {
-            return;
-        };
-        prefs.drum_models.insert(id.to_owned(), enabled);
-        if let Err(error) = save(path, prefs) {
-            eprintln!("noodle: couldn't save preferences: {error}");
-        }
-    });
-}
-
-/// The Split to stems models the user has switched off.
-pub fn stem_models_off() -> std::collections::BTreeSet<String> {
-    CURRENT.with_borrow(|current| {
-        current
-            .as_ref()
-            .map(|(_, prefs)| prefs.stem_models_off.clone())
-            .unwrap_or_default()
-    })
-}
-
-/// Saves whether a Split to stems model is enabled, if [`init`] has been called.
-pub fn remember_stem_model(id: &str, enabled: bool) {
-    CURRENT.with_borrow_mut(|current| {
-        let Some((path, prefs)) = current else {
-            return;
-        };
-        if enabled {
-            prefs.stem_models_off.remove(id);
-        } else {
-            prefs.stem_models_off.insert(id.to_owned());
-        }
-        if let Err(error) = save(path, prefs) {
-            eprintln!("noodle: couldn't save preferences: {error}");
-        }
-    });
-}
-
 /// The sources of sounds the user added.
 pub fn sources() -> Vec<crate::sounds::source::SourceSpec> {
     CURRENT.with_borrow(|current| {
@@ -462,8 +397,6 @@ pub fn adopt(imported: &Prefs) -> Prefs {
             monitor_device: prefs.monitor_device.clone(),
             engine_on: prefs.engine_on,
             sandbox_plugins: prefs.sandbox_plugins,
-            drum_models: prefs.drum_models.clone(),
-            stem_models_off: prefs.stem_models_off.clone(),
             sources: prefs.sources.clone(),
             source_secrets: prefs.source_secrets.clone(),
             ..imported.portable()
@@ -633,8 +566,6 @@ mod tests {
             snap: crate::snap::DEFAULT,
             record_quantise: Default::default(),
             monitoring_latency: Default::default(),
-            drum_models: Default::default(),
-            stem_models_off: Default::default(),
             sources: Default::default(),
             source_secrets: Default::default(),
             keymap: Default::default(),

@@ -2,7 +2,7 @@
 
 The runtimes behind the drum rack's model choice (`docs/design/drum-rack-from-clip.md`,
 Decisions 6 to 10). This is the library side, in `noodle-stems/src/drum/`;
-the app side (Models tab, first-use popup, dialog drop-down) is at the end.
+the app side (Models tab, inline download, dialog drop-down) is at the end.
 
 - **Manifests** (`manifest.rs`): one per model, in the UI order LarsNet, Timbrica,
   drumsep: parts and their order, the parts it lacks, licence and non-commercial
@@ -55,24 +55,23 @@ dominates a kick-and-hat mix). Not listened to on real kits yet.
 - Downloads are pinned to commit hashes, and the Hugging Face CDN redirect needs
   `us.aws.cdn.hf.co` reachable.
 
-## The app side (#520): Models tab, first-use popup, drop-down
+## The app side (#520, reworked by the settings redesign)
 
 `noodle-app/src/models.rs` (`Models`, held by the app).
 
-- **Enabled** is a preference (`Prefs::drum_models`, id to bool). A model not in it
-  has not been asked about. It is machine-local, so not exported or embedded.
-- **Ready** means enabled and downloaded; the drum rack dialog's "Separation model"
-  drop-down lists only those, in the app's order (LarsNet, Timbrica, drumsep). With
-  none it says where to switch one on. The choice is held by the dialog; the
-  analyser (`drum-separation-analyser.md`) reads it.
-- **Settings, Models tab:** per model an enable toggle, parts and what it lacks,
-  size, licence (with the non-commercial warning), credit, provenance, a source
-  link, and Download / Cancel (progress bar) / Remove, plus where the weights are
-  stored. Downloads run as a `Job` over `DrumModelStore::fetch`.
-- **First-use popup:** shown the first time Create drum rack is used, while some
-  downloadable model is unasked. One toggle per model, non-commercial ones start
-  off so a download of them is a choice. Download selected enables and fetches the
-  ticked ones; Not now leaves all off; both answer them.
+- **No on/off switch and no first-use popup.** A model is *ready* when it is
+  downloaded; Remove is how it is turned off. The drum rack dialog's "Separation
+  model" drop-down lists the ready ones, in the app's order (LarsNet, Timbrica,
+  drumsep). Models not on the computer are offered inline in the same dialog
+  (a "Download a separation model" disclosure, open when none is ready), each
+  with its size, licence, the non-commercial warning and a Download button. The
+  choice is held by the dialog; the analyser (`drum-separation-analyser.md`)
+  reads it.
+- **Settings, Models tab:** one compact list for the drum models and the Split to
+  stems model: name, what uses it, size, and one action (Download, Cancel with a
+  progress bar, Remove), with the Non-commercial chip on the row. Parts, licence,
+  credit, provenance and the source link sit behind a row's Details disclosure.
+  A footer line gives the total size and where the weights are stored. Downloads
+  run as a `Job` over `DrumModelStore::fetch`.
 - **Not published:** a model without an address and checksum shows "Not available
-  yet" with Download disabled, and the popup leaves it unasked until it can be
-  downloaded (all three today, #523).
+  yet" in place of Download (all three today, #523).

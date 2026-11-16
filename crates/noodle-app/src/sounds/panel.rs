@@ -233,27 +233,19 @@ fn filters(sounds: &mut Sounds, ui: &mut Ui) {
                 });
             }
         }
-        let add = ui
-            .small_button("Sources…")
-            .on_hover_text("Add, remove and manage where sounds come from, in Settings");
-        if add.clicked() {
-            sounds.wants_sources = true;
-        }
-        add.context_menu(|ui| {
-            if ui.button("Make shareable pack…").clicked() {
-                sounds.choose_pack_folder();
-                ui.close();
-            }
-            if ui.button("Add a folder as a source…").clicked() {
-                if let Some(path) = crate::picker::pick_folder()
-                    && let Err(why) = sounds.add_folder(path)
-                {
-                    sounds.message = Some(why);
-                }
-                ui.close();
+        sounds.add_menu(ui, true);
+    });
+    if sounds.has_unreachable() {
+        ui.horizontal(|ui| {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                "⚠ A source can't be reached. Its earlier sounds are still listed.",
+            );
+            if ui.small_button("Details").clicked() {
+                sounds.wants_sources = true;
             }
         });
-    });
+    }
     ui.horizontal(|ui| {
         let selected = sounds
             .filter
