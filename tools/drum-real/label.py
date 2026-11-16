@@ -53,9 +53,12 @@ SPURIOUS_KEY = "z"
 # stem (separated by the app's drum separation, drums only) or mix (only for tests).
 MANIFEST_COLUMNS = ["id", "file", "title", "artist", "year", "genre", "kind", "licence",
                     "source_url", "credit"]
-# Licences whose text allows use in a dataset with credit. Everything else is refused.
-ALLOWED_LICENCES = {"cc0", "pd", "cc-by-2.5", "cc-by-3.0", "cc-by-4.0",
-                     "cc-by-sa-2.5", "cc-by-sa-3.0", "cc-by-sa-4.0"}
+# Licences that allow redistribution with credit. Anything else (all-rights-reserved commercial
+# recordings, NC, ND, unclear) may be listed too, for training only: it is flagged as
+# non-redistributable, `stats` counts it, and the model card must say the model is not licence
+# clean (tools/drum-classifier/MODEL-CARD.md). The audio and the features are never published.
+OPEN_LICENCES = {"cc0", "pd", "cc-by-2.5", "cc-by-3.0", "cc-by-4.0",
+                 "cc-by-sa-2.5", "cc-by-sa-3.0", "cc-by-sa-4.0"}
 KINDS = {"multitrack", "stem", "mix"}
 
 # Columns of the dataset generator's hits.csv, so real rows sit beside synthetic ones.
@@ -75,16 +78,16 @@ def read_manifest(work):
         missing = [c for c in MANIFEST_COLUMNS if not (r.get(c) or "").strip()]
         if missing:
             raise SystemExit(f"{path}: song {r.get('id') or '?'} is missing {', '.join(missing)}")
-        if r["licence"].strip().lower() not in ALLOWED_LICENCES:
-            raise SystemExit(
-                f"{path}: song {r['id']} has licence {r['licence']!r}; allowed: "
-                f"{', '.join(sorted(ALLOWED_LICENCES))} (no NC, no ND, nothing unclear)")
         if r["kind"] not in KINDS:
             raise SystemExit(f"{path}: song {r['id']} has kind {r['kind']!r}; use one of {sorted(KINDS)}")
     ids = [r["id"] for r in rows]
     if len(set(ids)) != len(ids):
         raise SystemExit(f"{path}: duplicate ids")
     return rows
+
+
+def redistributable(row):
+    return row["licence"].strip().lower() in OPEN_LICENCES
 
 
 def split_of(song_id):
@@ -419,6 +422,10 @@ def stats(work):
         by_purity[ev["purity"]] = by_purity.get(ev["purity"], 0) + 1
         by_song[song] = by_song.get(song, 0) + 1
     print(f"{len(done)} labelled hits in {len(by_song)} songs")
+    closed = [s["id"] for s in read_manifest(work) if s["id"] in by_song and not redistributable(s)]
+    if closed:
+        print(f"not licence clean (training only, never publish): {len(closed)} songs; "
+              "the model card must say so")
     print("class: ", ", ".join(f"{k} {v}" for k, v in sorted(by_class.items())))
     print("purity:", ", ".join(f"{k} {v}" for k, v in sorted(by_purity.items())))
 

@@ -16,6 +16,16 @@ and **MuldjordKit by Lars Muldjord, CC BY 4.0** (https://github.com/sfzinstrumen
 mapped and converted by kinwie). Credit for the MuldjordKit must travel with the model and the dataset.
 `manifest.json` of the dataset lists every sample with its licence and credit.
 
+## Not licence clean when trained with real recordings
+
+Models trained with the real-hit labels from `tools/drum-real/` (see that README) also learned
+from features of **commercial recordings used without a licence** (songs the maintainer owns
+copies of, not released under any open licence). Such a model is **not licence clean**: do not
+assume it may be used, redistributed or built on freely. The recordings, the features measured
+from them and their labels are **not published**; only the model file is. A model trained on the
+CC0 and CC BY data above alone is licence clean, and its card says so; say which kind of model a
+published file is, and list the training sources, when you publish it.
+
 ## Limits
 
 About three quarters right on isolated one-shots of kits it has not heard, and much less on hits

@@ -94,11 +94,10 @@ class Tests(unittest.TestCase):
             counts[label.split_of(f"song{i}")] += 1
         self.assertTrue(600 < counts["train"] < 800 and counts["test"] > 100)
 
-    def test_refuses_nc_licence(self):
-        for bad in ("cc-by-nc-4.0", "cc-by-nd-4.0", "unknown", ""):
-            w = make_work(licence=bad)
-            with self.assertRaises(SystemExit):
-                label.read_manifest(w)
+    def test_closed_licences_are_flagged_not_refused(self):
+        for lic, open_ in (("cc-by-4.0", True), ("all-rights-reserved", False), ("cc-by-nc-4.0", False)):
+            rows = label.read_manifest(make_work(licence=lic))
+            self.assertEqual(label.redistributable(rows[0]), open_)
 
     def test_purity_names_match_classifier(self):
         # drum_data.rs Purity::ALL (docs/features/drum-classifier.md)

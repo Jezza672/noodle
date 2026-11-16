@@ -6,7 +6,10 @@ lives outside the repo, in a WORK folder (for example `~/Documents/Jezza/drum-re
 
 1. `fetch_ccmixter.py WORK --tags funk,drums ...` downloads CC0 / CC BY / CC BY-SA uploads from
    ccMixter and records source, licence and credit in `WORK/manifest.csv`. Anything NC, ND or
-   unclear is refused, by `fetch_ccmixter.py` and again by `label.py` when it reads the manifest.
+   unclear is skipped by `fetch_ccmixter.py`. `label.py` also accepts songs you add yourself under any
+   licence (write `all-rights-reserved`): they are training only, `stats` reports them, and the model
+   card must say the model is not licence clean. Neither the audio, the features nor the labels of
+   such songs are published.
    You can also add rows by hand (columns in `label.py`, `MANIFEST_COLUMNS`).
 2. `label.py split WORK` keeps only the drums of full mixes (kind `mix`) with the app's HT-Demucs
    (`drum_real_split`; needs the model from the Models tab). Real drum multitracks and drum-only
