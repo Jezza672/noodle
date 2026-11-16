@@ -1,6 +1,6 @@
-# Low-latency monitoring, chunks 1 and 2 (#548)
+# Low-latency monitoring (#548)
 
-Delivered. Open work (chunk 3, only the live cone running in the device callback) is in [ROADMAP.md](../ROADMAP.md), the design in [../architecture/transport-and-devices.md](../architecture/transport-and-devices.md).
+Delivered, in three chunks. What is owed on hardware is in [ROADMAP.md](../ROADMAP.md), the design in [../architecture/transport-and-devices.md](../architecture/transport-and-devices.md) and, for the third chunk, [../architecture/caching.md](../architecture/caching.md) ("Rendered ahead") and [ADR 0014](../adr/0014-a-render-is-played-while-it-fills.md).
 
 **What it does.** While a track is armed or monitored, what the player hears of their own playing is not delayed by anything but its own path, and the device buffer is as small as the hardware allows. One setting, **Monitoring latency** (Auto, Always low, Off), on the Audio tab of Settings. The engine block stays 128, so cache entries stay valid; only the device buffer moves.
 
@@ -32,3 +32,18 @@ The Audio tab shows the buffer's state and the monitored path's plugin latency (
 Tests: the session tests `arming_a_track_while_stopped_reopens_the_stream_with_a_small_buffer`, `the_buffer_relaxes_when_idle_and_wakes_when_armed`, `the_stream_is_not_reopened_while_the_transport_runs`, `a_chosen_buffer_size_and_the_off_setting_leave_the_buffer_alone`, `always_low_opens_small_from_the_start` (on the virtual output, whose buffer follows `live_buffer`), and the policy table in `latency.rs`.
 
 **Owed on the Mac:** the gap when arming reopens the stream, and a power measurement of the relaxed buffer. Ask before making sound.
+
+## 3. Only the live cone is left to the callback: rendering ahead
+
+A cluster with no whole entry used to play live in the callback until the background render finished. The render runs many times faster than real time, so the callback now plays from the entry while it is still being written, as soon as the render is two seconds ahead of the playhead (ADR 0014).
+
+- `noodle-io`: `CacheWriter::publish` (done every 4096 frames by `write`) makes what has been written readable; `CacheStore::get_growing` opens the entry as it fills, `CachedAudio::available` is what can be read now, and `Growth` says whether the render finished or was abandoned. The commit renames the file with readers holding it open, so a player started on a growing entry carries on into the whole one.
+- `CachedPlayer::growing`: the worker makes a chunk only once the render has written past its end, so a chunk is never short or stale. Its config is the same as a whole entry's, so the render finishing swaps nothing.
+- `Freezer::plan_at` takes an `Ahead` (the playhead, the entries played now and those given up) and plays a single non-looping entry as `TargetState::Streaming` when the render is `AHEAD_JOIN_SECONDS` (2 s) ahead, down to `AHEAD_KEEP_SECONDS` (0.4 s). `FreezePlan::watches` lists the renders it looked at.
+- `Freezing::poll(playhead, playing)` watches those leads and has the session compile again when one is made or lost. A cluster given up stays live until its render ends or a new render starts, so a render slower than the playhead doesn't flap.
+- An edit changes the key: the old entry comes off at once and the cluster plays live, so a tweak is heard immediately, and it goes back to the new entry once the new render is ahead.
+- Monitoring latency Off keeps the old rule; Auto and Always low play ahead. The toolbar's cache status is **Ahead** (`CacheStatus::Ahead`) while a cluster is played this way.
+
+Tests: the writer and reader (`noodle-io` `cache.rs`), the player on a growing entry (`cached.rs`), the plan's decisions and that a streamed entry sounds like the live one (`tests/freeze.rs`: `a_cluster_plays_from_an_entry_still_being_written_once_the_render_is_ahead`, `an_abandoned_render_is_not_played`), and the lead watching (`freezing.rs`).
+
+Not done: loop laps are not played ahead (they wait for their renders), and the callback's per-block saving on a 60-track project has not been measured. Owed on the Mac: listen to the hand-over.

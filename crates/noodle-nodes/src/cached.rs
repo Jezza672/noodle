@@ -15,6 +15,7 @@
 
 use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
+use std::time::Duration;
 
 use noodle_core::{CacheKey, Config, Value};
 use noodle_engine::{
@@ -35,6 +36,9 @@ const CHUNKS: usize = 16;
 /// a render swapped in mid-playback has its first blocks ready: about 0.34 s
 /// at 48 kHz, longer than the worker needs to catch up.
 const PRELOAD: u64 = 4;
+/// How often the worker looks again for frames of an entry that is being
+/// written, when it has caught up with the render.
+const GROWTH_POLL: Duration = Duration::from_millis(10);
 /// Chunks made in one run, so a refill doesn't hold a pool thread for long.
 const CHUNKS_PER_RUN: usize = 4;
 
@@ -52,6 +56,9 @@ pub struct CachedPlayer {
     key: Option<CacheKey>,
     shape: Shape,
     blocking: bool,
+    /// The entry may still be being written: play what there is, and wait
+    /// for the rest instead of taking its end for the end of the entry.
+    growing: bool,
     /// The timeline frame the entry's first frame belongs to: 0 for a render
     /// of the whole project, the start of the pass for a pass's entry.
     start: u64,
@@ -72,6 +79,18 @@ impl CachedPlayer {
         }
     }
 
+    /// Plays an entry that a render is still writing (see
+    /// [`CacheStore::get_growing`]). The player keeps what it holds as the
+    /// render goes on and plays the same sound once the entry is whole, so
+    /// the plan that follows the render's end doesn't have to replace it.
+    /// The caller makes sure the render is far enough ahead of the playhead.
+    pub fn growing(store: CacheStore, key: CacheKey, shape: Shape) -> Self {
+        Self {
+            growing: true,
+            ..Self::new(store, key, shape)
+        }
+    }
+
     /// Plays silence of `shape`: what stands in for an offline node until its
     /// render is done.
     pub fn silent(store: CacheStore, shape: Shape) -> Self {
@@ -80,6 +99,7 @@ impl CachedPlayer {
             key: None,
             shape,
             blocking: false,
+            growing: false,
             start: 0,
             laps: Vec::new(),
         }
@@ -183,10 +203,14 @@ impl NodeType for CachedPlayer {
 impl CachedPlayer {
     /// The player of the entry under `key`.
     fn player(&self, key: CacheKey, setup: &Setup<'_>) -> Result<Player, NodeError> {
-        let audio = self
-            .store
-            .get(&key)
-            .ok_or_else(|| NodeError::config("the cached render is gone"))?;
+        // A render that ended since the plan was made left a whole entry.
+        let audio = (if self.growing {
+            self.store.get_growing(&key)
+        } else {
+            None
+        })
+        .or_else(|| self.store.get(&key))
+        .ok_or_else(|| NodeError::config("the cached render is gone"))?;
         let lanes = self.shape.lanes();
         if audio.info().channels != lanes {
             return Err(NodeError::config("the cached render has the wrong shape"));
@@ -575,6 +599,9 @@ impl Worker {
     /// Makes the next `count` chunks now, on the calling thread.
     fn preload(&mut self, count: u64) {
         for _ in 0..count {
+            if !self.ready(self.next) {
+                return;
+            }
             let Ok(mut chunk) = self.spent.pop() else {
                 return;
             };
@@ -593,6 +620,10 @@ impl Worker {
                 self.generation = latest;
                 self.next = self.shared.target.load(Ordering::Acquire);
             }
+            // An entry still being written: the chunk waits for its frames.
+            if !self.ready(self.next) {
+                return Next::After(GROWTH_POLL);
+            }
             // Rung again when the audio thread returns a chunk.
             let Ok(mut chunk) = self.spent.pop() else {
                 return Next::Idle;
@@ -608,6 +639,12 @@ impl Worker {
             let _ = self.full.push(chunk);
         }
         Next::Again
+    }
+
+    /// Whether chunk `index` is all there: the entry is whole, or the render
+    /// has written past the end of the chunk.
+    fn ready(&self, index: u64) -> bool {
+        !self.audio.growing() || self.audio.available() >= (index + 1) * CHUNK as u64
     }
 
     /// Reads chunk `index` and lays it out lane by lane. Whatever the entry
@@ -740,5 +777,54 @@ mod tests {
         let mut h = Harness::new(&player, &Config::new(), &[], RATE, 64).unwrap();
         h.run(64).unwrap();
         assert!(h.output(0).lane(0, 0).iter().all(|&x| x == 0.0));
+    }
+
+    #[test]
+    fn a_player_on_a_growing_entry_plays_what_is_written_and_never_something_else() {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CacheStore::open(dir.path()).unwrap();
+        let key = KeyBuilder::new("cached-test").u64(2).finish();
+        let ramp: Vec<f32> = (0..100_000).map(|i| (i + 1) as f32).collect();
+        let mut writer = store.writer(&key, 1, RATE as u32).unwrap();
+        writer.write(&ramp[..20_480]).unwrap();
+
+        let player = CachedPlayer::growing(store.clone(), key, Shape::MONO);
+        let mut h = Harness::new(&player, &Config::new(), &[], RATE, 4096).unwrap();
+        let mut heard = Vec::new();
+        for _ in 0..4 {
+            h.run(4096).unwrap();
+            heard.extend_from_slice(h.output(0).lane(0, 0));
+            std::thread::sleep(Duration::from_millis(30));
+        }
+        // What the render has written is played, from the first block.
+        assert_eq!(heard[0], 1.0);
+        assert_eq!(heard.len(), 16_384);
+        for (i, &x) in heard.iter().enumerate() {
+            assert!(x == 0.0 || x == (i + 1) as f32, "at {i}: {x}");
+        }
+        assert_eq!(heard[16_000], 16_001.0, "the stream kept up");
+
+        // Past the end of what is written the player is silent, not wrong,
+        // and picks the render up once it has moved on.
+        writer.write(&ramp[20_480..]).unwrap();
+        writer.commit().unwrap();
+        let mut late = Vec::new();
+        for _ in 0..30 {
+            h.run(4096).unwrap();
+            late.extend_from_slice(h.output(0).lane(0, 0));
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        let at = 16_384;
+        for (i, &x) in late.iter().enumerate() {
+            let frame = at + i;
+            assert!(
+                x == 0.0 || x == ramp.get(frame).copied().unwrap_or(0.0),
+                "at {frame}: {x}"
+            );
+        }
+        assert!(
+            late.iter().filter(|&&x| x != 0.0).count() > 50_000,
+            "the player carried on into what was written after it started"
+        );
     }
 }

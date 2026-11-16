@@ -34,7 +34,7 @@ fn temp(name: &str) -> std::path::PathBuf {
     dir.join(name)
 }
 
-pub use cache::{CacheInfo, CacheStore, CacheUsage, CacheWriter, CachedAudio};
+pub use cache::{CacheInfo, CacheStore, CacheUsage, CacheWriter, CachedAudio, Growth};
 pub use decode::{DecodeError, Decoder, FileInfo, decode_file};
 pub use devices::{
     AudioConfig, AudioError, COMMON_SAMPLE_RATES, Capabilities, Chosen, DeviceInfo, DeviceList,

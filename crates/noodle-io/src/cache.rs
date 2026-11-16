@@ -13,10 +13,12 @@
 //!
 //! Nothing here is for the audio thread: every call does file I/O.
 
+use std::collections::HashMap;
 use std::fs::{self, File};
 use std::io::{self, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, SystemTime};
 
 use noodle_core::CacheKey;
@@ -27,6 +29,52 @@ const EXTENSION: &str = "nrc";
 /// A `.partial` file this old can't belong to a render still running.
 const STALE_PARTIAL: Duration = Duration::from_secs(60 * 60);
 static PARTIALS: AtomicU64 = AtomicU64::new(0);
+/// Frames between the points where a writer makes what it has written
+/// readable (see [`Growth`]): about 85 ms at 48 kHz.
+const PUBLISH_FRAMES: u64 = 4096;
+
+/// How far an entry that is still being written has got, shared between the
+/// writer and whoever reads it as it grows. Only a writer in this process is
+/// seen: a render is started by the app that plays it.
+#[derive(Debug)]
+pub struct Growth {
+    path: PathBuf,
+    channels: usize,
+    sample_rate: u32,
+    /// Frames on disk, as of the writer's last publish.
+    frames: AtomicU64,
+    /// The entry was committed: `frames` is its length and it won't change.
+    finished: AtomicBool,
+    /// The writer was dropped without committing: nothing more will come.
+    abandoned: AtomicBool,
+}
+
+impl Growth {
+    pub fn channels(&self) -> usize {
+        self.channels
+    }
+
+    pub fn sample_rate(&self) -> u32 {
+        self.sample_rate
+    }
+
+    /// Frames that can be read now.
+    pub fn frames(&self) -> u64 {
+        self.frames.load(Ordering::Acquire)
+    }
+
+    /// Whether the entry is complete.
+    pub fn finished(&self) -> bool {
+        self.finished.load(Ordering::Acquire)
+    }
+
+    /// Whether the render stopped without finishing the entry.
+    pub fn abandoned(&self) -> bool {
+        self.abandoned.load(Ordering::Acquire)
+    }
+}
+
+type Growing = Arc<Mutex<HashMap<CacheKey, Arc<Growth>>>>;
 
 /// What a [`CacheStore`] holds.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -80,6 +128,8 @@ impl CacheInfo {
 #[derive(Clone, Debug)]
 pub struct CacheStore {
     dir: PathBuf,
+    /// The entries being written now, by key.
+    growing: Growing,
 }
 
 impl CacheStore {
@@ -88,7 +138,10 @@ impl CacheStore {
     pub fn open(dir: impl Into<PathBuf>) -> io::Result<Self> {
         let dir = dir.into();
         fs::create_dir_all(&dir)?;
-        let store = Self { dir };
+        let store = Self {
+            dir,
+            growing: Growing::default(),
+        };
         let now = SystemTime::now();
         for entry in store.files()? {
             if entry.partial
@@ -118,6 +171,29 @@ impl CacheStore {
     /// renders it again. Marks the entry as recently used.
     pub fn get(&self, key: &CacheKey) -> Option<CachedAudio> {
         self.open_entry(key, true)
+    }
+
+    /// The entry for `key` as far as it has been written, if a render in
+    /// this process is writing it now. It reads like [`get`](Self::get), but
+    /// [`CachedAudio::available`] grows as the render goes on, and the entry
+    /// is whole once [`Growth::finished`].
+    pub fn get_growing(&self, key: &CacheKey) -> Option<CachedAudio> {
+        let growth = self.growth(key)?;
+        let file = File::open(&growth.path).ok()?;
+        Some(CachedAudio {
+            file,
+            info: CacheInfo {
+                channels: growth.channels,
+                sample_rate: growth.sample_rate,
+                frames: growth.frames(),
+            },
+            growth: Some(growth),
+        })
+    }
+
+    /// How far the render writing `key` has got, if one is.
+    pub fn growth(&self, key: &CacheKey) -> Option<Arc<Growth>> {
+        self.growing.lock().expect("growing lock").get(key).cloned()
     }
 
     fn open_entry(&self, key: &CacheKey, touch: bool) -> Option<CachedAudio> {
@@ -171,6 +247,20 @@ impl CacheStore {
         };
         // Placeholder header; the real frame count is written on commit.
         file.write_all(&info.header())?;
+        // The header is on disk before anyone can look for the entry.
+        file.flush()?;
+        let growth = Arc::new(Growth {
+            path: partial.clone(),
+            channels,
+            sample_rate,
+            frames: AtomicU64::new(0),
+            finished: AtomicBool::new(false),
+            abandoned: AtomicBool::new(false),
+        });
+        self.growing
+            .lock()
+            .expect("growing lock")
+            .insert(*key, Arc::clone(&growth));
         Ok(CacheWriter {
             file: Some(file),
             committed: false,
@@ -178,6 +268,10 @@ impl CacheStore {
             target: self.path(key),
             info,
             scratch: Vec::new(),
+            key: *key,
+            growing: Arc::clone(&self.growing),
+            growth,
+            published: 0,
         })
     }
 
@@ -265,6 +359,11 @@ pub struct CacheWriter {
     target: PathBuf,
     info: CacheInfo,
     scratch: Vec<u8>,
+    key: CacheKey,
+    growing: Growing,
+    growth: Arc<Growth>,
+    /// Frames made readable so far.
+    published: u64,
 }
 
 impl CacheWriter {
@@ -284,6 +383,22 @@ impl CacheWriter {
             .expect("writer used after commit")
             .write_all(&self.scratch)?;
         self.info.frames += (samples.len() / self.info.channels) as u64;
+        if self.info.frames - self.published >= PUBLISH_FRAMES {
+            self.publish()?;
+        }
+        Ok(())
+    }
+
+    /// Makes what has been written readable through
+    /// [`CacheStore::get_growing`]. [`write`](Self::write) does it every few
+    /// thousand frames by itself.
+    pub fn publish(&mut self) -> io::Result<()> {
+        self.file
+            .as_mut()
+            .expect("writer used after commit")
+            .flush()?;
+        self.published = self.info.frames;
+        self.growth.frames.store(self.published, Ordering::Release);
         Ok(())
     }
 
@@ -302,12 +417,30 @@ impl CacheWriter {
         drop(file);
         fs::rename(&self.partial, &self.target)?;
         self.committed = true;
+        // Readers hold the file open, which the rename leaves alone.
+        self.growth
+            .frames
+            .store(self.info.frames, Ordering::Release);
+        self.growth.finished.store(true, Ordering::Release);
         Ok(self.info)
     }
 }
 
 impl Drop for CacheWriter {
     fn drop(&mut self) {
+        {
+            let mut growing = self.growing.lock().expect("growing lock");
+            // A render of the same key may have replaced this one.
+            if growing
+                .get(&self.key)
+                .is_some_and(|g| Arc::ptr_eq(g, &self.growth))
+            {
+                growing.remove(&self.key);
+            }
+        }
+        if !self.committed {
+            self.growth.abandoned.store(true, Ordering::Release);
+        }
         // Also after a commit that failed part way, e.g. on a full disk.
         if !self.committed {
             self.file = None;
@@ -321,6 +454,8 @@ impl Drop for CacheWriter {
 pub struct CachedAudio {
     file: File,
     info: CacheInfo,
+    /// Set for an entry opened while it is being written.
+    growth: Option<Arc<Growth>>,
 }
 
 impl CachedAudio {
@@ -340,11 +475,32 @@ impl CachedAudio {
         if expected != Some(file.metadata()?.len()) {
             return Err(bad("wrong length"));
         }
-        Ok(Self { file, info })
+        Ok(Self {
+            file,
+            info,
+            growth: None,
+        })
     }
 
     pub fn info(&self) -> CacheInfo {
         self.info
+    }
+
+    /// Frames that can be read now: the whole entry, or for one opened while
+    /// it was being written (see [`CacheStore::get_growing`]) as many as the
+    /// render has published.
+    pub fn available(&self) -> u64 {
+        self.growth
+            .as_ref()
+            .map_or(self.info.frames, |growth| growth.frames())
+    }
+
+    /// Whether more may still arrive: the entry is being written and its
+    /// render is still going.
+    pub fn growing(&self) -> bool {
+        self.growth
+            .as_ref()
+            .is_some_and(|growth| !growth.finished() && !growth.abandoned())
     }
 
     /// Reads interleaved frames starting at frame `start` into `out` (a
@@ -353,7 +509,7 @@ impl CachedAudio {
     pub fn read_frames(&mut self, start: u64, out: &mut [f32]) -> io::Result<usize> {
         let channels = self.info.channels;
         let wanted = (out.len() / channels) as u64;
-        let frames = wanted.min(self.info.frames.saturating_sub(start)) as usize;
+        let frames = wanted.min(self.available().saturating_sub(start)) as usize;
         if frames == 0 {
             return Ok(0);
         }
@@ -484,6 +640,54 @@ mod tests {
         fs::write(&path, b"not an entry at all, not even close").unwrap();
         assert!(store.get(&key(1)).is_none());
         assert!(!path.exists());
+    }
+
+    #[test]
+    fn an_entry_can_be_read_while_it_is_written_and_stays_readable_after_the_commit() {
+        let (_dir, store) = store();
+        let mut w = store.writer(&key(1), 1, 48_000).unwrap();
+        // Nothing is published yet, and the entry is not whole.
+        let mut audio = store.get_growing(&key(1)).unwrap();
+        assert_eq!(audio.available(), 0);
+        assert!(audio.growing());
+        assert!(!store.contains(&key(1)));
+
+        let samples: Vec<f32> = (0..10_000).map(|i| i as f32).collect();
+        w.write(&samples[..3000]).unwrap();
+        // Less than a publish step: written, not yet readable.
+        assert_eq!(audio.available(), 0);
+        w.write(&samples[3000..6000]).unwrap();
+        assert_eq!(audio.available(), 6000);
+        let mut out = [0.0; 4];
+        assert_eq!(audio.read_frames(5998, &mut out).unwrap(), 2);
+        assert_eq!(out[..2], [5998.0, 5999.0]);
+        // Past what is published is a short read, never a stale value.
+        assert_eq!(audio.read_frames(6000, &mut out).unwrap(), 0);
+
+        w.write(&samples[6000..]).unwrap();
+        w.publish().unwrap();
+        assert_eq!(audio.available(), 10_000);
+        w.commit().unwrap();
+        // The reader opened before the rename still reads, and knows it is whole.
+        assert!(!audio.growing());
+        assert_eq!(audio.available(), 10_000);
+        assert_eq!(audio.read_frames(9998, &mut out).unwrap(), 2);
+        assert_eq!(out[..2], [9998.0, 9999.0]);
+        // Once committed there is nothing growing to find.
+        assert!(store.get_growing(&key(1)).is_none());
+        assert!(store.contains(&key(1)));
+    }
+
+    #[test]
+    fn a_dropped_writer_is_seen_as_abandoned() {
+        let (_dir, store) = store();
+        let mut w = store.writer(&key(1), 1, 48_000).unwrap();
+        w.write(&[0.0; 8192]).unwrap();
+        let growth = store.growth(&key(1)).unwrap();
+        assert!(!growth.abandoned());
+        drop(w);
+        assert!(growth.abandoned() && !growth.finished());
+        assert!(store.growth(&key(1)).is_none());
     }
 
     #[test]

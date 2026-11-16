@@ -1827,7 +1827,7 @@ impl App {
         ) {
             (false, _, _) => (weak, false),
             (true, Some(_), _) => (theme::WARNING, true),
-            (true, None, CacheStatus::Cached) => (theme::ACCENT, true),
+            (true, None, CacheStatus::Cached | CacheStatus::Ahead) => (theme::ACCENT, true),
             (true, None, CacheStatus::Rendering(_)) => (theme::ACCENT, false),
             (true, None, _) => (weak, true),
         }

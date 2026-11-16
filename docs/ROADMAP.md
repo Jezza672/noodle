@@ -91,15 +91,13 @@ Chunks 1 to 3 are built: see [features/noodle-as-a-plugin.md](features/noodle-as
 2. More than one instance in a process: the UI waker and the other process-wide state. Size M.
 3. VST3 and AU through the wrapper, packaging, and an owed pass in real hosts on the Mac. Size M.
 
-## Planned: low-latency monitoring (#548)
+## Built, owed on hardware: low-latency monitoring (#548)
 
 The least delay the hardware allows while a track is armed or monitored, chosen automatically, and a larger device buffer when nobody is recording. One setting, Monitoring latency (Auto, Always low, Off). The engine block stays 128 so cache entries stay valid; the device buffer is what moves. (So the deferred idea below, of the engine block following the device period, is not part of this.)
 
-Decided November 2026 (#548): Relaxed (1024 frames) applies only while the transport is stopped and nothing is armed; ahead rendering (chunk 3) is on for everyone in Auto.
+Decided November 2026 (#548): Relaxed (1024 frames) applies only while the transport is stopped and nothing is armed; ahead rendering is on for everyone in Auto.
 
-Chunks 1 and 2 are built (`features/low-latency-monitoring.md`). Owed on the Mac: the gap when arming reopens the stream, and a power measurement of the relaxed buffer.
-
-3. Only the live cone runs in the device callback. Today a cluster with no entry plays live until the background `Freezing` render finishes and swaps in; this adds a streaming render that keeps just ahead of the playhead and is played while it fills, with an ADR for the change to that rule. Size L, and it may want two PRs (the streaming entry, then the hand-over on edits and shortfalls).
+All three chunks are built (`features/low-latency-monitoring.md`). Owed on the Mac: the gap when arming reopens the stream, a power measurement of the relaxed buffer, and listening to the hand-over between live and a growing entry on a heavy project (ADR 0014).
 
 ## Owed: needs a person on real hardware
 

@@ -9,14 +9,15 @@
 //! over. A render for a project that has since changed is cancelled, and a
 //! render that failed isn't tried again until the project changes.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant};
 
-use noodle_core::{NodeId, Project};
+use noodle_core::{CacheKey, NodeId, Project};
 use noodle_engine::{Cancelled, Job, JobPanicked, Mode, Pass, Registry, Settings, TargetKind};
 use noodle_nodes::{
-    FreezeError, FreezePlan, FreezeReport, Freezer, RenderRequest, TargetState, spawn_freeze_passes,
+    Ahead, FreezeError, FreezePlan, FreezeReport, Freezer, RenderRequest, TargetState, Watch,
+    spawn_freeze_passes,
 };
 
 /// How long after the last edit that doesn't recompile (a parameter, say) the
@@ -75,6 +76,14 @@ pub struct Freezing {
     /// project changes.
     failed: Option<(Project, String)>,
     dirty_since: Option<Instant>,
+    /// The renders under way that the last plan looked at, for deciding when
+    /// a cluster should start or stop playing from its growing entry.
+    watches: Vec<Watch>,
+    /// The thresholds of the last plan's lead on the playhead, in frames.
+    lead: (u64, u64),
+    /// The growing entries played now, and the ones given up for this render.
+    joined: HashSet<CacheKey>,
+    lost: HashSet<CacheKey>,
     /// Bytes the cache has dropped, oldest first, to stay within its limit
     /// since the app started.
     evicted: u64,
@@ -112,6 +121,10 @@ pub struct Look<'a> {
     /// The pass starts worth having entries for, most wanted first: the one
     /// playing, then the hot starts. Empty turns the automatic targets off.
     pub passes: Vec<Pass>,
+    /// Where the transport is, if a cluster whose entry is still being
+    /// rendered may play from it as it grows once the render is far enough
+    /// ahead. `None` plays such a cluster live until the render is done.
+    pub playhead: Option<u64>,
 }
 
 impl Freezing {
@@ -124,6 +137,10 @@ impl Freezing {
             badges: BTreeMap::new(),
             failed: None,
             dirty_since: None,
+            watches: Vec::new(),
+            lead: (0, 0),
+            joined: HashSet::new(),
+            lost: HashSet::new(),
             evicted: 0,
         }
     }
@@ -244,6 +261,7 @@ impl Freezing {
             self.hashing = None;
             self.badges.clear();
             self.failed = None;
+            self.watches.clear();
             return Ok(None);
         }
         let freezer = self.freezer()?.clone();
@@ -258,7 +276,29 @@ impl Freezing {
         );
         // Entries are looked up for the pass once the keys can be trusted.
         let pass = unknown.is_empty().then_some(look.pass).flatten();
-        let mut plan = freezer.plan(&analysis, look.settings, look.frames, false, pass.as_ref());
+        let ahead = look.playhead.map(|playhead| Ahead {
+            joined: self.joined.clone(),
+            lost: self.lost.clone(),
+            ..Ahead::new(playhead, look.settings.sample_rate)
+        });
+        self.lead = ahead
+            .as_ref()
+            .map_or((u64::MAX, 0), |ahead| (ahead.join, ahead.keep));
+        let mut plan = freezer.plan_at(
+            &analysis,
+            look.settings,
+            look.frames,
+            false,
+            pass.as_ref(),
+            ahead.as_ref(),
+        );
+        self.watches = plan.watches.clone();
+        self.joined = self
+            .watches
+            .iter()
+            .filter(|watch| watch.joined)
+            .map(|watch| watch.key)
+            .collect();
         if !unknown.is_empty() {
             // Files are being read for their keys. Until that's done nothing
             // that plays them can be keyed, so no render starts (it would be
@@ -328,6 +368,8 @@ impl Freezing {
                 frames: look.frames,
                 extend_registry: look.extend_registry.clone(),
             };
+            // A new render is a new chance for a cluster given up.
+            self.lost.clear();
             self.running = Some(Running {
                 job: spawn_freeze_passes(freezer, request, missing_passes.clone()),
                 project: look.project.clone(),
@@ -343,7 +385,7 @@ impl Freezing {
             .filter(|(kind, _)| !kind.is_auto())
             .map(|(kind, state)| {
                 let state = match state {
-                    TargetState::Ready => BadgeState::Ready,
+                    TargetState::Ready | TargetState::Streaming => BadgeState::Ready,
                     TargetState::Blocked(why) => BadgeState::Failed(why.to_string()),
                     TargetState::Missing => match (&failure, fraction) {
                         (Some(why), _) => BadgeState::Failed(why.clone()),
@@ -361,8 +403,14 @@ impl Freezing {
         Ok(Some(plan))
     }
 
-    /// Looks at the render under way. Call it every frame.
-    pub fn poll(&mut self) -> Polled {
+    /// Looks at the render under way. Call it every frame. `playhead` is the
+    /// transport's position, and `playing` whether it runs.
+    pub fn poll(&mut self, playhead: Option<u64>, playing: bool) -> Polled {
+        if let Some(playhead) = playhead
+            && self.watch_leads(playhead, playing)
+        {
+            return Polled::Finished;
+        }
         if let Some(hashing) = &mut self.hashing
             && hashing.poll().is_some()
         {
@@ -403,6 +451,32 @@ impl Freezing {
     }
 }
 
+impl Freezing {
+    /// Whether a render under way has got far enough ahead of the playhead
+    /// to play from, or a cluster playing from one has run out of lead, so
+    /// the plan has to be made again.
+    fn watch_leads(&mut self, playhead: u64, playing: bool) -> bool {
+        let (join, keep) = self.lead;
+        let mut changed = false;
+        for watch in &self.watches {
+            if watch.finished() {
+                // The render's end compiles again by itself.
+                continue;
+            }
+            let lead = watch.lead(playhead);
+            if watch.joined {
+                if watch.abandoned() || (playing && lead < keep as i64) {
+                    self.lost.insert(watch.key);
+                    changed = true;
+                }
+            } else if !watch.abandoned() && !self.lost.contains(&watch.key) && lead >= join as i64 {
+                changed = true;
+            }
+        }
+        changed
+    }
+}
+
 impl Default for Freezing {
     fn default() -> Self {
         Self::new()
@@ -416,4 +490,82 @@ fn default_cache_dir() -> PathBuf {
         || std::env::temp_dir().join("noodle-renders"),
         |dirs| dirs.cache_dir().join("renders"),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use noodle_core::KeyBuilder;
+    use noodle_io::CacheStore;
+
+    /// A watch on an entry being written, `frames` of it published.
+    fn watch(
+        frames: usize,
+        start: u64,
+        joined: bool,
+    ) -> (Watch, noodle_io::CacheWriter, tempfile::TempDir) {
+        let dir = tempfile::tempdir().unwrap();
+        let store = CacheStore::open(dir.path()).unwrap();
+        let key = KeyBuilder::new("watch").u64(1).finish();
+        let mut writer = store.writer(&key, 1, 48_000).unwrap();
+        writer.write(&vec![0.0; frames]).unwrap();
+        writer.publish().unwrap();
+        let watch = Watch {
+            key,
+            growths: vec![store.growth(&key).unwrap()],
+            start,
+            joined,
+        };
+        (watch, writer, dir)
+    }
+
+    fn freezing(watch: Watch) -> Freezing {
+        let mut freezing = Freezing::new();
+        // Two seconds to join, under half a second to give up.
+        freezing.lead = (96_000, 19_200);
+        freezing.watches = vec![watch];
+        freezing
+    }
+
+    #[test]
+    fn a_render_far_enough_ahead_is_picked_up_and_one_that_falls_behind_is_given_up() {
+        // Nothing to do while the lead is short.
+        let (w, _writer, _dir) = watch(100_000, 0, false);
+        let mut freezing = freezing(w);
+        assert!(!freezing.watch_leads(50_000, true));
+        // The playhead is 100 000 behind the render's end at 0, and joins.
+        assert!(freezing.watch_leads(0, false));
+
+        // Playing from it, the lead running down to under half a second gives
+        // it up for good, until the next render.
+        let (w, _writer, _dir) = watch(100_000, 0, true);
+        let mut freezing = self::freezing(w);
+        assert!(!freezing.watch_leads(50_000, true));
+        assert!(freezing.watch_leads(90_000, true));
+        let key = freezing.watches[0].key;
+        assert!(freezing.lost.contains(&key));
+        // A stopped transport doesn't use its lead up.
+        let (w, _writer, _dir) = watch(100_000, 0, true);
+        let mut freezing = self::freezing(w);
+        assert!(!freezing.watch_leads(90_000, false));
+        // A cluster given up isn't picked up again by the same render.
+        let (w, _writer, _dir) = watch(100_000, 0, false);
+        let mut freezing = self::freezing(w);
+        freezing.lost.insert(freezing.watches[0].key);
+        assert!(!freezing.watch_leads(0, true));
+    }
+
+    #[test]
+    fn an_abandoned_render_is_given_up_and_a_finished_one_is_left_to_its_own_compile() {
+        let (w, writer, _dir) = watch(100_000, 0, true);
+        let mut freezing = freezing(w);
+        drop(writer);
+        assert!(freezing.watch_leads(0, true));
+
+        let (w, writer, _dir) = watch(100_000, 0, true);
+        let mut freezing = self::freezing(w);
+        writer.commit().unwrap();
+        // Whole: no lead to watch, the render's end recompiles.
+        assert!(!freezing.watch_leads(99_999, true));
+    }
 }
