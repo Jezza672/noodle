@@ -30,6 +30,11 @@ pub enum ProblemKind {
     BadPackId,
     EmptyPackName,
     NoSamples,
+    /// A fault in the pack's `index`th library entry.
+    Item {
+        index: usize,
+        fault: ItemFault,
+    },
     BadHash,
     DuplicateHash {
         first: usize,
@@ -59,6 +64,57 @@ pub enum ProblemKind {
     },
 }
 
+/// What is wrong with a library entry of a pack.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ItemFault {
+    BadHash,
+    DuplicateHash { first: usize },
+    EmptyName,
+    DuplicateName { first: usize },
+    EmptyTag,
+    MissingAuthor,
+    MissingCredit,
+    EmptyCustomLicence,
+    UnknownLicence,
+    UnknownSpdx { id: String },
+    /// No `file`, so there is nothing to publish.
+    NoFile,
+    UnsafePath { file: String },
+    MissingFile { file: String },
+    /// A sample the entry needs that is not a hash.
+    BadNeed { hash: String },
+    /// A sample the entry needs that the pack does not hold.
+    NeedNotInPack { hash: String },
+}
+
+impl fmt::Display for ItemFault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            ItemFault::BadHash => write!(f, "hash must be 64 lowercase hex digits"),
+            ItemFault::DuplicateHash { first } => write!(f, "same hash as item {first}"),
+            ItemFault::EmptyName => write!(f, "name is empty"),
+            ItemFault::DuplicateName { first } => write!(f, "same name as item {first}"),
+            ItemFault::EmptyTag => write!(f, "empty tag"),
+            ItemFault::MissingAuthor => write!(f, "no author (set one on the item or the pack)"),
+            ItemFault::MissingCredit => {
+                write!(f, "the licence requires a credit and there is none")
+            }
+            ItemFault::EmptyCustomLicence => write!(f, "custom licence text is empty"),
+            ItemFault::UnknownLicence => write!(f, "the licence is unknown, and a pack must say"),
+            ItemFault::UnknownSpdx { id } => write!(f, "unknown SPDX id {id:?}"),
+            ItemFault::NoFile => write!(f, "names no file, so there is nothing to publish"),
+            ItemFault::UnsafePath { file } => {
+                write!(f, "file {file:?} must be a relative path inside the pack")
+            }
+            ItemFault::MissingFile { file } => write!(f, "file {file:?} does not exist"),
+            ItemFault::BadNeed { hash } => write!(f, "needs {hash:?}, which is not a sample hash"),
+            ItemFault::NeedNotInPack { hash } => {
+                write!(f, "needs sample {hash}, which is not in the pack")
+            }
+        }
+    }
+}
+
 impl fmt::Display for Problem {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         if let Some(i) = self.sample {
@@ -72,7 +128,8 @@ impl fmt::Display for Problem {
                 write!(f, "pack id must be lowercase letters, digits and hyphens")
             }
             ProblemKind::EmptyPackName => write!(f, "pack name is empty"),
-            ProblemKind::NoSamples => write!(f, "pack has no samples"),
+            ProblemKind::NoSamples => write!(f, "pack has no samples or library entries"),
+            ProblemKind::Item { index, fault } => write!(f, "item {index}: {fault}"),
             ProblemKind::BadHash => write!(f, "hash must be 64 lowercase hex digits"),
             ProblemKind::DuplicateHash { first } => write!(f, "same hash as sample {first}"),
             ProblemKind::EmptyName => write!(f, "name is empty"),

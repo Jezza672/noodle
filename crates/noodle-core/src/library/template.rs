@@ -21,6 +21,9 @@ pub struct GroupTemplate {
     /// Not listed in the library: the app instantiates it itself.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub hidden: bool,
+    /// Set when the entry came from a pack.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<super::Origin>,
     nodes: BTreeMap<NodeId, Node>,
     connections: Vec<Connection>,
 }
@@ -113,6 +116,7 @@ impl GroupTemplate {
         let template = Self {
             name: name.into(),
             slug: String::new(),
+            origin: None,
             hidden: false,
             nodes,
             connections,

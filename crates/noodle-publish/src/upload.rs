@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use noodle_packs::{Index, Manifest};
 
-use crate::{INDEX, PublishError, manifest_path, object_path};
+use crate::{INDEX, PublishError, item_object, manifest_path, object_path, sha256_hex};
 
 pub use noodle_network::s3::Put;
 
@@ -88,6 +88,18 @@ pub fn upload_objects(site: &Path, store: &dyn Store) -> Result<Uploaded, Publis
                 Put::Exists => done.objects_present += 1,
             }
         }
+        for i in &manifest.items {
+            let key = item_object(&i.hash);
+            let file = site.join(&key);
+            let body = fs::read(&file).map_err(crate::io(&file))?;
+            match store
+                .put(&key, &body, "text/plain; charset=utf-8", IMMUTABLE, true)
+                .map_err(|m| fail(&key, m))?
+            {
+                Put::Stored => done.objects_stored += 1,
+                Put::Exists => done.objects_present += 1,
+            }
+        }
     }
     Ok(done)
 }
@@ -97,6 +109,7 @@ pub fn upload_objects(site: &Path, store: &dyn Store) -> Result<Uploaded, Publis
 pub struct Published {
     pub packs: usize,
     pub samples: usize,
+    pub items: usize,
 }
 
 /// Publishes the packs under `packs_dir` from definitions alone: the audio is
@@ -109,6 +122,7 @@ pub fn publish(packs_dir: &Path, store: &dyn Store) -> Result<Published, Publish
     let packs = crate::check_defs(packs_dir)?;
     let mut manifests = Vec::new();
     let mut samples = 0;
+    let mut items = 0;
     for pack in &packs {
         let mut manifest = pack.def.manifest();
         for s in &mut manifest.samples {
@@ -130,6 +144,18 @@ pub fn publish(packs_dir: &Path, store: &dyn Store) -> Result<Published, Publish
             }
             s.bytes = Some(body.len() as u64);
             samples += 1;
+        }
+        // Entries are in git, so CI puts them: the check is that each file
+        // is the one its hash names and loads.
+        for (i, item) in manifest.items.iter_mut().enumerate() {
+            let bytes = crate::items::load_item(pack, i)?;
+            debug_assert_eq!(sha256_hex(&bytes), item.hash);
+            let key = item_object(&item.hash);
+            store
+                .put(&key, &bytes, "text/plain; charset=utf-8", IMMUTABLE, true)
+                .map_err(|m| fail(&key, m))?;
+            item.bytes = Some(bytes.len() as u64);
+            items += 1;
         }
         let key = manifest_path(&pack.def.id);
         manifests.push((key, manifest));
@@ -163,6 +189,7 @@ pub fn publish(packs_dir: &Path, store: &dyn Store) -> Result<Published, Publish
     Ok(Published {
         packs: packs.len(),
         samples,
+        items,
     })
 }
 

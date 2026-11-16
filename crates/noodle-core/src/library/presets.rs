@@ -154,6 +154,9 @@ pub struct NodePreset {
     pub slug: String,
     pub node_type: String,
     pub values: PresetValues,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<super::Origin>,
+
 }
 
 impl NodePreset {
@@ -161,6 +164,7 @@ impl NodePreset {
         Self {
             name: name.into(),
             slug: String::new(),
+            origin: None,
             node_type: node.type_id.clone(),
             values: PresetValues::of(node),
         }
@@ -210,6 +214,8 @@ pub struct GroupPreset {
     pub slug: String,
     /// The [topology key](super::topology::Topology::key) it was made for.
     pub topology: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<super::Origin>,
     /// Nodes that hold nothing (boundary nodes, nested groups) are left out
     /// of the list's meaning but keep their place, so positions line up.
     pub nodes: Vec<PresetValues>,
@@ -253,6 +259,7 @@ impl GroupPreset {
         Self {
             name: name.into(),
             slug: String::new(),
+            origin: None,
             topology: order.key,
             nodes,
         }

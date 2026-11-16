@@ -7,10 +7,12 @@ license.workspace = true
 
 [dependencies]
 flacenc = "0.5.1"
+noodle-core.workspace = true
 noodle-io.workspace = true
 noodle-network.workspace = true
 noodle-nodes.workspace = true
 noodle-packs.workspace = true
+sha2 = "0.10"
 thiserror = "2"
 zip = { version = "9.0.4", default-features = false, features = ["deflate"] }
 

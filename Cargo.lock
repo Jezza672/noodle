@@ -2905,10 +2905,12 @@ name = "noodle-publish"
 version = "0.1.0"
 dependencies = [
  "flacenc",
+ "noodle-core",
  "noodle-io",
  "noodle-network",
  "noodle-nodes",
  "noodle-packs",
+ "sha2",
  "tempfile",
  "thiserror 2.0.21",
  "zip",
