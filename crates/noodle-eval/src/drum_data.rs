@@ -240,8 +240,19 @@ pub struct SplitPlan {
     pub test: Vec<String>,
 }
 
+/// The kit a library belongs to for splitting: kits that may share a room and
+/// microphones are held out together (the DRSDrums kit and MuldjordKit are
+/// both recorded and mapped by Lars Muldjord).
+pub fn kit_family(library: &str) -> &str {
+    match library {
+        "drsdrums" => "muldjordkit",
+        other => other,
+    }
+}
+
 /// Which split a sample is in.
 pub fn split_of(file: &str, library: &str, plan: &SplitPlan) -> Split {
+    let library = kit_family(library);
     if plan.test.iter().any(|k| k == library) {
         return Split::Test;
     }
@@ -1002,6 +1013,16 @@ pub fn build(opts: &BuildOptions) -> Result<String, String> {
     let mut sources: Vec<Source> = Vec::new();
     for (pack, only) in &opts.packs {
         sources.extend(read_pack(pack, &opts.plan, only.as_deref())?);
+    }
+    // Audio is kept by file name, so two packs must not share one.
+    let mut seen = std::collections::HashSet::new();
+    for s in &sources {
+        if !seen.insert(s.file.as_str()) {
+            return Err(format!(
+                "{} is in more than one pack; file names must be unique across packs",
+                s.file
+            ));
+        }
     }
     std::fs::create_dir_all(&opts.out).map_err(|e| e.to_string())?;
     let mut audio: HashMap<String, Vec<f32>> = HashMap::new();
@@ -1859,6 +1880,17 @@ mod tests {
             assert_eq!(split_of(&f, "v", &plan), Split::Val);
             assert_eq!(split_of(&f, "other", &plan), Split::Train);
         }
+    }
+
+    #[test]
+    fn kits_recorded_together_are_held_out_together() {
+        let plan = SplitPlan {
+            val: vec![],
+            test: vec!["muldjordkit".into()],
+        };
+        assert_eq!(split_of("a.wav", "drsdrums", &plan), Split::Test);
+        assert_eq!(split_of("a.wav", "muldjordkit", &plan), Split::Test);
+        assert_eq!(split_of("a.wav", "swirly-drums", &plan), Split::Train);
     }
 
     #[test]

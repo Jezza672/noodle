@@ -541,12 +541,18 @@ fn drum_dataset(args: &[&str]) -> Result<(), String> {
             let packs: Vec<(PathBuf, Option<Vec<String>>)> = args
                 .windows(2)
                 .filter(|w| w[0] == "--pack")
-                .map(|w| match w[1].rsplit_once(':') {
-                    Some((dir, libs)) => (
-                        PathBuf::from(dir),
-                        Some(libs.split(',').map(str::to_string).collect()),
-                    ),
-                    None => (PathBuf::from(w[1]), None),
+                .map(|w| {
+                    match w[1]
+                        .rsplit_once(':')
+                        // `C:\packs\x` is a path, not a kit list.
+                        .filter(|(_, libs)| !libs.contains(['\\', '/']))
+                    {
+                        Some((dir, libs)) => (
+                            PathBuf::from(dir),
+                            Some(libs.split(',').map(str::to_string).collect()),
+                        ),
+                        None => (PathBuf::from(w[1]), None),
+                    }
                 })
                 .collect();
             if packs.is_empty() {
