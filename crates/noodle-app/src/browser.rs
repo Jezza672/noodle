@@ -78,6 +78,14 @@ impl Default for Browser {
 }
 
 impl Browser {
+    /// A browser that is on the screen, or not, as the app starts.
+    pub fn starting(shown: bool) -> Self {
+        Self {
+            shown,
+            ..Self::default()
+        }
+    }
+
     /// Whether the panel is on the screen, open or collapsed.
     pub fn is_shown(&self) -> bool {
         self.shown
@@ -303,18 +311,7 @@ fn entry_row(
         ui.spacing_mut().item_spacing.x = 0.0;
         if presets.is_empty() {
             ui.add_space(ARROW);
-        } else if ui
-            .add_sized(
-                [ARROW, ui.spacing().interact_size.y],
-                egui::Button::new(if open { "▾" } else { "▸" }).frame(false),
-            )
-            .on_hover_text(if open {
-                "Hide its presets"
-            } else {
-                "Show its presets"
-            })
-            .clicked()
-        {
+        } else if fold_arrow(ui, open).clicked() {
             if open {
                 unfolded.remove(&key);
             } else {
@@ -356,6 +353,41 @@ fn entry_row(
             editor.request_add(entry.choice.clone(), None, Some(preset.to_owned()));
         }
     }
+}
+
+/// The arrow that unfolds a row, drawn as a triangle: pointing right when
+/// folded, down when open. It is painted, not typed, so it doesn't depend on
+/// the font having the arrow glyphs.
+fn fold_arrow(ui: &mut Ui, open: bool) -> egui::Response {
+    let size = egui::vec2(ARROW, ui.spacing().interact_size.y);
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click());
+    let colour = if response.hovered() {
+        ui.visuals().strong_text_color()
+    } else {
+        ui.visuals().text_color()
+    };
+    let (c, r) = (rect.center(), 4.0);
+    let points = if open {
+        vec![
+            c + egui::vec2(-r, -r * 0.6),
+            c + egui::vec2(r, -r * 0.6),
+            c + egui::vec2(0.0, r * 0.8),
+        ]
+    } else {
+        vec![
+            c + egui::vec2(-r * 0.6, -r),
+            c + egui::vec2(-r * 0.6, r),
+            c + egui::vec2(r * 0.8, 0.0),
+        ]
+    };
+    ui.painter().add(egui::Shape::convex_polygon(
+        points,
+        colour,
+        egui::Stroke::NONE,
+    ));
+    let label = if open { "Hide presets" } else { "Show presets" };
+    response.widget_info(|| egui::WidgetInfo::labeled(egui::WidgetType::Button, true, label));
+    response.on_hover_text(label)
 }
 
 /// Whether a library entry is the user's own.
