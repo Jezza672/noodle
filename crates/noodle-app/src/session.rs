@@ -4544,7 +4544,7 @@ fn fallback(config: &AudioConfig) -> Option<AudioConfig> {
     // the audio.
     let tried = AudioConfig {
         midi_inputs: Vec::new(),
-        threads: 0,
+        threads: None,
         ..config.clone()
     };
     (defaults != tried).then_some(defaults)
@@ -5935,7 +5935,7 @@ mod tests {
             live_buffer: None,
             channels: Some(6),
             midi_inputs: vec!["Keys".into()],
-            threads: 3,
+            threads: Some(3),
         };
         assert_eq!(
             fallback(&chosen),
