@@ -36,11 +36,14 @@ impl Sounds {
     }
 
     /// Saves the list the user added, which is every source but the built-in.
-    fn persist(&self) {
+    pub(super) fn persist(&self) {
         let specs: Vec<_> = self
             .sources
             .iter()
             .filter(|s| !s.is_built_in())
+            // A web source still being checked is not kept: quitting now
+            // must not leave an address that never answered.
+            .filter(|s| self.form.checking.as_deref() != Some(s.id.as_str()))
             .map(Source::spec)
             .collect();
         crate::prefs::remember_sources(&specs);

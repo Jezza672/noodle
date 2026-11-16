@@ -287,6 +287,7 @@ impl Sounds {
                 }
                 Some(Reach::Reachable) => {
                     self.form = Form::default();
+                    self.persist();
                     return;
                 }
                 _ => ctx.request_repaint_after(std::time::Duration::from_millis(100)),
