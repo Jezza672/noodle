@@ -339,7 +339,7 @@ It has these views:
     acts on one.
   - The mixer is still to come.
 - **Browser** (`noodle-app/src/browser.rs`): one panel at the left of the
-  window, shown from View > Browser (or "Show or Hide Browser" in the palette),
+  window, shown from View > Browser, Cmd/Ctrl+B or "Show or Hide Browser" in the palette (open at the first launch, then as left),
   that holds everything that can be found and put into the project. Its tabs
   are Sounds and Nodes. The whole panel collapses to a thin
   strip (the ◀ at its top right, or "Collapse or Expand Browser" in the

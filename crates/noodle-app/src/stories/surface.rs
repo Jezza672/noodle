@@ -123,6 +123,7 @@ pub const CHORDS: &[Chord] = &[
     chord(CMD, Key::N, Surface::Menu, "File > New"),
     chord(CMD, Key::Comma, Surface::Menu, "Settings in the menu"),
     chord(CMD, Key::K, Surface::Menu, "View > Command Palette"),
+    chord(CMD, Key::B, Surface::Menu, "View > Browser"),
     chord(
         NONE,
         Key::Space,
