@@ -35,7 +35,29 @@ const STAGE_OUT: &str = "out";
 /// with a wire into its gain or mute. The rest are dropped, so a group left
 /// at its defaults costs nothing and renders like the flat patch.
 pub fn flatten(graph: &Graph) -> Cow<'_, Graph> {
-    flatten_keeping(graph, &BTreeSet::new())
+    flatten_keeping(graph, &track_output_stages(graph))
+}
+
+/// The stage of every output port of every track, which a track's mute
+/// drives. The compiler asks for the signal ones only (see
+/// [`output_stages`]): a port that carries notes has no stage, or the notes
+/// would end at a node that only passes signal. This keeps all of them, for
+/// callers with no registry to tell the two apart.
+fn track_output_stages(graph: &Graph) -> BTreeSet<NodeId> {
+    graph
+        .nodes()
+        .filter(|(_, node)| {
+            node.type_id == GROUP_OUTPUT
+                && node
+                    .parent
+                    .is_some_and(|group| graph.track_input(group).is_some())
+        })
+        .flat_map(|(id, node)| {
+            node.boundary_ports()
+                .into_iter()
+                .map(move |(port, _)| stage_id(id, port))
+        })
+        .collect()
 }
 
 /// [`flatten`], also keeping a stage for each boundary port in `keep` (by
@@ -74,7 +96,9 @@ pub(crate) fn flatten_keeping<'a>(graph: &'a Graph, keep: &BTreeSet<NodeId>) -> 
         .collect();
     // A track's mute reaches its outputs without a wire: its track input's
     // mute drives the stage of each output, unless something is wired to
-    // that output's mute already.
+    // that output's mute already. (A track's signal outputs have a stage
+    // through `keep`; one that carries notes has none, and is muted at the
+    // track input, which stops its MIDI.)
     for (node_id, node) in graph.nodes() {
         if node.type_id != GROUP_OUTPUT {
             continue;
@@ -228,10 +252,7 @@ fn stages(graph: &Graph, keep: &BTreeSet<NodeId>) -> BTreeMap<NodeId, Stage> {
                     .source(&Endpoint::new(node_id, control_key(control, port)))
                     .is_some()
             });
-            // A track's outputs keep a stage for its track input's mute to drive.
-            let track_out = !is_input && graph.track_input(group).is_some();
             if !(node.has_gain_or_mute(port)
-                || track_out
                 || mute
                 || keep_for_solo
                 || wired
@@ -895,5 +916,50 @@ mod tests {
         };
         assert_eq!((outputs(inner), outputs(outer)), (1, 1));
         assert_eq!(output_stages(graph, &registry).count(), 0);
+    }
+
+    #[test]
+    fn notes_pass_out_of_a_track_without_a_stage_in_the_way() {
+        use noodle_core::group::TRACK_INPUT;
+        let mut registry = crate::Registry::new();
+        registry.register(Notes);
+        let mut project = Project::new();
+        let mut history = History::new();
+        let group = add(&mut project, &mut history, Node::new(GROUP));
+        let notes = add(
+            &mut project,
+            &mut history,
+            Node::new("test.notes").in_group(group),
+        );
+        add(
+            &mut project,
+            &mut history,
+            Node::new(TRACK_INPUT).in_group(group),
+        );
+        let output = add(
+            &mut project,
+            &mut history,
+            Node::new(GROUP_OUTPUT)
+                .with_config(ports_config(&[(1, "out".into()), (2, "out1".into())]))
+                .in_group(group),
+        );
+        let sink = add(&mut project, &mut history, Node::new("sink"));
+        wire(
+            &mut project,
+            &mut history,
+            (notes, "out"),
+            (output, &port_key(2)),
+        );
+        wire(&mut project, &mut history, (group, "out1"), (sink, "notes"));
+
+        let graph = project.graph();
+        let keep = output_stages(graph, &registry).collect();
+        let flat = flatten_keeping(graph, &keep);
+        assert_eq!(
+            flat.source(&Endpoint::new(sink, "notes")),
+            Some(&Endpoint::new(notes, "out")),
+            "the notes should reach the sink directly"
+        );
+        assert!(flat.node(stage_id(output, 2)).is_none());
     }
 }
