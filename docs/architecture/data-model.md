@@ -48,8 +48,11 @@ The **Project** is the single source of truth. It holds one global graph:
     gain, mute or solo say, however a wire or lane drives them, and whichever
     end of the port is a group output or input. The kind is read from the
     nodes at the ends of the wires that pass through the port, at any nesting
-    depth (`flatten::Keep`). Those ports pass straight through, and a mute on
+    depth (`flatten::Keep`). Those ports pass straight through, and a mute,
+    gain or lane on
     them does nothing (a muted track stops its MIDI at the track input).
+    Solo mutes a group at its outputs, or at its inputs if none of its outputs
+    can take a stage; a group with neither is not silenced by another's solo.
   - **Boundary parameters.** Every port carries gain (dB), mute and solo as
     parameters of its boundary node, keyed `gain.<id>`, `mute.<id>` and
     `solo.<id>` (`Node::port_controls`, `Graph::group_controls`). Flatten

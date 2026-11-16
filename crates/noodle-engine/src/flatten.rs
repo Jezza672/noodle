@@ -351,8 +351,14 @@ fn stages(graph: &Graph, keep: &Keep) -> BTreeMap<NodeId, Stage> {
             }
             let controls = node.port_controls(port);
             // Solo mutes at a group's outputs, which is enough to silence
-            // it. A group with none is muted at its inputs.
-            let solo_here = !is_input || graph.group_ports(group).outputs.is_empty();
+            // it. A group with none that can take a stage (notes and spectra
+            // can't) is muted at its inputs.
+            let solo_here = !is_input
+                || graph
+                    .group_ports(group)
+                    .outputs
+                    .iter()
+                    .all(|p| keep.unstageable.contains(&p.stage()));
             let by_solo = solo_here && muted_by_solo.contains(&group);
             let keep_for_solo = solo_here && graph.solo_in_use(group);
             let mute = controls.mute || by_solo;
@@ -1161,6 +1167,46 @@ mod tests {
             "the notes should reach the sink directly"
         );
         assert!(flat.node(stage_id(output, 2)).is_none());
+    }
+
+    /// A group whose outputs all carry notes has nowhere to be soloed out
+    /// but its inputs.
+    #[test]
+    fn soloing_another_track_mutes_a_notes_only_group_at_its_input() {
+        let mut registry = crate::Registry::new();
+        registry.register(Notes(0));
+        let (mut project, mut history, [_, group_b], [a, b]) = two_tracks();
+        let input_b = project
+            .graph()
+            .group_ports(group_b)
+            .inputs
+            .first()
+            .unwrap()
+            .node;
+        history
+            .apply(
+                &mut project,
+                Command::Disconnect {
+                    input: Endpoint::new(b, port_key(1)),
+                },
+            )
+            .unwrap();
+        let notes = add(
+            &mut project,
+            &mut history,
+            Node::new("test.notes").in_group(group_b),
+        );
+        wire(
+            &mut project,
+            &mut history,
+            (notes, "out"),
+            (b, &port_key(1)),
+        );
+        set(&mut project, &mut history, a, &control_key(SOLO, 1), 1.0);
+        let flat = flatten(project.graph(), &registry);
+        assert!(flat.node(stage_id(b, 1)).is_none(), "notes get no stage");
+        let input = flat.node(stage_id(input_b, 1)).expect("muted at the input");
+        assert_eq!(input.params[SOLO_MUTE], 1.0);
     }
 
     /// A small, seeded random number generator, so failures reproduce.
