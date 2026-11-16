@@ -661,15 +661,8 @@ impl Probe<'_> {
 
     /// Lets menus and animations run, without input, until something labelled
     /// like `word` is on screen. A submenu opens after a short delay, so a
-    /// fixed settle is sometimes too early on a slow machine.
-    pub fn settle_until_like(&mut self, word: &str) {
-        if !self.try_settle_until_like(word, 200) {
-            panic!("nothing labelled like {word:?} ever appeared");
-        }
-    }
-
-    /// Like [`Probe::settle_until_like`], but gives up after `tries` rounds
-    /// and says whether the label appeared. For a caller that can retry the
+    /// fixed settle is sometimes too early on a slow machine. Gives up after
+    /// `tries` rounds and says whether the label appeared. For a caller that can retry the
     /// action that should have produced it (a menu click lost to a repaint).
     pub fn try_settle_until_like(&mut self, word: &str, tries: usize) -> bool {
         for _ in 0..tries {
