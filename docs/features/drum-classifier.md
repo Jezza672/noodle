@@ -49,6 +49,15 @@ Weak spots: closed hats mixed under kicks and snares, rides against hats, and to
 These come from the 24-band feature, not the network: a wider or bigger network did not help
 (validation accuracy sat near 62% for every size tried).
 
+## Real-data tools
+
+`tools/drum-real/` (README there) builds a hand-labelled set of real hits from openly licensed
+audio (CC0, CC BY, CC BY-SA only; the manifest records source, licence and credit, and NC/ND rows
+are refused). `drum_real_split` keeps the drums of a mix, `drum_real_detect` runs the app's
+`analyse_hits`, and `label.py label` plays each hit for single-keystroke class and purity labels
+(`clean double truncated malformed mixed spurious`). `label.py export` writes rows in the dataset
+generator's `hits.csv` columns. The data stays outside the repo. Nothing consumes the export yet.
+
 ## Owed
 
 - **Publish the model** (and a dataset card, a model card): not done, and not to be without the
