@@ -18,6 +18,11 @@ FEATURES = (
     [f"b{i}" for i in range(24)]
     + ["centroid_hz", "flatness", "low", "mid", "high", "decay_s", "pitched", "pitch_key", "has_pitch", "attack_peaks", "mixed", "truncated"]
 )
+# How pure a detection is as a kit sample, in the order of the `purity` output.
+# Only `clean` may enter a bin of single hits (docs/features/drum-classifier.md).
+PURITY = ["clean", "double", "truncated", "malformed", "mixed", "spurious"]
+# The false-accept rate (not-clean hits let into a clean bin) the gate is tuned for.
+TARGET_FAR = 0.01
 QUIET_DB = -45.0
 # A loop hit labelled from a placed hit mixed this far down is mostly someone
 # else's tail, so it is neither trained on nor scored.
@@ -28,8 +33,9 @@ def load(path):
     rows = {"train": [], "val": [], "test": []}
     with open(os.path.join(path, "hits.csv")) as f:
         for r in csv.DictReader(f):
-            if r["label"] not in CLASSES or float(r["level_db"]) < QUIET_DB or float(r["gain_db"]) < MIN_GAIN_DB:
+            if float(r["level_db"]) < QUIET_DB or float(r["gain_db"]) < MIN_GAIN_DB:
                 continue
+            ty = CLASSES.index(r["label"]) if r["label"] in CLASSES else -1
             pk = r["pitch_key"]
             x = [float(r[f"b{i}"]) for i in range(24)] + [
                 float(r["centroid"]), float(r["flatness"]), float(r["low"]), float(r["mid"]),
@@ -37,7 +43,7 @@ def load(path):
                 float(pk) if pk else 0.0, 1.0 if pk else 0.0, float(r["attack_peaks"]),
                 float(r["mixed"]), float(r["truncated"]),
             ]
-            rows[r["split"]].append((x, CLASSES.index(r["label"]), r["source"], r["mixed"] == "1" or r["truncated"] == "1", float(pk) if pk else None))
+            rows[r["split"]].append((x, ty, r["source"], r["mixed"] == "1" or r["truncated"] == "1", float(pk) if pk else None, PURITY.index(r["purity"]), r["damage"]))
     return rows
 
 
@@ -48,6 +54,10 @@ def arrays(rs):
     )
 
 
+def purity_of(rs):
+    return torch.tensor([r[5] for r in rs])
+
+
 class Net(nn.Module):
     def __init__(self, mean, std, hidden=256):
         super().__init__()
@@ -56,8 +66,9 @@ class Net(nn.Module):
         self.body = nn.Sequential(
             nn.Linear(len(FEATURES), hidden), nn.ReLU(), nn.Dropout(0.3),
             nn.Linear(hidden, hidden), nn.ReLU(), nn.Dropout(0.3),
-            nn.Linear(hidden, len(CLASSES)),
         )
+        self.kind = nn.Linear(hidden, len(CLASSES))
+        self.purity = nn.Linear(hidden, len(PURITY))
 
     def prep(self, x):
         x = x.clone()
@@ -66,7 +77,8 @@ class Net(nn.Module):
         return (x - self.mean) / self.std
 
     def forward(self, x):
-        return self.body(self.prep(x))
+        h = self.body(self.prep(x))
+        return self.kind(h), self.purity(h)
 
 
 class Exported(nn.Module):
@@ -76,14 +88,35 @@ class Exported(nn.Module):
         self.net = net
 
     def forward(self, features):
-        p = torch.softmax(self.net(features), dim=-1)
-        return p, p.max(dim=-1).values
+        kind, purity = self.net(features)
+        p = torch.softmax(kind, dim=-1)
+        return p, p.max(dim=-1).values, torch.softmax(purity, dim=-1)
 
 
 def predict(net, x):
     net.eval()
     with torch.no_grad():
-        return torch.softmax(net(x), dim=-1)
+        return torch.softmax(net(x)[0], dim=-1)
+
+
+def predict_purity(net, x):
+    net.eval()
+    with torch.no_grad():
+        return torch.softmax(net(x)[1], dim=-1)
+
+
+def tune_gate(p, y):
+    """The lowest gate on `clean` probability with false-accept at most TARGET_FAR
+    (of real not-clean hits; spurious detections are not counted), and the share
+    of clean hits that passes it."""
+    pc = p[:, 0]
+    bad = pc[(y != 0) & (y != PURITY.index("spurious"))].sort().values
+    clean = pc[y == 0]
+    if len(bad) == 0 or len(clean) == 0:
+        return 0.9, 0.0
+    allowed = int(TARGET_FAR * len(bad))
+    gate = max(0.5, float(bad[-allowed - 1]) + 1e-6)
+    return gate, float((clean >= gate).float().mean())
 
 
 def report(net, rows, rule_rows=None):
@@ -93,7 +126,7 @@ def report(net, rows, rule_rows=None):
         ("Loops, all hits", lambda r: r[2] == "loop"),
         ("Loops, clean hits only", lambda r: r[2] == "loop" and not r[3]),
     ]:
-        rs = [r for r in rows if pick(r)]
+        rs = [r for r in rows if pick(r) and r[1] >= 0 and r[5] != PURITY.index("spurious")]
         if not rs:
             continue
         x, y = arrays(rs)
@@ -137,6 +170,7 @@ def main():
     rows = load(a.data)
     xtr, ytr = arrays(rows["train"])
     xva, yva = arrays(rows["val"])
+    ptr, pva = purity_of(rows["train"]), purity_of(rows["val"])
     probe = xtr.clone()
     probe[:, 24] = torch.log2(probe[:, 24].clamp(min=20.0))
     probe[:, 29] = torch.log(probe[:, 29].clamp(min=1e-3))
@@ -144,9 +178,12 @@ def main():
     for i in (32, 34, 35):  # the flags go in as they are
         mean[i], std[i] = 0.0, 1.0
     net = Net(mean, std)
-    counts = torch.bincount(ytr, minlength=len(CLASSES)).float().clamp(min=1)
+    kinds = ytr[ytr >= 0]
+    counts = torch.bincount(kinds, minlength=len(CLASSES)).float().clamp(min=1)
     weight = (counts.sum() / counts / len(CLASSES)).sqrt()
     loss_fn = nn.CrossEntropyLoss(weight=weight)
+    pcounts = torch.bincount(ptr, minlength=len(PURITY)).float().clamp(min=1)
+    purity_loss = nn.CrossEntropyLoss(weight=(pcounts.sum() / pcounts / len(PURITY)).sqrt())
     opt = torch.optim.AdamW(net.parameters(), lr=3e-3, weight_decay=1e-3)
     sched = torch.optim.lr_scheduler.CosineAnnealingLR(opt, a.epochs)
     best, best_state = 0.0, None
@@ -160,30 +197,40 @@ def main():
             xb = xb.clone()
             xb[:, :24] += torch.randn(len(idx), 24) * 1.0
             opt.zero_grad()
-            loss_fn(net(xb), ytr[idx]).backward()
+            kind_out, purity_out = net(xb)
+            has_type = ytr[idx] >= 0
+            loss = purity_loss(purity_out, ptr[idx])
+            if has_type.any():
+                loss = loss + loss_fn(kind_out[has_type], ytr[idx][has_type])
+            loss.backward()
             opt.step()
         sched.step()
-        acc = (predict(net, xva).argmax(1) == yva).float().mean().item()
+        # The best epoch is the one that keeps the most clean hits at the target
+        # false-accept rate on validation: that is what the bins use.
+        _, acc = tune_gate(predict_purity(net, xva), pva)
         if acc > best:
             best, best_state = acc, {k: v.clone() for k, v in net.state_dict().items()}
     net.load_state_dict(best_state)
+    gate, kept = tune_gate(predict_purity(net, xva), pva)
+    print(f"clean gate {gate:.4f}: {100*kept:.1f}% of clean validation hits kept at false-accept <= {100*TARGET_FAR:.1f}%")
     os.makedirs(a.out, exist_ok=True)
     net.eval()
     ex = Exported(net).eval()
     torch.onnx.export(
         ex, (torch.zeros(1, len(FEATURES)),), os.path.join(a.out, "classifier.onnx"),
-        input_names=["features"], output_names=["probs", "confidence"],
-        dynamic_axes={"features": {0: "n"}, "probs": {0: "n"}, "confidence": {0: "n"}},
+        input_names=["features"], output_names=["probs", "confidence", "purity"],
+        dynamic_axes={"features": {0: "n"}, "probs": {0: "n"}, "confidence": {0: "n"}, "purity": {0: "n"}},
         opset_version=17, dynamo=False,
     )
     import onnxruntime as ort
     sess = ort.InferenceSession(os.path.join(a.out, "classifier.onnx"))
     xt = arrays(rows["test"])[0][:200]
-    got = sess.run(None, {"features": xt.numpy()})[0]
-    assert np.allclose(got, predict(net, xt).numpy(), atol=1e-4), "ONNX output differs from PyTorch"
-    rep = f"# Learned classifier, test split\n\nBest validation accuracy {100*best:.1f}% over {a.epochs} epochs, seed {a.seed}.\n\n" + report(net, rows["test"])
+    got = sess.run(None, {"features": xt.numpy()})
+    assert np.allclose(got[0], predict(net, xt).numpy(), atol=1e-4), "ONNX output differs from PyTorch"
+    assert np.allclose(got[2], predict_purity(net, xt).numpy(), atol=1e-4), "ONNX purity differs from PyTorch"
+    rep = f"# Learned classifier, test split\n\nClean gate tuned on validation: {gate:.4f} ({100*kept:.1f}% of clean hits kept at false-accept <= {100*TARGET_FAR:.1f}%), {a.epochs} epochs, seed {a.seed}.\nThe purity gate is scored in Rust: `noodle-eval drum-dataset baseline --model classifier.onnx --gate {gate:.4f}`.\n\n" + report(net, rows["test"])
     open(os.path.join(a.out, "report.md"), "w").write(rep)
-    json.dump({"classes": CLASSES, "features": FEATURES, "quiet_db": QUIET_DB}, open(os.path.join(a.out, "io.json"), "w"), indent=1)
+    json.dump({"classes": CLASSES, "purity": PURITY, "clean_gate": gate, "features": FEATURES, "quiet_db": QUIET_DB}, open(os.path.join(a.out, "io.json"), "w"), indent=1)
     print(rep)
 
 
