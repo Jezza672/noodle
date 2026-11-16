@@ -84,6 +84,35 @@ drum under it) and `spurious` (not a hit). Rationale and the survey behind it ar
   (PR 3); more kits and a held-out-by-kit split are PR 2. The test split has only 736 clean hits
   from a handful of kits, so read the intervals.
 
+## More kits, held-out kits, augmentation
+
+- **Packs.** `drum-dataset build` takes `--pack DIR` more than once, and `--pack DIR:lib,lib` keeps
+  only those kits (the second pack repeats kits the first has). A flat pack (`audio/x.wav`,
+  first tag the piece, kit named by the author) is read as well as the folder layout. The run
+  that gave the numbers below: `drums-cc0` plus the `vcsl`, `noodle` (synthetic electronic) and
+  `drsdrums` kits of the v2 pack; 1,638 samples with augmentation.
+- **Split by whole kit** (`--val-kits`, `--test-kits`): every sample of a named kit goes to that
+  split, so validation and test only hold kits the model has never heard. Here: val `noodle`,
+  `vcsl`; test `unruly-drums`, `drsdrums`, `virtuosity-drums`; the rest train. With neither flag
+  the old split (hash of the name, mic versions together) is used.
+- **Augmentation** (`--augment N`, training kits only; test and validation are never made of
+  augmented sounds): kick, snare, tom, clap and `other` are pitch-shifted by resampling up to two
+  semitones; hats and cymbals get a little noise and a duller top. Never time-stretched.
+  Ablation (same data otherwise): at gate 0.5 the false-accept rate was 0.8% with it and 0.6%
+  without, and clean hits kept 16.5% against 11.4%. A small gain, within the noise of a test set
+  of about a thousand clean hits.
+- **Real hits.** `train.py --real hits.csv` (repeatable) and `baseline --extra hits.csv` take
+  hand-labelled rows exported by `tools/drum-real/label.py` (the generator's columns, source
+  `real`); the report scores them in their own section. Nothing real is in the repo.
+- **Not done: E-GMD and StemGMD.** They are full performances, not one-shots; using them needs
+  an onset-aligned pipeline from MIDI, which is a separate piece of work.
+- **Licences.** The training data is no longer required to be licence-clean. The model card
+  says so, and no training data (rows, audio) is ever uploaded with a model.
+- **Result** (test split, three unseen kits): gate 0.77 lets 0.04% of not-clean hits in (4 of
+  9,744) and keeps 0.3% of clean hits; gate 0.5 gives 0.8% and 16.5%. The detector's flags alone:
+  7.5% and 46.4%. So the held-out-kit result matches the earlier one: safe, but the features
+  cannot yet tell a clean hit from the messy ones. PR 3 is the lever.
+
 ## Owed
 
 - **Publish the model** (and a dataset card, a model card): not done, and not to be without the

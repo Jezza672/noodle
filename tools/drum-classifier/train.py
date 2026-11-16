@@ -29,9 +29,13 @@ QUIET_DB = -45.0
 MIN_GAIN_DB = -35.0
 
 
-def load(path):
+def load(path, extra=()):
+    """Rows of `path`/hits.csv, and of each file in `extra` (hand-labelled real
+    hits exported by tools/drum-real/label.py, same columns, source `real`)."""
     rows = {"train": [], "val": [], "test": []}
-    with open(os.path.join(path, "hits.csv")) as f:
+    files = [os.path.join(path, "hits.csv")] + list(extra)
+    for name in files:
+      with open(name) as f:
         for r in csv.DictReader(f):
             if float(r["level_db"]) < QUIET_DB or float(r["gain_db"]) < MIN_GAIN_DB:
                 continue
@@ -164,10 +168,11 @@ def main():
     ap.add_argument("out")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--epochs", type=int, default=60)
+    ap.add_argument("--real", action="append", default=[], help="a hand-labelled hits.csv to add (repeatable)")
     a = ap.parse_args()
     torch.manual_seed(a.seed)
     np.random.seed(a.seed)
-    rows = load(a.data)
+    rows = load(a.data, a.real)
     xtr, ytr = arrays(rows["train"])
     xva, yva = arrays(rows["val"])
     ptr, pva = purity_of(rows["train"]), purity_of(rows["val"])

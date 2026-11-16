@@ -10,6 +10,13 @@ Training: `tools/drum-classifier/train.py` on the dataset from `noodle-eval drum
 
 ## Data and licences
 
+**This model is not licence-clean.** The training data is not required to be, and any real
+recordings added to it (songs the maintainers labelled by hand) may carry any licence. Training
+data (feature rows, audio, labels) is never uploaded with a model; only the model file and this
+card are. Treat the model as a derivative of its training data and check before reusing it.
+
+The synthetic part of the data:
+
 Trained on features of the `drums-cc0` one-shot pack: Karoryfer Samples (Swirly, Big Rusty and
 Unruly Drums, The Hat With The Phat), D. Smolken (Body Percussion) and Virtuosity Drums, all CC0 1.0;
 and **MuldjordKit by Lars Muldjord, CC BY 4.0** (https://github.com/sfzinstruments/DrumGizmo.MuldjordKit,

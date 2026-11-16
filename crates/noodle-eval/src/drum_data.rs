@@ -106,6 +106,22 @@ impl Class {
         }
     }
 
+    /// The class of a sample in a flat pack (no category folders), from its
+    /// tags: the first tag names the piece, `open` marks an open hat.
+    pub fn of_tags(tags: &[&str]) -> Class {
+        match tags.first().copied().unwrap_or("") {
+            "kick" => Class::Kick,
+            "snare" => Class::Snare,
+            "clap" | "handclap" => Class::Clap,
+            "hihat" if tags.contains(&"open") || tags.contains(&"half-open") => Class::OpenHat,
+            "hihat" => Class::ClosedHat,
+            "crash" | "china" | "splash" => Class::Crash,
+            "ride" => Class::Ride,
+            "tom" => Class::Tom,
+            _ => Class::Other,
+        }
+    }
+
     /// What the app would call it. `pitch_key` splits toms low from high at
     /// the same boundary the rule labeller uses.
     pub fn kind(self, pitch_key: Option<f32>) -> DrumKind {
@@ -147,6 +163,9 @@ impl Split {
 /// One one-shot of the pack.
 #[derive(Clone, Debug)]
 pub struct Source {
+    /// The pack folder the file is in (`None` for a variant made by
+    /// augmentation, which is held in memory).
+    pub pack: Option<PathBuf>,
     /// Path relative to the pack.
     pub file: String,
     pub category: String,
@@ -210,11 +229,27 @@ pub fn split_key(file: &str, library: &str) -> String {
     format!("{library}|{}", kept.join("-"))
 }
 
-/// Which split a sample is in. `holdout` (a library tag) goes entirely to
-/// test, which asks "does it work on a kit it has never heard".
-pub fn split_of(file: &str, library: &str, holdout: Option<&str>) -> Split {
-    if holdout == Some(library) {
+/// Which kits (libraries) are held out whole. A sample of a kit in `test` or
+/// `val` goes to that split, every other kit is training. With neither set,
+/// samples are split by a hash of their file name instead (a hit and its room
+/// version stay together), which does not ask "does it work on a kit it has
+/// never heard".
+#[derive(Clone, Debug, Default)]
+pub struct SplitPlan {
+    pub val: Vec<String>,
+    pub test: Vec<String>,
+}
+
+/// Which split a sample is in.
+pub fn split_of(file: &str, library: &str, plan: &SplitPlan) -> Split {
+    if plan.test.iter().any(|k| k == library) {
         return Split::Test;
+    }
+    if plan.val.iter().any(|k| k == library) {
+        return Split::Val;
+    }
+    if !plan.val.is_empty() || !plan.test.is_empty() {
+        return Split::Train;
     }
     match fnv(&split_key(file, library)) % 100 {
         0..=69 => Split::Train,
@@ -229,10 +264,37 @@ fn quoted<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     Some(&rest[..rest.find('"')?])
 }
 
+/// A library name from an author: the text in the last parentheses if there
+/// is any (`... (DRSDrums)`), else the whole name, lower-cased with dashes.
+fn library_of_author(author: &str) -> String {
+    let named = author
+        .rsplit_once('(')
+        .and_then(|(_, r)| r.split_once(')'))
+        .map_or(author, |(n, _)| n);
+    let mut out = String::new();
+    for c in named.chars() {
+        if c.is_ascii_alphanumeric() {
+            out.push(c.to_ascii_lowercase());
+        } else if !out.ends_with('-') && !out.is_empty() {
+            out.push('-');
+        }
+    }
+    out.trim_end_matches('-').to_string()
+}
+
 /// The samples of `pack` (a folder with a `pack.ron`), with licences, credits
 /// and splits. A sample without a file or a licence is an error: a dataset
-/// that cannot say where a sound came from is not releasable.
-pub fn read_pack(pack: &Path, holdout: Option<&str>) -> Result<Vec<Source>, String> {
+/// that cannot say where a sound came from is not releasable. `only` keeps just
+/// the named libraries (for a pack that repeats kits another one has).
+///
+/// Two layouts: files in category folders with the library as a tag (`audio/kick/x.wav`),
+/// or a flat pack (`audio/x.wav`) whose first tag is the piece and whose
+/// library is named by the author.
+pub fn read_pack(
+    pack: &Path,
+    plan: &SplitPlan,
+    only: Option<&[String]>,
+) -> Result<Vec<Source>, String> {
     let ron = std::fs::read_to_string(pack.join("pack.ron"))
         .map_err(|e| format!("{}: {e}", pack.join("pack.ron").display()))?;
     let mut out = Vec::new();
@@ -243,39 +305,67 @@ pub fn read_pack(pack: &Path, holdout: Option<&str>) -> Result<Vec<Source>, Stri
         let file = quoted(line, "file: Some(\"").ok_or("a sample has no file")?;
         let licence =
             quoted(line, "licence: Some(spdx(\"").ok_or_else(|| format!("{file}: no licence"))?;
-        let credit = quoted(line, "credit: Some(\"").unwrap_or("");
+        let author = quoted(line, "author: Some(\"").unwrap_or("");
+        let tags_text = line.split("tags: [").nth(1).unwrap_or("");
+        let tags: Vec<&str> = tags_text
+            .split(']')
+            .next()
+            .unwrap_or("")
+            .split('"')
+            .filter(|t| !t.contains(',') && !t.trim().is_empty())
+            .collect();
         let mut parts = file.split('/');
         let (_, category, name) = (
             parts.next(),
             parts.next().unwrap_or(""),
             parts.next_back().unwrap_or(""),
         );
-        let tags = line.split("tags: [").nth(1).unwrap_or("");
-        let library = tags
-            .split('"')
-            .filter(|t| !t.contains(',') && !t.contains(']') && !t.is_empty())
-            .nth(1)
-            .unwrap_or("unknown")
-            .to_string();
+        let flat = file.matches('/').count() == 1;
+        let (library, class, category) = if flat {
+            (
+                library_of_author(author),
+                Class::of_tags(&tags),
+                tags.first().copied().unwrap_or("").to_string(),
+            )
+        } else {
+            (
+                tags.last().copied().unwrap_or("unknown").to_string(),
+                Class::of_sample(category, name),
+                category.to_string(),
+            )
+        };
+        if only.is_some_and(|o| !o.contains(&library)) {
+            continue;
+        }
+        let credit = match quoted(line, "credit: Some(\"") {
+            Some(c) => c.to_string(),
+            None if licence.starts_with("CC-BY") => format!("{author} ({licence})"),
+            None => String::new(),
+        };
         out.push(Source {
+            pack: Some(pack.to_path_buf()),
             file: file.to_string(),
-            category: category.to_string(),
-            class: Class::of_sample(category, name),
-            split: split_of(file, &library, holdout),
+            category,
+            class,
+            split: split_of(file, &library, plan),
             library,
             licence: licence.to_string(),
-            credit: credit.to_string(),
+            credit,
         });
     }
     if out.is_empty() {
-        return Err("the pack lists no samples".into());
+        return Err(format!("{}: the pack lists no samples", pack.display()));
     }
     out.sort_by(|a, b| a.file.cmp(&b.file));
     Ok(out)
 }
 
 /// A one-shot as mono audio at [`RATE`], peak-normalised, capped in length.
-fn load(pack: &Path, source: &Source) -> Result<Vec<f32>, String> {
+fn load(source: &Source) -> Result<Vec<f32>, String> {
+    let pack = source
+        .pack
+        .as_deref()
+        .ok_or("an augmented sample has no file")?;
     let path = pack.join(&source.file);
     let audio = decode_file(&path).map_err(|e| format!("{}: {e}", path.display()))?;
     let audio = resample(&audio, RATE).map_err(|e| format!("{}: {e}", path.display()))?;
@@ -817,6 +907,7 @@ pub fn read_rows(path: &Path) -> Result<Vec<Row>, String> {
                 "loop" => "loop",
                 "damaged" => "damaged",
                 "double" => "double",
+                "real" => "real",
                 _ => "oneshot",
             },
             origin: c[2].to_string(),
@@ -848,11 +939,58 @@ pub fn read_rows(path: &Path) -> Result<Vec<Row>, String> {
 }
 
 pub struct BuildOptions {
-    pub pack: PathBuf,
+    /// Packs to read, each with the libraries to keep (`None` for all).
+    pub packs: Vec<(PathBuf, Option<Vec<String>>)>,
     pub out: PathBuf,
     pub seed: u64,
     pub loops: usize,
-    pub holdout_library: Option<String>,
+    /// Kits held out whole for validation and test.
+    pub plan: SplitPlan,
+    /// Augmented variants made of each training one-shot.
+    pub augment: usize,
+}
+
+/// `x` played `semitones` higher by resampling (it also gets shorter, as a
+/// smaller drum would). Peak-normalised again.
+fn pitch_shift(x: &[f32], semitones: f32) -> Vec<f32> {
+    let f = 2f32.powf(semitones / 12.0);
+    let n = (x.len() as f32 / f) as usize;
+    let mut y: Vec<f32> = (0..n)
+        .map(|i| {
+            let t = i as f32 * f;
+            let k = t as usize;
+            let a = x.get(k).copied().unwrap_or(0.0);
+            let b = x.get(k + 1).copied().unwrap_or(0.0);
+            a + (b - a) * (t - k as f32)
+        })
+        .collect();
+    let peak = y.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
+    y.iter_mut().for_each(|v| *v /= peak);
+    y
+}
+
+/// A variant of a training one-shot, made differently for each kind: drums
+/// that have a pitch are shifted a little (up to two semitones; a bigger shift
+/// hurts hats), hats and cymbals get a little noise and a duller top instead.
+/// Never stretched in time, because that changes the ring-out and the spacing
+/// of doubles, which are what the purity labels are about.
+fn augmented(class: Class, x: &[f32], rng: &mut Rng) -> Vec<f32> {
+    match class {
+        Class::ClosedHat | Class::OpenHat | Class::Crash | Class::Ride => {
+            let mut y = x.to_vec();
+            if rng.chance(0.5) {
+                lowpass(&mut y, rng.range(7_000.0, 15_000.0));
+            }
+            let level = db_gain(rng.range(-50.0, -38.0));
+            for v in &mut y {
+                *v += (rng.f() * 2.0 - 1.0) * level;
+            }
+            let peak = y.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
+            y.iter_mut().for_each(|v| *v /= peak);
+            y
+        }
+        _ => pitch_shift(x, rng.range(-2.0, 2.0)),
+    }
 }
 
 fn detect(audio: &[f32]) -> Vec<Hit> {
@@ -861,11 +999,31 @@ fn detect(audio: &[f32]) -> Vec<Hit> {
 
 /// Builds the dataset into `opts.out`. Returns a summary to print.
 pub fn build(opts: &BuildOptions) -> Result<String, String> {
-    let sources = read_pack(&opts.pack, opts.holdout_library.as_deref())?;
+    let mut sources: Vec<Source> = Vec::new();
+    for (pack, only) in &opts.packs {
+        sources.extend(read_pack(pack, &opts.plan, only.as_deref())?);
+    }
     std::fs::create_dir_all(&opts.out).map_err(|e| e.to_string())?;
     let mut audio: HashMap<String, Vec<f32>> = HashMap::new();
     for s in &sources {
-        audio.insert(s.file.clone(), load(&opts.pack, s)?);
+        audio.insert(s.file.clone(), load(s)?);
+    }
+    // Augmented variants of the training one-shots only: what the model is
+    // tested on is never made of them.
+    let mut aug = Rng::new(opts.seed ^ 0xA061);
+    let originals = sources.len();
+    for i in 0..originals {
+        if sources[i].split != Split::Train {
+            continue;
+        }
+        for n in 0..opts.augment {
+            let mut s = sources[i].clone();
+            s.pack = None;
+            s.file = format!("{}#aug{n}", s.file);
+            let y = augmented(s.class, &audio[&sources[i].file], &mut aug);
+            audio.insert(s.file.clone(), y);
+            sources.push(s);
+        }
     }
     let mut rows: Vec<Row> = Vec::new();
     let mut undetected = 0;
@@ -1048,7 +1206,7 @@ pub fn build(opts: &BuildOptions) -> Result<String, String> {
         csv.push('\n');
     }
     std::fs::write(opts.out.join("hits.csv"), csv).map_err(|e| e.to_string())?;
-    write_manifest(opts, &sources)?;
+    write_manifest(opts, &sources[..originals])?;
     let mut summary = format!(
         "{} rows ({} samples, {} loops); {undetected} one-shots undetected; \
          {placed_total} placed hits, {missed} never detected, {spurious} detections matched nothing\n",
@@ -1189,14 +1347,15 @@ fn write_manifest(opts: &BuildOptions, sources: &[Source]) -> Result<(), String>
     writeln!(m, "  \"seed\": {},", opts.seed).unwrap();
     writeln!(m, "  \"loops\": {},", opts.loops).unwrap();
     writeln!(m, "  \"rate\": {RATE},").unwrap();
-    writeln!(
-        m,
-        "  \"holdout_library\": {},",
-        opts.holdout_library
-            .as_ref()
-            .map_or("null".into(), |l| format!("\"{}\"", esc(l)))
-    )
-    .unwrap();
+    let list = |kits: &[String]| {
+        kits.iter()
+            .map(|k| format!("\"{}\"", esc(k)))
+            .collect::<Vec<_>>()
+            .join(", ")
+    };
+    writeln!(m, "  \"val_kits\": [{}],", list(&opts.plan.val)).unwrap();
+    writeln!(m, "  \"test_kits\": [{}],", list(&opts.plan.test)).unwrap();
+    writeln!(m, "  \"augment\": {},", opts.augment).unwrap();
     let classes: Vec<String> = Class::ALL
         .iter()
         .map(|c| format!("\"{}\"", c.name()))
@@ -1480,6 +1639,7 @@ pub fn baseline(rows: &[Row], split: Split, labeller: &dyn HitLabeller, name: &s
         ("One-shots, alone", "oneshot", false),
         ("Loops, all hits", "loop", false),
         ("Loops, clean hits only", "loop", true),
+        ("Real hits (hand-labelled)", "real", false),
     ] {
         let mut cm = Confusion::default();
         let mut spurious = 0;
@@ -1679,16 +1839,64 @@ mod tests {
     }
 
     #[test]
-    fn splits_are_stable_and_the_holdout_library_is_all_test() {
+    fn splits_are_stable_and_held_out_kits_stay_whole() {
+        let none = SplitPlan::default();
         assert_eq!(
-            split_of("a/b.wav", "x", None),
-            split_of("a/b.wav", "x", None)
+            split_of("a/b.wav", "x", &none),
+            split_of("a/b.wav", "x", &none)
         );
-        assert_eq!(split_of("a/b.wav", "x", Some("x")), Split::Test);
         let n = (0..1000)
-            .filter(|i| split_of(&format!("f{i}"), "x", None) == Split::Train)
+            .filter(|i| split_of(&format!("f{i}"), "x", &none) == Split::Train)
             .count();
         assert!((600..800).contains(&n), "{n} of 1000 in train");
+        let plan = SplitPlan {
+            val: vec!["v".into()],
+            test: vec!["t".into()],
+        };
+        for i in 0..50 {
+            let f = format!("f{i}");
+            assert_eq!(split_of(&f, "t", &plan), Split::Test);
+            assert_eq!(split_of(&f, "v", &plan), Split::Val);
+            assert_eq!(split_of(&f, "other", &plan), Split::Train);
+        }
+    }
+
+    #[test]
+    fn a_flat_pack_takes_class_from_tags_and_kit_from_the_author() {
+        assert_eq!(Class::of_tags(&["kick", "dark"]), Class::Kick);
+        assert_eq!(Class::of_tags(&["hihat", "closed"]), Class::ClosedHat);
+        assert_eq!(Class::of_tags(&["hihat", "open", "dark"]), Class::OpenHat);
+        assert_eq!(Class::of_tags(&["percussion", "orchestral"]), Class::Other);
+        assert_eq!(library_of_author("Versilian Studios (VCSL)"), "vcsl");
+        assert_eq!(library_of_author("Noodle"), "noodle");
+        let dir = tempfile::tempdir().unwrap();
+        std::fs::write(
+            dir.path().join("pack.ron"),
+            r#"        (hash: "ab", name: "K", file: Some("audio/kick-01.wav"), author: Some("Lars Muldjord, X (DRSDrums)"), licence: Some(spdx("CC-BY-4.0")), tags: ["kick", "dark", "long"]),
+        (hash: "cd", name: "S", file: Some("audio/snare-01.wav"), author: Some("Noodle"), licence: Some(spdx("CC0-1.0")), tags: ["snare", "bright"]),
+"#,
+        )
+        .unwrap();
+        let all = read_pack(dir.path(), &SplitPlan::default(), None).unwrap();
+        assert_eq!(all.len(), 2);
+        assert_eq!(all[0].library, "drsdrums");
+        assert_eq!(all[0].class, Class::Kick);
+        assert!(all[0].credit.contains("CC-BY-4.0"));
+        let only = read_pack(dir.path(), &SplitPlan::default(), Some(&["noodle".into()])).unwrap();
+        assert_eq!(only.len(), 1);
+        assert_eq!(only[0].class, Class::Snare);
+    }
+
+    #[test]
+    fn augmentation_shifts_pitched_drums_and_leaves_length_alone_for_hats() {
+        let mut rng = Rng::new(3);
+        let kick = click(RATE as usize / 4, 0.08, 60.0);
+        let up = pitch_shift(&kick, 12.0);
+        assert!((up.len() as i64 - kick.len() as i64 / 2).abs() <= 1);
+        let hat = click(RATE as usize / 4, 0.02, 7_000.0);
+        let y = augmented(Class::ClosedHat, &hat, &mut rng);
+        assert_eq!(y.len(), hat.len());
+        assert_ne!(y, hat);
     }
 
     fn click(len: usize, decay: f32, freq: f32) -> Vec<f32> {
@@ -1705,6 +1913,7 @@ mod tests {
     #[test]
     fn loops_are_labelled_from_placement_and_rows_round_trip() {
         let source = |file: &str, class| Source {
+            pack: None,
             file: file.into(),
             category: String::new(),
             library: "lib".into(),

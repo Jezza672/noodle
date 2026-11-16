@@ -523,7 +523,8 @@ fn report(rows: &[noodle_eval::harness::Row], baseline: &Path, update: bool) -> 
     Ok(())
 }
 
-/// `drum-dataset build --pack DIR --out DIR [--seed N] [--loops N] [--holdout-library TAG]`
+/// `drum-dataset build --pack DIR[:LIB,LIB] ... --out DIR [--seed N] [--loops N]
+/// [--val-kits A,B] [--test-kits C,D] [--augment N]`
 /// writes the drum classifier's data; `drum-dataset baseline --data DIR
 /// [--split test] [--out FILE]` scores the rule labeller on it.
 fn drum_dataset(args: &[&str]) -> Result<(), String> {
@@ -536,8 +537,35 @@ fn drum_dataset(args: &[&str]) -> Result<(), String> {
     };
     match args.first().copied() {
         Some("build") => {
+            // `--pack DIR` may repeat; `DIR:lib,lib` keeps only those kits.
+            let packs: Vec<(PathBuf, Option<Vec<String>>)> = args
+                .windows(2)
+                .filter(|w| w[0] == "--pack")
+                .map(|w| match w[1].rsplit_once(':') {
+                    Some((dir, libs)) => (
+                        PathBuf::from(dir),
+                        Some(libs.split(',').map(str::to_string).collect()),
+                    ),
+                    None => (PathBuf::from(w[1]), None),
+                })
+                .collect();
+            if packs.is_empty() {
+                return Err("--pack DIR is required".into());
+            }
+            let kits = |name: &str| -> Vec<String> {
+                flag(name)
+                    .map(|v| v.split(',').map(str::to_string).collect())
+                    .unwrap_or_default()
+            };
             let opts = BuildOptions {
-                pack: PathBuf::from(flag("--pack").ok_or("--pack DIR is required")?),
+                packs,
+                plan: drum_data::SplitPlan {
+                    val: kits("--val-kits"),
+                    test: kits("--test-kits"),
+                },
+                augment: flag("--augment")
+                    .map_or(Ok(0), str::parse)
+                    .map_err(|e| format!("--augment: {e}"))?,
                 out: PathBuf::from(flag("--out").ok_or("--out DIR is required")?),
                 seed: flag("--seed")
                     .map_or(Ok(1), str::parse)
@@ -545,7 +573,6 @@ fn drum_dataset(args: &[&str]) -> Result<(), String> {
                 loops: flag("--loops")
                     .map_or(Ok(600), str::parse)
                     .map_err(|e| format!("--loops: {e}"))?,
-                holdout_library: flag("--holdout-library").map(str::to_string),
             };
             print!("{}", drum_data::build(&opts)?);
             Ok(())
@@ -558,7 +585,12 @@ fn drum_dataset(args: &[&str]) -> Result<(), String> {
                 "test" => Split::Test,
                 other => return Err(format!("--split: {other}")),
             };
-            let rows = drum_data::read_rows(&data.join("hits.csv"))?;
+            let mut rows = drum_data::read_rows(&data.join("hits.csv"))?;
+            // Hand-labelled real hits (`tools/drum-real/label.py export`) in the
+            // same columns, scored beside the synthetic rows.
+            if let Some(extra) = flag("--extra") {
+                rows.extend(drum_data::read_rows(Path::new(extra))?);
+            }
             let (labeller, name): (Box<dyn noodle_io::HitLabeller>, &str) = match flag("--model") {
                 Some(model) => (
                     Box::new(
