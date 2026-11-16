@@ -6073,4 +6073,57 @@ mod tests {
         h.run_steps(5);
         h.get_by_label("Settings");
     }
+
+    /// Every Settings tab draws its own page, in one window that keeps its
+    /// size and place, with a tab list that does not move when hovered.
+    #[test]
+    fn settings_tabs_show_their_content_in_one_fixed_window() {
+        use crate::settings::Tab;
+        // The toolbar has an Audio button too: the tab is the lower one.
+        fn tab_node<'a>(h: &'a Harness<'static, App>, name: &'a str) -> egui_kittest::Node<'a> {
+            h.get_all_by_label(name)
+                .find(|n| n.rect().min.y > 40.0)
+                .expect("the tab is drawn")
+        }
+        let mut h = harness(empty());
+        h.run();
+        h.state_mut().open_settings(Tab::General);
+        h.run_steps(5);
+        let close = h.get_by_label("Close").rect();
+        let tabs: Vec<egui::Rect> = ["General", "Audio", "Display", "Models", "Sources"]
+            .iter()
+            .map(|t| tab_node(&h, t).rect())
+            .collect();
+        for (_, name, label) in [
+            (Tab::Sources, "Sources", "Refresh all"),
+            (Tab::Models, "Models", "Split to stems"),
+            (Tab::Audio, "Audio", "Monitoring"),
+            (Tab::Display, "Display", "Performance mode"),
+            (Tab::General, "General", "Export User Settings…"),
+        ] {
+            tab_node(&h, name).click();
+            h.run_steps(5);
+            h.get_by_label_contains(label);
+            assert_eq!(
+                h.get_by_label("Close").rect(),
+                close,
+                "{name}: the window moved"
+            );
+        }
+        // Hovering a tab changes its colour, not the layout.
+        for hovered in ["Audio", "Sources", "General"] {
+            tab_node(&h, hovered).hover();
+            h.run_steps(3);
+            for (name, rect) in ["General", "Audio", "Display", "Models", "Sources"]
+                .iter()
+                .zip(&tabs)
+            {
+                assert_eq!(
+                    tab_node(&h, name).rect(),
+                    *rect,
+                    "{name} moved over {hovered}"
+                );
+            }
+        }
+    }
 }

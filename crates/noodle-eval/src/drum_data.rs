@@ -28,7 +28,7 @@ use std::path::{Path, PathBuf};
 /// The rate everything is rendered and analysed at.
 pub const RATE: u32 = 44_100;
 /// Bumped when the generator changes what it writes.
-pub const DATASET_VERSION: u32 = 1;
+pub const DATASET_VERSION: u32 = 2;
 /// The longest a one-shot is kept, in seconds (cymbals ring a long time).
 const MAX_SAMPLE: f64 = 3.0;
 /// A loop hit labelled from a placed hit mixed further down than this (dB) is
@@ -358,6 +358,79 @@ fn room(rng: &mut Rng, rt60: f32) -> Vec<f32> {
     ir
 }
 
+/// How pure a detection is as a kit sample. Only `Clean` may enter a bin of
+/// single hits.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum Purity {
+    /// One hit that finishes ringing before the end of its window.
+    Clean,
+    /// Two or more hits of one drum (a flam, a roll, a doubled hit).
+    Double,
+    /// Still ringing at the end of its window, or cut by the next hit.
+    Truncated,
+    /// A real hit that is damaged: no attack, clipped, faded in.
+    Malformed,
+    /// Another drum sounds under it.
+    Mixed,
+    /// Not a hit.
+    Spurious,
+}
+
+impl Purity {
+    pub const ALL: [Purity; 6] = [
+        Purity::Clean,
+        Purity::Double,
+        Purity::Truncated,
+        Purity::Malformed,
+        Purity::Mixed,
+        Purity::Spurious,
+    ];
+
+    pub fn name(self) -> &'static str {
+        match self {
+            Purity::Clean => "clean",
+            Purity::Double => "double",
+            Purity::Truncated => "truncated",
+            Purity::Malformed => "malformed",
+            Purity::Mixed => "mixed",
+            Purity::Spurious => "spurious",
+        }
+    }
+
+    pub fn from_name(name: &str) -> Option<Purity> {
+        Purity::ALL.into_iter().find(|p| p.name() == name)
+    }
+}
+
+/// The envelope's block, in frames (2 ms).
+const BLOCK: usize = (RATE as usize) / 500;
+/// A hit is over once it is this far (dB) under its peak.
+const OVER_DB: f32 = 30.0;
+/// A predecessor still this close (dB) to a hit's peak at its start is under it.
+const RING_DB: f32 = 25.0;
+/// The detector's longest cut, in frames.
+const MAX_CUT: usize = (1.5 * RATE as f32) as usize;
+
+/// The level of each 2 ms block of `x`, in dB.
+fn env_db(x: &[f32]) -> Vec<f32> {
+    x.chunks(BLOCK)
+        .map(|c| 10.0 * (c.iter().map(|s| s * s).sum::<f32>() / BLOCK as f32 + 1e-12).log10())
+        .collect()
+}
+
+/// Whether `x` is still sounding (within [`OVER_DB`] of its peak) just before
+/// `end` (the 20 ms before the last 20 ms, which the loader fades).
+fn ringing_at(x: &[f32], end: usize) -> bool {
+    let end = end.min(x.len());
+    let env = env_db(x);
+    let peak = env.iter().copied().fold(-200.0, f32::max);
+    let a = end.saturating_sub(2 * 20 * RATE as usize / 1000) / BLOCK;
+    let b = (end.saturating_sub(20 * RATE as usize / 1000) / BLOCK).max(a + 1);
+    env[a.min(env.len() - 1)..b.min(env.len())]
+        .iter()
+        .any(|&l| l > peak - OVER_DB)
+}
+
 /// A hit placed in a loop.
 #[derive(Clone, Debug)]
 pub struct Placed {
@@ -366,6 +439,81 @@ pub struct Placed {
     pub file: String,
     /// The loudness it was mixed at (dB, after bleed).
     pub gain_db: f32,
+    /// Its own level over time as mixed, in dB per 2 ms block.
+    pub env: Vec<f32>,
+    /// Hits placed together on purpose as a double share a group.
+    pub group: Option<u32>,
+}
+
+impl Placed {
+    fn peak(&self) -> f32 {
+        self.env.iter().copied().fold(-200.0, f32::max)
+    }
+
+    /// Its own level at `frame` (-200 before and after it).
+    fn level_at(&self, frame: usize) -> f32 {
+        frame
+            .checked_sub(self.at)
+            .and_then(|d| self.env.get(d / BLOCK))
+            .copied()
+            .unwrap_or(-200.0)
+    }
+
+    /// The frame where it has fallen [`OVER_DB`] under its peak.
+    fn own_end(&self) -> usize {
+        let peak = self.peak();
+        let top = self.env.iter().position(|&l| l >= peak).unwrap_or(0);
+        let b = (top + 1..self.env.len())
+            .find(|&b| self.env[b] < peak - OVER_DB)
+            .unwrap_or(self.env.len());
+        self.at + (b * BLOCK).min(MAX_CUT)
+    }
+}
+
+/// The purity of each placed hit, from what else is placed (ground truth):
+/// another hit of the same drum, or placed with it as a double, on top of it
+/// makes it `Double`; another drum's tail still strong under it makes it
+/// `Mixed`; another hit starting before it has fallen away makes it
+/// `Truncated`. Anything else is `Clean`.
+pub fn purity_labels(placed: &[Placed]) -> Vec<Purity> {
+    placed
+        .iter()
+        .enumerate()
+        .map(|(k, p)| {
+            let peak = p.peak();
+            let (mut double, mut mixed, mut cut) = (false, false, false);
+            for (j, q) in placed.iter().enumerate() {
+                if j == k {
+                    continue;
+                }
+                let same = q.class == p.class || (q.group.is_some() && q.group == p.group);
+                if q.at >= p.at {
+                    if q.at < p.own_end() && q.peak() >= p.level_at(q.at) - 12.0 {
+                        if same {
+                            double = true;
+                        } else {
+                            cut = true;
+                        }
+                    }
+                } else if q.own_end() > p.at && q.level_at(p.at + 2 * BLOCK) > peak - RING_DB {
+                    if same {
+                        double = true;
+                    } else {
+                        mixed = true;
+                    }
+                }
+            }
+            if double {
+                Purity::Double
+            } else if mixed {
+                Purity::Mixed
+            } else if cut {
+                Purity::Truncated
+            } else {
+                Purity::Clean
+            }
+        })
+        .collect()
 }
 
 /// A rendered loop and where everything in it is.
@@ -395,6 +543,13 @@ impl<'a> Pool<'a> {
             Some((s, a))
         }
     }
+}
+
+/// How long after a hit its double comes, in frames: from a flam to most of a
+/// beat, spread evenly in the logarithm.
+fn double_gap(rng: &mut Rng) -> usize {
+    let secs = (0.005f32.ln() + rng.f() * (0.6f32.ln() - 0.005f32.ln())).exp();
+    (secs * RATE as f32) as usize
 }
 
 /// Renders one loop from `pool` (the samples of one split).
@@ -499,12 +654,44 @@ fn make_loop(pool: &Pool, rng: &mut Rng) -> Option<Loop> {
                 *m += v * g;
             }
         }
+        let scaled: Vec<f32> = hit.iter().map(|v| v * g).collect();
         placed.push(Placed {
             at,
             class,
             file: source.file.clone(),
             gain_db,
+            env: env_db(&scaled),
+            group: None,
         });
+        // Sometimes the same piece again soon after, on purpose: a flam, a
+        // roll or a doubled hit.
+        if !focus.is_some_and(|f| f != class) && rng.chance(0.06) {
+            let (source2, audio2) = if rng.chance(0.7) {
+                variants[rng.below(variants.len())]
+            } else {
+                (source, audio)
+            };
+            let gap = double_gap(rng);
+            let at2 = at + gap;
+            let delta = rng.range(-8.0, 0.0);
+            let g2 = db_gain(gain_db + delta);
+            for (i, v) in audio2.iter().enumerate() {
+                if let Some(m) = mix.get_mut(at2 + i) {
+                    *m += v * g2;
+                }
+            }
+            let scaled: Vec<f32> = audio2.iter().map(|v| v * g2).collect();
+            let group = placed.len() as u32;
+            placed.last_mut().unwrap().group = Some(group);
+            placed.push(Placed {
+                at: at2,
+                class,
+                file: source2.file.clone(),
+                gain_db: gain_db + delta,
+                env: env_db(&scaled),
+                group: Some(group),
+            });
+        }
     }
     // The room, EQ and noise.
     if rng.chance(0.5) {
@@ -555,6 +742,11 @@ pub struct Row {
     pub gain_db: f32,
     pub mixed: bool,
     pub truncated: bool,
+    /// How pure it is as a sample (ground truth from the generator).
+    pub purity: Purity,
+    /// `none`, or what was done to a damaged one-shot (`chop_start`, `clip`,
+    /// `fade_in`, `gate`), or `double` for a one-shot with a second hit.
+    pub damage: String,
     pub features: HitFeatures,
 }
 
@@ -565,6 +757,7 @@ fn csv_header() -> String {
     for b in 0..24 {
         write!(s, ",b{b}").unwrap();
     }
+    s.push_str(",purity,damage");
     s
 }
 
@@ -594,6 +787,7 @@ fn csv_row(r: &Row) -> String {
     for b in f.bands {
         write!(s, ",{b:.3}").unwrap();
     }
+    write!(s, ",{},{}", r.purity.name(), r.damage).unwrap();
     s
 }
 
@@ -603,7 +797,7 @@ pub fn read_rows(path: &Path) -> Result<Vec<Row>, String> {
     let mut rows = Vec::new();
     for (n, line) in text.lines().enumerate().skip(1) {
         let c: Vec<&str> = line.split(',').collect();
-        if c.len() != 18 + 24 {
+        if c.len() != 18 + 24 + 2 {
             return Err(format!("line {}: {} columns", n + 1, c.len()));
         }
         let num = |i: usize| -> Result<f32, String> {
@@ -619,7 +813,12 @@ pub fn read_rows(path: &Path) -> Result<Vec<Row>, String> {
                 "val" => Split::Val,
                 _ => Split::Test,
             },
-            source: if c[1] == "loop" { "loop" } else { "oneshot" },
+            source: match c[1] {
+                "loop" => "loop",
+                "damaged" => "damaged",
+                "double" => "double",
+                _ => "oneshot",
+            },
             origin: c[2].to_string(),
             label: c[3].to_string(),
             onset_s: num(4)?,
@@ -627,6 +826,8 @@ pub fn read_rows(path: &Path) -> Result<Vec<Row>, String> {
             gain_db: num(6)?,
             mixed: c[7] == "1",
             truncated: c[8] == "1",
+            purity: Purity::from_name(c[42]).ok_or_else(|| format!("line {}: purity", n + 1))?,
+            damage: c[43].to_string(),
             features: HitFeatures {
                 bands,
                 centroid: num(9)?,
@@ -669,18 +870,29 @@ pub fn build(opts: &BuildOptions) -> Result<String, String> {
     let mut rows: Vec<Row> = Vec::new();
     let mut undetected = 0;
     // One-shots alone, with a little silence before and after.
-    for s in &sources {
-        let pad = (0.1 * RATE as f32) as usize;
-        let mut x = vec![0.0; pad];
-        x.extend_from_slice(&audio[&s.file]);
-        x.extend(std::iter::repeat_n(0.0, pad * 4));
-        let hits = detect(&x);
-        let Some(hit) = hits
+    let pad = (0.1 * RATE as f32) as usize;
+    let alone = |x: &[f32]| {
+        let mut y = vec![0.0; pad];
+        y.extend_from_slice(x);
+        y.extend(std::iter::repeat_n(0.0, pad * 4));
+        let hits = detect(&y);
+        let found = hits
             .iter()
-            .find(|h| (h.onset as f64 / f64::from(RATE) - 0.1).abs() < 0.03)
-        else {
+            .position(|h| (h.onset as f64 / f64::from(RATE) - 0.1).abs() < 0.03);
+        (hits, found)
+    };
+    for s in &sources {
+        let (hits, found) = alone(&audio[&s.file]);
+        let Some(j) = found else {
             undetected += 1;
             continue;
+        };
+        // The window is cut at the longest the detector cuts to; a hit that is
+        // still ringing there is truncated.
+        let purity = if ringing_at(&audio[&s.file], MAX_CUT.min(audio[&s.file].len())) {
+            Purity::Truncated
+        } else {
+            Purity::Clean
         };
         rows.push(row_of(
             s.split,
@@ -688,8 +900,92 @@ pub fn build(opts: &BuildOptions) -> Result<String, String> {
             s.file.clone(),
             s.class.name().into(),
             0.0,
-            hit,
+            &hits[j],
+            purity,
+            "none",
         ));
+    }
+    // The same one-shots damaged: attack chopped off, clipped, faded in, or
+    // cut off while still sounding. Two kinds each, picked by the seed.
+    let mut dmg = Rng::new(opts.seed ^ 0x00DA_3A6E);
+    for s in &sources {
+        let x = &audio[&s.file];
+        let kinds = ["chop_start", "clip", "fade_in", "gate"];
+        let first = dmg.below(kinds.len());
+        let second = (first + 1 + dmg.below(kinds.len() - 1)) % kinds.len();
+        for kind in [kinds[first], kinds[second]] {
+            let Some((y, purity)) = damage(x, kind, &mut dmg) else {
+                continue;
+            };
+            let (hits, found) = alone(&y);
+            let Some(j) = found else {
+                undetected += 1;
+                continue;
+            };
+            rows.push(row_of(
+                s.split,
+                "damaged",
+                s.file.clone(),
+                s.class.name().into(),
+                0.0,
+                &hits[j],
+                purity,
+                kind,
+            ));
+        }
+    }
+    // Doubles: a one-shot and a second hit of the same piece (or, a third of
+    // the time, another of the same split) a flam to most of a beat later.
+    let mut dbl = Rng::new(opts.seed ^ 0x000D_0B1E);
+    for split in [Split::Train, Split::Val, Split::Test] {
+        let mine: Vec<&Source> = sources.iter().filter(|s| s.split == split).collect();
+        for (n, s) in mine.iter().enumerate() {
+            let other = if dbl.chance(0.35) {
+                mine[dbl.below(mine.len())]
+            } else {
+                s
+            };
+            let gap = double_gap(&mut dbl);
+            let delta = dbl.range(-8.0, 0.0);
+            let (first, second) = (&audio[&s.file], &audio[&other.file]);
+            let mut mix = vec![0.0f32; gap + second.len().max(first.len())];
+            let mut placed = Vec::new();
+            for (at, x, src, gain_db) in [(0, first, *s, 0.0), (gap, second, other, delta)] {
+                let g = db_gain(gain_db);
+                for (i, v) in x.iter().enumerate() {
+                    mix[at + i] += v * g;
+                }
+                let scaled: Vec<f32> = x.iter().map(|v| v * g).collect();
+                placed.push(Placed {
+                    at: at + pad,
+                    class: src.class,
+                    file: src.file.clone(),
+                    gain_db,
+                    env: env_db(&scaled),
+                    group: Some(n as u32),
+                });
+            }
+            let peak = mix.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
+            mix.iter_mut().for_each(|v| *v /= peak);
+            let mut y = vec![0.0; pad];
+            y.extend_from_slice(&mix);
+            y.extend(std::iter::repeat_n(0.0, pad * 4));
+            let hits = detect(&y);
+            for (label, purity, gain, h) in label_detections(&hits, &placed) {
+                if label != "spurious" {
+                    rows.push(row_of(
+                        split,
+                        "double",
+                        s.file.clone(),
+                        label,
+                        gain,
+                        h,
+                        purity,
+                        "double",
+                    ));
+                }
+            }
+        }
     }
     // Loops.
     let mut spurious = 0usize;
@@ -716,47 +1012,30 @@ pub fn build(opts: &BuildOptions) -> Result<String, String> {
             };
             let hits = detect(&lp.audio);
             placed_total += lp.placed.len();
-            // Each detection takes the nearest placed hit within MATCH; of
-            // several detections near one placed hit only the nearest is
-            // labelled, and the rest are spurious.
-            let window = MATCH * f64::from(RATE);
-            let nearest: Vec<Option<(usize, f64)>> = hits
+            let labelled = label_detections(&hits, &lp.placed);
+            let found: Vec<bool> = lp
+                .placed
                 .iter()
-                .map(|h| {
-                    lp.placed
-                        .iter()
-                        .enumerate()
-                        .map(|(k, p)| (k, (p.at as f64 - h.onset as f64).abs()))
-                        .filter(|&(_, d)| d <= window)
-                        .min_by(|a, b| a.1.total_cmp(&b.1))
+                .map(|p| {
+                    labelled.iter().any(|(l, _, _, h)| {
+                        *l != "spurious"
+                            && h.onset.abs_diff(p.at as u64) as f64 <= MATCH * f64::from(RATE)
+                    })
                 })
                 .collect();
-            let mut owner: Vec<Option<usize>> = vec![None; lp.placed.len()];
-            for (j, n) in nearest.iter().enumerate() {
-                if let Some((k, d)) = *n
-                    && owner[k].is_none_or(|o| d < nearest[o].map_or(f64::MAX, |x| x.1))
-                {
-                    owner[k] = Some(j);
+            for (label, purity, gain, h) in labelled {
+                if label == "spurious" {
+                    spurious += 1;
                 }
-            }
-            let found: Vec<bool> = owner.iter().map(Option::is_some).collect();
-            for (j, h) in hits.iter().enumerate() {
-                let (label, gain) = match nearest[j] {
-                    Some((k, _)) if owner[k] == Some(j) => {
-                        (lp.placed[k].class.name(), lp.placed[k].gain_db)
-                    }
-                    _ => {
-                        spurious += 1;
-                        ("spurious", 0.0)
-                    }
-                };
                 rows.push(row_of(
                     split,
                     "loop",
                     format!("{}-{i}", split.name()),
-                    label.into(),
+                    label,
                     gain,
                     h,
+                    purity,
+                    "none",
                 ));
             }
             missed += found.iter().filter(|f| !**f).count();
@@ -784,6 +1063,7 @@ pub fn build(opts: &BuildOptions) -> Result<String, String> {
     Ok(summary)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn row_of(
     split: Split,
     source: &'static str,
@@ -791,6 +1071,8 @@ fn row_of(
     label: String,
     gain_db: f32,
     h: &Hit,
+    purity: Purity,
+    damage: &str,
 ) -> Row {
     Row {
         split,
@@ -802,8 +1084,93 @@ fn row_of(
         gain_db,
         mixed: h.mixed,
         truncated: h.truncated,
+        purity,
+        damage: damage.to_string(),
         features: h.features.clone(),
     }
+}
+
+/// Labels each detection from the placed hits: the nearest detection within
+/// [`MATCH`] of a placed hit takes its class and purity (a ring past the end of
+/// its window makes it `Truncated`), and every other is `spurious`.
+fn label_detections<'a>(hits: &'a [Hit], placed: &[Placed]) -> Vec<(String, Purity, f32, &'a Hit)> {
+    let window = MATCH * f64::from(RATE);
+    let nearest: Vec<Option<(usize, f64)>> = hits
+        .iter()
+        .map(|h| {
+            placed
+                .iter()
+                .enumerate()
+                .map(|(k, p)| (k, (p.at as f64 - h.onset as f64).abs()))
+                .filter(|&(_, d)| d <= window)
+                .min_by(|a, b| a.1.total_cmp(&b.1))
+        })
+        .collect();
+    let mut owner: Vec<Option<usize>> = vec![None; placed.len()];
+    for (j, n) in nearest.iter().enumerate() {
+        if let Some((k, d)) = *n
+            && owner[k].is_none_or(|o| d < nearest[o].map_or(f64::MAX, |x| x.1))
+        {
+            owner[k] = Some(j);
+        }
+    }
+    let purity = purity_labels(placed);
+    hits.iter()
+        .enumerate()
+        .map(|(j, h)| match nearest[j] {
+            Some((k, _)) if owner[k] == Some(j) => {
+                let p = &placed[k];
+                let mut pur = purity[k];
+                if pur == Purity::Clean
+                    && p.level_at((h.end as usize).saturating_sub(2 * BLOCK)) > p.peak() - OVER_DB
+                {
+                    pur = Purity::Truncated;
+                }
+                (p.class.name().to_string(), pur, p.gain_db, h)
+            }
+            _ => ("spurious".to_string(), Purity::Spurious, 0.0, h),
+        })
+        .collect()
+}
+
+/// `x` damaged as `kind`, and how pure the result is.
+fn damage(x: &[f32], kind: &str, rng: &mut Rng) -> Option<(Vec<f32>, Purity)> {
+    let ms = |t: f32| (t / 1000.0 * RATE as f32) as usize;
+    let mut y = x.to_vec();
+    let purity = match kind {
+        "chop_start" => {
+            let n = ms(rng.range(10.0, 60.0));
+            if n + ms(50.0) >= y.len() {
+                return None;
+            }
+            y.drain(..n);
+            Purity::Malformed
+        }
+        "clip" => {
+            let g = rng.range(3.0, 12.0);
+            y.iter_mut().for_each(|v| *v = (*v * g).clamp(-1.0, 1.0));
+            Purity::Malformed
+        }
+        "fade_in" => {
+            let n = ms(rng.range(40.0, 150.0)).min(y.len());
+            for (i, v) in y.iter_mut().take(n).enumerate() {
+                *v *= i as f32 / n as f32;
+            }
+            Purity::Malformed
+        }
+        _ => {
+            // Cut dead, no fade, while it still sounds.
+            let at = ms(rng.range(40.0, 400.0));
+            if at + ms(60.0) >= y.len() || !ringing_at(&y, at + ms(20.0)) {
+                return None;
+            }
+            y.truncate(at);
+            Purity::Truncated
+        }
+    };
+    let peak = y.iter().fold(0.0f32, |m, v| m.max(v.abs())).max(1e-6);
+    y.iter_mut().for_each(|v| *v /= peak);
+    Some((y, purity))
 }
 
 fn esc(s: &str) -> String {
@@ -950,8 +1317,8 @@ impl Confusion {
 /// What the labeller said, as a class name (`Unknown` for no guess). The two
 /// toms are both `tom`; a crash guess is `crash` and is also counted right for
 /// a ride (the app has no ride).
-fn guess_class(labeller: &dyn HitLabeller, row: &Row) -> &'static str {
-    let hit = Hit {
+fn hit_of(row: &Row) -> Hit {
+    Hit {
         onset: 0,
         start: 0,
         end: 0,
@@ -959,7 +1326,11 @@ fn guess_class(labeller: &dyn HitLabeller, row: &Row) -> &'static str {
         mixed: row.mixed,
         level_db: row.level_db,
         features: row.features.clone(),
-    };
+    }
+}
+
+fn guess_class(labeller: &dyn HitLabeller, row: &Row) -> &'static str {
+    let hit = hit_of(row);
     match labeller.label(&hit).0 {
         DrumKind::Kick => "kick",
         DrumKind::Snare => "snare",
@@ -970,6 +1341,125 @@ fn guess_class(labeller: &dyn HitLabeller, row: &Row) -> &'static str {
         DrumKind::Crash => "crash",
         DrumKind::Unknown => "Unknown",
     }
+}
+
+/// The 95% Wilson interval of `k` in `n`, as percentages.
+fn wilson(k: usize, n: usize) -> (f32, f32) {
+    if n == 0 {
+        return (0.0, 100.0);
+    }
+    let (k, n) = (k as f32, n as f32);
+    let z = 1.96f32;
+    let p = k / n;
+    let d = 1.0 + z * z / n;
+    let centre = (p + z * z / (2.0 * n)) / d;
+    let half = z * (p * (1.0 - p) / n + z * z / (4.0 * n * n)).sqrt() / d;
+    (
+        100.0 * (centre - half).max(0.0),
+        100.0 * (centre + half).min(1.0),
+    )
+}
+
+/// The purity gate's report: how many hits that are not clean get into a clean
+/// bin (the false-accept rate, the headline), per kind of impurity and per
+/// kind of damage, and how many clean hits are turned away. `gate` is the
+/// probability of `clean` a hit needs; a labeller with no purity output is
+/// scored on the detector's `mixed` and `truncated` flags.
+pub fn purity_report(rows: &[Row], split: Split, labeller: &dyn HitLabeller, gate: f32) -> String {
+    let mut out = String::new();
+    let used: Vec<&Row> = rows
+        .iter()
+        .filter(|r| r.split == split && r.level_db >= -45.0 && r.gain_db >= MIN_GAIN_DB)
+        .collect();
+    let probs: Vec<Option<Vec<f32>>> = used.iter().map(|r| labeller.purity(&hit_of(r))).collect();
+    let has_model = probs.iter().any(Option::is_some);
+    let accept = |i: usize, gate: f32| match &probs[i] {
+        Some(p) => noodle_io::pure_enough(p, &hit_of(used[i]), gate),
+        None => !used[i].mixed && !used[i].truncated,
+    };
+    writeln!(
+        out,
+        "## Purity gate ({} split)\n\n{}\n\n\
+         False-accept rate: of the hits that are not clean, the share let into a clean bin. 95% Wilson interval in brackets.\n",
+        split.name(),
+        if has_model {
+            format!("Accepted when `clean` is the likeliest class with probability at least {gate} and the detector flags neither `mixed` nor `truncated`.")
+        } else {
+            "No purity model: accepted when the detector flags neither `mixed` nor `truncated`.".into()
+        }
+    )
+    .unwrap();
+    let rate = |k: usize, n: usize| {
+        let (lo, hi) = wilson(k, n);
+        format!(
+            "{:.1}% ({lo:.1} to {hi:.1})",
+            100.0 * k as f32 / n.max(1) as f32
+        )
+    };
+    // Headline: every real hit that is not clean (not a spurious detection).
+    let bad: Vec<usize> = (0..used.len())
+        .filter(|&i| !matches!(used[i].purity, Purity::Clean | Purity::Spurious))
+        .collect();
+    let bad_in = bad.iter().filter(|&&i| accept(i, gate)).count();
+    let clean: Vec<usize> = (0..used.len())
+        .filter(|&i| used[i].purity == Purity::Clean)
+        .collect();
+    let clean_in = clean.iter().filter(|&&i| accept(i, gate)).count();
+    writeln!(
+        out,
+        "**False-accept rate: {}** ({bad_in} of {} not-clean hits). Clean hits kept: {} ({clean_in} of {}).\n",
+        rate(bad_in, bad.len()),
+        bad.len(),
+        rate(clean_in, clean.len()),
+        clean.len()
+    )
+    .unwrap();
+    out.push_str("| truth | n | let into a clean bin |\n|---|---|---|\n");
+    for pu in Purity::ALL {
+        let ix: Vec<usize> = (0..used.len()).filter(|&i| used[i].purity == pu).collect();
+        if ix.is_empty() {
+            continue;
+        }
+        let k = ix.iter().filter(|&&i| accept(i, gate)).count();
+        writeln!(
+            out,
+            "| {} | {} | {} |",
+            pu.name(),
+            ix.len(),
+            rate(k, ix.len())
+        )
+        .unwrap();
+    }
+    out.push_str("\nBy source, and by damage for damaged one-shots (not-clean hits only):\n\n| source | n not clean | let in |\n|---|---|---|\n");
+    let mut groups: BTreeMap<String, Vec<usize>> = BTreeMap::new();
+    for &i in &bad {
+        let r = used[i];
+        let key = if r.source == "damaged" {
+            format!("damaged: {}", r.damage)
+        } else {
+            r.source.to_string()
+        };
+        groups.entry(key).or_default().push(i);
+    }
+    for (key, ix) in groups {
+        let k = ix.iter().filter(|&&i| accept(i, gate)).count();
+        writeln!(out, "| {key} | {} | {} |", ix.len(), rate(k, ix.len())).unwrap();
+    }
+    if has_model {
+        out.push_str("\nGate sweep:\n\n| gate | false-accept | clean kept |\n|---|---|---|\n");
+        for g in [0.5, 0.7, 0.8, 0.9, 0.95, 0.98, 0.99] {
+            let b = bad.iter().filter(|&&i| accept(i, g)).count();
+            let c = clean.iter().filter(|&&i| accept(i, g)).count();
+            writeln!(
+                out,
+                "| {g} | {} | {} |",
+                rate(b, bad.len()),
+                rate(c, clean.len())
+            )
+            .unwrap();
+        }
+    }
+    out
 }
 
 /// Scores `labeller` on `rows` of `split` and writes a markdown report.
@@ -1048,12 +1538,113 @@ pub fn baseline(rows: &[Row], split: Split, labeller: &dyn HitLabeller, name: &s
         )
         .unwrap();
     }
+    out.push('\n');
+    out.push_str(&purity_report(rows, split, labeller, noodle_io::CLEAN_GATE));
     out
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn placed(at_ms: usize, class: Class, group: Option<u32>, ring_ms: usize) -> Placed {
+        // A hit at 0 dB that falls 60 dB over `ring_ms`.
+        let n = (ring_ms * RATE as usize / 1000) / BLOCK;
+        Placed {
+            at: at_ms * RATE as usize / 1000,
+            class,
+            file: String::new(),
+            gain_db: 0.0,
+            env: (0..n).map(|b| -60.0 * b as f32 / n as f32).collect(),
+            group,
+        }
+    }
+
+    #[test]
+    fn purity_is_worked_out_from_what_else_is_placed() {
+        let of = |p: &[Placed]| purity_labels(p);
+        // Alone, and spaced far apart: clean.
+        let far = [
+            placed(0, Class::Snare, None, 200),
+            placed(1000, Class::Snare, None, 200),
+        ];
+        assert_eq!(of(&far), [Purity::Clean, Purity::Clean]);
+        // The same drum again while it rings: both are doubles.
+        let flam = [
+            placed(0, Class::Snare, None, 400),
+            placed(20, Class::Snare, None, 400),
+        ];
+        assert_eq!(of(&flam), [Purity::Double, Purity::Double]);
+        // Placed together on purpose, even if another drum.
+        let grouped = [
+            placed(0, Class::Snare, Some(1), 400),
+            placed(30, Class::Clap, Some(1), 400),
+        ];
+        assert_eq!(of(&grouped), [Purity::Double, Purity::Double]);
+        // Another drum on top of a ringing one: the first is cut, the second mixed.
+        let over = [
+            placed(0, Class::Crash, None, 800),
+            placed(50, Class::Kick, None, 200),
+        ];
+        assert_eq!(of(&over), [Purity::Truncated, Purity::Mixed]);
+        // The next hit after the first has fallen away does not touch it.
+        let after = [
+            placed(0, Class::Kick, None, 100),
+            placed(500, Class::Snare, None, 100),
+        ];
+        assert_eq!(of(&after), [Purity::Clean, Purity::Clean]);
+    }
+
+    fn row_with(purity: Purity, source: &'static str) -> Row {
+        Row {
+            split: Split::Test,
+            source,
+            origin: "x".into(),
+            label: "snare".into(),
+            onset_s: 0.0,
+            level_db: -10.0,
+            gain_db: 0.0,
+            mixed: false,
+            truncated: false,
+            purity,
+            damage: "none".into(),
+            features: HitFeatures {
+                bands: [0.0; 24],
+                centroid: 1000.0,
+                flatness: 0.5,
+                split: [0.3, 0.4, 0.3],
+                decay: 0.1,
+                pitched: 0.0,
+                pitch_key: None,
+                attack_peaks: 1,
+            },
+        }
+    }
+
+    #[derive(Debug)]
+    struct Gate(f32);
+    impl HitLabeller for Gate {
+        fn label(&self, _: &Hit) -> (DrumKind, f32) {
+            (DrumKind::Snare, 1.0)
+        }
+        fn purity(&self, _: &Hit) -> Option<Vec<f32>> {
+            Some(vec![self.0, 0.0, 0.0, 0.0, 0.0, 0.0])
+        }
+    }
+
+    #[test]
+    fn the_false_accept_rate_catches_a_double_let_into_a_clean_bin() {
+        let rows = vec![
+            row_with(Purity::Clean, "oneshot"),
+            row_with(Purity::Double, "double"),
+            row_with(Purity::Malformed, "damaged"),
+        ];
+        let lax = purity_report(&rows, Split::Test, &Gate(0.99), 0.9);
+        assert!(lax.contains("False-accept rate: 100.0%"), "{lax}");
+        assert!(lax.contains("| double | 1 | 100.0%"), "{lax}");
+        let strict = purity_report(&rows, Split::Test, &Gate(0.1), 0.9);
+        assert!(strict.contains("False-accept rate: 0.0%"), "{strict}");
+    }
 
     #[test]
     fn pack_folders_map_to_classes() {
@@ -1147,6 +1738,8 @@ mod tests {
             "kick".into(),
             -3.0,
             &hits[0],
+            Purity::Clean,
+            "none",
         );
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("hits.csv");

@@ -69,21 +69,48 @@ impl OnnxLabeller {
         })
     }
 
-    fn probabilities(&self, hit: &Hit) -> Option<Vec<f32>> {
+    /// The type probabilities, and the purity probabilities when the model has
+    /// a `purity` output of `[n, PURITY.len()]`.
+    fn run(&self, hit: &Hit) -> Option<(Vec<f32>, Option<Vec<f32>>)> {
         let v = noodle_io::feature_vector(hit);
         let tensor = Tensor::from_array(([1usize, DRUM_FEATURES], v.to_vec())).ok()?;
         let mut session = self.session.lock().ok()?;
         let outputs = session.run(ort::inputs![tensor]).ok()?;
         let (_, data) = outputs[0].try_extract_tensor::<f32>().ok()?;
-        Some(data.to_vec())
+        let purity = outputs
+            .get("purity")
+            .and_then(|o| o.try_extract_tensor::<f32>().ok())
+            .map(|(_, d)| d.to_vec())
+            .filter(|d| d.len() == noodle_io::PURITY.len());
+        Some((data.to_vec(), purity))
     }
 }
 
 impl HitLabeller for OnnxLabeller {
     fn label(&self, hit: &Hit) -> (DrumKind, f32) {
-        match self.probabilities(hit) {
-            Some(p) => noodle_io::kind_from_probabilities(&p, hit),
+        match self.run(hit) {
+            Some((p, _)) => noodle_io::kind_from_probabilities(&p, hit),
             None => (DrumKind::Unknown, 0.0),
+        }
+    }
+
+    /// A model with no purity output has none; a hit it fails on is not clean.
+    fn purity(&self, hit: &Hit) -> Option<Vec<f32>> {
+        match self.run(hit) {
+            Some((_, purity)) => purity,
+            None => Some(vec![0.0; noodle_io::PURITY.len()]),
+        }
+    }
+
+    /// One run of the model for the label and the purity.
+    fn assess(&self, hit: &Hit) -> (DrumKind, f32, Option<bool>) {
+        match self.run(hit) {
+            Some((p, purity)) => {
+                let (kind, confidence) = noodle_io::kind_from_probabilities(&p, hit);
+                let clean = purity.map(|q| noodle_io::pure_enough(&q, hit, noodle_io::CLEAN_GATE));
+                (kind, confidence, clean)
+            }
+            None => (DrumKind::Unknown, 0.0, Some(false)),
         }
     }
 }

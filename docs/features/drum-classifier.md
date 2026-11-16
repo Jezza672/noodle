@@ -49,6 +49,41 @@ Weak spots: closed hats mixed under kicks and snares, rides against hats, and to
 These come from the 24-band feature, not the network: a wider or bigger network did not help
 (validation accuracy sat near 62% for every size tried).
 
+## Purity (bin only pure samples)
+
+The goal of binning is pure samples: only **one hit that finishes ringing before the end of its
+cut** may enter a clean bin. The classifier has a second output, `purity` `[n, 6]`:
+`clean`, `double` (flams, rolls, a hit doubled), `truncated` (still ringing at the end of the
+cut, or cut by the next hit), `malformed` (chopped start, clipped, faded in), `mixed` (another
+drum under it) and `spurious` (not a hit). Rationale and the survey behind it are in
+`research/drum-classifier-accuracy.md`.
+
+- **Labels** come from the generator (`purity_labels` in `noodle-eval/src/drum_data.rs`), from
+  where hits were placed: the same drum, or a deliberate double, on top of a ringing hit makes
+  both `double`; another drum's tail within 25 dB under a hit makes it `mixed`; another hit
+  starting before it has fallen 30 dB makes it `truncated`.
+- **Data** (dataset version 2): the one-shots; the same one-shots damaged (`chop_start`, `clip`,
+  `fade_in`, `gate`: cut dead while ringing); standalone doubles (a flam to 0.6 s apart, same
+  or another piece); and loops with 6% deliberate doubles. `hits.csv` has `purity` and
+  `damage` columns.
+- **Gate** (`noodle_io::clean_accepted`, `CLEAN_GATE`): a hit is accepted when `clean` is the
+  likeliest class with at least `CLEAN_GATE` probability. A labeller with no purity output
+  (the rules, or an older model) gates on the detector's `mixed`/`truncated` flags. The
+  model's answer is ANDed with those flags. `Binning::relabel` takes rejected hits out of their bins
+  into `other`, and drops a bin left with no accepted hit, so a double or damaged hit is never
+  offered from a bin of single hits (only a labeller that judges purity does this; the rules do not).
+- **Headline metric: false-accept rate**, the share of not-clean hits let into a clean bin,
+  with a 95% Wilson interval, per kind of impurity and per damage type
+  (`noodle-eval drum-dataset baseline --data D [--model M] [--gate G]`, "Purity gate"). The tests
+  break the gate and the labelling on purpose and check the numbers move.
+- **Result** (`drums-cc0`, 1,500 loops, 40 epochs, test split): the detector flags alone let 11.8%
+  of not-clean hits through (56.5% of clean kept). The model at gate 0.77 (tuned on validation for
+  at most 1% false accepts) lets 0.1% through (5 of 5,937) but keeps only 2.3% of clean hits;
+  gate 0.5 gives 1.4% and 19% kept. So the gate is safe but too strict: the 36 features cannot
+  separate a clean hit from the messy ones in loops. Envelope features and a patch CNN are next
+  (PR 3); more kits and a held-out-by-kit split are PR 2. The test split has only 736 clean hits
+  from a handful of kits, so read the intervals.
+
 ## Real-data tools
 
 `tools/drum-real/` (README there) builds a hand-labelled set of real hits from openly licensed
