@@ -203,7 +203,7 @@ impl DeviceArgs {
             live_buffer: None,
             channels: self.channels,
             midi_inputs: Vec::new(),
-            threads: 0,
+            threads: Some(0),
         }
     }
 }
@@ -390,7 +390,7 @@ fn run(command: Command) -> Result<(), String> {
         } => play(
             &project,
             &AudioConfig {
-                threads,
+                threads: Some(threads),
                 ..device.config()
             },
         ),
