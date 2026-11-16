@@ -138,8 +138,8 @@ All three chunks are built (`features/low-latency-monitoring.md`). Owed on the M
   the rack: the groups are sensible, the guessed pads are right, the picker
   changes the hit, and the rack sounds like the track's kit. Never produce real
   audio there without asking.
-- **Drum rack from clip, follow-ups** (`docs/design/drum-rack-from-clip.md`): a small
-  classifier of our own, (the model-free template matching and the separation analyser are built). Also listen to velocity layers and the groove clip on the
+- **Drum rack from clip, follow-ups** (`docs/design/drum-rack-from-clip.md`): the small
+  classifier is built (`docs/features/drum-classifier.md`; its publication and a Mac listening check are owed there); the model-free template matching and the separation analyser are built. Also listen to velocity layers and the groove clip on the
   Mac, and listen to the dialog's new audition (it plays straight to the
   monitor device) on the Mac: ask before making sound.
 - **Listen to the drum separation models on real kits** (`docs/features/drum-separation-models.md`):
