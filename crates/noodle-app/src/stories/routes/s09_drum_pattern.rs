@@ -487,9 +487,19 @@ fn rack_steps(h: &mut Handle, _size: usize) {
     let says_so = h.probe().mentions("Enable and download one in Settings");
     SEPARATION_OFFERED.with(|o| o.set(says_so));
     h.step("place the group on the kick pad from its menu");
-    let place = h.find_first("Place on…");
-    h.click(place, Modifiers::NONE);
-    h.probe().settle_until_like("Place on Bass Drum");
+    // The dialog keeps repainting while the analysis settles, and on a slow
+    // runner a click can land on a frame that rebuilds the menu. If the menu
+    // did not open, click the button again (a click on an open menu is only
+    // reached when the item is missing, so it cannot close a good one).
+    for attempt in 0..4 {
+        let place = h.find_first("Place on…");
+        h.click(place, Modifiers::NONE);
+        if h.probe().try_settle_until_like("Place on Bass Drum", 50) {
+            break;
+        }
+        assert!(attempt < 3, "the Place on… menu never offered Bass Drum");
+        h.probe().settle();
+    }
     let pad = h.find_like("Place on Bass Drum");
     h.click(pad, Modifiers::NONE);
     h.probe().settle();

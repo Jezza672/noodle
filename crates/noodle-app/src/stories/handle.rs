@@ -663,14 +663,23 @@ impl Probe<'_> {
     /// like `word` is on screen. A submenu opens after a short delay, so a
     /// fixed settle is sometimes too early on a slow machine.
     pub fn settle_until_like(&mut self, word: &str) {
-        for _ in 0..200 {
+        if !self.try_settle_until_like(word, 200) {
+            panic!("nothing labelled like {word:?} ever appeared");
+        }
+    }
+
+    /// Like [`Probe::settle_until_like`], but gives up after `tries` rounds
+    /// and says whether the label appeared. For a caller that can retry the
+    /// action that should have produced it (a menu click lost to a repaint).
+    pub fn try_settle_until_like(&mut self, word: &str, tries: usize) -> bool {
+        for _ in 0..tries {
             self.h.run_steps(5);
             if self.h.query_all_by_label_contains(word).next().is_some() {
-                return;
+                return true;
             }
             std::thread::sleep(std::time::Duration::from_millis(10));
         }
-        panic!("nothing labelled like {word:?} ever appeared");
+        false
     }
 
     /// Lets scrolling and animations finish; no input.
