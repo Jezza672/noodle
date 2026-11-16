@@ -749,7 +749,7 @@ pub const TOM_SPLIT_KEY: f32 = 52.0;
 /// attack's bursts, whether the hit is mixed and whether it is truncated, then
 /// the [`Shape`] (six envelope slices, attack, end level, end drop, lead-in,
 /// crest, clipped share, bursts, cut length).
-/// `tools/drum-classifier/train.py` builds the same vector, in this order.
+/// The model is trained in the private `Jezza672/drum-identifier` repository, whose `train/train.py` builds the same vector, in this order.
 pub fn feature_vector(hit: &Hit) -> [f32; FEATURE_COUNT] {
     let f = &hit.features;
     let mut v = [0.0; FEATURE_COUNT];
