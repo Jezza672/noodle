@@ -21,6 +21,15 @@ cargo run -p noodle-eval -- borrowed --clip my-speech      # a file in eval/loca
 `<probe>_<tempo>_<method>_warped.wav` and `_roundtrip.wav`. The full grid is
 about 1 GB, so pick a probe or tempo.
 
+## Drum classifier data
+
+`drum-dataset build --pack DIR --out OUT` makes the data for the learned drum hit
+classifier (issue #499): one-shots of a sample pack and synthetic loops (overlap, bleed,
+room, EQ, noise), each cut by the real `analyse_hits`, written as `hits.csv`, with a
+`manifest.json` that lists every sample's licence and credit and a `CREDITS.md`.
+`drum-dataset baseline --data OUT` scores the rule labeller on it. See
+`docs/design/drum-classifier-baseline.md`. Eval songs are never used.
+
 ## Metrics
 
 Before any of these, the test is gain-matched to the reference by integrated

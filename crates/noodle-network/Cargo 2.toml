@@ -1,0 +1,14 @@
+[package]
+name = "noodle-network"
+description = "Everything Noodle does over the network: the shared downloader (consent, streaming, SHA-256, content-keyed cache) and an S3/R2 bucket client for publishing."
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+hmac = "0.12"
+sha2 = "0.10"
+ureq = "3"
+
+[dev-dependencies]
+tempfile = "3.27.0"

@@ -465,7 +465,7 @@ fn down(x: f32, lo: f32, hi: f32) -> f32 {
 
 /// The best guess at what a hit is, and how sure (0 to 1). Under
 /// [`CONFIDENT`] the guess is [`DrumKind::Unknown`].
-fn guess(f: &HitFeatures) -> (DrumKind, f32) {
+pub fn guess(f: &HitFeatures) -> (DrumKind, f32) {
     let [low, mid, high] = f.split;
     let tonal = f.pitched > 0.5;
     let pitch = f.pitch_key.unwrap_or(0.0);
