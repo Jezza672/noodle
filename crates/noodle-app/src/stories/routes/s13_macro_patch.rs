@@ -8,9 +8,10 @@
 //! the update in another project are not routed.
 //!
 //! A second route gets the same gesture the short way: "Morph between
-//! presets..." on a Tempo Echo group adds a Morph node wired into everything
-//! the first two presets differ in, with its `position` as the group's `morph`
-//! control, so one knob moves the whole sound.
+//! presets..." on a Lead Synth group adds a Morph node wired into everything
+//! the first two presets differ in, and one more inside each nested group that
+//! holds differing parameters (the voices), with its `position` as the group's
+//! `morph` control, so one knob moves the whole sound.
 
 use std::path::Path;
 
@@ -188,15 +189,15 @@ fn mapping(p: &Project) -> String {
     lines.join("\n")
 }
 
-/// A Tempo Echo group wired to the output, with presets to morph between.
+/// A Lead Synth group wired to the output, with presets to morph between.
 fn morph_fixture(dir: &Path) -> App {
     let mut session = virtual_session(dir);
     let template = session
         .library()
         .templates()
-        .find(|(_, t)| t.name == "Tempo Echo")
+        .find(|(_, t)| t.name == "Lead Synth")
         .map(|(id, t)| (id.to_string(), t.clone()))
-        .expect("the library has the Tempo Echo");
+        .expect("the library has the Lead Synth");
     let mut next = session.new_node_id().0;
     let mut ids = || {
         let id = NodeId(next);
@@ -235,9 +236,14 @@ pub fn morph_route() -> Route {
         fixture: morph_fixture,
         size: None,
         steps: |h, _| {
-            h.step("select the echo");
-            let lead = lead_of(h.probe().project()).expect("the Tempo Echo group");
-            let title = h.port_row(lead, false, "in");
+            h.step("select the synth");
+            let lead = lead_of(h.probe().project()).expect("the Lead Synth group");
+            let first_input = {
+                let ports = h.probe().project().graph().group_ports(lead);
+                ports.inputs.first().map(|p| p.name.clone())
+            }
+            .expect("the synth has an input");
+            let title = h.port_row(lead, false, &first_input);
             h.click(title, Modifiers::NONE);
             h.probe().settle();
             h.step("open Morph between presets");
@@ -253,14 +259,32 @@ pub fn morph_route() -> Route {
             let project = p.project();
             let lead = lead_of(project).ok_or("the group is gone")?;
             let graph = project.graph();
-            let morph = graph
+            // The Lead Synth's voice is a nested group, and everything that
+            // differs between the presets is inside it: the Morph is there, fed
+            // from the synth's own `morph` control.
+            let inside = |mut at: Option<NodeId>| {
+                while let Some(g) = at {
+                    if g == lead {
+                        return true;
+                    }
+                    at = graph.node(g).and_then(|n| n.parent);
+                }
+                false
+            };
+            let morphs: Vec<NodeId> = graph
                 .nodes()
-                .find(|(_, n)| n.type_id == MORPH_ID && n.parent == Some(lead))
+                .filter(|(_, n)| n.type_id == MORPH_ID && inside(n.parent))
                 .map(|(id, _)| id)
-                .ok_or("no Morph node in the group")?;
-            let wired = graph.connections().filter(|c| c.from.node == morph).count();
-            if wired < 2 {
-                return Err(format!("the Morph drives {wired} parameters, wanted 2"));
+                .collect();
+            let wired: usize = morphs
+                .iter()
+                .map(|&m| graph.connections().filter(|c| c.from.node == m).count())
+                .sum();
+            if morphs.is_empty() || wired < 2 {
+                return Err(format!(
+                    "{} Morph nodes drive {wired} parameters, wanted 2 or more",
+                    morphs.len()
+                ));
             }
             if graph.group_ports(lead).input("morph").is_none() {
                 return Err("the group has no `morph` control".into());

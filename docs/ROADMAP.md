@@ -102,8 +102,8 @@ All three chunks are built (`features/low-latency-monitoring.md`). Owed on the M
   keys (type a value into a field), resizes, survives close and reopen and a
   project reload, plays as an effect and as an instrument, follows the host's
   transport and tempo, and Expose to host shows up as an automatable parameter.
-  Several instances at once. Retina and 4K scaling. Not built, on purpose: files dragged
-  from the host onto the editor. Decided November 2026: the supported route is an Import button in the editor (a host-neutral file picker), not per-host drops (#569).
+  Several instances at once. Retina and 4K scaling. Also try File > Import… with a picked file and a pasted path
+  (#569). Files dragged from the host onto the editor are not built, on purpose.
 
 - **AU on the Mac** after the shared plugin bridge (#242, #241): an Audio Unit
   instrument and an effect play, go quiet when idle (the unit sets

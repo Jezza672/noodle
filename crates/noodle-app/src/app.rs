@@ -127,6 +127,7 @@ pub struct App {
     outputs: OutputsView,
     /// Whether the MIDI ports view is showing.
     midi_ports_open: bool,
+    import_dialog: crate::import_dialog::ImportDialog,
     midi_ports: MidiPortsView,
     /// The computer keyboard as a MIDI source. Off at start and not saved.
     keyboard: crate::keyboard::KeyboardMidi,
@@ -247,6 +248,8 @@ pub(crate) enum Action {
     ToggleCpu,
     ImportAudio,
     ImportMidi,
+    /// Opens the Import dialog (audio and MIDI by picker or pasted path).
+    ImportFiles,
     ExportAudio,
     ExportMidi,
     /// Asks where the export the dialog chose is to be written.
@@ -371,6 +374,7 @@ impl App {
             models: Default::default(),
             outputs: OutputsView::default(),
             midi_ports_open: false,
+            import_dialog: crate::import_dialog::ImportDialog::default(),
             midi_ports: MidiPortsView::default(),
             keyboard: crate::keyboard::KeyboardMidi::default(),
             autosave: None,
@@ -891,6 +895,9 @@ impl App {
         self.export.show(ui.ctx(), &mut self.session);
         self.palette_and_templates(ui.ctx(), &mut actions);
         crate::stems_dialog::show(ui.ctx(), &mut self.session);
+        if let Some(files) = self.import_dialog.show(ui.ctx()) {
+            self.import_files(files);
+        }
         crate::sample_set_dialog::show(ui.ctx(), &mut self.session);
         self.models.poll(ui.ctx());
         self.drum_rack_dialog
@@ -963,6 +970,7 @@ impl App {
             && ctx.memory(egui::Memory::focused) != Some(crate::editor::canvas_id());
         let dialog = self.settings.is_open()
             || self.export.is_open()
+            || self.import_dialog.is_open()
             || self.confirming.is_some()
             || self.palette.is_open()
             || self.template_name.is_some();
@@ -1019,6 +1027,7 @@ impl App {
         // over the canvas and a modal's backdrop covers it. Keep it so.
         let dialog = self.settings.is_open()
             || self.export.is_open()
+            || self.import_dialog.is_open()
             || self.confirming.is_some()
             || self.palette.is_open()
             || self.template_name.is_some();
@@ -1107,8 +1116,13 @@ impl App {
                 });
             });
             ui.separator();
-            item(ui, "Import Audio…", None, true, Action::ImportAudio);
-            item(ui, "Import MIDI…", None, true, Action::ImportMidi);
+            if self.plugin_layout {
+                // No arrangement to import onto: one dialog for both.
+                item(ui, "Import…", None, true, Action::ImportFiles);
+            } else {
+                item(ui, "Import Audio…", None, true, Action::ImportAudio);
+                item(ui, "Import MIDI…", None, true, Action::ImportMidi);
+            }
             item(ui, "Browse Sounds…", None, true, Action::OpenSounds);
             item(ui, "Make Shareable Pack…", None, true, Action::MakePack);
             item(ui, "Export Audio…", None, true, Action::ExportAudio);
@@ -2715,6 +2729,7 @@ impl App {
                 }
             }
             Action::ImportMidi => self.import_midi(),
+            Action::ImportFiles => self.import_dialog.open(),
             Action::ExportMidi => self.export_midi(),
             Action::ExportAudio => self.export.open(&mut self.session),
             Action::StartExport => {
@@ -3120,6 +3135,40 @@ impl App {
         }
         if let Some(notice) = added.notice {
             self.session.notify(notice);
+        }
+    }
+
+    /// Imports what the Import dialog chose: MIDI files as clips, the rest
+    /// (audio files, folders) as a Sample Set on the canvas, which is what
+    /// dropping them there does.
+    fn import_files(&mut self, files: Vec<PathBuf>) {
+        let (midi, rest): (Vec<_>, Vec<_>) = files
+            .into_iter()
+            .partition(|p| crate::import_dialog::kind(p) == crate::import_dialog::Kind::Midi);
+        if !midi.is_empty() {
+            let playhead = self.session.playhead();
+            let at = playhead.max(noodle_core::Tick::ZERO);
+            let added = timeline::midi_file::import(&self.session, &midi, None, at);
+            if let Some(command) = added.command {
+                self.session.clear_message();
+                self.session.edit([crate::session::Edit::Apply(command)]);
+            }
+            if let Some(notice) = added.notice {
+                self.session.notify(notice);
+            }
+        }
+        if !rest.is_empty() {
+            let at = self
+                .editor
+                .view
+                .on(self.editor.canvas)
+                .to_graph(self.editor.canvas.center());
+            self.files_dropped_on_graph(editor::DroppedFiles {
+                paths: rest,
+                on: Err(at),
+                pad: None,
+                group: self.editor.group,
+            });
         }
     }
 
@@ -3553,6 +3602,74 @@ mod tests {
         harness.get_by_label("Import Audio…").click();
         harness.run();
         harness.get_by_label("Add a track before importing audio");
+    }
+
+    fn plugin_app() -> Harness<'static, App> {
+        harness(App::new_plugin(Session::new(crate::session::Nodes::all())))
+    }
+
+    fn sample_sets(h: &Harness<'static, App>) -> usize {
+        h.state()
+            .session
+            .project()
+            .graph()
+            .nodes()
+            .filter(|(_, n)| n.type_id == noodle_nodes::SAMPLE_SET_ID)
+            .count()
+    }
+
+    #[test]
+    fn the_plugin_editors_import_dialog_turns_a_picked_audio_file_into_a_sample_set() {
+        let dir = tempfile::tempdir().unwrap();
+        let tone: Vec<f32> = (0..4800).map(|n| (n as f32 * 0.05).sin() * 0.5).collect();
+        let path = dir.path().join("C4.wav");
+        noodle_io::write_wav(&path, &tone, 1, 48_000).unwrap();
+        answer_pickers_with(path);
+        let mut h = plugin_app();
+        h.run();
+        h.get_by_label("File").click();
+        h.run();
+        assert!(
+            h.query_by_label("Import Audio…").is_none(),
+            "one Import item"
+        );
+        h.get_by_label("Import…").click();
+        h.run();
+        h.get_by_label("Choose files…").click();
+        h.run();
+        assert_eq!(sample_sets(&h), 1);
+        assert!(
+            !h.state().import_dialog.is_open(),
+            "it closes after importing"
+        );
+    }
+
+    #[test]
+    fn the_import_dialog_takes_a_pasted_path_and_says_when_nothing_is_there() {
+        let dir = tempfile::tempdir().unwrap();
+        let tone: Vec<f32> = (0..4800).map(|n| (n as f32 * 0.05).sin() * 0.5).collect();
+        let path = dir.path().join("C4.wav");
+        noodle_io::write_wav(&path, &tone, 1, 48_000).unwrap();
+        let mut h = plugin_app();
+        h.state_mut().import_dialog.open();
+        h.run();
+        h.state_mut()
+            .import_dialog
+            .text_for_test(&format!("{}/missing.wav", dir.path().display()));
+        h.run();
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Import")
+            .click();
+        h.run();
+        h.get_by_label_contains("There is nothing at");
+        assert_eq!(sample_sets(&h), 0);
+        h.state_mut()
+            .import_dialog
+            .text_for_test(&path.display().to_string());
+        h.run();
+        h.get_by_role_and_label(egui::accesskit::Role::Button, "Import")
+            .click();
+        h.run();
+        assert_eq!(sample_sets(&h), 1);
     }
 
     #[test]

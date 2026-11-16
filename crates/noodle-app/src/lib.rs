@@ -23,6 +23,7 @@ mod drum_rack_dialog;
 mod editor;
 mod export_dialog;
 mod freezing;
+mod import_dialog;
 mod inline_result;
 mod keyboard;
 mod latency;

@@ -3,6 +3,12 @@
 //! parameter whose value differs between A and B, and exposes the node's
 //! `position` as a group input named `morph`, all as one undo step.
 //!
+//! Parameters inside nested groups are morphed too: a wire cannot cross a
+//! group boundary, so each nested group that holds differing parameters gets
+//! a Morph node of its own, driven by a group input named `morph` that is
+//! wired, one level up, from the parent's `morph` input. Levels that only
+//! lead to such a group get the input and the pass-through wire, no node.
+//!
 //! Nothing is modulated unseen: the wires are real, and a parameter that
 //! already has a wire or a lane stays out (two sources into one input were
 //! never allowed), as does all config. Taking a parameter out of the morph is
@@ -20,34 +26,97 @@ pub const MORPH_INPUT: &str = "morph";
 /// The name of the second input, `y`, of a four-preset morph.
 pub const MORPH_INPUT_Y: &str = "morph y";
 
-/// The IDs the command's new things take.
+/// The IDs the command's new things take: for each level it morphs, a Morph
+/// node, a frame and (if the group has no input boundary yet) a boundary.
 pub struct Ids {
-    pub morph: NodeId,
-    pub frame: FrameId,
-    /// The group's input boundary node, if it needs one made.
-    pub boundary: NodeId,
+    nodes: Vec<NodeId>,
+    frames: Vec<FrameId>,
 }
 
-/// Whether the only thing feeding `target` is one of `group`'s own inputs that
-/// nothing outside feeds: a control set in the group's panel, not a
-/// modulation. The Morph takes such a parameter over (its wire is replaced, so
-/// the control no longer does anything).
-fn only_from_the_boundary(graph: &noodle_core::Graph, group: NodeId, target: &Endpoint) -> bool {
-    let Some(source) = graph.source(target) else {
-        return false;
-    };
-    let Some(boundary) = graph.node(source.node) else {
-        return false;
-    };
-    if boundary.type_id != GROUP_INPUT || boundary.parent != Some(group) {
-        return false;
+impl Ids {
+    /// How many levels a morph of `group` may touch: the group and every
+    /// group inside it.
+    pub fn levels(graph: &noodle_core::Graph, group: NodeId) -> usize {
+        1 + nested_groups(graph, group).len()
     }
-    graph
-        .group_ports(group)
+
+    /// Enough IDs for `levels` levels.
+    pub fn new(
+        levels: usize,
+        mut node: impl FnMut() -> NodeId,
+        mut frame: impl FnMut() -> FrameId,
+    ) -> Self {
+        Self {
+            nodes: (0..2 * levels).map(|_| node()).collect(),
+            frames: (0..levels).map(|_| frame()).collect(),
+        }
+    }
+
+    fn node(&mut self) -> Result<NodeId, String> {
+        self.nodes.pop().ok_or_else(|| "out of node IDs".to_owned())
+    }
+
+    fn frame(&mut self) -> Result<FrameId, String> {
+        self.frames
+            .pop()
+            .ok_or_else(|| "out of frame IDs".to_owned())
+    }
+}
+
+/// Every group inside `group`, at any depth, parents before children.
+fn nested_groups(graph: &noodle_core::Graph, group: NodeId) -> Vec<NodeId> {
+    let mut found = Vec::new();
+    let mut queue = vec![group];
+    while let Some(parent) = queue.pop() {
+        for (id, node) in graph.children(Some(parent)) {
+            if node.type_id == GROUP {
+                found.push(id);
+                queue.push(id);
+            }
+        }
+    }
+    found
+}
+
+/// The name of the group input that is the only thing feeding `target`: a
+/// control set in a group's panel, not a modulation. The Morph takes such a
+/// parameter over (its wire is replaced, so the control no longer does
+/// anything). A control passed down through nested groups (an input of the
+/// morphed `group` wired to an input of a group inside it, and so on down to
+/// the parameter) counts, as long as nothing outside `group` feeds the first
+/// one; the name is the one in `group`'s panel.
+fn only_from_the_boundary(
+    graph: &noodle_core::Graph,
+    group: NodeId,
+    level: NodeId,
+    target: &Endpoint,
+) -> Option<String> {
+    let source = graph.source(target)?;
+    let boundary = graph.node(source.node)?;
+    if boundary.type_id != GROUP_INPUT || boundary.parent != Some(level) {
+        return None;
+    }
+    let port = graph
+        .group_ports(level)
         .inputs
         .into_iter()
-        .find(|p| p.node == source.node && p.key() == source.port)
-        .is_some_and(|p| graph.source(&Endpoint::new(group, p.name)).is_none())
+        .find(|p| p.node == source.node && p.key() == source.port)?;
+    let outside = graph.source(&Endpoint::new(level, port.name.clone()));
+    match outside {
+        None => Some(port.name),
+        // Fed from the level above: a control of that group passed down.
+        Some(from) if level != group => {
+            let parent = graph.node(level)?.parent?;
+            only_from_the_boundary(graph, group, parent, &Endpoint::new(level, port.name)).filter(
+                |_| {
+                    graph
+                        .node(from.node)
+                        .is_some_and(|n| n.parent == Some(parent))
+                },
+            )
+        }
+        Some(_) => None,
+    }
 }
 
 /// A group input named `base`, or the first free `base 2`, `base 3`, ...
@@ -64,6 +133,8 @@ pub struct Morphed {
     /// How many parameters the Morph drives.
     pub wired: usize,
     pub left_out: Vec<String>,
+    /// Group controls whose only job was a parameter the Morph now drives.
+    pub taken_over: Vec<String>,
 }
 
 impl Morphed {
@@ -72,6 +143,12 @@ impl Morphed {
         let mut text = format!("Morphing {} parameters.", self.wired);
         if !self.left_out.is_empty() {
             text.push_str(&format!(" Left out: {}.", self.left_out.join("; ")));
+        }
+        if !self.taken_over.is_empty() {
+            text.push_str(&format!(
+                " The Morph now drives what these controls did: {}.",
+                self.taken_over.join(", ")
+            ));
         }
         text
     }
@@ -88,7 +165,7 @@ pub fn command(
     group: NodeId,
     a: (&str, &GroupPreset),
     others: &[&GroupPreset],
-    ids: &Ids,
+    mut ids: Ids,
 ) -> Result<Morphed, String> {
     if !matches!(others.len(), 1 | 3) {
         return Err("a morph is between two presets, or four for an XY pad".to_owned());
@@ -110,20 +187,17 @@ pub fn command(
         return Err("a preset is for a differently built group".to_owned());
     }
 
-    let mut rows: Vec<(Endpoint, MorphRow)> = Vec::new();
+    // The rows of each level: a node's parameters are morphed by the Morph
+    // node of the group it is directly in.
     let mut left_out = Vec::new();
-    let mut nested = false;
+    let mut taken_over: Vec<String> = Vec::new();
+    let mut levels: std::collections::BTreeMap<NodeId, Vec<(Endpoint, MorphRow)>> =
+        std::collections::BTreeMap::new();
     for (id, values) in a.1.paired(others, graph, group) {
         let node = graph.node(id).ok_or("a node is gone")?;
-        // A wire stays in one group, so a node inside a nested group can't be
-        // reached from the Morph.
-        if node.parent != Some(group) {
-            if values.iter().any(|v| v.params != values[0].params) && !nested {
-                nested = true;
-                left_out.push("nodes inside nested groups stay as in the first preset".to_owned());
-            }
+        let Some(level) = node.parent else {
             continue;
-        }
+        };
         // A group's own boundary nodes hold levels, not parameters to morph.
         let Some(node_type) = registry.get(&node.type_id) else {
             continue;
@@ -157,13 +231,19 @@ pub fn command(
             }
             let target = Endpoint::new(id, key.clone());
             let name = format!("{label} {}", input.name);
-            if graph.source(&target).is_some() && !only_from_the_boundary(graph, group, &target) {
+            let control = only_from_the_boundary(graph, group, level, &target);
+            if graph.source(&target).is_some() && control.is_none() {
                 left_out.push(format!("{name} has a wire"));
                 continue;
             }
             if project.lane_for(&target).is_some() {
                 left_out.push(format!("{name} has an automation lane"));
                 continue;
+            }
+            if let Some(control) = control
+                && !taken_over.contains(&control)
+            {
+                taken_over.push(control);
             }
             let row = if info.is_offset() {
                 // A wire moves the value along its travel from the base,
@@ -195,113 +275,206 @@ pub fn command(
                     stepped: matches!(info.kind, ParamKind::Stepped { .. }),
                 }
             };
-            rows.push((target, row));
+            levels.entry(level).or_default().push((target, row));
         }
     }
-    if rows.is_empty() {
+    let wired: usize = levels.values().map(Vec::len).sum();
+    if wired == 0 {
         return Err("the two presets don't differ in anything that can be morphed".to_owned());
     }
 
-    // Left of what is inside, in a frame.
-    let (x, y) = graph
-        .children(Some(group))
-        .map(|(_, n)| (n.position.x, n.position.y))
-        .fold((f32::MAX, f32::MAX), |(x, y), (nx, ny)| {
-            (x.min(nx), y.min(ny))
-        });
-    let (x, y) = if x == f32::MAX {
-        (0.0, 0.0)
-    } else {
-        (x - 340.0, y)
-    };
-    let mut morph = Node::new(MORPH_ID).at(x, y).with_config(morph_config(
-        &rows.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>(),
-    ));
-    morph.parent = Some(group);
+    // The levels that need the `morph` input: those with rows, and every
+    // group on the way down to one, so the control reaches it.
+    let mut needed: std::collections::BTreeSet<NodeId> = std::collections::BTreeSet::new();
+    needed.insert(group);
+    for &level in levels.keys() {
+        let mut at = Some(level);
+        while let Some(g) = at {
+            needed.insert(g);
+            if g == group {
+                break;
+            }
+            at = graph.node(g).and_then(|n| n.parent);
+        }
+    }
+    // Parents before children, so a child's input is named after its parent's
+    // is placed.
+    let mut order = vec![group];
+    order.extend(
+        nested_groups(graph, group)
+            .into_iter()
+            .filter(|g| needed.contains(g)),
+    );
 
     let mut commands = vec![apply_a];
-    commands.push(Command::AddNode {
-        id: ids.morph,
-        node: morph,
-    });
-    commands.push(Command::AddFrame {
-        id: ids.frame,
-        frame: Frame {
-            label: "Morph A to B".to_owned(),
-            position: Position {
-                x: x - 20.0,
-                y: y - 40.0,
-            },
-            width: 260.0,
-            height: 80.0 + 22.0 * rows.len() as f32,
-        },
-    });
+    let mut feed: std::collections::BTreeMap<NodeId, Vec<Endpoint>> =
+        std::collections::BTreeMap::new();
+    // Pass 1, per level: the input port(s), the Morph node and its wires.
+    let mut inputs: std::collections::BTreeMap<NodeId, (NodeId, Vec<String>, Vec<String>)> =
+        std::collections::BTreeMap::new();
+    for &level in &order {
+        // The group inputs: `morph` (and `morph y` for four presets), or the
+        // first free `morph 2`, ... All go on the group's one input boundary.
+        let taken = graph.group_ports(level);
+        let name = free_name(&taken, MORPH_INPUT);
+        let suffix = name[MORPH_INPUT.len()..].to_owned();
+        let mut names = vec![name];
+        if xy {
+            names.push(format!("{MORPH_INPUT_Y}{suffix}"));
+        }
+        let existing = graph
+            .children(Some(level))
+            .find(|(_, n)| n.type_id == GROUP_INPUT);
+        let mut ports = existing.map_or_else(Vec::new, |(_, n)| n.boundary_ports());
+        let mut keys = Vec::new();
+        for name in &names {
+            let id = ports.iter().map(|&(id, _)| id).max().map_or(1, |id| id + 1);
+            ports.push((id, name.clone()));
+            keys.push(noodle_core::group::port_key(id));
+        }
+        let boundary = match existing {
+            Some((id, _)) => {
+                commands.push(Command::SetConfig {
+                    node: id,
+                    key: noodle_core::group::PORTS.into(),
+                    value: Some(noodle_core::group::ports_value(&ports)),
+                });
+                id
+            }
+            None => {
+                let x = graph
+                    .children(Some(level))
+                    .map(|(_, n)| n.position.x)
+                    .reduce(f32::min)
+                    .map_or(0.0, |x| x - 250.0);
+                let mut node =
+                    Node::new(GROUP_INPUT).with_config(noodle_core::group::ports_config(&ports));
+                node.position = Position { x, y: 0.0 };
+                node.parent = Some(level);
+                let id = ids.node()?;
+                commands.push(Command::AddNode { id, node });
+                id
+            }
+        };
+        let boundary_id = boundary;
+        inputs.insert(level, (boundary, keys.clone(), names));
 
-    // The group inputs: `morph` (and `morph y` for four presets), or the
-    // first free `morph 2`, ... All go on the group's one input boundary.
-    let taken = graph.group_ports(group);
-    let name = free_name(&taken, MORPH_INPUT);
-    let suffix = name[MORPH_INPUT.len()..].to_owned();
-    let mut names = vec![name];
-    if xy {
-        names.push(format!("{MORPH_INPUT_Y}{suffix}"));
-    }
-    let existing = graph
-        .children(Some(group))
-        .find(|(_, n)| n.type_id == GROUP_INPUT);
-    let mut ports = existing.map_or_else(Vec::new, |(_, n)| n.boundary_ports());
-    let mut keys = Vec::new();
-    for name in names {
-        let id = ports.iter().map(|&(id, _)| id).max().map_or(1, |id| id + 1);
-        ports.push((id, name));
-        keys.push(noodle_core::group::port_key(id));
-    }
-    let boundary = match existing {
-        Some((id, _)) => {
-            commands.push(Command::SetConfig {
-                node: id,
-                key: noodle_core::group::PORTS.into(),
-                value: Some(noodle_core::group::ports_value(&ports)),
-            });
-            id
+        let Some(own) = levels.get(&level) else {
+            // No Morph here: the input itself is what the groups below get.
+            feed.insert(
+                level,
+                keys.iter()
+                    .map(|k| Endpoint::new(boundary_id, k.clone()))
+                    .collect(),
+            );
+            continue;
+        };
+        let mut rows = own.clone();
+        let passes = order
+            .iter()
+            .skip(1)
+            .any(|&c| graph.node(c).and_then(|n| n.parent) == Some(level));
+        let first_pass = rows.len();
+        if passes {
+            // The groups below follow the Morph's own position, so a
+            // slider or pad on it moves them too: rows that give it back.
+            let line = |name: &str, a: f32, b: f32, c: f32, d: f32| MorphRow {
+                name: name.to_owned(),
+                min: 0.0,
+                max: 1.0,
+                log: false,
+                a,
+                b,
+                c,
+                d,
+                stepped: false,
+            };
+            let dummy = Endpoint::new(NodeId(0), "");
+            rows.push((
+                dummy.clone(),
+                line("Position for nested groups", 0.0, 1.0, 0.0, 1.0),
+            ));
+            if xy {
+                rows.push((dummy, line("y for nested groups", 0.0, 0.0, 1.0, 1.0)));
+            }
         }
-        None => {
-            let x = graph
-                .children(Some(group))
-                .map(|(_, n)| n.position.x)
-                .reduce(f32::min)
-                .map_or(0.0, |x| x - 250.0);
-            let mut node =
-                Node::new(GROUP_INPUT).with_config(noodle_core::group::ports_config(&ports));
-            node.position = Position { x, y: 0.0 };
-            node.parent = Some(group);
-            commands.push(Command::AddNode {
-                id: ids.boundary,
-                node,
+        // Left of what is inside, in a frame.
+        let (x, y) = graph
+            .children(Some(level))
+            .map(|(_, n)| (n.position.x, n.position.y))
+            .fold((f32::MAX, f32::MAX), |(x, y), (nx, ny)| {
+                (x.min(nx), y.min(ny))
             });
-            ids.boundary
+        let (x, y) = if x == f32::MAX {
+            (0.0, 0.0)
+        } else {
+            (x - 340.0, y)
+        };
+        let mut morph = Node::new(MORPH_ID).at(x, y).with_config(morph_config(
+            &rows.iter().map(|(_, r)| r.clone()).collect::<Vec<_>>(),
+        ));
+        morph.parent = Some(level);
+        let morph_id = ids.node()?;
+        commands.push(Command::AddNode {
+            id: morph_id,
+            node: morph,
+        });
+        commands.push(Command::AddFrame {
+            id: ids.frame()?,
+            frame: Frame {
+                label: "Morph A to B".to_owned(),
+                position: Position {
+                    x: x - 20.0,
+                    y: y - 40.0,
+                },
+                width: 260.0,
+                height: 80.0 + 22.0 * rows.len() as f32,
+            },
+        });
+        let (boundary, keys, _) = &inputs[&level];
+        commands.push(spare::wire(
+            Endpoint::new(*boundary, keys[0].clone()),
+            Endpoint::new(morph_id, MORPH_POSITION),
+        ));
+        if xy {
+            commands.push(spare::wire(
+                Endpoint::new(*boundary, keys[1].clone()),
+                Endpoint::new(morph_id, MORPH_Y),
+            ));
         }
-    };
-    commands.push(spare::wire(
-        Endpoint::new(boundary, keys[0].clone()),
-        Endpoint::new(ids.morph, MORPH_POSITION),
-    ));
-    if xy {
-        commands.push(spare::wire(
-            Endpoint::new(boundary, keys[1].clone()),
-            Endpoint::new(ids.morph, MORPH_Y),
-        ));
+        for (i, (target, _)) in rows.iter().enumerate().take(first_pass) {
+            commands.push(spare::wire(
+                Endpoint::new(morph_id, morph_output_key(i)),
+                target.clone(),
+            ));
+        }
+        feed.insert(
+            level,
+            (first_pass..rows.len())
+                .map(|i| Endpoint::new(morph_id, morph_output_key(i)))
+                .collect(),
+        );
     }
-    for (i, (target, _)) in rows.iter().enumerate() {
-        commands.push(spare::wire(
-            Endpoint::new(ids.morph, morph_output_key(i)),
-            target.clone(),
-        ));
+    // Pass 2: each nested level's input is fed, one level up, by the
+    // parent's own `morph` input.
+    for &level in order.iter().skip(1) {
+        let parent = graph
+            .node(level)
+            .and_then(|n| n.parent)
+            .ok_or("a nested group has no parent")?;
+        let (_, _, child_names) = &inputs[&level];
+        for (from, name) in feed[&parent].iter().zip(child_names) {
+            commands.push(spare::wire(
+                from.clone(),
+                Endpoint::new(level, name.clone()),
+            ));
+        }
     }
     Ok(Morphed {
         command: Command::Batch(commands),
-        wired: rows.len(),
+        wired,
         left_out,
+        taken_over,
     })
 }
 
@@ -401,19 +574,24 @@ mod tests {
         (a, b)
     }
 
+    fn test_ids(session: &mut Session, group: NodeId) -> Ids {
+        let levels = Ids::levels(session.project().graph(), group);
+        let mut nodes = std::iter::repeat_with(|| session.new_node_id()).take(2 * levels);
+        let nodes: Vec<NodeId> = nodes.by_ref().collect();
+        let mut frames: Vec<FrameId> = (0..levels).map(|_| session.new_frame_id()).collect();
+        let mut nodes = nodes.into_iter();
+        Ids::new(levels, || nodes.next().unwrap(), || frames.pop().unwrap())
+    }
+
     fn morph_edit(session: &mut Session, lead: &Lead, a: &GroupPreset, b: &GroupPreset) -> Morphed {
-        let ids = Ids {
-            morph: session.new_node_id(),
-            frame: session.new_frame_id(),
-            boundary: session.new_node_id(),
-        };
+        let ids = test_ids(session, lead.group);
         let morphed = command(
             session.project(),
             session.registry(),
             lead.group,
             ("A", a),
             &[b],
-            &ids,
+            ids,
         )
         .unwrap();
         session.edit([Edit::Apply(morphed.command.clone())]);
@@ -522,23 +700,181 @@ mod tests {
         assert!(!close(&at_a, &at_b), "A and B sound the same");
     }
 
+    struct Nested {
+        outer: NodeId,
+        top: NodeId,
+        mid: NodeId,
+        gain: NodeId,
+    }
+
+    /// A saw into `mid`, a group that holds only `inner`, a group that holds
+    /// a gain; out through the outer group to the output. The saw is at the
+    /// top level of the group, the gain two groups down, and the middle group
+    /// holds no parameter of its own.
+    fn nested(session: &mut Session) -> Nested {
+        let named = |n: &str| Config::new().with("name", Value::Text(n.into()));
+        let outer = add(session, Node::new(GROUP).with_config(named("Outer")));
+        let mid = add(
+            session,
+            Node::new(GROUP).with_config(named("Mid")).in_group(outer),
+        );
+        let inner = add(
+            session,
+            Node::new(GROUP).with_config(named("Inner")).in_group(mid),
+        );
+        let saw = add(session, Node::new("noodle.osc.saw").in_group(outer));
+        let gain = add(session, Node::new("noodle.util.gain").in_group(inner));
+        let boundary = |session: &mut Session, parent: NodeId, kind: &str, port: &str| {
+            let node = Node::new(kind)
+                .with_config(ports_config(&[(1, port.into())]))
+                .in_group(parent);
+            add(session, node)
+        };
+        let outer_out = boundary(session, outer, GROUP_OUTPUT, "out");
+        let mid_in = boundary(session, mid, GROUP_INPUT, "in");
+        let mid_out = boundary(session, mid, GROUP_OUTPUT, "out");
+        let inner_in = boundary(session, inner, GROUP_INPUT, "in");
+        let inner_out = boundary(session, inner, GROUP_OUTPUT, "out");
+        wire(session, (saw, "out"), (mid, "in"));
+        let top = add(session, Node::new("noodle.util.gain").in_group(outer));
+        wire(session, (mid, "out"), (top, "in"));
+        wire(session, (top, "out"), (outer_out, "p1"));
+        wire(session, (mid_in, "p1"), (inner, "in"));
+        wire(session, (inner, "out"), (mid_out, "p1"));
+        wire(session, (inner_in, "p1"), (gain, "in"));
+        wire(session, (gain, "out"), (inner_out, "p1"));
+        let output = add(session, Node::new(OUTPUT_ID));
+        wire(session, (outer, "out"), (output, "in"));
+        Nested {
+            outer,
+            top,
+            mid,
+            gain,
+        }
+    }
+
+    #[test]
+    fn a_morph_reaches_parameters_in_nested_groups_through_group_inputs() {
+        let mut session = Session::new(Nodes::all());
+        let n = nested(&mut session);
+        set(&mut session, n.top, "gain", -6.0);
+        set(&mut session, n.gain, "gain", -12.0);
+        let a = GroupPreset::capture(session.project().graph(), n.outer, "A");
+        set(&mut session, n.top, "gain", -1.0);
+        set(&mut session, n.gain, "gain", -3.0);
+        let b = GroupPreset::capture(session.project().graph(), n.outer, "B");
+        let reference = |preset: &GroupPreset| {
+            let mut s = Session::new(Nodes::all());
+            let r = nested(&mut s);
+            let command = preset
+                .apply(s.project().graph(), r.outer, "x", &|n: &Node| {
+                    noodle_engine::Registry::with_builtins().layout_signature(n)
+                })
+                .unwrap();
+            s.edit([Edit::Apply(command)]);
+            render(&s)
+        };
+        let (want_a, want_b) = (reference(&a), reference(&b));
+
+        let ids = test_ids(&mut session, n.outer);
+        let morphed = command(
+            session.project(),
+            session.registry(),
+            n.outer,
+            ("A", &a),
+            &[&b],
+            ids,
+        )
+        .unwrap();
+        assert_eq!(morphed.wired, 2, "{:?}", morphed.left_out);
+        assert!(morphed.left_out.is_empty(), "{:?}", morphed.left_out);
+        let before = session.project().clone();
+        session.edit([Edit::Apply(morphed.command)]);
+        let after = session.project().clone();
+        // One undo step, though it touches three groups.
+        session.undo();
+        assert_eq!(session.project().graph(), before.graph());
+        session.redo();
+        assert_eq!(session.project().graph(), after.graph());
+
+        let graph = session.project().graph();
+        let morphs: Vec<NodeId> = graph
+            .nodes()
+            .filter(|(_, n)| n.type_id == MORPH_ID)
+            .map(|(id, _)| id)
+            .collect();
+        assert_eq!(
+            morphs.len(),
+            2,
+            "one in the outer group, one beside the inner gain"
+        );
+        // The middle group only passes the control down: an input, no Morph.
+        assert!(graph.group_ports(n.mid).input("morph").is_some());
+        assert!(
+            graph
+                .children(Some(n.mid))
+                .all(|(_, node)| node.type_id != MORPH_ID)
+        );
+        let inner_morph = *morphs
+            .iter()
+            .find(|&&m| graph.node(m).unwrap().parent != Some(n.outer))
+            .unwrap();
+        let top_morph = *morphs.iter().find(|&&m| m != inner_morph).unwrap();
+        assert_eq!(
+            graph.source(&Endpoint::new(n.gain, "gain")).unwrap().node,
+            inner_morph
+        );
+        assert_eq!(
+            graph.source(&Endpoint::new(n.top, "gain")).unwrap().node,
+            top_morph
+        );
+        let close = |x: &[f32], y: &[f32]| {
+            x.len() == y.len() && x.iter().zip(y).all(|(p, q)| (p - q).abs() < 1e-3)
+        };
+        set(&mut session, top_morph, "position", 0.0);
+        let at_a = render(&session);
+        set(&mut session, top_morph, "position", 1.0);
+        let at_b = render(&session);
+        assert!(close(&at_a, &want_a), "position 0 isn't preset A");
+        assert!(close(&at_b, &want_b), "position 1 isn't preset B");
+        assert!(!close(&at_a, &at_b));
+    }
+
+    #[test]
+    fn the_notice_names_the_controls_the_morph_took_over() {
+        let mut session = Session::new(Nodes::all());
+        let lead = lead(&mut session);
+        // Cutoff is set by a control of the group, which nothing outside feeds.
+        let input = add(
+            &mut session,
+            Node::new(GROUP_INPUT)
+                .with_config(ports_config(&[(1, "Brightness".into())]))
+                .in_group(lead.group),
+        );
+        wire(&mut session, (input, "p1"), (lead.filter, "cutoff"));
+        let (a, b) = presets(&mut session, &lead);
+        let morphed = morph_edit(&mut session, &lead, &a, &b);
+        assert_eq!(morphed.taken_over, vec!["Brightness".to_owned()]);
+        assert!(
+            morphed.notice().contains("Brightness"),
+            "{}",
+            morphed.notice()
+        );
+    }
+
     #[test]
     fn identical_presets_have_nothing_to_morph() {
         let mut session = Session::new(Nodes::all());
         let lead = lead(&mut session);
         let a = GroupPreset::capture(session.project().graph(), lead.group, "A");
-        let ids = Ids {
-            morph: session.new_node_id(),
-            frame: session.new_frame_id(),
-            boundary: session.new_node_id(),
-        };
+        let ids = test_ids(&mut session, lead.group);
         let result = command(
             session.project(),
             session.registry(),
             lead.group,
             ("A", &a),
             &[&a],
-            &ids,
+            ids,
         );
         assert!(result.is_err());
     }
@@ -554,18 +890,14 @@ mod tests {
         set(&mut session, lead.filter, "cutoff", 100.0);
         set(&mut session, lead.gain, "gain", 0.0);
         let d = GroupPreset::capture(session.project().graph(), lead.group, "D");
-        let ids = Ids {
-            morph: session.new_node_id(),
-            frame: session.new_frame_id(),
-            boundary: session.new_node_id(),
-        };
+        let ids = test_ids(&mut session, lead.group);
         let morphed = command(
             session.project(),
             session.registry(),
             lead.group,
             ("A", &a),
             &[&b, &c, &d],
-            &ids,
+            ids,
         )
         .unwrap();
         session.edit([Edit::Apply(morphed.command)]);
@@ -593,7 +925,7 @@ mod tests {
         let template = session
             .library()
             .templates()
-            .find(|(_, t)| t.name == "Tempo Echo")
+            .find(|(_, t)| t.name == "Lead Synth")
             .map(|(id, t)| (id.to_string(), t.clone()))
             .unwrap();
         let mut next = session.new_node_id().0;
@@ -620,6 +952,21 @@ mod tests {
                 .graph()
                 .nodes()
                 .any(|(_, n)| n.type_id == MORPH_ID),
+            "{:?}",
+            session.message()
+        );
+        // The voices sit in a nested group; it has its own Morph, fed from
+        // the group's `morph` input, so the notice no longer says some
+        // parameters were left behind.
+        let graph = session.project().graph();
+        assert!(
+            graph
+                .nodes()
+                .any(|(_, n)| n.type_id == MORPH_ID && n.parent != Some(group)),
+            "no Morph inside a nested group"
+        );
+        assert!(
+            !session.message().unwrap_or_default().contains("nested"),
             "{:?}",
             session.message()
         );
