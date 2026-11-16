@@ -21,6 +21,12 @@
   exactly the nodes downstream to change (and undo to restore all of them),
   layout-only edits to change none, and a group's fader to move only keys after
   the group.
+- **Cached against live.** `noodle-nodes/tests/freeze.rs` freezes a group
+  whose outputs include notes, a spectrum or a sample choice (leaving it,
+  entering it, nested) and requires the project played from the cache to match
+  the live one to within 1e-5, after taking off the latency the live graph
+  sounds late by, and with no diagnostics. Reinstating the original bug (stages
+  on non-signal boundary ports) fails five of the six; the sixth, notes entering a group, guards the input side only.
 - **Real-time safety:** the audio-thread allocation check runs in all
   debug builds and tests. `tests/parallel.rs` does the same for a plan on
   worker threads, counting allocations on every thread, and checks it sounds
