@@ -1059,6 +1059,7 @@ mod tests {
                 pitched: 0.0,
                 pitch_key: None,
                 attack_peaks: 1,
+                shape: Default::default(),
             },
         }
     }

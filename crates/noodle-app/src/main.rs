@@ -42,9 +42,11 @@ fn main() -> ExitCode {
     }
     session.set_templates_dir(prefs::templates_dir());
     let mut engine_on = true;
+    let mut browser_open = true;
     if let Some(path) = prefs::default_path() {
         let prefs = prefs::init(path);
         engine_on = prefs.engine_on;
+        browser_open = prefs.browser_open;
         session.set_audio_config(prefs.audio.clone());
         session.set_sandbox_plugins(prefs.sandbox_plugins);
         session.set_monitor_device(&prefs.monitor_device);
@@ -74,6 +76,7 @@ fn main() -> ExitCode {
                 move || ctx.request_repaint(),
             )));
             let mut app = App::new(session);
+            app.show_browser_at_start(browser_open);
             if let Some(dir) = autosave::default_dir() {
                 app.set_autosave(autosave::Autosave::new(dir));
             }

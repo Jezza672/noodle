@@ -254,8 +254,8 @@ pub static ENTRIES: &[Entry] = &[
         "view.browser",
         "Show or Hide Browser",
         Action::ToggleBrowser,
-        None,
-        false,
+        chord(CMD, Key::B),
+        true,
     ),
     entry(
         "view.browser.collapse",

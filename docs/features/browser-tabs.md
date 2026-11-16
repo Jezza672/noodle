@@ -9,7 +9,7 @@ into the properties panel.
 the browser, one panel at the left of the window (`noodle-app/src/browser.rs`),
 shown from View > Browser. The whole panel collapses to a thin strip (◀ at its
 top right) and opens from the strip (▶), so it can stay out of the canvas's way;
-the palette has "Show or Hide Browser" and "Collapse or Expand Browser". The
+Cmd/Ctrl+B shows or hides it, and the palette has "Show or Hide Browser" and "Collapse or Expand Browser". It is shown the first time Noodle starts, and afterwards as it was left (`Prefs::browser_open`; off when no preferences are loaded, so tests and plugin hosts start without it). The
 panel's width can be dragged.
 
 - **Sounds:** unchanged (search, filters, audition, drag onto a Sampler, pad,
@@ -44,6 +44,11 @@ lists scroll with the wheel, the Sounds tab's Add source menu opens Settings on 
 `properties.rs` (the section). Story routes S31 to S33 open the sounds from
 View > Browser. The lists' scroll bars are always shown, so they can be dragged.
 
-**Owed.** The panel's open, collapsed and tab state is not remembered between
-runs. A preset can't be dragged onto a node already on the canvas (use the
+**Owed.** Whether the panel is shown is remembered between runs, but whether it is collapsed and which tab is open are not. A preset can't be dragged onto a node already on the canvas (use the
 properties section).
+
+## Fold arrows
+
+The ▸/▾ arrows that unfold a row's presets are painted triangles
+(`browser::fold_arrow`), not text, so they don't depend on the font having the
+glyphs.

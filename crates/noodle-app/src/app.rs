@@ -397,6 +397,13 @@ impl App {
         app
     }
 
+    /// Starts with the browser panel shown, or not: a real launch passes what
+    /// the preferences say (open the first time), and everything else leaves
+    /// it hidden.
+    pub fn show_browser_at_start(&mut self, shown: bool) {
+        self.browser = crate::browser::Browser::starting(shown);
+    }
+
     /// The session, for the plugin shell, whose host asks things of it.
     pub fn session(&self) -> &Session {
         &self.session
@@ -1285,7 +1292,7 @@ impl App {
             if ui
                 .selectable_label(self.browser.is_shown(), "Browser")
                 .on_hover_text(
-                    "Sounds, nodes, groups and presets in a panel at the side. \
+                    "Sounds, nodes and groups in a panel at the side (Cmd/Ctrl+B). \
                      It collapses to a strip",
                 )
                 .clicked()
@@ -2693,7 +2700,10 @@ impl App {
             Action::ToggleScope => self.scope_open = !self.scope_open,
             Action::TogglePlugins => self.plugin_browser.toggle(),
             Action::OpenSounds => self.sounds.open(),
-            Action::ToggleBrowser => self.browser.toggle(),
+            Action::ToggleBrowser => {
+                self.browser.toggle();
+                crate::prefs::remember_browser_open(self.browser.is_shown());
+            }
             Action::CollapseBrowser => self.browser.toggle_collapsed(),
             Action::MakePack => self.sounds.choose_pack_folder(),
             Action::ToggleCache => self.cache_panel.toggle(),
@@ -5979,7 +5989,7 @@ mod tests {
             h.query_by_label("Deep Kick").is_none(),
             "folded until asked for"
         );
-        h.get_by_label("▸").click();
+        h.get_by_label("Show presets").click();
         h.run();
         h.get_by_label("Deep Kick").click();
         h.run_steps(3);
@@ -6013,7 +6023,7 @@ mod tests {
         app.browser.search_nodes(&name);
         let mut h = harness(app);
         h.run();
-        h.get_all_by_label("▸")
+        h.get_all_by_label("Show presets")
             .next()
             .expect("a row with presets")
             .click();
@@ -6160,5 +6170,30 @@ mod tests {
                 );
             }
         }
+    }
+
+    /// The browser is open the first time Noodle starts, Cmd/Ctrl+B shows and
+    /// hides it, and it starts as it was left.
+    #[test]
+    fn the_browser_starts_open_and_ctrl_b_toggles_it_and_is_remembered() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("prefs.ron");
+        let prefs = crate::prefs::init(path.clone());
+        assert!(prefs.browser_open, "open the first time Noodle starts");
+        let mut app = App::new(Session::new(crate::session::Nodes::all()));
+        app.show_browser_at_start(prefs.browser_open);
+        let mut h = harness(app);
+        h.run_steps(3);
+        assert!(h.state().browser.is_shown(), "open on the first launch");
+        let at = egui::pos2(500.0, 300.0);
+        crate::testkit::press(&mut h, at, Modifiers::COMMAND, Key::B);
+        h.run_steps(3);
+        assert!(!h.state().browser.is_shown(), "closed by the shortcut");
+        // The next launch starts as it was left.
+        assert!(!crate::prefs::load(&path).unwrap().browser_open);
+        crate::testkit::press(&mut h, at, Modifiers::COMMAND, Key::B);
+        h.run_steps(3);
+        assert!(h.state().browser.is_shown(), "opened again");
+        assert!(crate::prefs::load(&path).unwrap().browser_open);
     }
 }
