@@ -124,6 +124,13 @@ pub static ENTRIES: &[Entry] = &[
         false,
     ),
     entry(
+        "file.import_files",
+        "Import audio or MIDI by file or path…",
+        Action::ImportFiles,
+        None,
+        false,
+    ),
+    entry(
         "view.sounds",
         "Browse Sounds…",
         Action::OpenSounds,
