@@ -7,17 +7,39 @@
 //! named by [`DrumPart`], so what reads this does not care which model ran
 //! (see [`pads_for`](super::pads_for) and [`part_for`](super::part_for)).
 
+use noodle_io::{Hit, analyse_hits};
+
 use crate::drum::{DrumPart, PartSeparator};
 use crate::split::{fit, to_rate};
 use crate::{ModelId, SeparateError, Stereo};
 
 /// A part is active in a hit when it is within this many decibels of the
-/// loudest part of the hit. Separators leak a little of every part into the
-/// others (about -30 dB), so a part under this is bleed, not a drum.
+/// loudest part of the hit. Separators leak the other parts into each part:
+/// on real songs drumsep's leak is often within 20 dB, so a margin that wide
+/// calls nearly every hit mixed; 10 dB leaves about half of a song's hits with
+/// one clearly dominant part.
 ///
-/// Not tuned on real kits yet: the listening test on dry, loud rock, electronic
-/// and room-miked kits is owed (see `docs/ROADMAP.md`).
-pub const ACTIVE_WITHIN_DB: f32 = 20.0;
+/// Not tuned by ear on real kits yet: the listening test on dry, loud rock,
+/// electronic and room-miked kits is owed (see `docs/ROADMAP.md`).
+pub const ACTIVE_WITHIN_DB: f32 = 10.0;
+
+/// An event found in several parts keeps the detections of the parts within
+/// this many decibels of the loudest. Wider than [`ACTIVE_WITHIN_DB`], which
+/// decides what is *mixed*: a hat 14 dB under the kick it is struck with is a
+/// hit of its own (its part found an onset), but the pair is still mixed.
+const KEEP_WITHIN_DB: f32 = 20.0;
+
+/// Hits quieter than this (peak, relative to full scale) are not kept when
+/// hits are found in the parts: the same cut-off the drum binning uses.
+const QUIET_DB: f32 = -45.0;
+
+/// Detections in different parts within this long of each other are one event
+/// (the same sound, or drums struck together).
+const SAME_EVENT_SECONDS: f64 = 0.025;
+
+/// Which part is loudest for an event is judged over this long from its first
+/// onset: short, so a ringing cymbal cannot outvote a kick or snare.
+const LOUDEST_SECONDS: f64 = 0.03;
 
 /// A part quieter than this (relative to full scale) is never active, whatever
 /// the others are: silence next to silence is not a drum.
@@ -45,6 +67,9 @@ pub struct HitSeparation {
     pub active: Vec<DrumPart>,
     /// The hit's window of each part, as long as the hit, at the clip's rate.
     pub audio: Vec<(DrumPart, Stereo)>,
+    /// The part the hit was found in, by [`separate_and_find_hits`]; `None`
+    /// when the hits were given to [`separate_hits`].
+    pub home: Option<DrumPart>,
 }
 
 impl HitSeparation {
@@ -89,16 +114,14 @@ fn slice(audio: &Stereo, from: usize, to: usize) -> Stereo {
     }
 }
 
-/// Runs `separator` over `audio` (at `rate`) and describes each of `hits`.
-/// `progress` is told how far along it is (0 to 1) and answers whether to go
-/// on; on `false` this stops with [`SeparateError::Cancelled`].
-pub fn separate_hits(
+/// Runs `separator` over `audio` and brings its parts back to `rate` and the
+/// length of `audio`.
+fn parts_at_rate(
     separator: &mut dyn PartSeparator,
     audio: &Stereo,
     rate: u32,
-    hits: &[HitWindow],
     progress: &mut dyn FnMut(f32) -> bool,
-) -> Result<Separation, SeparateError> {
+) -> Result<Vec<(DrumPart, Stereo)>, SeparateError> {
     let fail =
         |what: &str, e: &dyn std::fmt::Display| SeparateError::Failed(format!("{what}: {e}"));
     if !progress(0.0) {
@@ -110,7 +133,7 @@ pub fn separate_hits(
         return Err(SeparateError::Cancelled);
     }
     let parts = {
-        let mut inner = |f: f32| progress(0.05 + 0.85 * f);
+        let mut inner = |f: f32| progress(0.05 + 0.75 * f);
         separator.separate(&mix, &mut inner)?
     };
     drop(mix);
@@ -120,17 +143,30 @@ pub fn separate_hits(
         let back = to_rate(&stereo, model_rate, rate).map_err(|e| fail("can't resample", &e))?;
         at_rate.push((part, fit(back, audio.len())));
     }
-    if !progress(0.95) {
+    if !progress(0.8) {
         return Err(SeparateError::Cancelled);
     }
+    Ok(at_rate)
+}
+
+/// What each of `hits` holds of each of `parts` (which are as long as the clip,
+/// at `rate`). `homes` says which part each hit was found in, if it was.
+fn describe(
+    model: ModelId,
+    parts: &[(DrumPart, Stereo)],
+    rate: u32,
+    hits: &[HitWindow],
+    homes: &[Option<DrumPart>],
+) -> Separation {
     let compare = ((COMPARE_SECONDS * f64::from(rate)) as usize).max(1);
     let described = hits
         .iter()
-        .map(|hit| {
+        .zip(homes)
+        .map(|(hit, home)| {
             let (start, end) = (hit.start as usize, hit.end as usize);
             let onset = (hit.onset as usize).clamp(start, end);
             let to = (onset + compare).min(end);
-            let levels: Vec<(DrumPart, f32)> = at_rate
+            let levels: Vec<(DrumPart, f32)> = parts
                 .iter()
                 .map(|(p, a)| (*p, level_db(a, onset, to)))
                 .collect();
@@ -144,19 +180,110 @@ pub fn separate_hits(
             HitSeparation {
                 levels,
                 active: active.into_iter().map(|(p, _)| p).collect(),
-                audio: at_rate
+                audio: parts
                     .iter()
                     .map(|(p, a)| (*p, slice(a, start, end)))
                     .collect(),
+                home: *home,
             }
         })
         .collect();
-    progress(1.0);
-    Ok(Separation {
-        model: separator.model(),
-        parts: at_rate.iter().map(|(p, _)| *p).collect(),
+    Separation {
+        model,
+        parts: parts.iter().map(|(p, _)| *p).collect(),
         hits: described,
-    })
+    }
+}
+
+/// Runs `separator` over `audio` (at `rate`) and describes each of `hits`.
+/// `progress` is told how far along it is (0 to 1) and answers whether to go
+/// on; on `false` this stops with [`SeparateError::Cancelled`].
+pub fn separate_hits(
+    separator: &mut dyn PartSeparator,
+    audio: &Stereo,
+    rate: u32,
+    hits: &[HitWindow],
+    progress: &mut dyn FnMut(f32) -> bool,
+) -> Result<Separation, SeparateError> {
+    let at_rate = parts_at_rate(separator, audio, rate, &mut |f| progress(f * 0.95))?;
+    let homes = vec![None; hits.len()];
+    let separation = describe(separator.model(), &at_rate, rate, hits, &homes);
+    progress(1.0);
+    Ok(separation)
+}
+
+/// Separates `audio` (at `rate`) into drum parts, then finds the hits in each
+/// part rather than in the whole mix, so a hat over a kick is two hits, each
+/// cut from its own part. An event heard in several parts at once (a detection
+/// in each within [`SAME_EVENT_SECONDS`]) keeps the detections of the parts
+/// within [`KEEP_WITHIN_DB`] of the loudest at its start; the rest is the
+/// separator's leakage, not a drum, and is dropped. The hits are
+/// in onset order and the [`Separation`] describes them one for one, with
+/// [`HitSeparation::home`] set.
+pub fn separate_and_find_hits(
+    separator: &mut dyn PartSeparator,
+    audio: &Stereo,
+    rate: u32,
+    progress: &mut dyn FnMut(f32) -> bool,
+) -> Result<(Vec<Hit>, Separation), SeparateError> {
+    let at_rate = parts_at_rate(separator, audio, rate, &mut |f| progress(f * 0.7))?;
+    let count = at_rate.len().max(1) as f32;
+    let mut found: Vec<(usize, Hit)> = Vec::new();
+    for (index, (_, part)) in at_rate.iter().enumerate() {
+        let mono: Vec<f32> = part
+            .left
+            .iter()
+            .zip(&part.right)
+            .map(|(l, r)| 0.5 * (l + r))
+            .collect();
+        let base = 0.7 + 0.3 * index as f32 / count;
+        let hits = analyse_hits(&mono, rate, &mut |f| progress(base + 0.3 * f / count))
+            .map_err(|_| SeparateError::Cancelled)?;
+        found.extend(
+            hits.into_iter()
+                .filter(|h| h.level_db >= QUIET_DB)
+                .map(|h| (index, h)),
+        );
+    }
+    found.sort_by_key(|(index, h)| (h.onset, *index));
+    let window = ((SAME_EVENT_SECONDS * f64::from(rate)) as u64).max(1);
+    let judged = ((LOUDEST_SECONDS * f64::from(rate)) as usize).max(1);
+    let mut kept: Vec<(usize, Hit)> = Vec::new();
+    let mut at = 0;
+    while at < found.len() {
+        let first = found[at].1.onset;
+        let mut end = at;
+        while end < found.len() && found[end].1.onset < first + window {
+            end += 1;
+        }
+        let levels: Vec<f32> = at_rate
+            .iter()
+            .map(|(_, a)| level_db(a, first as usize, first as usize + judged))
+            .collect();
+        let loudest = levels.iter().copied().fold(f32::NEG_INFINITY, f32::max);
+        if loudest > FLOOR_DB {
+            kept.extend(
+                found[at..end]
+                    .iter()
+                    .filter(|(i, _)| levels[*i] >= loudest - KEEP_WITHIN_DB)
+                    .cloned(),
+            );
+        }
+        at = end;
+    }
+    kept.sort_by_key(|(index, h)| (h.onset, *index));
+    let windows: Vec<HitWindow> = kept
+        .iter()
+        .map(|(_, h)| HitWindow {
+            onset: h.onset,
+            start: h.start,
+            end: h.end.min(audio.len() as u64),
+        })
+        .collect();
+    let homes: Vec<Option<DrumPart>> = kept.iter().map(|(i, _)| Some(at_rate[*i].0)).collect();
+    let separation = describe(separator.model(), &at_rate, rate, &windows, &homes);
+    progress(1.0);
+    Ok((kept.into_iter().map(|(_, h)| h).collect(), separation))
 }
 
 #[cfg(test)]
@@ -340,5 +467,97 @@ mod tests {
             f < 0.3
         });
         assert_eq!(result, Err(SeparateError::Cancelled));
+    }
+
+    fn kick() -> Vec<f32> {
+        let mut phase = 0.0f32;
+        (0..RATE as usize / 4)
+            .map(|i| {
+                let t = i as f32 / RATE as f32;
+                phase += std::f32::consts::TAU * (45.0 + 110.0 * (-t * 40.0).exp()) / RATE as f32;
+                0.8 * phase.sin() * (-t * 14.0).exp()
+            })
+            .collect()
+    }
+
+    fn hat() -> Vec<f32> {
+        let mut state = 99u32;
+        let mut low = 0.0f32;
+        (0..RATE as usize / 10)
+            .map(|i| {
+                state = state.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                let n = (state >> 8) as f32 / (1u32 << 23) as f32 - 1.0;
+                low += 0.6 * (n - low);
+                let t = i as f32 / RATE as f32;
+                0.5 * (n - low) * (-t * 60.0).exp()
+            })
+            .collect()
+    }
+
+    fn put(into: &mut Stereo, at_seconds: f32, sound: &[f32], gain: f32) {
+        let at = (at_seconds * RATE as f32) as usize;
+        for (i, v) in sound.iter().enumerate() {
+            into.left[at + i] += gain * v;
+            into.right[at + i] += gain * v;
+        }
+    }
+
+    #[test]
+    fn hits_are_found_in_each_part_so_a_hat_over_a_kick_is_two_hits() {
+        let n = 2 * RATE as usize;
+        let (mut kicks, mut hats) = (Stereo::silent(n), Stereo::silent(n));
+        put(&mut kicks, 0.2, &kick(), 1.0);
+        put(&mut kicks, 1.2, &kick(), 1.0);
+        put(&mut hats, 0.7, &hat(), 8.0);
+        put(&mut hats, 1.2, &hat(), 8.0);
+        // The kick leaks into the hat part, 35 dB down: leakage, not a hit.
+        put(&mut hats, 0.2, &kick(), 0.018);
+        let mut separator = Canned {
+            parts: vec![(DrumPart::Kick, kicks), (DrumPart::HiHat, hats)],
+            rate: RATE,
+        };
+        let (hits, separation) =
+            separate_and_find_hits(&mut separator, &Stereo::silent(n), RATE, &mut |_| true)
+                .unwrap();
+        assert_eq!(
+            hits.len(),
+            4,
+            "{:?}",
+            hits.iter().map(|h| h.onset).collect::<Vec<_>>()
+        );
+        let homes: Vec<_> = separation.hits.iter().map(|h| h.home).collect();
+        assert_eq!(
+            homes,
+            vec![
+                Some(DrumPart::Kick),
+                Some(DrumPart::HiHat),
+                Some(DrumPart::Kick),
+                Some(DrumPart::HiHat)
+            ]
+        );
+        assert!(hits.windows(2).all(|w| w[0].onset <= w[1].onset));
+        assert!(
+            !separation.hits[0].is_mixed(),
+            "the leak is under the margin"
+        );
+        assert!(
+            separation.hits[2].is_mixed(),
+            "the kick and the hat sound together"
+        );
+        assert!(separation.hits[3].is_mixed());
+        // Each hit is cut from its own part.
+        assert!(separation.hits[1].part_audio(DrumPart::HiHat).is_some());
+    }
+
+    #[test]
+    fn finding_hits_in_parts_can_be_cancelled() {
+        let n = RATE as usize;
+        let mut separator = Canned {
+            parts: vec![(DrumPart::Kick, Stereo::silent(n))],
+            rate: RATE,
+        };
+        let result =
+            separate_and_find_hits(&mut separator, &Stereo::silent(n), RATE, &mut |f| f < 0.5);
+        assert!(matches!(result, Err(SeparateError::Cancelled)));
     }
 }

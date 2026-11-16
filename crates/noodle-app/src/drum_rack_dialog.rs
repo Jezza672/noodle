@@ -87,6 +87,8 @@ enum Action {
 
 struct State {
     clip: ClipId,
+    /// The analysis's `generation` these bins were made from.
+    generation: u32,
     merge: f32,
     binning: Binning,
     pads: BTreeMap<u8, Placed>,
@@ -109,6 +111,7 @@ impl State {
         binning.relabel(&analysis.hits, analysis.labeller.as_ref());
         let mut state = Self {
             clip: analysis.clip,
+            generation: analysis.generation,
             merge: DEFAULT_MERGE,
             binning,
             pads: BTreeMap::new(),
@@ -457,7 +460,11 @@ impl DrumRackDialog {
             self.state = None;
             return;
         };
-        if self.state.as_ref().is_none_or(|s| s.clip != analysis.clip) {
+        if self
+            .state
+            .as_ref()
+            .is_none_or(|s| s.clip != analysis.clip || s.generation != analysis.generation)
+        {
             self.state = Some(State::new(&analysis));
         }
         let state = self.state.as_mut().expect("just made");
@@ -1293,6 +1300,7 @@ mod tests {
             levels: Vec::new(),
             active: vec![DrumPart::Kick],
             audio: Vec::new(),
+            home: None,
         };
         let mut hits: Vec<HitSeparation> = (0..8).map(|_| none()).collect();
         hits[0].active = vec![DrumPart::Kick, DrumPart::HiHat];
