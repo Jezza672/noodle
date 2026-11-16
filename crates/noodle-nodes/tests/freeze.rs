@@ -1694,11 +1694,22 @@ impl Rig {
 
     /// Two outputs, one for each source. Nothing joins them but the output
     /// itself, so the cache makes no cut of its own downstream of the groups.
-    fn sum_to_output(&mut self, id: u64, a: (NodeId, &str), b: (NodeId, &str)) {
+    fn two_outputs(&mut self, id: u64, a: (NodeId, &str), b: (NodeId, &str)) {
         for (n, source) in [a, b].into_iter().enumerate() {
             let out = self.node(id + n as u64, Node::new(OUTPUT_ID));
             self.wire(source, (out, "in"));
         }
+    }
+
+    /// A gain of -90 dB on `from`, so a bypass is there but can't hide a
+    /// silent path under test.
+    fn quiet(&mut self, id: u64, from: (NodeId, &str)) -> NodeId {
+        let gain = self.node(
+            id,
+            Node::new(noodle_nodes::GAIN_ID).with_param("gain", -90.0),
+        );
+        self.wire(from, (gain, "in"));
+        gain
     }
 
     /// Freezes the cache for a pass at the start, then checks the cached
@@ -1731,7 +1742,7 @@ fn notes_leaving_a_cached_group_still_play_live() {
     let (in_b, _, mix_b) = rig.voice_chain(26);
     rig.wire((euclid, "out"), (in_a, "in"));
     rig.wire((euclid, "out"), (in_b, "in"));
-    rig.sum_to_output(30, (mix_a, "out"), (mix_b, "out"));
+    rig.two_outputs(30, (mix_a, "out"), (mix_b, "out"));
     let group = rig.group(&[euclid, in_a, mix_a, NodeId(23)]);
     let ports = rig.project.graph().group_ports(group);
     assert_eq!(ports.outputs.len(), 2, "one audio output, one for notes");
@@ -1747,7 +1758,7 @@ fn notes_entering_a_cached_group_play_the_same_from_the_cache() {
     let (in_b, _, mix_b) = rig.voice_chain(26);
     rig.wire((euclid, "out"), (in_a, "in"));
     rig.wire((euclid, "out"), (in_b, "in"));
-    rig.sum_to_output(30, (mix_a, "out"), (mix_b, "out"));
+    rig.two_outputs(30, (mix_a, "out"), (mix_b, "out"));
     let group = rig.group(&[in_a, saw_a, mix_a]);
     assert_eq!(rig.project.graph().group_ports(group).inputs.len(), 1);
     rig.cached_plays_like_live("notes into a cached group");
@@ -1762,9 +1773,12 @@ fn notes_cross_nested_cached_groups() {
     let (in_b, _, mix_b) = rig.voice_chain(26);
     rig.wire((euclid, "out"), (in_a, "in"));
     rig.wire((euclid, "out"), (in_b, "in"));
-    rig.sum_to_output(30, (mix_a, "out"), (mix_b, "out"));
+    rig.two_outputs(30, (mix_a, "out"), (mix_b, "out"));
     let inner = rig.group(&[in_a, saw_a, mix_a]);
-    rig.group(&[euclid, inner]);
+    let outer = rig.group(&[euclid, inner]);
+    // Notes cross the outer group's boundary (to chain B) and the inner one's.
+    assert_eq!(rig.project.graph().group_ports(outer).outputs.len(), 2);
+    assert_eq!(rig.project.graph().group_ports(inner).inputs.len(), 1);
     rig.cached_plays_like_live("notes through nested cached groups");
 }
 
@@ -1786,7 +1800,7 @@ fn a_spectrum_leaving_a_cached_group_still_plays_live() {
         Node::new(noodle_nodes::GAIN_ID).with_param("gain", -90.0),
     );
     rig.wire((saw, "out"), (quiet, "in"));
-    rig.sum_to_output(44, (synth, "out"), (quiet, "out"));
+    rig.two_outputs(44, (synth, "out"), (quiet, "out"));
     let group = rig.group(&[saw, analyse]);
     assert_eq!(rig.project.graph().group_ports(group).outputs.len(), 2);
     rig.cached_plays_like_live("a spectrum out of a cached group");
@@ -1805,7 +1819,8 @@ fn a_spectrum_crossing_cached_groups_plays_the_same() {
     let synth = rig.node(43, Node::new("noodle.spectral.synthesize"));
     rig.wire((saw, "out"), (analyse, "in"));
     rig.wire((analyse, "spectrum"), (synth, "spectrum"));
-    rig.sum_to_output(44, (synth, "out"), (saw, "out"));
+    let bypass = rig.quiet(47, (saw, "out"));
+    rig.two_outputs(44, (synth, "out"), (bypass, "out"));
     rig.group(&[analyse]);
     rig.group(&[synth]);
     rig.cached_plays_like_live("a spectrum across groups");
@@ -1829,7 +1844,8 @@ fn a_sample_choice_crossing_a_cached_group_plays_the_same() {
     let other = rig.node(24, Node::new("noodle.osc.sine"));
     rig.wire((euclid, "out"), (sampler, "in"));
     rig.wire((chosen, "sample"), (sampler, "sample"));
-    rig.sum_to_output(30, (sampler, "out"), (other, "out"));
+    let other = rig.quiet(47, (other, "out"));
+    rig.two_outputs(30, (sampler, "out"), (other, "out"));
     rig.group(&[chosen]);
     rig.group(&[euclid, sampler]);
     rig.cached_plays_like_live("a sample choice across cached groups");

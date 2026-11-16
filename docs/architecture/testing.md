@@ -26,7 +26,7 @@
   entering it, nested) and requires the project played from the cache to match
   the live one to within 1e-5, after taking off the latency the live graph
   sounds late by, and with no diagnostics. Reinstating the original bug (stages
-  on non-signal boundary ports) fails five of the six.
+  on non-signal boundary ports) fails five of the six; the sixth, notes entering a group, guards the input side only.
 - **Real-time safety:** the audio-thread allocation check runs in all
   debug builds and tests. `tests/parallel.rs` does the same for a plan on
   worker threads, counting allocations on every thread, and checks it sounds
