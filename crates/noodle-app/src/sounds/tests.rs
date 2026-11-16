@@ -514,7 +514,7 @@ mod library_packs {
         settle(&mut s, &theirs);
         let listed = entry(&s, "Boom").clone();
         assert_eq!(listed.kind, catalogue::Kind::NodePreset);
-        assert_eq!(listed.needs, [hash.clone()]);
+        assert_eq!(listed.needs, std::slice::from_ref(&hash));
         // The Sounds tab lists the sound and not the preset, the Library tab the reverse.
         let sounds_tab = catalogue::list(s.entries(), &s.filter, &s.cached);
         let library_tab = catalogue::list(s.entries(), &s.library_filter, &s.installed);

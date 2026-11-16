@@ -59,7 +59,7 @@ pub fn candidates(session: &Session) -> Vec<Candidate> {
 }
 
 /// The pack being made.
-#[derive(Clone)]
+#[derive(Clone, Default)]
 pub struct Draft {
     pub name: String,
     pub id: String,
@@ -70,21 +70,6 @@ pub struct Draft {
     pub tags: String,
     /// The IDs of the entries chosen.
     pub picked: HashSet<String>,
-}
-
-impl Default for Draft {
-    fn default() -> Self {
-        Self {
-            name: String::new(),
-            id: String::new(),
-            id_typed: false,
-            description: String::new(),
-            author: String::new(),
-            licence: Choice::default(),
-            tags: String::new(),
-            picked: HashSet::new(),
-        }
-    }
 }
 
 impl Draft {
