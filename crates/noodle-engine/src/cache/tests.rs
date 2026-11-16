@@ -55,6 +55,18 @@ fn registry() -> Registry {
             layout,
         });
     };
+    // What flattening puts at a group's boundary (the real one is in
+    // `noodle-nodes`).
+    add(
+        noodle_core::group::GROUP_STAGE,
+        1,
+        Layout::realtime()
+            .input("in", "In")
+            .param("gain", "Gain", ParamInfo::new(-60.0, 24.0, 0.0))
+            .param("mute", "Mute", ParamInfo::new(0.0, 1.0, 0.0))
+            .param("solo_mute", "Solo mute", ParamInfo::new(0.0, 1.0, 0.0))
+            .output("out", "Out"),
+    );
     add("source", 1, Layout::realtime().output("out", "Out"));
     add(
         "live",
@@ -719,4 +731,205 @@ fn moving_a_node_changes_neither_the_partition_nor_a_key() {
         after.output_key(send, 0).unwrap()
     );
     assert_eq!(cuts(&rig), [send]);
+}
+
+/// A small, seeded random number generator, so failures reproduce.
+struct XorShift(u64);
+
+impl XorShift {
+    fn below(&mut self, n: usize) -> usize {
+        self.0 ^= self.0 << 13;
+        self.0 ^= self.0 >> 7;
+        self.0 ^= self.0 << 17;
+        (self.0 % n as u64) as usize
+    }
+}
+
+/// A random acyclic patch of sources, `thru` nodes (with a parameter) and
+/// joins, wired from lower IDs to higher ones.
+fn random_patch(rng: &mut XorShift) -> (Rig, Vec<NodeId>) {
+    let mut rig = Rig::new();
+    let count = 3 + rng.below(10);
+    let mut ids = Vec::new();
+    for n in 0..count {
+        let kind = if n == 0 {
+            "source"
+        } else {
+            ["source", "thru", "thru", "join"][rng.below(4)]
+        };
+        let id = rig.add(n as u64 + 1, kind);
+        if kind != "source" {
+            let ports: &[&str] = if kind == "join" { &["a", "b"] } else { &["in"] };
+            for port in ports {
+                if rng.below(5) != 0 {
+                    let from = ids[rng.below(ids.len())];
+                    rig.wire(from, id, port);
+                }
+            }
+        }
+        ids.push(id);
+    }
+    (rig, ids)
+}
+
+/// What each node's output key is, for the nodes that can be cached.
+fn all_keys(rig: &Rig, ids: &[NodeId]) -> Vec<Option<CacheKey>> {
+    let analysis = rig.analysis(1000);
+    ids.iter()
+        .map(|&id| analysis.output_key(id, 0).ok())
+        .collect()
+}
+
+/// The nodes that read `node`, directly or through others, and itself.
+fn downstream(rig: &Rig, node: NodeId) -> std::collections::BTreeSet<NodeId> {
+    let mut found = std::collections::BTreeSet::from([node]);
+    loop {
+        let before = found.len();
+        for c in rig.project.graph().connections() {
+            if found.contains(&c.from.node) {
+                found.insert(c.to.node);
+            }
+        }
+        if found.len() == before {
+            return found;
+        }
+    }
+}
+
+/// A key has to follow everything that changes the sound and nothing that
+/// doesn't: a parameter changes the key of its node and everything
+/// downstream, and of nothing else; undo brings every key back; and edits
+/// that are only layout (moving, port order, a preset's name) change none.
+#[test]
+fn a_keys_change_follows_exactly_what_is_downstream_of_the_edit() {
+    let mut rng = XorShift(0xcafe_f00d);
+    let mut sensitive = 0;
+    for patch in 0..60 {
+        let (mut rig, ids) = random_patch(&mut rng);
+        let before = all_keys(&rig, &ids);
+        assert!(before.iter().any(Option::is_some));
+
+        for &id in &ids {
+            if rig.project.graph().node(id).unwrap().type_id != "thru" {
+                continue;
+            }
+            rig.apply(Command::SetParam {
+                node: id,
+                key: "amount".into(),
+                value: Some(0.9),
+            });
+            let after = all_keys(&rig, &ids);
+            let reach = downstream(&rig, id);
+            for (n, &other) in ids.iter().enumerate() {
+                if reach.contains(&other) {
+                    assert_ne!(after[n], before[n], "patch {patch}: {other} should change");
+                    sensitive += 1;
+                } else {
+                    assert_eq!(after[n], before[n], "patch {patch}: {other} should not");
+                }
+            }
+            rig.history.undo(&mut rig.project).unwrap();
+            assert_eq!(all_keys(&rig, &ids), before, "patch {patch}: undo");
+        }
+
+        for &id in &ids {
+            rig.apply(Command::MoveNode {
+                node: id,
+                position: noodle_core::Position { x: 9.0, y: 7.0 },
+            });
+            rig.apply(Command::SetPortOrder {
+                node: id,
+                order: vec!["out".into()],
+            });
+            rig.apply(Command::SetPreset {
+                node: id,
+                preset: Some("somewhere".into()),
+            });
+        }
+        assert_eq!(all_keys(&rig, &ids), before, "patch {patch}: layout only");
+    }
+    assert!(sensitive > 100, "{sensitive}");
+}
+
+/// What the playback cache stores is the sound before a group's own faders,
+/// so a fader or a mute on a group's output changes what is downstream of
+/// the group and never what is inside it, and nothing a group is made of
+/// changes keys that don't read it.
+#[test]
+fn a_group_fader_moves_keys_after_the_group_and_none_inside_it() {
+    use noodle_core::group::{GAIN, control_key, group_nodes};
+    let mut rng = XorShift(0x5eed_1234);
+    let mut faders = 0;
+    for patch in 0..60 {
+        let (mut rig, ids) = random_patch(&mut rng);
+        // Fold a random pick of the patch into a group.
+        let picked: Vec<NodeId> = ids.iter().copied().filter(|_| rng.below(3) == 0).collect();
+        if picked.is_empty() {
+            continue;
+        }
+        let before_group = all_keys(&rig, &ids);
+        // What reads something that left the group, however far on: those
+        // keys now include a group output's stage.
+        let wires: Vec<Connection> = rig.project.graph().connections().collect();
+        let mut after_group = std::collections::BTreeSet::new();
+        loop {
+            let before = after_group.len();
+            for c in &wires {
+                let leaves = picked.contains(&c.from.node) && !picked.contains(&c.to.node);
+                if leaves || after_group.contains(&c.from.node) {
+                    after_group.insert(c.to.node);
+                }
+            }
+            if after_group.len() == before {
+                break;
+            }
+        }
+        let (group, command) =
+            group_nodes(&rig.project.clone(), &picked, || rig.project.new_node_id()).unwrap();
+        rig.apply(command);
+        let grouped = all_keys(&rig, &ids);
+        let fed_by_group = |id: NodeId| after_group.contains(&id);
+        for (n, &id) in ids.iter().enumerate() {
+            if !fed_by_group(id) {
+                assert_eq!(
+                    grouped[n], before_group[n],
+                    "patch {patch}: grouping moved {id}"
+                );
+            }
+        }
+
+        let Some(output) = rig
+            .project
+            .graph()
+            .group_ports(group)
+            .outputs
+            .first()
+            .map(|p| p.node)
+        else {
+            continue;
+        };
+        rig.apply(Command::SetParam {
+            node: output,
+            key: control_key(GAIN, 1),
+            value: Some(-6.0),
+        });
+        let faded = all_keys(&rig, &ids);
+        for (n, &id) in ids.iter().enumerate() {
+            // (Unless it reads something that left the group and came back.)
+            if picked.contains(&id) && !after_group.contains(&id) {
+                assert_eq!(
+                    faded[n], grouped[n],
+                    "patch {patch}: the fader moved {id} inside"
+                );
+            }
+        }
+        if ids
+            .iter()
+            .enumerate()
+            .any(|(n, id)| !picked.contains(id) && faded[n] != grouped[n])
+        {
+            faders += 1;
+        }
+    }
+    assert!(faders > 5, "{faders}");
 }

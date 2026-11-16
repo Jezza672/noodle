@@ -47,9 +47,11 @@ impl NodeType for TestType {
         inputs: &[Shape],
     ) -> Result<Vec<Shape>, NodeError> {
         let broadcast = Shape::broadcast_all(inputs.iter().copied())?;
+        // Signal outputs, then spectral ones.
+        let outputs = layout.outputs.len() + layout.spectral_outputs.len();
         Ok(match self.outputs {
-            Outputs::Broadcast => vec![broadcast; layout.outputs.len()],
-            Outputs::Fixed(shape) => vec![shape; layout.outputs.len()],
+            Outputs::Broadcast => vec![broadcast; outputs],
+            Outputs::Fixed(shape) => vec![shape; outputs],
             Outputs::Split => vec![broadcast, Shape::new(broadcast.voices, 2)],
         })
     }
@@ -104,6 +106,29 @@ fn registry() -> Registry {
         "notes",
         Layout::realtime()
             .event_input("notes", "Notes")
+            .output("out", "Out"),
+        Outputs::Broadcast,
+    );
+    // Spectral wires: `analyse` turns signal into spectrum, `spectral` passes
+    // it, `resynth` turns it back.
+    add(
+        "analyse",
+        Layout::realtime()
+            .input("in", "In")
+            .spectral_output("out", "Out"),
+        Outputs::Broadcast,
+    );
+    add(
+        "spectral",
+        Layout::realtime()
+            .spectral_input("spectrum", "Spectrum")
+            .spectral_output("out", "Out"),
+        Outputs::Broadcast,
+    );
+    add(
+        "resynth",
+        Layout::realtime()
+            .spectral_input("spectrum", "Spectrum")
             .output("out", "Out"),
         Outputs::Broadcast,
     );
@@ -209,6 +234,7 @@ fn check(graph: &Graph, schedule: &Schedule, diagnostics: &[Diagnostic]) {
     );
     let mut holds: HashMap<BufferId, Endpoint> = HashMap::new();
     let mut event_holds: HashMap<EventBufferId, Endpoint> = HashMap::new();
+    let mut spectral_holds: HashMap<SpectralBufferId, Endpoint> = HashMap::new();
 
     for node in &schedule.nodes {
         for (port, source) in node.layout.inputs.iter().zip(&node.inputs) {
@@ -246,6 +272,50 @@ fn check(graph: &Graph, schedule: &Schedule, diagnostics: &[Diagnostic]) {
                 }
                 None => assert_explained(&input),
             }
+        }
+
+        for (port, source) in node
+            .layout
+            .spectral_inputs
+            .iter()
+            .zip(&node.spectral_inputs)
+        {
+            let input = Endpoint::new(node.id, port.key.as_ref());
+            match source {
+                Some(b) => {
+                    let wired = graph.source(&input).expect("spectral input must be wired");
+                    assert_eq!(
+                        spectral_holds.get(b),
+                        Some(wired),
+                        "{input} read a stale spectral buffer"
+                    );
+                    assert_eq!(
+                        schedule.spectral_sizes[b.0], node.spectral_size,
+                        "{input} reads a buffer of another FFT size"
+                    );
+                }
+                None => assert_explained(&input),
+            }
+        }
+        assert_distinct(&node.spectral_outputs, "spectral outputs share a buffer");
+        for (b, port) in node
+            .spectral_outputs
+            .iter()
+            .zip(&node.layout.spectral_outputs)
+        {
+            assert!(
+                b.0 < schedule.spectral_lanes.len(),
+                "no spectral buffer {b:?}"
+            );
+            assert!(
+                !node.spectral_inputs.contains(&Some(*b)),
+                "spectral output aliases a spectral input"
+            );
+            assert_eq!(
+                schedule.spectral_sizes[b.0], node.spectral_size,
+                "spectral buffer of the wrong FFT size"
+            );
+            spectral_holds.insert(*b, Endpoint::new(node.id, port.key.as_ref()));
         }
 
         assert_distinct(&node.outputs, "outputs share a buffer");
@@ -663,9 +733,12 @@ fn random_graphs_compile_to_valid_schedules() {
         "note_thru",
         "notes",
         "delayish",
+        "analyse",
+        "spectral",
+        "resynth",
     ];
-    // Each fixture's outputs and inputs, as (port key, is an event port).
-    type Ports = Vec<(String, bool)>;
+    // Each fixture's outputs and inputs, as (port key, kind: 0 signal, 1 event, 2 spectral).
+    type Ports = Vec<(String, u8)>;
     let ports: HashMap<&str, (Ports, Ports)> = types
         .iter()
         .map(|&type_id| {
@@ -674,22 +747,28 @@ fn random_graphs_compile_to_valid_schedules() {
                 .unwrap()
                 .layout(&Config::new())
                 .unwrap();
-            let signal_in = layout.inputs.iter().map(|p| (p.key.to_string(), false));
-            let signal_out = layout.outputs.iter().map(|p| (p.key.to_string(), false));
-            let events_in = layout
-                .event_inputs
-                .iter()
-                .map(|p| (p.key.to_string(), true));
+            let signal_in = layout.inputs.iter().map(|p| (p.key.to_string(), 0u8));
+            let signal_out = layout.outputs.iter().map(|p| (p.key.to_string(), 0u8));
+            let events_in = layout.event_inputs.iter().map(|p| (p.key.to_string(), 1u8));
             let events_out = layout
                 .event_outputs
                 .iter()
-                .map(|p| (p.key.to_string(), true));
-            let outputs = signal_out.chain(events_out).collect();
-            let inputs = signal_in.chain(events_in).collect();
+                .map(|p| (p.key.to_string(), 1u8));
+            let spectral_in = layout
+                .spectral_inputs
+                .iter()
+                .map(|p| (p.key.to_string(), 2u8));
+            let spectral_out = layout
+                .spectral_outputs
+                .iter()
+                .map(|p| (p.key.to_string(), 2u8));
+            let outputs = signal_out.chain(events_out).chain(spectral_out).collect();
+            let inputs = signal_in.chain(events_in).chain(spectral_in).collect();
             (type_id, (outputs, inputs))
         })
         .collect();
     let mut rng = XorShift(0x5eed);
+    let mut spectral_reads = 0;
 
     for _ in 0..500 {
         let mut p = Project::new();
@@ -709,7 +788,7 @@ fn random_graphs_compile_to_valid_schedules() {
             let (from_port, is_event) = &outputs[rng.below(outputs.len())];
             // Mostly pick an input of the same kind; occasionally any input,
             // to exercise kind mismatches.
-            let inputs: Vec<&(String, bool)> = ports[to_type]
+            let inputs: Vec<&(String, u8)> = ports[to_type]
                 .1
                 .iter()
                 .filter(|(_, kind)| rng.below(10) == 0 || kind == is_event)
@@ -719,6 +798,13 @@ fn random_graphs_compile_to_valid_schedules() {
                 wire(&mut p, from, from_port, to, to_port);
             }
         }
-        compile_checked(&p);
+        let (schedule, _) = compile_checked(&p);
+        spectral_reads += schedule
+            .nodes
+            .iter()
+            .filter(|n| n.spectral_inputs.iter().any(Option::is_some))
+            .count();
     }
+    // The generator has to reach spectral wires, or their checks prove nothing.
+    assert!(spectral_reads > 100, "{spectral_reads}");
 }

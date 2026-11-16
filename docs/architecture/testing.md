@@ -14,6 +14,13 @@
   same property on random wiring, with no audio. `noodle-core/tests/random_edits.rs`
   applies random edits (add, wire, move into a group, remove, group), checking
   that undo and redo reach every state exactly and a save loads back equal.
+- **Schedules and cache keys, randomised.** The compiler's random-graph test
+  covers signal, event and spectral wires, and its checker verifies every
+  buffer an input reads (spectral ones and their FFT sizes included). The
+  cache tests change a parameter in a random patch and require the key of
+  exactly the nodes downstream to change (and undo to restore all of them),
+  layout-only edits to change none, and a group's fader to move only keys after
+  the group.
 - **Real-time safety:** the audio-thread allocation check runs in all
   debug builds and tests. `tests/parallel.rs` does the same for a plan on
   worker threads, counting allocations on every thread, and checks it sounds
