@@ -1,15 +1,15 @@
-//! Drum separation models in the app: which are enabled, downloading and
-//! removing their weights, the Models tab of Settings and the first-use popup.
+//! Drum separation models in the app: downloading and removing their weights,
+//! and the Models tab of Settings.
 //!
 //! What a model is lives in `noodle_stems::drum` (manifests, and the store that
-//! keeps the weights). This is the user's side: *enabled* is a setting kept in
-//! the preferences (a model not in them has not been asked about yet), and a
-//! model is *ready* when it is enabled and its weights are on disk. The drum
-//! rack dialog offers only the ready ones.
+//! keeps the weights). A model is *ready* when its weights are on disk: there is
+//! no separate on/off switch, a downloaded model is offered and Remove turns it
+//! off. Downloading starts where the model is needed (the Create drum rack
+//! dialog, the Split to stems dialog), which shows the licence and size first;
+//! the Models tab is where they are managed afterwards.
 //!
 //! A model whose manifest has no address or checksum yet cannot be downloaded
-//! (`StoreError::NotPublished`). The UI says "not available yet" for it, and
-//! the first-use popup leaves it unasked until it can be downloaded.
+//! (`StoreError::NotPublished`). The UI says "not available yet" for it.
 
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -68,8 +68,6 @@ pub struct Models {
     running: BTreeMap<&'static str, Download>,
     /// Why the last download or removal of a model failed.
     problems: BTreeMap<&'static str, String>,
-    /// The first-use popup's toggles, while it is open.
-    popup: Option<BTreeMap<&'static str, bool>>,
     /// Split to stems: its models, where their weights are kept, and the
     /// downloads under way and what went wrong with them.
     stem_specs: Vec<ModelSpec>,
@@ -109,7 +107,6 @@ impl Models {
             fetch,
             running: BTreeMap::new(),
             problems: BTreeMap::new(),
-            popup: None,
             stem_specs: ModelSpec::all(),
             stem_store: directories::ProjectDirs::from("", "", "Noodle")
                 .map(|dirs| ModelStore::new(dirs.data_dir().join("models"))),
@@ -117,15 +114,6 @@ impl Models {
             stem_running: BTreeMap::new(),
             stem_problems: BTreeMap::new(),
         }
-    }
-
-    /// Whether a Split to stems model is switched on (the default).
-    pub fn stem_enabled(&self, model: &ModelSpec) -> bool {
-        !crate::prefs::stem_models_off().contains(model.id)
-    }
-
-    pub fn set_stem_enabled(&self, model: &ModelSpec, on: bool) {
-        crate::prefs::remember_stem_model(model.id, on);
     }
 
     pub fn stem_downloaded(&self, model: &ModelSpec) -> bool {
@@ -173,18 +161,6 @@ impl Models {
         self.store.as_ref().map(|s| s.dir())
     }
 
-    /// Whether the user has switched `model` on. Not asked about yet is off.
-    pub fn is_enabled(&self, model: &DrumModelManifest) -> bool {
-        crate::prefs::drum_models()
-            .get(model.id)
-            .copied()
-            .unwrap_or(false)
-    }
-
-    pub fn set_enabled(&self, model: &DrumModelManifest, on: bool) {
-        crate::prefs::remember_drum_model(model.id, on);
-    }
-
     pub fn is_downloaded(&self, model: &DrumModelManifest) -> bool {
         self.store.as_ref().is_some_and(|s| s.is_downloaded(model))
     }
@@ -193,13 +169,13 @@ impl Models {
         self.running.contains_key(model.id)
     }
 
-    /// The models the drum rack dialog offers: enabled, and downloaded, in the
+    /// The models the drum rack dialog offers: the downloaded ones, in the
     /// order the app lists them.
     pub fn ready(&self) -> Vec<&'static DrumModelManifest> {
         self.manifests
             .iter()
             .copied()
-            .filter(|m| self.is_enabled(m) && self.is_downloaded(m))
+            .filter(|m| self.is_downloaded(m))
             .collect()
     }
 
@@ -233,8 +209,8 @@ impl Models {
         }
     }
 
-    /// Deletes the weights of `model`. It stays enabled, but is not offered
-    /// until it is downloaded again.
+    /// Deletes the weights of `model`. It is not offered until it is
+    /// downloaded again.
     pub fn remove(&mut self, model: &DrumModelManifest) {
         let Some(store) = &self.store else { return };
         match store.remove(model) {
@@ -298,115 +274,36 @@ impl Models {
         }
     }
 
-    // ---- first-use popup ----
-
-    /// The models the popup would ask about: not answered yet, and
-    /// downloadable.
-    fn unasked(&self) -> Vec<&'static DrumModelManifest> {
-        let answered = crate::prefs::drum_models();
-        self.manifests
-            .iter()
-            .copied()
-            .filter(|m| m.is_published() && !answered.contains_key(m.id))
-            .collect()
-    }
-
-    /// Whether the first-use popup is due: some model is downloadable and has
-    /// not been asked about.
-    pub fn first_use_due(&self) -> bool {
-        self.popup.is_some() || !self.unasked().is_empty()
-    }
-
-    /// Draws the first-use popup, which offers each model not answered for yet
-    /// with a toggle. A model under a non-commercial licence starts off, so a
-    /// download of it is a choice. Download selected enables and fetches the
-    /// ticked ones; Not now leaves every one off. Either way the models are
-    /// answered for, and the Models tab changes them later.
-    pub fn show_first_use(&mut self, ctx: &egui::Context) {
-        let asking = self.unasked();
-        if asking.is_empty() {
-            self.popup = None;
-            return;
-        }
-        let mut toggles = self.popup.take().unwrap_or_default();
-        for m in &asking {
-            toggles.entry(m.id).or_insert(starts_on(m));
-        }
-        let mut answer = None;
-        let modal = crate::dialog::modal(ctx, "models first use", |ui| {
-            ui.set_max_width(480.0);
-            ui.heading("Separation models");
-            ui.add_space(6.0);
-            ui.label(
-                "Create drum rack can pull apart drums that sound together using an AI \
-                 model. The models are not included with Noodle: each is downloaded once \
-                 from its author's page and kept on this computer. Your audio is never \
-                 uploaded. Pick the ones to download now.",
-            );
-            ui.add_space(6.0);
-            for m in &asking {
-                let on = toggles.entry(m.id).or_default();
-                ui.checkbox(on, RichText::new(m.name).strong());
-                ui.indent(m.id, |ui| facts(ui, m));
-                ui.add_space(4.0);
-            }
-            if let Some(folder) = self.folder() {
-                ui.weak(format!("Kept in {}", folder.display()));
-            }
-            ui.weak("You can change this later in Settings, on the Models tab.");
-            ui.add_space(8.0);
-            ui.horizontal(|ui| {
-                let any = toggles.values().any(|on| *on);
-                if ui
-                    .add_enabled(any, egui::Button::new("Download selected"))
-                    .clicked()
-                {
-                    answer = Some(true);
-                }
-                if ui.button("Not now").clicked() {
-                    answer = Some(false);
-                }
-            });
-        });
-        if modal.should_close() {
-            answer.get_or_insert(false);
-        }
-        match answer {
-            Some(download) => self.answer(&asking, &toggles, download),
-            None => self.popup = Some(toggles),
-        }
-    }
-
-    /// Records the popup's answer for `asking`: with `download`, the ticked
-    /// models are enabled and fetched and the rest are off; without, all are off.
-    fn answer(
-        &mut self,
-        asking: &[&'static DrumModelManifest],
-        toggles: &BTreeMap<&'static str, bool>,
-        download: bool,
-    ) {
-        for &m in asking {
-            let on = download && toggles.get(m.id).copied().unwrap_or(false);
-            self.set_enabled(m, on);
-            if on {
-                self.download(m);
-            }
-        }
-    }
-
     // ---- the Models tab ----
 
-    /// The body of the Models tab: one block per model.
+    /// Whether any model is downloading (for the tab's status dot).
+    pub fn any_downloading(&self) -> bool {
+        !self.running.is_empty() || !self.stem_running.is_empty()
+    }
+
+    /// The body of the Models tab: one compact list, drum models then the
+    /// Split to stems model. Licence, author and source sit behind a row's
+    /// disclosure; the non-commercial chip stays on the row.
     pub fn body(&mut self, ui: &mut Ui) {
-        ui.weak(
-            "The AI models Create drum rack can separate drums with. A model is offered \
-             there when it is enabled and downloaded. They are not included with Noodle.",
-        );
-        ui.add_space(4.0);
+        for model in self.manifests.clone() {
+            self.drum_row(ui, model);
+        }
+        for model in self.stem_specs.clone() {
+            self.stem_row(ui, &model);
+        }
+        ui.add_space(8.0);
+        ui.separator();
+        let mut total = 0;
+        for m in &self.manifests {
+            total += self.store.as_ref().map_or(0, |s| s.size_on_disk(m));
+        }
+        for m in &self.stem_specs {
+            total += self.stem_store.as_ref().map_or(0, |s| s.size_on_disk(m));
+        }
         match self.folder() {
             Some(folder) => {
-                ui.horizontal(|ui| {
-                    ui.label("Stored in");
+                ui.horizontal_wrapped(|ui| {
+                    ui.weak(format!("{} on this computer, in", human_size(total)));
                     ui.label(
                         RichText::new(folder.display().to_string())
                             .monospace()
@@ -421,149 +318,198 @@ impl Models {
                 );
             }
         }
-        for model in self.manifests.clone() {
-            ui.add_space(6.0);
-            ui.separator();
-            self.block(ui, model);
-        }
-        ui.add_space(10.0);
-        ui.heading("Split to stems");
-        ui.weak(
-            "The model that splits a clip into drums, bass, vocals and the rest. It runs on \
-             ONNX Runtime, which is downloaded with it. Not included with Noodle.",
-        );
-        if let Some(store) = &self.stem_store {
-            ui.horizontal(|ui| {
-                ui.label("Stored in");
-                ui.label(
-                    RichText::new(store.dir().display().to_string())
-                        .monospace()
-                        .small(),
-                );
-            });
-        }
-        for model in self.stem_specs.clone() {
-            ui.add_space(6.0);
-            ui.separator();
-            self.stem_block(ui, &model);
-        }
     }
 
-    fn stem_block(&mut self, ui: &mut Ui, model: &ModelSpec) {
-        let info = model.info();
-        let downloaded = self.stem_downloaded(model);
-        let mut enabled = self.stem_enabled(model);
-        if ui
-            .checkbox(&mut enabled, RichText::new(info.name).strong())
-            .on_hover_text("Offered in Split to stems when on")
-            .changed()
-        {
-            self.set_stem_enabled(model, enabled);
-        }
-        ui.indent(model.id, |ui| {
-            ui.label(format!("Separates: {}", info.separates));
-            ui.label(format!("Size: about {}", human_size(info.bytes)));
-            ui.label(format!("Licence: {}", info.licence));
-            ui.weak(format!("By {}", info.credit));
-            if !info.source_url.is_empty() {
-                ui.hyperlink_to("Source", info.source_url);
+    /// One row: name, what it is used by, size, and one action.
+    fn row_header(
+        ui: &mut Ui,
+        name: &str,
+        used_by: &str,
+        size: String,
+        non_commercial: bool,
+        status: impl FnOnce(&mut Ui),
+    ) {
+        ui.horizontal(|ui| {
+            ui.label(RichText::new(name).strong());
+            ui.weak(used_by);
+            if non_commercial {
+                ui.colored_label(ui.visuals().warn_fg_color, "Non-commercial");
             }
-            if let Some(job) = self.stem_running.get(model.id) {
-                let fraction = job.fraction();
-                ui.horizontal(|ui| {
+            ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                status(ui);
+                ui.weak(size);
+            });
+        });
+    }
+
+    fn drum_row(&mut self, ui: &mut Ui, model: &'static DrumModelManifest) {
+        let downloaded = self.is_downloaded(model);
+        let size = model.size().map_or("size unknown".to_owned(), human_size);
+        let mut act = None;
+        ui.separator();
+        Self::row_header(
+            ui,
+            model.name,
+            "Create drum rack",
+            size,
+            model.non_commercial,
+            |ui| {
+                if self.is_downloading(model) {
+                    if ui.button("Cancel").clicked() {
+                        act = Some(false);
+                    }
+                    let f = self.running.get(model.id).map_or(0.0, |j| j.fraction());
                     ui.add(
-                        egui::ProgressBar::new(fraction)
-                            .desired_width(200.0)
+                        egui::ProgressBar::new(f)
+                            .desired_width(90.0)
                             .show_percentage(),
                     );
+                } else if downloaded {
+                    if ui.button("Remove").clicked() {
+                        act = Some(false);
+                    }
+                    ui.weak("Downloaded");
+                } else if model.is_published() {
+                    if ui.button("Download").clicked() {
+                        act = Some(true);
+                    }
+                } else {
+                    ui.weak("Not available yet");
+                }
+            },
+        );
+        match act {
+            Some(true) => self.download(model),
+            Some(false) if self.running.contains_key(model.id) => self.cancel(model),
+            Some(false) => self.remove(model),
+            None => {}
+        }
+        ui.indent(model.id, |ui| {
+            egui::CollapsingHeader::new("Details")
+                .id_salt(("drum details", model.id))
+                .show(ui, |ui| facts(ui, model));
+            if let Some(problem) = self.problems.get(model.id) {
+                ui.colored_label(ui.visuals().error_fg_color, problem);
+            }
+        });
+    }
+
+    fn stem_row(&mut self, ui: &mut Ui, model: &ModelSpec) {
+        let info = model.info();
+        let downloaded = self.stem_downloaded(model);
+        let mut act = None;
+        ui.separator();
+        Self::row_header(
+            ui,
+            info.name,
+            "Split to stems",
+            human_size(info.bytes),
+            false,
+            |ui| {
+                if let Some(job) = self.stem_running.get(model.id) {
                     if ui.button("Cancel").clicked() {
                         job.cancel();
                     }
-                });
-            } else if downloaded {
-                let on_disk = self
-                    .stem_store
-                    .as_ref()
-                    .map_or(0, |s| s.size_on_disk(model));
-                ui.horizontal(|ui| {
-                    ui.label(format!("Downloaded, {} on disk", human_size(on_disk)));
+                    ui.add(
+                        egui::ProgressBar::new(job.fraction())
+                            .desired_width(90.0)
+                            .show_percentage(),
+                    );
+                } else if downloaded {
                     if ui.button("Remove").clicked() {
-                        self.remove_stem(model);
+                        act = Some(false);
+                    }
+                    ui.weak("Downloaded");
+                } else if ui.button("Download").clicked() {
+                    act = Some(true);
+                }
+            },
+        );
+        match act {
+            Some(true) => self.download_stem(model),
+            Some(false) => self.remove_stem(model),
+            None => {}
+        }
+        ui.indent(model.id, |ui| {
+            egui::CollapsingHeader::new("Details")
+                .id_salt(("stem details", model.id))
+                .show(ui, |ui| {
+                    ui.label(format!("Separates: {}", info.separates));
+                    ui.label(format!("Licence: {}", info.licence));
+                    ui.weak(format!("By {}", info.credit));
+                    ui.weak("Runs on ONNX Runtime, which is downloaded with it.");
+                    if !info.source_url.is_empty() {
+                        ui.hyperlink_to("Source", info.source_url);
                     }
                 });
-            } else {
-                ui.horizontal(|ui| {
-                    ui.label("Not downloaded");
-                    if ui.button("Download").clicked() {
-                        self.download_stem(model);
-                    }
-                });
-            }
             if let Some(problem) = self.stem_problems.get(model.id) {
                 ui.colored_label(ui.visuals().error_fg_color, problem);
             }
         });
     }
 
-    fn block(&mut self, ui: &mut Ui, model: &'static DrumModelManifest) {
-        let published = model.is_published();
-        let downloaded = self.is_downloaded(model);
-        let downloading = self.is_downloading(model);
-        let mut enabled = self.is_enabled(model);
-        if ui
-            .checkbox(&mut enabled, RichText::new(model.name).strong())
-            .on_hover_text("Offered in Create drum rack when on and downloaded")
-            .changed()
-        {
-            self.set_enabled(model, enabled);
-        }
-        ui.indent(model.id, |ui| {
-            facts(ui, model);
-            let size = |bytes: u64| human_size(bytes);
-            if downloading {
-                let fraction = self.running.get(model.id).map_or(0.0, |j| j.fraction());
-                ui.horizontal(|ui| {
+    /// Inline download offer for Create drum rack: each model not on this
+    /// computer, with what it separates, its licence and size first, then a
+    /// Download button. Says what is under way.
+    pub fn offer(&mut self, ui: &mut Ui) {
+        let mut start = None;
+        for &m in &self.manifests {
+            if self.is_downloaded(m) {
+                continue;
+            }
+            ui.horizontal_wrapped(|ui| {
+                ui.label(RichText::new(m.name).strong());
+                let size = m.size().map_or("size unknown".to_owned(), human_size);
+                ui.weak(format!("{size} · {}", m.licence));
+                if m.non_commercial {
+                    ui.colored_label(
+                        ui.visuals().warn_fg_color,
+                        "Non-commercial use only: not for music you sell.",
+                    );
+                }
+                if let Some(job) = self.running.get(m.id) {
                     ui.add(
-                        egui::ProgressBar::new(fraction)
-                            .desired_width(200.0)
+                        egui::ProgressBar::new(job.fraction())
+                            .desired_width(110.0)
                             .show_percentage(),
                     );
-                    if ui.button("Cancel").clicked() {
-                        self.cancel(model);
+                    if ui.small_button("Cancel").clicked() {
+                        job.cancel();
                     }
-                });
-            } else if downloaded {
-                let on_disk = self.store.as_ref().map_or(0, |s| s.size_on_disk(model));
-                ui.horizontal(|ui| {
-                    ui.label(format!("Downloaded, {} on disk", size(on_disk)));
-                    if ui.button("Remove").clicked() {
-                        self.remove(model);
+                } else if m.is_published() {
+                    if ui
+                        .button("Download")
+                        .on_hover_text(format!(
+                            "Separates: {}. By {}. Downloaded once from its author's page and \
+                             kept on this computer; your audio is never uploaded.",
+                            m.parts
+                                .iter()
+                                .map(|p| p.label())
+                                .collect::<Vec<_>>()
+                                .join(", "),
+                            m.credit
+                        ))
+                        .clicked()
+                    {
+                        start = Some(m);
                     }
-                });
-            } else if published {
-                ui.horizontal(|ui| {
-                    ui.label("Not downloaded");
-                    if ui.button("Download").clicked() {
-                        self.download(model);
-                    }
-                });
-            } else {
-                ui.horizontal(|ui| {
-                    ui.weak(NOT_PUBLISHED);
-                    ui.add_enabled(false, egui::Button::new("Download"));
-                });
-            }
-            if let Some(problem) = self.problems.get(model.id) {
+                } else {
+                    ui.weak("Not available yet");
+                }
+            });
+            if let Some(problem) = self.problems.get(m.id) {
                 ui.colored_label(ui.visuals().error_fg_color, problem);
             }
-        });
+        }
+        if let Some(m) = start {
+            self.download(m);
+        }
     }
-}
 
-/// A model under a non-commercial licence starts off in the popup, so
-/// downloading it is a choice.
-fn starts_on(m: &DrumModelManifest) -> bool {
-    !m.non_commercial
+    /// Whether some drum model could still be downloaded here.
+    pub fn has_offer(&self) -> bool {
+        self.manifests.iter().any(|m| !self.is_downloaded(m))
+    }
 }
 
 const NOT_PUBLISHED: &str = "Not available yet: its download address is not published";
@@ -675,39 +621,20 @@ mod tests {
     }
 
     #[test]
-    fn a_model_is_ready_when_enabled_and_downloaded() {
+    fn a_model_is_ready_once_downloaded_and_not_after_removal() {
         let dir = tempfile::tempdir().unwrap();
         prefs_in(dir.path());
         let a = leak_model("a", true, false);
         let mut m = models(vec![a], &dir.path().join("w"));
         let ctx = egui::Context::default();
-        assert!(m.ready().is_empty());
+        assert!(m.ready().is_empty() && m.has_offer());
         m.download(a);
         finish(&mut m, &ctx);
         assert!(m.is_downloaded(a));
-        // Downloaded alone is not enough.
-        assert!(m.ready().is_empty());
-        m.set_enabled(a, true);
         assert_eq!(m.ready(), vec![a]);
-        m.set_enabled(a, false);
-        assert!(m.ready().is_empty());
-        m.set_enabled(a, true);
+        assert!(!m.has_offer());
         m.remove(a);
-        assert!(m.ready().is_empty());
-    }
-
-    #[test]
-    fn enabling_is_remembered_in_the_preferences() {
-        let dir = tempfile::tempdir().unwrap();
-        prefs_in(dir.path());
-        let a = leak_model("a", true, false);
-        let m = models(vec![a], &dir.path().join("w"));
-        assert!(!m.is_enabled(a));
-        m.set_enabled(a, true);
-        let saved = crate::prefs::load(&dir.path().join("prefs.ron")).unwrap();
-        assert_eq!(saved.drum_models.get("a"), Some(&true));
-        // Portable settings leave it out: it is about this machine's files.
-        assert!(saved.portable().drum_models.is_empty());
+        assert!(m.ready().is_empty() && m.has_offer());
     }
 
     #[test]
@@ -719,43 +646,6 @@ mod tests {
         m.download(a);
         assert!(!m.is_downloading(a));
         assert_eq!(m.problems.get("a").map(String::as_str), Some(NOT_PUBLISHED));
-        // And the popup has nothing to offer for it.
-        assert!(!m.first_use_due());
-    }
-
-    #[test]
-    fn the_popup_asks_once_per_model_and_non_commercial_starts_off() {
-        let dir = tempfile::tempdir().unwrap();
-        prefs_in(dir.path());
-        let free = leak_model("free", true, false);
-        let nc = leak_model("nc", true, true);
-        let mut m = models(vec![free, nc], &dir.path().join("w"));
-        let ctx = egui::Context::default();
-        assert!(m.first_use_due());
-        // Download selected with the popup's own defaults: the free one only.
-        let asking = m.unasked();
-        let toggles: BTreeMap<_, _> = asking.iter().map(|x| (x.id, starts_on(x))).collect();
-        assert_eq!(toggles.get("free"), Some(&true));
-        assert_eq!(toggles.get("nc"), Some(&false));
-        m.answer(&asking, &toggles, true);
-        finish(&mut m, &ctx);
-        assert!(!m.first_use_due());
-        assert!(m.is_enabled(free) && !m.is_enabled(nc));
-        assert_eq!(m.ready(), vec![free]);
-    }
-
-    #[test]
-    fn not_now_answers_every_model_off() {
-        let dir = tempfile::tempdir().unwrap();
-        prefs_in(dir.path());
-        let free = leak_model("free", true, false);
-        let mut m = models(vec![free], &dir.path().join("w"));
-        let asking = m.unasked();
-        let toggles = asking.iter().map(|x| (x.id, true)).collect();
-        m.answer(&asking, &toggles, false);
-        assert!(!m.first_use_due());
-        assert!(!m.is_enabled(free));
-        assert!(!m.is_downloading(free));
     }
 
     #[test]
@@ -793,7 +683,7 @@ mod tests {
     }
 
     #[test]
-    fn a_stem_model_is_on_by_default_and_can_be_downloaded_and_removed() {
+    fn a_stem_model_can_be_downloaded_and_removed() {
         let dir = tempfile::tempdir().unwrap();
         prefs_in(dir.path());
         let mut m = models(vec![], &dir.path().join("w"));
@@ -806,13 +696,6 @@ mod tests {
         });
         let model = m.stem_specs[0].clone();
         let ctx = egui::Context::default();
-        assert!(m.stem_enabled(&model));
-        m.set_stem_enabled(&model, false);
-        assert!(!m.stem_enabled(&model));
-        let saved = crate::prefs::load(&dir.path().join("prefs.ron")).unwrap();
-        assert!(saved.stem_models_off.contains(model.id));
-        assert!(saved.portable().stem_models_off.is_empty());
-        m.set_stem_enabled(&model, true);
         assert!(!m.stem_downloaded(&model));
         m.download_stem(&model);
         for _ in 0..200 {

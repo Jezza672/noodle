@@ -315,12 +315,11 @@ which needs the licence checks first).
 6. **Three models, in this order:** LarsNet, Timbrica, drumsep (the UI order
    for now; revisit later). The MDX23C DrumSep is **not supported**: it is no
    longer available and has no licence.
-7. **First-use popup** offering the downloads, **one toggle per model**.
-8. **Settings, Models tab:** each model can be enabled or disabled, has a
-   download (and remove) button, and shows where it is stored, its size, licence
+7. **Downloads are offered inline** in the Create drum rack dialog (the first-use
+   popup and the per-model toggle were dropped by the settings redesign).
+8. **Settings, Models tab:** each model has a download (and remove) button, and shows where it is stored, its size, licence
    and source, and the non-commercial warning where it applies.
-9. **The drum rack dialog has a model drop-down** listing only the enabled
-   (and downloaded) models.
+9. **The drum rack dialog has a model drop-down** listing the downloaded models.
 10. **Not now:** letting users supply their own model (needs a stable, fairly
     universal interface definition) and the same model controls for Split to
     stems. Both are on `ROADMAP.md`.
@@ -337,8 +336,7 @@ which needs the licence checks first).
 - **Downloads** use the shared download crate (#509: consent, SHA-256, content
   cache). Nothing is bundled in the repository or the release; each download
   shows the licence and credits the authors.
-- **Enabled state** is app settings, not project data. The first-use popup shows
-  until each model has been answered once; the Models tab changes it later.
+- **Downloaded state** is on this machine, not project data.
 - **Open: where the ONNX files come from.** drumsep has an ONNX conversion
   (MIT) and Timbrica ships ONNX (CC BY-NC-SA); **LarsNet ships only as a
   PyTorch zip on Google Drive**, which the app cannot run. So LarsNet needs our
