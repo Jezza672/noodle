@@ -101,4 +101,16 @@ impl HitLabeller for OnnxLabeller {
             None => Some(vec![0.0; noodle_io::PURITY.len()]),
         }
     }
+
+    /// One run of the model for the label and the purity.
+    fn assess(&self, hit: &Hit) -> (DrumKind, f32, Option<bool>) {
+        match self.run(hit) {
+            Some((p, purity)) => {
+                let (kind, confidence) = noodle_io::kind_from_probabilities(&p, hit);
+                let clean = purity.map(|q| noodle_io::pure_enough(&q, hit, noodle_io::CLEAN_GATE));
+                (kind, confidence, clean)
+            }
+            None => (DrumKind::Unknown, 0.0, Some(false)),
+        }
+    }
 }

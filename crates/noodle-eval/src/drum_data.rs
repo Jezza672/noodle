@@ -1374,7 +1374,7 @@ pub fn purity_report(rows: &[Row], split: Split, labeller: &dyn HitLabeller, gat
     let probs: Vec<Option<Vec<f32>>> = used.iter().map(|r| labeller.purity(&hit_of(r))).collect();
     let has_model = probs.iter().any(Option::is_some);
     let accept = |i: usize, gate: f32| match &probs[i] {
-        Some(p) => noodle_io::clean_accepted(p, gate),
+        Some(p) => noodle_io::pure_enough(p, &hit_of(used[i]), gate),
         None => !used[i].mixed && !used[i].truncated,
     };
     writeln!(
@@ -1383,7 +1383,7 @@ pub fn purity_report(rows: &[Row], split: Split, labeller: &dyn HitLabeller, gat
          False-accept rate: of the hits that are not clean, the share let into a clean bin. 95% Wilson interval in brackets.\n",
         split.name(),
         if has_model {
-            format!("Accepted when `clean` is the likeliest class with probability at least {gate}.")
+            format!("Accepted when `clean` is the likeliest class with probability at least {gate} and the detector flags neither `mixed` nor `truncated`.")
         } else {
             "No purity model: accepted when the detector flags neither `mixed` nor `truncated`.".into()
         }

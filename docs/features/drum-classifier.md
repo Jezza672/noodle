@@ -68,8 +68,10 @@ drum under it) and `spurious` (not a hit). Rationale and the survey behind it ar
   `damage` columns.
 - **Gate** (`noodle_io::clean_accepted`, `CLEAN_GATE`): a hit is accepted when `clean` is the
   likeliest class with at least `CLEAN_GATE` probability. A labeller with no purity output
-  (the rules, or an older model) gates on the detector's `mixed`/`truncated` flags. A bin's
-  members are sorted so accepted hits come first (`DrumBin::relabel`).
+  (the rules, or an older model) gates on the detector's `mixed`/`truncated` flags. The
+  model's answer is ANDed with those flags. `Binning::relabel` takes rejected hits out of their bins
+  into `other`, and drops a bin left with no accepted hit, so a double or damaged hit is never
+  offered from a bin of single hits (only a labeller that judges purity does this; the rules do not).
 - **Headline metric: false-accept rate**, the share of not-clean hits let into a clean bin,
   with a 95% Wilson interval, per kind of impurity and per damage type
   (`noodle-eval drum-dataset baseline --data D [--model M] [--gate G]`, "Purity gate"). The tests

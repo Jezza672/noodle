@@ -568,14 +568,14 @@ pub trait HitLabeller: Send + Sync + std::fmt::Debug {
         None
     }
 
-    /// Whether the hit is pure enough for a bin of single hits: one hit that
-    /// finishes ringing before the end of its cut. A labeller with no purity
-    /// answer falls back on the detector's own flags.
-    fn is_clean(&self, hit: &Hit) -> bool {
-        match self.purity(hit) {
-            Some(p) => clean_accepted(&p, CLEAN_GATE),
-            None => !hit.mixed && !hit.truncated,
-        }
+    /// The label, and whether the hit is pure enough for a bin of single hits:
+    /// one hit that finishes ringing before the end of its cut. `None` for the
+    /// second when the labeller cannot judge purity (the rules), so nothing is
+    /// held back. A model that judges runs once per hit here, not twice.
+    fn assess(&self, hit: &Hit) -> (DrumKind, f32, Option<bool>) {
+        let (kind, confidence) = self.label(hit);
+        let clean = self.purity(hit).map(|p| pure_enough(&p, hit, CLEAN_GATE));
+        (kind, confidence, clean)
     }
 }
 
@@ -593,6 +593,13 @@ pub const PURITY: [&str; 6] = [
 /// turned away costs one sample; a double let in is the failure to avoid, so
 /// this is high. Tuned on the validation split (`tools/drum-classifier`).
 pub const CLEAN_GATE: f32 = 0.77;
+
+/// Whether the hit may enter a clean bin: the purity output says so *and* the
+/// detector has not flagged it `mixed` or `truncated`. Both must agree, because
+/// the model alone has been seen to let flagged hits through.
+pub fn pure_enough(probs: &[f32], hit: &Hit, gate: f32) -> bool {
+    clean_accepted(probs, gate) && !hit.mixed && !hit.truncated
+}
 
 /// Whether `probs` (one for each of [`PURITY`]) put the hit in a clean bin: it
 /// is the likeliest class and at least `gate` sure.
@@ -712,9 +719,6 @@ impl DrumBin {
     /// Labels the bin again with `labeller`, from its medoid.
     pub fn relabel(&mut self, hits: &[Hit], labeller: &dyn HitLabeller) {
         (self.kind, self.confidence) = labeller.label(&hits[self.medoid]);
-        // Hits the labeller takes for pure come first, so a bin's first hit is
-        // never a double or a damaged one while a clean one is there.
-        self.members.sort_by_key(|&m| !labeller.is_clean(&hits[m]));
     }
 }
 
@@ -741,10 +745,31 @@ pub fn layer_split(hits: &[Hit], members: &[usize], layers: u8) -> Vec<Vec<usize
 
 impl Binning {
     /// Labels every bin again with `labeller`.
+    ///
+    /// A labeller that judges purity also keeps the bins clean: a hit it
+    /// turns away leaves its bin for `other`, and a bin left with no clean hit
+    /// is dropped, so no double or damaged hit is ever offered from a bin of
+    /// single hits.
     pub fn relabel(&mut self, hits: &[Hit], labeller: &dyn HitLabeller) {
-        for bin in &mut self.bins {
-            bin.relabel(hits, labeller);
+        let assessed: Vec<(DrumKind, f32, Option<bool>)> =
+            hits.iter().map(|h| labeller.assess(h)).collect();
+        let rejected = |h: usize| assessed[h].2 == Some(false);
+        let mut bins = Vec::with_capacity(self.bins.len());
+        for mut bin in std::mem::take(&mut self.bins) {
+            let (keep, out): (Vec<usize>, Vec<usize>) =
+                bin.members.iter().partition(|&&m| !rejected(m));
+            self.other.extend(out);
+            if keep.is_empty() {
+                continue;
+            }
+            if !keep.contains(&bin.medoid) {
+                bin.medoid = medoid_of(hits, &keep);
+            }
+            bin.members = keep;
+            (bin.kind, bin.confidence) = (assessed[bin.medoid].0, assessed[bin.medoid].1);
+            bins.push(bin);
         }
+        self.bins = bins;
     }
 }
 
@@ -1622,20 +1647,53 @@ mod tests {
     }
 
     #[test]
-    fn relabelling_puts_the_hits_the_gate_accepts_first() {
+    fn a_flagged_hit_is_not_pure_even_when_the_model_says_clean() {
+        let k = kick();
+        let mut hits = run(&track(1.0, &[(&k, 0.3, 1.0)]));
+        let clean = [0.99, 0.0, 0.0, 0.0, 0.0, 0.0];
+        assert!(
+            pure_enough(&clean, &hits[0], CLEAN_GATE) == (!hits[0].mixed && !hits[0].truncated)
+        );
+        hits[0].truncated = true;
+        assert!(!pure_enough(&clean, &hits[0], CLEAN_GATE));
+        hits[0].truncated = false;
+        hits[0].mixed = true;
+        assert!(!pure_enough(&clean, &hits[0], CLEAN_GATE));
+    }
+
+    #[test]
+    fn a_purity_labeller_removes_rejected_hits_and_empty_bins() {
         let k = kick();
         let mut hits = run(&track(
             1.0,
             &[(&k, 0.3, 1.0), (&k, 0.6, 1.0), (&k, 0.9, 1.0)],
         ));
-        // Make the first hit the one the gate turns away.
+        for h in &mut hits {
+            h.mixed = false;
+            h.truncated = false;
+        }
+        let base = bin_hits(&hits, DEFAULT_MERGE);
+        assert_eq!(base.bins.len(), 1);
+        // One rejected: it leaves the bin for `other`, and is not a member.
         hits[0].level_db = -40.0;
-        let mut bin = bin_hits(&hits, DEFAULT_MERGE).bins.remove(0);
-        bin.members = vec![0, 1, 2];
-        bin.relabel(&hits, &LoudIsClean);
-        assert_eq!(*bin.members.last().unwrap(), 0);
-        // With no purity output, the detector's flags decide.
-        assert!(Rules.is_clean(&hits[1]) == (!hits[1].mixed && !hits[1].truncated));
+        let mut one = base.clone();
+        one.relabel(&hits, &LoudIsClean);
+        assert_eq!(one.bins.len(), 1);
+        assert!(!one.bins[0].members.contains(&0));
+        assert!(one.other.contains(&0));
+        assert!(one.bins[0].members.contains(&one.bins[0].medoid));
+        // All rejected: no bin offers any of them.
+        hits.iter_mut().for_each(|h| h.level_db = -40.0);
+        let mut none = base.clone();
+        none.relabel(&hits, &LoudIsClean);
+        assert!(none.bins.is_empty());
+        for i in 0..hits.len() {
+            assert!(none.other.contains(&i));
+        }
+        // The rules judge nothing, so nothing is held back.
+        let mut rules = base.clone();
+        rules.relabel(&hits, &Rules);
+        assert_eq!(rules.bins[0].members.len(), base.bins[0].members.len());
     }
 
     #[test]
