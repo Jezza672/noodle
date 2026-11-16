@@ -38,8 +38,8 @@ pub use cache::{CacheInfo, CacheStore, CacheUsage, CacheWriter, CachedAudio, Gro
 pub use decode::{DecodeError, Decoder, FileInfo, decode_file};
 pub use devices::{
     AudioConfig, AudioError, COMMON_SAMPLE_RATES, Capabilities, Chosen, DeviceInfo, DeviceList,
-    Direction, HostInfo, InputChoice, LIVE_BUFFER, VIRTUAL_OUTPUT, buffer_request, capabilities,
-    choose_config, devices, hosts, virtual_output,
+    Direction, HostInfo, InputChoice, LIVE_BUFFER, VIRTUAL_OUTPUT, auto_threads, auto_threads_for,
+    buffer_request, capabilities, choose_config, devices, hosts, virtual_output,
 };
 pub use drum_bins::{
     Binning, CLASSES as DRUM_CLASSES, CLEAN_GATE, Cancelled as DrumCancelled, DEFAULT_MERGE,

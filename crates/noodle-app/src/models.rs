@@ -302,6 +302,7 @@ impl Models {
         }
         match self.folder() {
             Some(folder) => {
+                crate::settings::show_file_button(ui, "Show file", folder);
                 ui.horizontal_wrapped(|ui| {
                     ui.weak(format!("{} on this computer, in", human_size(total)));
                     ui.label(

@@ -1383,7 +1383,8 @@ fn open_playback(
         max_frames,
         channels: engine_channels,
     };
-    let (mut controller, processor) = engine_with_workers(settings, choice.threads, false)?;
+    let (mut controller, processor) =
+        engine_with_workers(settings, choice.worker_threads(), false)?;
     let mut buses = vec![Bus {
         device: main_id.clone().unwrap_or_default(),
         channels: main_channels,

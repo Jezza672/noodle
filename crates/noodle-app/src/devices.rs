@@ -307,14 +307,16 @@ impl DevicePicker {
         let cores = std::thread::available_parallelism().map_or(1, std::num::NonZero::get);
         let mut threads = self.draft.threads;
         combo(ui, "Worker threads", threads_label(threads), |ui| {
+            ui.selectable_value(&mut threads, None, threads_label(None));
             for count in 0..cores.max(2) {
-                ui.selectable_value(&mut threads, count, threads_label(count));
+                ui.selectable_value(&mut threads, Some(count), threads_label(Some(count)));
             }
         })
         .on_hover_text(
             "Extra threads that run branches of a wide graph side by side. \
-             Helps when the CPU meter climbs on graphs with many parallel \
-             voices or plugins; View > CPU meters shows the effect",
+             Automatic leaves two cores for the audio thread and the \
+             interface. Helps when the CPU meter climbs on graphs with many \
+             parallel voices or plugins; View > CPU meters shows the effect",
         );
         ui.end_row();
 
@@ -582,11 +584,16 @@ fn sample_rates(output: Option<&Capabilities>, input: Option<&Capabilities>) -> 
 
 /// The buffer sizes to offer: the usual powers of two, within the output's
 /// range when it says.
-fn threads_label(count: usize) -> String {
+fn threads_label(count: Option<usize>) -> String {
     match count {
-        0 => "Off (audio thread only)".to_owned(),
-        1 => "1 extra thread".to_owned(),
-        n => format!("{n} extra threads"),
+        None => match noodle_io::auto_threads() {
+            0 => "Automatic (audio thread only)".to_owned(),
+            1 => "Automatic (1 extra thread)".to_owned(),
+            n => format!("Automatic ({n} extra threads)"),
+        },
+        Some(0) => "Off (audio thread only)".to_owned(),
+        Some(1) => "1 extra thread".to_owned(),
+        Some(n) => format!("{n} extra threads"),
     }
 }
 
@@ -600,6 +607,13 @@ fn buffer_sizes(output: Option<&Capabilities>) -> Vec<u32> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_automatic_thread_choice_says_what_it_resolved_to() {
+        let label = super::threads_label(None);
+        assert!(label.starts_with("Automatic ("), "{label}");
+        assert_eq!(super::threads_label(Some(0)), "Off (audio thread only)");
+    }
+
     use egui_kittest::Harness;
     use egui_kittest::kittest::Queryable;
 

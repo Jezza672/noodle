@@ -467,7 +467,9 @@ fn rack_steps(h: &mut Handle, _size: usize) {
     h.waited(0.5);
     for _ in 0..1500 {
         h.probe().settle();
-        if h.probe().mentions("hits ·") {
+        // The group's own button, not the summary line: the line can appear
+        // while the groups are still being laid out.
+        if h.probe().mentions("hits ·") && h.probe().has("Place on…") {
             break;
         }
         std::thread::sleep(std::time::Duration::from_millis(20));
@@ -483,6 +485,12 @@ fn rack_steps(h: &mut Handle, _size: usize) {
     // did not open, click the button again (a click on an open menu is only
     // reached when the item is missing, so it cannot close a good one).
     for attempt in 0..4 {
+        // Not there yet on a slow runner: let the dialog settle and look again.
+        if !h.probe().has("Place on…") {
+            assert!(attempt < 3, "the dialog never showed a Place on… menu");
+            h.probe().settle();
+            continue;
+        }
         let place = h.find_first("Place on…");
         h.click(place, Modifiers::NONE);
         if h.probe().try_settle_until_like("Place on Bass Drum", 50) {
