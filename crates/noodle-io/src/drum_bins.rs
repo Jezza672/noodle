@@ -23,7 +23,7 @@ use crate::pitch::PitchTracker;
 
 /// Bumped when the hits found or the features change, so a cached analysis made
 /// by an older detector is not replayed.
-pub const DETECTOR_VERSION: u32 = 1;
+pub const DETECTOR_VERSION: u32 = 2;
 
 /// The onset sensitivity: higher than the warp engine's, so a soft ghost note
 /// still counts as a hit.
@@ -82,6 +82,38 @@ pub struct HitFeatures {
     pub pitch_key: Option<f32>,
     /// How many separate bursts the first 40 ms has (a clap has several).
     pub attack_peaks: u8,
+    /// The envelope and the edges of the cut.
+    pub shape: Shape,
+}
+
+/// How a hit's envelope and edges look: what tells a whole single hit from a
+/// chopped, clipped, faded, cut-off or doubled one. All of it is independent of
+/// how loud the hit is.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Shape {
+    /// The mean level (dB below the peak, floored at -80) over 0 to 5, 5 to 15,
+    /// 15 to 40, 40 to 100, 100 to 300 and 300 to 1000 ms after the onset
+    /// (-80 where the cut has already ended).
+    pub slices: [f32; 6],
+    /// Milliseconds from the onset to the loudest 2 ms.
+    pub attack_ms: f32,
+    /// The level of the last 10 ms of the cut under the peak (dB, floored at
+    /// -80): high means it is still ringing where it ends.
+    pub end_db: f32,
+    /// The biggest fall between neighbouring milliseconds in the last 30 ms
+    /// (dB): large means it was cut dead.
+    pub end_drop_db: f32,
+    /// The level just before the cut under the hit's peak (dB, -80 to 20):
+    /// the tail of what came before.
+    pub lead_db: f32,
+    /// Peak over RMS of the first 100 ms (dB).
+    pub crest_db: f32,
+    /// The share of the first 100 ms within 2% of the peak: flat tops, clipping.
+    pub clip_frac: f32,
+    /// Separate bursts in the whole cut (a double has more than one).
+    pub bursts: f32,
+    /// The length of the cut in milliseconds.
+    pub cut_ms: f32,
 }
 
 /// One drum hit found in a clip.
@@ -306,6 +338,68 @@ fn pitch_of(x: &[f32], rate: u32) -> (f32, Option<f32>) {
     )
 }
 
+/// The peak level of each block of `x`, in decibels (amplitude).
+fn peak_envelope(x: &[f32], block: usize) -> Vec<f32> {
+    x.chunks(block)
+        .map(|c| 20.0 * (c.iter().fold(0.0f32, |m, s| m.max(s.abs())) + 1e-6).log10())
+        .collect()
+}
+
+/// The [`Shape`] of a cut `x` whose 2 ms envelope is `env`, with its peak in
+/// block `peak_at` at `peak` dB, and `ring` dB of sound just before it.
+fn shape_of(x: &[f32], env: &[f32], peak_at: usize, peak: f32, ring: f32, rate: u32) -> Shape {
+    let ms = |t: f64| (t * f64::from(rate) / 1000.0) as usize;
+    let rel = |db: f32| (db - peak).clamp(-80.0, 20.0);
+    let power = |db: f32| 10f32.powf(db / 10.0);
+    // The mean level over blocks `a..b` (milliseconds / 2) of the envelope.
+    let slice = |a: usize, b: usize| {
+        let (a, b) = (a / 2, (b / 2).min(env.len()));
+        if a >= b {
+            return -80.0;
+        }
+        let mean = env[a..b].iter().map(|&l| power(l)).sum::<f32>() / (b - a) as f32;
+        rel(db(mean)).min(0.0)
+    };
+    let slices = [
+        slice(0, 5),
+        slice(5, 15),
+        slice(15, 40),
+        slice(40, 100),
+        slice(100, 300),
+        slice(300, 1000),
+    ];
+    let end_db = if env.is_empty() {
+        -80.0
+    } else {
+        slice((env.len().saturating_sub(5)) * 2, env.len() * 2)
+    };
+    // The biggest fall between 3 ms peak blocks in the last 30 ms: held over a
+    // block, so the zero crossings of a low tone do not look like a cut.
+    let levels = peak_envelope(x, ms(3.0).max(1));
+    let from = levels.len().saturating_sub(10);
+    let end_drop_db = levels[from..]
+        .windows(2)
+        .map(|w| w[0] - w[1])
+        .fold(0.0, f32::max);
+    let head = &x[..x.len().min(ms(100.0))];
+    let top = head.iter().fold(0.0f32, |m, s| m.max(s.abs())).max(1e-9);
+    let rms = (head.iter().map(|s| s * s).sum::<f32>() / head.len().max(1) as f32)
+        .sqrt()
+        .max(1e-9);
+    Shape {
+        slices,
+        attack_ms: peak_at as f32 * BLOCK as f32 * 1000.0,
+        end_db,
+        end_drop_db: end_drop_db.min(100.0),
+        lead_db: rel(ring),
+        crest_db: (20.0 * (top / rms).log10()).clamp(0.0, 60.0),
+        clip_frac: head.iter().filter(|s| s.abs() >= 0.98 * top).count() as f32
+            / head.len().max(1) as f32,
+        bursts: f32::from(count_peaks(&peak_envelope(x, ms(6.0).max(1)))),
+        cut_ms: x.len() as f32 * 1000.0 / rate as f32,
+    }
+}
+
 /// Finds the hits in `mono` (at `rate`), cuts each and describes it.
 ///
 /// `progress` is called with how far along it is (0 to 1) every so often and
@@ -384,6 +478,14 @@ pub fn analyse_hits(
                 pitched,
                 pitch_key,
                 attack_peaks: count_peaks(attack),
+                shape: shape_of(
+                    &mono[on..end],
+                    &env[..env.len().min((end - on).div_ceil(block))],
+                    peak_at,
+                    peak,
+                    ring,
+                    rate,
+                ),
             },
         });
     }
@@ -632,7 +734,7 @@ pub const CLASSES: [&str; 9] = [
 ];
 
 /// The length of [`feature_vector`].
-pub const FEATURE_COUNT: usize = BANDS + 12;
+pub const FEATURE_COUNT: usize = BANDS + 12 + 14;
 
 /// The probability the learned classifier's top class needs, or the answer is
 /// [`DrumKind::Unknown`].
@@ -644,13 +746,15 @@ pub const TOM_SPLIT_KEY: f32 = 52.0;
 /// What the learned classifier is given, raw (it normalises inside): the bands,
 /// the centroid in Hz, flatness, the three-way split, the decay in seconds,
 /// how pitched, the pitch's key (0 when none) and whether there is one, the
-/// attack's bursts, and whether the hit is mixed and whether it is truncated.
-/// `tools/drum-classifier/train.py` builds the same vector, in this order.
+/// attack's bursts, whether the hit is mixed and whether it is truncated, then
+/// the [`Shape`] (six envelope slices, attack, end level, end drop, lead-in,
+/// crest, clipped share, bursts, cut length).
+/// The model is trained in the private `Jezza672/drum-identifier` repository, whose `train/train.py` builds the same vector, in this order.
 pub fn feature_vector(hit: &Hit) -> [f32; FEATURE_COUNT] {
     let f = &hit.features;
     let mut v = [0.0; FEATURE_COUNT];
     v[..BANDS].copy_from_slice(&f.bands);
-    v[BANDS..].copy_from_slice(&[
+    v[BANDS..BANDS + 12].copy_from_slice(&[
         f.centroid,
         f.flatness,
         f.split[0],
@@ -663,6 +767,23 @@ pub fn feature_vector(hit: &Hit) -> [f32; FEATURE_COUNT] {
         f32::from(f.attack_peaks),
         f32::from(u8::from(hit.mixed)),
         f32::from(u8::from(hit.truncated)),
+    ]);
+    let sh = &f.shape;
+    v[BANDS + 12..].copy_from_slice(&[
+        sh.slices[0],
+        sh.slices[1],
+        sh.slices[2],
+        sh.slices[3],
+        sh.slices[4],
+        sh.slices[5],
+        sh.attack_ms,
+        sh.end_db,
+        sh.end_drop_db,
+        sh.lead_db,
+        sh.crest_db,
+        sh.clip_frac,
+        sh.bursts,
+        sh.cut_ms,
     ]);
     v
 }
@@ -1612,6 +1733,40 @@ mod tests {
         assert!(cache.get(&HitKey::new("x", 0, 1)).is_none());
     }
 
+    #[test]
+    fn the_shape_tells_a_whole_hit_from_a_cut_or_doubled_one() {
+        let k = kick();
+        // Alone, it rings out: the end is quiet, it is one burst, nothing was cut.
+        let whole = run(&track(1.0, &[(&k, 0.2, 1.0)]));
+        let w = &whole[0].features.shape;
+        assert!(w.end_db < -20.0, "{w:?}");
+        assert!(w.end_drop_db < 20.0, "{w:?}");
+        assert_eq!(w.bursts, 1.0);
+        assert!(w.attack_ms < 20.0, "{w:?}");
+        assert!(w.slices[0] > w.slices[3], "a kick falls: {w:?}");
+        // Chopped dead while it still sounds: the cut ends at the chop, still loud.
+        let mut cut = k.clone();
+        cut.truncate(seconds(0.06));
+        let chopped = run(&track(1.0, &[(&cut, 0.2, 1.0)]));
+        let c = &chopped[0].features.shape;
+        assert!(c.end_db > w.end_db + 10.0, "{c:?}");
+        assert!(c.cut_ms < w.cut_ms, "{c:?} {w:?}");
+        // Faded in: the attack is late.
+        let faded: Vec<f32> = k
+            .iter()
+            .enumerate()
+            .map(|(i, s)| s * (i as f32 / seconds(0.08) as f32).min(1.0))
+            .collect();
+        let late = run(&track(1.0, &[(&faded, 0.2, 1.0)]));
+        assert!(late[0].features.shape.attack_ms > w.attack_ms + 10.0);
+        // A second hit while the first rings: the first is cut by it, still sounding.
+        let double = run(&track(1.0, &[(&k, 0.2, 1.0), (&k, 0.28, 1.0)]));
+        assert!(double[0].features.shape.end_db > w.end_db + 15.0);
+        // The vector carries them all.
+        assert_eq!(feature_vector(&whole[0]).len(), FEATURE_COUNT);
+        assert_eq!(FEATURE_COUNT, 50);
+    }
+
     #[derive(Debug)]
     struct Always(DrumKind);
     impl HitLabeller for Always {
@@ -1756,11 +1911,16 @@ mod tests {
         hit.features.pitch_key = None;
         let v = feature_vector(&hit);
         assert_eq!(v.len(), FEATURE_COUNT);
+        let sh = &hit.features.shape;
+        assert_eq!(v[BANDS + 12], sh.slices[0]);
+        assert_eq!(v[BANDS + 18], sh.attack_ms);
+        assert_eq!(v[BANDS + 19], sh.end_db);
+        assert_eq!(v[BANDS + 25], sh.cut_ms);
         assert_eq!(v[..BANDS], hit.features.bands);
         assert_eq!(v[BANDS], hit.features.centroid);
         assert_eq!(v[BANDS + 5], hit.features.decay);
         assert_eq!(
-            v[BANDS + 7..],
+            v[BANDS + 7..BANDS + 12],
             [
                 0.0,
                 0.0,

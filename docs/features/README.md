@@ -65,4 +65,4 @@ One file per delivered milestone: what was planned, what landed (with PR numbers
 | [preset-morph.md](preset-morph.md) | The Morph node and Morph between presets on a group |
 | [wavetable-and-grains.md](wavetable-and-grains.md) | Wavetable oscillator and Grains: nodes, shipped tables, three templates |
 | [noodle-as-a-plugin.md](noodle-as-a-plugin.md) | Noodle as a plugin: library split, host backend, headless CLAP, host transport and parameters, the editor window, more than one instance, VST3 and AU |
-| [drum-classifier.md](drum-classifier.md) | Drum hit classifier: data generator, training, ONNX labeller |
+| [drum-classifier.md](drum-classifier.md) | Drum hit classifier, consumer side: features, ONNX labeller, purity gate (the model is trained in a separate private repo) |

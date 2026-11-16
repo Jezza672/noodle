@@ -21,7 +21,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("noodle-eval: {e}");
             eprintln!(
-                "usage: noodle-eval compare REF TEST [SPEED] | validate MANIFEST.csv | fit MANIFEST.csv [--cache F] [--out MODEL.json] [--drop a,b] | probes [OPTIONS] | songs [OPTIONS] | borrowed [OPTIONS] | drum-dataset build|baseline [OPTIONS]"
+                "usage: noodle-eval compare REF TEST [SPEED] | validate MANIFEST.csv | fit MANIFEST.csv [--cache F] [--out MODEL.json] [--drop a,b] | probes [OPTIONS] | songs [OPTIONS] | borrowed [OPTIONS]"
             );
             ExitCode::FAILURE
         }
@@ -77,7 +77,6 @@ fn run(args: &[String]) -> Result<(), String> {
         ["probes", rest @ ..] => probes(rest),
         ["songs", rest @ ..] => songs(rest),
         ["borrowed", rest @ ..] => borrowed(rest),
-        ["drum-dataset", rest @ ..] => drum_dataset(rest),
         _ => Err("bad arguments".into()),
     }
 }
@@ -521,73 +520,4 @@ fn report(rows: &[noodle_eval::harness::Row], baseline: &Path, update: bool) -> 
         println!("wrote {}", baseline.display());
     }
     Ok(())
-}
-
-/// `drum-dataset build --pack DIR --out DIR [--seed N] [--loops N] [--holdout-library TAG]`
-/// writes the drum classifier's data; `drum-dataset baseline --data DIR
-/// [--split test] [--out FILE]` scores the rule labeller on it.
-fn drum_dataset(args: &[&str]) -> Result<(), String> {
-    use noodle_eval::drum_data::{self, BuildOptions, Split};
-    let flag = |name: &str| {
-        args.iter()
-            .position(|a| *a == name)
-            .and_then(|i| args.get(i + 1))
-            .copied()
-    };
-    match args.first().copied() {
-        Some("build") => {
-            let opts = BuildOptions {
-                pack: PathBuf::from(flag("--pack").ok_or("--pack DIR is required")?),
-                out: PathBuf::from(flag("--out").ok_or("--out DIR is required")?),
-                seed: flag("--seed")
-                    .map_or(Ok(1), str::parse)
-                    .map_err(|e| format!("--seed: {e}"))?,
-                loops: flag("--loops")
-                    .map_or(Ok(600), str::parse)
-                    .map_err(|e| format!("--loops: {e}"))?,
-                holdout_library: flag("--holdout-library").map(str::to_string),
-            };
-            print!("{}", drum_data::build(&opts)?);
-            Ok(())
-        }
-        Some("baseline") => {
-            let data = PathBuf::from(flag("--data").ok_or("--data DIR is required")?);
-            let split = match flag("--split").unwrap_or("test") {
-                "train" => Split::Train,
-                "val" => Split::Val,
-                "test" => Split::Test,
-                other => return Err(format!("--split: {other}")),
-            };
-            let rows = drum_data::read_rows(&data.join("hits.csv"))?;
-            let (labeller, name): (Box<dyn noodle_io::HitLabeller>, &str) = match flag("--model") {
-                Some(model) => (
-                    Box::new(
-                        noodle_stems::drum::OnnxLabeller::open(Path::new(model), None)
-                            .map_err(|e| e.to_string())?,
-                    ),
-                    "Learned classifier",
-                ),
-                None => (Box::new(noodle_io::Rules), "Rule labeller baseline"),
-            };
-            let mut report = drum_data::baseline(&rows, split, labeller.as_ref(), name);
-            if let Some(g) = flag("--gate") {
-                let gate: f32 = g.parse().map_err(|e| format!("--gate: {e}"))?;
-                report.push('\n');
-                report.push_str(&drum_data::purity_report(
-                    &rows,
-                    split,
-                    labeller.as_ref(),
-                    gate,
-                ));
-            }
-            match flag("--out") {
-                Some(path) => std::fs::write(path, report).map_err(|e| e.to_string()),
-                None => {
-                    print!("{report}");
-                    Ok(())
-                }
-            }
-        }
-        _ => Err("drum-dataset build|baseline".into()),
-    }
 }
