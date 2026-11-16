@@ -87,3 +87,34 @@ catches a flipped byte and a missing object.
 - **Secrets.** `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY` and
   `R2_BUCKET`. The publish step is skipped unless all four are set, so the
   workflow publishes nothing until they are added.
+
+## Groups and presets in packs
+
+A pack can carry library entries (group templates, node presets, group presets)
+as well as samples, so a pack like a drum kit can ship its kit groups beside its
+sounds. The Library tab of the browser lists them and the Share window makes them.
+
+- **Definition.** `pack.ron` gains `items: [(hash, name, kind, file, author, licence,
+  tags, credit, needs)]`. `kind` is `Template`, `NodePreset` or `GroupPreset`. `file`
+  is the entry's RON, which lives in git beside `pack.ron` (it is small, and reviewed
+  like the definition). `hash` is the SHA-256 of that file's bytes. A pack may hold
+  items only.
+- **`needs`.** The samples an entry uses, by audio hash. Each must be one of the
+  pack's own samples (a validator rule), so an install never needs another source,
+  and the file may name no sample it does not list. This is how a kit group
+  references the pack's own sounds.
+- **Site.** `items/<sha256>.ron` objects, immutable like samples; manifests list
+  `items` with `bytes`; index entries count them. `upload` also puts items, and CI
+  `publish` puts them from git (conditional puts) after checking each file hashes to
+  its name, loads as the kind it says, and names only declared samples.
+- **Published file.** `noodle_publish::item_file` strips the slug and the origin, so
+  the same entry always hashes the same.
+- **Install.** `source::fetch_item` downloads the file (SHA-256 checked), reads it,
+  refuses it if it names a sample the manifest did not list, then downloads each
+  sample (audio hash checked). The app imports the samples and saves the entry to
+  the user store with an `Origin` (pack, author, licence label, credit, hash), which
+  is also how the tab knows what is installed. An entry installed from a pack under
+  a licence that is not an SPDX id cannot be shared again.
+- **Share.** The Library tab's "Share my groups and presets…" bundles chosen user
+  entries and the sounds they use (from the sample store) into the same site the
+  folder wizard makes. Credit lines are made when the licence asks for one.

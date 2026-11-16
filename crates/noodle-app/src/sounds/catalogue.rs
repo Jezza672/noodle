@@ -16,10 +16,52 @@ use super::folder::LocalFile;
 /// The name a source is known by in a saved catalogue and in filters.
 pub type SourceId = String;
 
-/// What kind of content an entry is. Only sounds so far.
+/// What kind of content an entry is: a sound, or an entry of the user's
+/// library (a group or a preset), which a pack carries the same way.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize, Deserialize)]
 pub enum Kind {
     Sound,
+    Template,
+    NodePreset,
+    GroupPreset,
+}
+
+impl Kind {
+    pub fn is_sound(self) -> bool {
+        self == Kind::Sound
+    }
+
+    /// What the Library tab calls it.
+    pub fn label(self) -> &'static str {
+        match self {
+            Kind::Sound => "Sound",
+            Kind::Template => "Group",
+            Kind::NodePreset => "Node preset",
+            Kind::GroupPreset => "Group preset",
+        }
+    }
+
+    /// The pack's kind of library entry, `None` for a sound.
+    pub fn item_kind(self) -> Option<noodle_packs::ItemKind> {
+        use noodle_packs::ItemKind;
+        match self {
+            Kind::Sound => None,
+            Kind::Template => Some(ItemKind::Template),
+            Kind::NodePreset => Some(ItemKind::NodePreset),
+            Kind::GroupPreset => Some(ItemKind::GroupPreset),
+        }
+    }
+}
+
+impl From<noodle_packs::ItemKind> for Kind {
+    fn from(kind: noodle_packs::ItemKind) -> Self {
+        use noodle_packs::ItemKind;
+        match kind {
+            ItemKind::Template => Kind::Template,
+            ItemKind::NodePreset => Kind::NodePreset,
+            ItemKind::GroupPreset => Kind::GroupPreset,
+        }
+    }
 }
 
 /// One item a source offers.
@@ -39,6 +81,9 @@ pub struct Entry {
     /// The size of its object, if the source says.
     pub bytes: Option<u64>,
     pub source: SourceId,
+    /// For a library entry, the hashes of the samples of its pack it uses.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub needs: Vec<String>,
     /// Where its audio is, for a sound in a folder source.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub file: Option<LocalFile>,
@@ -64,10 +109,29 @@ impl Entry {
     }
 }
 
-/// The entries of a source's pack. A sample whose hash is not 64 hex digits is
-/// left out: the hash becomes a file name, so it must be nothing else.
+/// The entries of a source's pack. A sample or library entry whose hash is not
+/// 64 hex digits is left out: the hash becomes a file name, so it must be
+/// nothing else. So is a library entry that needs a sample that is not one.
 pub fn entries_of(source: &str, manifest: &Manifest) -> Vec<Entry> {
-    manifest
+    let items = manifest
+        .items
+        .iter()
+        .filter(|i| is_hash(&i.hash) && i.needs.iter().all(|n| is_hash(n)))
+        .map(|i| Entry {
+            kind: i.kind.into(),
+            key: i.hash.clone(),
+            name: i.name.clone(),
+            pack: manifest.name.clone(),
+            author: i.author.clone(),
+            licence: i.licence.clone(),
+            tags: i.tags.clone(),
+            credit: i.credit.clone(),
+            bytes: i.bytes,
+            source: source.to_owned(),
+            needs: i.needs.clone(),
+            file: None,
+        });
+    let sounds = manifest
         .samples
         .iter()
         .filter(|s| is_hash(&s.hash))
@@ -82,9 +146,10 @@ pub fn entries_of(source: &str, manifest: &Manifest) -> Vec<Entry> {
             credit: s.credit.clone(),
             bytes: s.bytes,
             source: source.to_owned(),
+            needs: Vec::new(),
             file: None,
-        })
-        .collect()
+        });
+    sounds.chain(items).collect()
 }
 
 /// What the search box and the two filters ask for.
@@ -95,6 +160,8 @@ pub struct Filter {
     pub source: Option<SourceId>,
     /// Only this licence, by its label.
     pub licence: Option<String>,
+    /// The Library tab's list: library entries and not sounds.
+    pub library: bool,
 }
 
 impl Filter {
@@ -102,6 +169,9 @@ impl Filter {
     /// pack or author, and it is from the chosen source and under the chosen
     /// licence.
     pub fn accepts(&self, entry: &Entry) -> bool {
+        if entry.kind.is_sound() == self.library {
+            return false;
+        }
         if self.source.as_ref().is_some_and(|s| *s != entry.source) {
             return false;
         }
@@ -162,6 +232,7 @@ mod tests {
             credit: None,
             bytes: Some(1000),
             source: source.into(),
+            needs: vec![],
             file: None,
         }
     }
@@ -251,6 +322,7 @@ mod tests {
                     bytes: None,
                 })
                 .collect(),
+            items: vec![],
         };
         let found = entries_of("s", &manifest);
         assert_eq!(found.len(), 1);

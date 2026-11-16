@@ -228,6 +228,14 @@ impl Library {
         }
     }
 
+    /// The ID of the user entry installed from a pack under this hash.
+    pub fn installed(&self, hash: &str) -> Option<&str> {
+        self.entries
+            .iter()
+            .find(|e| !e.is_system() && e.item.origin().is_some_and(|o| o.hash == hash))
+            .map(|e| e.id.as_str())
+    }
+
     fn unique_slug(&self, kind: Kind, base: &str) -> String {
         let taken = |slug: &str| {
             self.entries

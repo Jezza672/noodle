@@ -2,7 +2,7 @@
 
 use noodle_core::{Command, Config, Node, Value};
 
-use super::{Done, Then};
+use super::{Done, Installed, Then};
 use crate::session::{Edit, Session};
 use crate::timeline::{add_track, import};
 
@@ -83,4 +83,28 @@ pub fn apply(session: &mut Session, done: Done) {
             }
         }
     }
+}
+
+/// Puts a library entry that has arrived into the user's library, with its
+/// samples registered so the group or preset finds them by hash, and with its
+/// origin kept so the credit and licence travel with it.
+pub fn install(session: &mut Session, got: Installed) {
+    let Installed { entry, result } = got;
+    let fetched = match result {
+        Ok(fetched) => fetched,
+        Err(why) => return session.notify(format!("Couldn't install {}: {why}", entry.name)),
+    };
+    for (_, path) in &fetched.samples {
+        if let Err(e) = session.samples().import(path) {
+            return session.notify(format!("Couldn't read a sound of {}: {e}", entry.name));
+        }
+    }
+    let origin = noodle_core::library::Origin {
+        hash: entry.key.clone(),
+        pack: entry.pack.clone(),
+        author: entry.author.clone(),
+        licence: entry.licence.label(),
+        credit: entry.credit_line(),
+    };
+    session.install_library_item(fetched.item, origin);
 }

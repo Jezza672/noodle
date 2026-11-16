@@ -16,6 +16,7 @@ mod folder;
 mod manage;
 mod page;
 mod panel;
+mod share;
 pub mod source;
 mod vault;
 mod wizard;
@@ -102,6 +103,19 @@ struct Fetch {
     job: Job<Result<Fetched, String>>,
 }
 
+/// A library entry being brought from a source.
+struct Install {
+    entry: Entry,
+    job: Job<Result<source::FetchedItem, String>>,
+}
+
+/// A library entry that has arrived, or failed to, for the app to put in the
+/// user's library.
+pub struct Installed {
+    pub entry: Entry,
+    pub result: Result<source::FetchedItem, String>,
+}
+
 /// Whether a source answered the last time it was asked.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Reach {
@@ -138,6 +152,15 @@ pub struct Sounds {
     asked: bool,
     filter: Filter,
     fetching: Vec<Fetch>,
+    /// What the Library tab lists is filtered apart from the sounds.
+    library_filter: Filter,
+    installing: Vec<Install>,
+    /// What has arrived and is for the library.
+    installs: Vec<Installed>,
+    /// The hashes of the entries already in the user's library.
+    installed: HashSet<String>,
+    /// The Share groups and presets window, while it is open.
+    share: Option<share::Share>,
     /// A download waiting for the user to agree to its size.
     confirm: Option<(Entry, Then)>,
     playing: Option<Playing>,
@@ -204,6 +227,14 @@ impl Sounds {
             asked: false,
             filter: Filter::default(),
             fetching: Vec::new(),
+            library_filter: Filter {
+                library: true,
+                ..Filter::default()
+            },
+            installing: Vec::new(),
+            installs: Vec::new(),
+            installed: HashSet::new(),
+            share: None,
             confirm: None,
             playing: None,
             message: None,
@@ -233,6 +264,7 @@ impl Sounds {
     pub fn busy(&self) -> bool {
         self.refreshing.is_some()
             || !self.fetching.is_empty()
+            || !self.installing.is_empty()
             || self.wizard.as_ref().is_some_and(wizard::Wizard::busy)
     }
 
@@ -257,6 +289,48 @@ impl Sounds {
         if let Some(dir) = crate::picker::pick_folder_in("of sounds to make a pack from", None) {
             self.make_pack(dir);
         }
+    }
+
+    /// Tells the panel which entries the user's library already holds, by
+    /// the hash they were installed under.
+    pub fn set_installed(&mut self, hashes: HashSet<String>) {
+        self.installed = hashes;
+    }
+
+    /// Opens the Share groups and presets window.
+    pub fn share_library(&mut self) {
+        self.share = Some(share::Share::default());
+    }
+
+    /// Brings the library entry `entry` from its source, with the samples it
+    /// uses. What arrives is taken with [`take_installs`](Self::take_installs).
+    pub fn install(&mut self, entry: Entry) {
+        if entry.kind.is_sound() {
+            return;
+        }
+        if self.installed.contains(&entry.key)
+            || self.installing.iter().any(|i| i.entry.key == entry.key)
+        {
+            return;
+        }
+        let (Some(source), Some(cache)) = (self.source(&entry.source).cloned(), self.cache.clone())
+        else {
+            self.message = Some("There is nowhere to keep sounds on this computer".into());
+            return;
+        };
+        let net = self.net.clone();
+        let wanted = entry.clone();
+        let job = Job::spawn(move |progress| {
+            source::fetch_item(&net, &cache, &source, &wanted, &mut |f| {
+                progress.report(f).is_ok()
+            })
+        });
+        self.installing.push(Install { entry, job });
+    }
+
+    /// The library entries that have arrived since the last call.
+    pub fn take_installs(&mut self) -> Vec<Installed> {
+        std::mem::take(&mut self.installs)
     }
 
     /// What the panel lists, before the search.
@@ -331,7 +405,7 @@ impl Sounds {
         self.cleanable = None;
         self.cached.clear();
         self.sizes.clear();
-        for entry in &self.entries {
+        for entry in self.entries.iter().filter(|e| e.kind.is_sound()) {
             let in_folder = entry.file.is_some()
                 && matches!(self.reach.get(&entry.source), Some(Reach::Reachable));
             if in_folder {
@@ -443,6 +517,16 @@ impl Sounds {
             if std::mem::take(&mut self.again) {
                 self.refresh();
             }
+        }
+        let mut i = 0;
+        while i < self.installing.len() {
+            let Some(done) = self.installing[i].job.poll() else {
+                i += 1;
+                continue;
+            };
+            let Install { entry, .. } = self.installing.remove(i);
+            let result = done.map_err(|p| p.to_string()).and_then(|r| r);
+            self.installs.push(Installed { entry, result });
         }
         let mut i = 0;
         while i < self.fetching.len() {
@@ -559,11 +643,25 @@ impl Sounds {
         if visible && !self.asked {
             self.refresh();
         }
-        let busy = self.refreshing.is_some() || !self.fetching.is_empty() || self.playing.is_some();
+        let busy = self.refreshing.is_some()
+            || !self.fetching.is_empty()
+            || !self.installing.is_empty()
+            || self.playing.is_some();
         if busy {
             ctx.request_repaint_after(Duration::from_millis(100));
         }
         wizard::show(self, ctx);
+    }
+
+    /// Draws the Share groups and presets window, if it is open. It reads the
+    /// library and the samples, so the app gives it the session.
+    pub fn show_share(&mut self, ctx: &Context, session: &Session) {
+        share::show(self, ctx, session);
+    }
+
+    /// Draws the Library tab into the browser panel.
+    pub fn show_library(&mut self, ui: &mut egui::Ui) {
+        panel::show_library(self, ui);
     }
 
     /// Draws the Sounds tab into the browser panel.

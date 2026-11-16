@@ -25,6 +25,7 @@ fn pack() -> PackDef {
         author: "Jo".into(),
         licence: Licence::Default,
         samples: vec![sample(H1, "Kick"), sample(H2, "Snare")],
+        items: vec![],
     }
 }
 
@@ -309,4 +310,79 @@ fn all_problems_are_reported_and_printable() {
         v[0].to_string(),
         "sample 0: hash must be 64 lowercase hex digits"
     );
+}
+
+fn item(hash: &str, name: &str) -> ItemDef {
+    ItemDef {
+        hash: hash.into(),
+        name: name.into(),
+        kind: ItemKind::Template,
+        file: None,
+        author: None,
+        licence: None,
+        tags: vec![],
+        credit: None,
+        needs: vec![],
+    }
+}
+
+fn item_faults(p: &PackDef) -> Vec<ItemFault> {
+    validate(p)
+        .into_iter()
+        .filter_map(|p| match p.kind {
+            ProblemKind::Item { fault, .. } => Some(fault),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_pack_may_hold_only_library_entries_and_they_reach_the_manifest() {
+    let mut p = pack();
+    p.samples.clear();
+    assert!(kinds(&p).contains(&ProblemKind::NoSamples));
+    p.items.push(item(H1, "Fat bass"));
+    assert!(validate(&p).is_empty());
+    let m = p.manifest();
+    assert_eq!(m.items[0].author, "Jo");
+    assert_eq!(m.items[0].licence, Licence::Default);
+    assert_eq!(m.index_entry("x").items, 1);
+    assert_eq!(Manifest::from_json(&m.to_json().unwrap()).unwrap(), m);
+    let ron = p.to_ron().unwrap();
+    assert_eq!(PackDef::from_ron(&ron).unwrap(), p);
+}
+
+#[test]
+fn library_entries_follow_the_sample_rules_and_must_have_their_samples_in_the_pack() {
+    let mut p = pack();
+    p.items = vec![item("x", " "), item(H1, "A"), item(H1, "A")];
+    p.author = String::new();
+    let f = item_faults(&p);
+    assert!(f.contains(&ItemFault::BadHash));
+    assert!(f.contains(&ItemFault::EmptyName));
+    assert!(f.contains(&ItemFault::DuplicateHash { first: 1 }));
+    assert!(f.contains(&ItemFault::DuplicateName { first: 1 }));
+    assert!(f.contains(&ItemFault::MissingAuthor));
+
+    let mut p = pack();
+    let mut i = item(H1, "A");
+    i.needs = vec![H2.into(), "nope".into(), "f".repeat(64)];
+    i.licence = Some(Licence::Spdx("CC-BY-4.0".into()));
+    i.file = Some("../a.ron".into());
+    p.items = vec![i];
+    let f = item_faults(&p);
+    assert!(f.contains(&ItemFault::BadNeed {
+        hash: "nope".into()
+    }));
+    assert!(f.contains(&ItemFault::NeedNotInPack {
+        hash: "f".repeat(64)
+    }));
+    assert!(
+        !f.iter()
+            .any(|f| matches!(f, ItemFault::NeedNotInPack { hash } if hash == H2))
+    );
+    assert!(f.contains(&ItemFault::MissingCredit));
+    assert!(f.contains(&ItemFault::UnsafePath {
+        file: "../a.ron".into()
+    }));
 }

@@ -14,7 +14,10 @@
 //! to repeat because objects never change once written and the site is
 //! uploaded objects first, `index.json` last.
 
+mod items;
 mod upload;
+
+pub use items::{item_file, item_samples, kind_of, parse_item, sha256_hex};
 
 pub use noodle_network::s3::Bucket;
 pub use upload::{DirStore, Published, Put, R2, Store, Uploaded, publish, upload_objects};
@@ -50,6 +53,9 @@ pub fn object_path(hash: &str) -> String {
     format!("objects/{hash}.flac")
 }
 
+/// The path of a library entry's object, relative to the site root.
+pub use noodle_packs::item_object;
+
 #[derive(Debug, thiserror::Error)]
 pub enum PublishError {
     #[error("{}: {source}", path.display())]
@@ -78,6 +84,12 @@ pub enum PublishError {
         name: String,
         expected: String,
         actual: String,
+    },
+    #[error("{}: library entry {name:?}: {message}", path.display())]
+    BadItem {
+        path: PathBuf,
+        name: String,
+        message: String,
     },
     #[error("{}: fewer than {MIN_FRAMES} frames of audio", path.display())]
     TooShort { path: PathBuf },
@@ -178,6 +190,10 @@ pub fn check_defs(dir: &Path) -> Result<Vec<FoundPack>, PublishError> {
                 problems,
             });
         }
+        // Entries are in git, so a PR check can read them.
+        for i in 0..pack.def.items.len() {
+            items::load_item(pack, i)?;
+        }
     }
     Ok(packs)
 }
@@ -238,6 +254,9 @@ pub fn check(dir: &Path) -> Result<Vec<FoundPack>, PublishError> {
         for i in 0..pack.def.samples.len() {
             load(pack, i)?;
         }
+        for i in 0..pack.def.items.len() {
+            items::load_item(pack, i)?;
+        }
     }
     Ok(packs)
 }
@@ -247,6 +266,7 @@ pub fn check(dir: &Path) -> Result<Vec<FoundPack>, PublishError> {
 pub struct Report {
     pub packs: usize,
     pub samples: usize,
+    pub items: usize,
     /// Objects encoded and written.
     pub written: usize,
     /// Objects that were already in the site and left alone.
@@ -292,6 +312,21 @@ pub fn build_packs(packs: &[FoundPack], out: &Path) -> Result<Report, PublishErr
             }
             manifest.samples[i].bytes = Some(fs::metadata(&object).map_err(io(&object))?.len());
             report.samples += 1;
+        }
+        for i in 0..pack.def.items.len() {
+            let bytes = items::load_item(pack, i)?;
+            let object = out.join(item_object(&pack.def.items[i].hash));
+            if object.is_file() {
+                report.skipped += 1;
+            } else {
+                if let Some(parent) = object.parent() {
+                    fs::create_dir_all(parent).map_err(io(parent))?;
+                }
+                write_text_bytes(&object, &bytes)?;
+                report.written += 1;
+            }
+            manifest.items[i].bytes = Some(bytes.len() as u64);
+            report.items += 1;
         }
         let manifest_file = out.join(manifest_path(&pack.def.id));
         write_text(&manifest_file, &json(manifest.to_json(), &manifest_file)?)?;
@@ -368,6 +403,12 @@ fn json(r: Result<String, PackError>, path: &Path) -> Result<String, PublishErro
         path: path.to_owned(),
         source: Box::new(source),
     })
+}
+
+fn write_text_bytes(path: &Path, bytes: &[u8]) -> Result<(), PublishError> {
+    let partial = path.with_extension("partial");
+    fs::write(&partial, bytes).map_err(io(&partial))?;
+    fs::rename(&partial, path).map_err(io(path))
 }
 
 fn write_text(path: &Path, text: &str) -> Result<(), PublishError> {
@@ -486,6 +527,34 @@ pub fn verify(site: &Path) -> Result<usize, PublishError> {
                     actual,
                 });
             }
+            checked += 1;
+        }
+        for item in &manifest.items {
+            if !is_hash(&item.hash) {
+                return Err(PublishError::Invalid {
+                    path,
+                    problems: vec![Problem {
+                        sample: None,
+                        kind: noodle_packs::ProblemKind::BadHash,
+                    }],
+                });
+            }
+            let object = site.join(item_object(&item.hash));
+            let bytes = fs::read(&object).map_err(io(&object))?;
+            let actual = sha256_hex(&bytes);
+            if actual != item.hash {
+                return Err(PublishError::HashMismatch {
+                    path: object,
+                    name: item.name.clone(),
+                    expected: item.hash.clone(),
+                    actual,
+                });
+            }
+            parse_item(&bytes, item.kind).map_err(|message| PublishError::BadItem {
+                path: object,
+                name: item.name.clone(),
+                message,
+            })?;
             checked += 1;
         }
     }

@@ -226,18 +226,22 @@ fn packs(command: PacksCommand) -> Result<(), String> {
             }
             .map_err(err)?;
             let samples: usize = packs.iter().map(|p| p.def.samples.len()).sum();
-            println!("{} packs, {samples} samples: ok", packs.len());
+            let items: usize = packs.iter().map(|p| p.def.items.len()).sum();
+            println!(
+                "{} packs, {samples} samples, {items} library entries: ok",
+                packs.len()
+            );
         }
         PacksCommand::Build { dir, out } => {
             let r = noodle_publish::build(&dir, &out).map_err(err)?;
             println!(
-                "{} packs, {} samples: {} objects written, {} already there",
-                r.packs, r.samples, r.written, r.skipped
+                "{} packs, {} samples, {} library entries: {} objects written, {} already there",
+                r.packs, r.samples, r.items, r.written, r.skipped
             );
         }
         PacksCommand::Verify { site } => {
             let n = noodle_publish::verify(&site).map_err(err)?;
-            println!("{n} samples: ok");
+            println!("{n} objects: ok");
         }
         PacksCommand::Upload { dir, to } => {
             let store = pack_store(to)?;
@@ -255,7 +259,10 @@ fn packs(command: PacksCommand) -> Result<(), String> {
         PacksCommand::Publish { dir, to } => {
             let store = pack_store(to)?;
             let done = noodle_publish::publish(&dir, &*store).map_err(err)?;
-            println!("{} packs, {} samples published", done.packs, done.samples);
+            println!(
+                "{} packs, {} samples, {} library entries published",
+                done.packs, done.samples, done.items
+            );
         }
     }
     Ok(())

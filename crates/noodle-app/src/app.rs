@@ -871,13 +871,21 @@ impl App {
         }
         self.sounds.tick(
             ui.ctx(),
-            self.browser.visible_tab() == Some(crate::browser::Tab::Sounds),
+            matches!(
+                self.browser.visible_tab(),
+                Some(crate::browser::Tab::Sounds | crate::browser::Tab::Library)
+            ),
         );
+        self.sounds.set_installed(self.session.installed_hashes());
+        self.sounds.show_share(ui.ctx(), &self.session);
         if self.sounds.take_wants_sources() {
             self.open_settings(crate::settings::Tab::Sources);
         }
         for done in self.sounds.poll(&self.session) {
             crate::sounds::apply::apply(&mut self.session, done);
+        }
+        for got in self.sounds.take_installs() {
+            crate::sounds::apply::install(&mut self.session, got);
         }
         self.cache_panel.show(ui.ctx(), &mut self.session);
         self.export.show(ui.ctx(), &mut self.session);

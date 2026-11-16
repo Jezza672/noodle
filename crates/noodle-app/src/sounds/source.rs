@@ -363,6 +363,64 @@ pub fn download(
         .map_err(|e| e.to_string())
 }
 
+/// A library entry brought from a source, and the samples it uses.
+pub struct FetchedItem {
+    pub item: noodle_core::library::Item,
+    /// Where each sample it uses is on this computer, by hash.
+    pub samples: Vec<(String, std::path::PathBuf)>,
+}
+
+/// Brings the library entry `entry` from `source`: its file, checked against
+/// the SHA-256 that names it and read as the kind the manifest says, then
+/// each sample it needs, checked against its own hash. Nothing is installed:
+/// that is for the app, which owns the library.
+pub fn fetch_item(
+    net: &Net,
+    cache: &Cache,
+    source: &Source,
+    entry: &Entry,
+    progress: &mut dyn FnMut(f32) -> bool,
+) -> Result<FetchedItem, String> {
+    let kind = entry.kind.item_kind().ok_or("that isn't a library entry")?;
+    if !noodle_packs::is_hash(&entry.key) {
+        return Err("that isn't an entry's hash".into());
+    }
+    let request = source
+        .request(source.join(&noodle_packs::item_object(&entry.key)))
+        .with_sha256(&entry.key);
+    let path = cache
+        .get(
+            &Downloader::new(net.clone()),
+            &entry.key,
+            &request,
+            None,
+            &mut |_| true,
+        )
+        .map_err(|e| e.to_string())?;
+    let bytes = std::fs::read(&path).map_err(|e| e.to_string())?;
+    if bytes.len() as u64 > MAX_TEXT {
+        return Err("the entry is too big to be a group or a preset".into());
+    }
+    let item = noodle_publish::parse_item(&bytes, kind)?;
+    // What the entry names must be what the manifest said it needs, so a
+    // source can't make an install fetch anything else.
+    let used = noodle_publish::item_samples(&item);
+    if let Some(other) = used.iter().find(|h| !entry.needs.contains(h)) {
+        return Err(format!(
+            "it uses sample {other}, which its pack doesn't list"
+        ));
+    }
+    let mut samples = Vec::new();
+    for (i, hash) in used.iter().enumerate() {
+        let total = used.len() as f32;
+        let path = download(net, cache, source, hash, &mut |f| {
+            progress((i as f32 + f) / total)
+        })?;
+        samples.push((hash.clone(), path));
+    }
+    Ok(FetchedItem { item, samples })
+}
+
 #[cfg(test)]
 pub(crate) mod fake {
     //! A source served from memory, for tests.
@@ -467,6 +525,7 @@ pub(crate) mod fake {
             version: 1,
             description: String::new(),
             samples,
+            items: vec![],
         };
         let index = Index::new(vec![manifest.index_entry("packs/tones/manifest.json")]);
         site.put(&format!("{BASE}/index.json"), index.to_json().unwrap());

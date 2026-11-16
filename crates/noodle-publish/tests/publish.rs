@@ -75,6 +75,7 @@ fn builds_objects_named_by_the_hash_of_their_decoded_audio() {
         Report {
             packs: 1,
             samples: 2,
+            items: 0,
             written: 2,
             skipped: 0
         }
@@ -279,7 +280,8 @@ fn a_contributor_uploads_objects_and_ci_publishes_from_definitions_alone() {
         published,
         Published {
             packs: 1,
-            samples: 2
+            samples: 2,
+            items: 0
         }
     );
     // The store is now a whole site, and it verifies.
@@ -380,6 +382,7 @@ fn packs_in_hand_build_without_a_pack_ron_and_zip_into_a_site() {
                 tags: vec![],
                 credit: None,
             }],
+            items: vec![],
         },
         dir: audio,
     };

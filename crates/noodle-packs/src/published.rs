@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Licence, check_format};
+use crate::{Error, ItemKind, Licence, check_format};
 
 /// The per-pack manifest a source serves. JSON, so any static host and any
 /// language can read it.
@@ -12,7 +12,30 @@ pub struct Manifest {
     pub version: u32,
     #[serde(default)]
     pub description: String,
+    #[serde(default)]
     pub samples: Vec<ManifestSample>,
+    /// Library entries: templates and presets, at `items/<hash>.ron`.
+    #[serde(default)]
+    pub items: Vec<ManifestItem>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ManifestItem {
+    pub hash: String,
+    pub name: String,
+    pub kind: ItemKind,
+    pub author: String,
+    pub licence: Licence,
+    #[serde(default)]
+    pub tags: Vec<String>,
+    #[serde(default)]
+    pub credit: Option<String>,
+    /// Hashes of the pack's samples the entry uses.
+    #[serde(default)]
+    pub needs: Vec<String>,
+    /// Size of the uploaded file, filled in by the publisher.
+    #[serde(default)]
+    pub bytes: Option<u64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -47,6 +70,8 @@ pub struct IndexEntry {
     /// Where the manifest is, relative to the index's URL.
     pub manifest: String,
     pub samples: u32,
+    #[serde(default)]
+    pub items: u32,
 }
 
 impl Manifest {
@@ -69,6 +94,7 @@ impl Manifest {
             description: self.description.clone(),
             manifest: manifest_path.to_string(),
             samples: self.samples.len() as u32,
+            items: self.items.len() as u32,
         }
     }
 }
