@@ -1622,3 +1622,215 @@ fn an_abandoned_render_is_not_played() {
     assert!(plan.replacements.is_empty() && plan.watches.is_empty());
     let _ = &mut rig;
 }
+
+// ---------------------------------------------------------------------------
+// Groups whose outputs carry notes, spectra or samples, played from the cache.
+//
+// The playback cache stores a group's audio outputs and plays them in place of
+// the nodes that made them. Whatever else leaves the group (notes, spectra, a
+// sample choice) still has to come from the live nodes, and what plays has to
+// be what the live graph plays.
+
+impl Rig {
+    /// Plays the project from the start of `pass`, with the cache standing in
+    /// or not, and insists it compiles cleanly.
+    fn play_running(&self, pass: &Pass, cached: bool) -> Vec<f32> {
+        let mut registry = Registry::with_builtins();
+        let library = register_library_blocking(&mut registry);
+        let table = TempoTable::new(self.project.tempo_map(), SETTINGS.sample_rate);
+        library
+            .clips
+            .update(&self.project, &table, RATE, &self.base);
+        let (mut controller, mut processor) = engine(SETTINGS).unwrap();
+        let diagnostics = if cached {
+            let plan = self.plan_for(pass);
+            assert!(!plan.replacements.is_empty(), "nothing was cached");
+            controller.update_project_replacing(&self.project, &registry, &plan.replacements)
+        } else {
+            controller.update_project(&self.project, &registry)
+        };
+        assert!(diagnostics.is_empty(), "{diagnostics:?}");
+        // Not a seek at the very start: a seek fades the output out and
+        // restarts the nodes, which moves the blocks note timing falls in.
+        if pass.tick.0 > 0 {
+            controller.transport().seek(pass.tick);
+        }
+        // A graph with latency sounds that late, and the cache holds what the
+        // render heard with that taken off (as `render` does), so line the
+        // live one up with it.
+        let late = controller.output_latency() * SETTINGS.channels;
+        run(&mut controller, &mut processor, None)[FADE_SKIP + late..].to_vec()
+    }
+
+    fn node(&mut self, id: u64, node: Node) -> NodeId {
+        let id = NodeId(id);
+        self.apply(Command::AddNode { id, node });
+        id
+    }
+
+    /// A rhythm into a four-voice saw, to a voice mix: (notes in, audio out).
+    fn voice_chain(&mut self, base: u64) -> (NodeId, NodeId, NodeId) {
+        let voices = self.node(
+            base,
+            Node::new("noodle.poly.voices")
+                .with_config(noodle_core::Config::new().with("voices", noodle_core::Value::Int(4))),
+        );
+        let saw = self.node(base + 1, Node::new("noodle.osc.saw"));
+        let mix = self.node(base + 2, Node::new("noodle.poly.voice_mix"));
+        self.wire((voices, "pitch"), (saw, "frequency"));
+        self.wire((saw, "out"), (mix, "in"));
+        (voices, saw, mix)
+    }
+
+    fn euclid(&mut self, id: u64) -> NodeId {
+        self.node(
+            id,
+            Node::new("noodle.event.euclidean")
+                .with_param("steps", 8.0)
+                .with_param("pulses", 5.0)
+                .with_param("key", 61.0),
+        )
+    }
+
+    /// Two outputs, one for each source. Nothing joins them but the output
+    /// itself, so the cache makes no cut of its own downstream of the groups.
+    fn sum_to_output(&mut self, id: u64, a: (NodeId, &str), b: (NodeId, &str)) {
+        for (n, source) in [a, b].into_iter().enumerate() {
+            let out = self.node(id + n as u64, Node::new(OUTPUT_ID));
+            self.wire(source, (out, "in"));
+        }
+    }
+
+    /// Freezes the cache for a pass at the start, then checks the cached
+    /// project plays what the live one does, and that it isn't silent.
+    fn cached_plays_like_live(&self, what: &str) {
+        let start = pass_at(self, 0);
+        assert!(
+            !self
+                .freeze_passes(std::slice::from_ref(&start))
+                .rendered
+                .is_empty()
+        );
+        let live = self.play_running(&start, false);
+        assert!(live.iter().any(|&s| s.abs() > 0.01), "{what}: silent");
+        let cached = self.play_running(&start, true);
+        // The live one is shorter by what its latency took off the front.
+        let n = live.len().min(cached.len());
+        assert!(n > FRAMES, "{what}: only {n} samples to compare");
+        assert_close(&cached[..n], &live[..n], what);
+    }
+}
+
+/// One rhythm feeds a voice chain inside a group and another outside it, so
+/// the notes leave the group while its audio comes from the cache.
+#[test]
+fn notes_leaving_a_cached_group_still_play_live() {
+    let mut rig = setup("notes-out");
+    let euclid = rig.euclid(21);
+    let (in_a, _, mix_a) = rig.voice_chain(22);
+    let (in_b, _, mix_b) = rig.voice_chain(26);
+    rig.wire((euclid, "out"), (in_a, "in"));
+    rig.wire((euclid, "out"), (in_b, "in"));
+    rig.sum_to_output(30, (mix_a, "out"), (mix_b, "out"));
+    let group = rig.group(&[euclid, in_a, mix_a, NodeId(23)]);
+    let ports = rig.project.graph().group_ports(group);
+    assert_eq!(ports.outputs.len(), 2, "one audio output, one for notes");
+    rig.cached_plays_like_live("notes out of a cached group");
+}
+
+/// The notes come from outside a cached group and enter it.
+#[test]
+fn notes_entering_a_cached_group_play_the_same_from_the_cache() {
+    let mut rig = setup("notes-in");
+    let euclid = rig.euclid(21);
+    let (in_a, saw_a, mix_a) = rig.voice_chain(22);
+    let (in_b, _, mix_b) = rig.voice_chain(26);
+    rig.wire((euclid, "out"), (in_a, "in"));
+    rig.wire((euclid, "out"), (in_b, "in"));
+    rig.sum_to_output(30, (mix_a, "out"), (mix_b, "out"));
+    let group = rig.group(&[in_a, saw_a, mix_a]);
+    assert_eq!(rig.project.graph().group_ports(group).inputs.len(), 1);
+    rig.cached_plays_like_live("notes into a cached group");
+}
+
+/// The same, with the group inside another one.
+#[test]
+fn notes_cross_nested_cached_groups() {
+    let mut rig = setup("notes-nested");
+    let euclid = rig.euclid(21);
+    let (in_a, saw_a, mix_a) = rig.voice_chain(22);
+    let (in_b, _, mix_b) = rig.voice_chain(26);
+    rig.wire((euclid, "out"), (in_a, "in"));
+    rig.wire((euclid, "out"), (in_b, "in"));
+    rig.sum_to_output(30, (mix_a, "out"), (mix_b, "out"));
+    let inner = rig.group(&[in_a, saw_a, mix_a]);
+    rig.group(&[euclid, inner]);
+    rig.cached_plays_like_live("notes through nested cached groups");
+}
+
+/// A group whose audio is cached and whose analysis leaves it as a spectrum.
+#[test]
+fn a_spectrum_leaving_a_cached_group_still_plays_live() {
+    let mut rig = setup("spectrum-out");
+    let saw = rig.node(
+        41,
+        Node::new("noodle.osc.saw").with_param("frequency", 110.0),
+    );
+    let analyse = rig.node(42, Node::new("noodle.spectral.analyze"));
+    let synth = rig.node(43, Node::new("noodle.spectral.synthesize"));
+    rig.wire((saw, "out"), (analyse, "in"));
+    rig.wire((analyse, "spectrum"), (synth, "spectrum"));
+    // The saw itself is nearly inaudible, so what is heard is the spectrum's.
+    let quiet = rig.node(
+        47,
+        Node::new(noodle_nodes::GAIN_ID).with_param("gain", -90.0),
+    );
+    rig.wire((saw, "out"), (quiet, "in"));
+    rig.sum_to_output(44, (synth, "out"), (quiet, "out"));
+    let group = rig.group(&[saw, analyse]);
+    assert_eq!(rig.project.graph().group_ports(group).outputs.len(), 2);
+    rig.cached_plays_like_live("a spectrum out of a cached group");
+}
+
+/// A spectrum enters a group that is cached for its audio, and the analysis
+/// itself is a group (spectra only) on the way in.
+#[test]
+fn a_spectrum_crossing_cached_groups_plays_the_same() {
+    let mut rig = setup("spectrum-in");
+    let saw = rig.node(
+        41,
+        Node::new("noodle.osc.saw").with_param("frequency", 110.0),
+    );
+    let analyse = rig.node(42, Node::new("noodle.spectral.analyze"));
+    let synth = rig.node(43, Node::new("noodle.spectral.synthesize"));
+    rig.wire((saw, "out"), (analyse, "in"));
+    rig.wire((analyse, "spectrum"), (synth, "spectrum"));
+    rig.sum_to_output(44, (synth, "out"), (saw, "out"));
+    rig.group(&[analyse]);
+    rig.group(&[synth]);
+    rig.cached_plays_like_live("a spectrum across groups");
+}
+
+/// A Sample node in one group chooses what a Sampler in another plays.
+#[test]
+fn a_sample_choice_crossing_a_cached_group_plays_the_same() {
+    // The shipped steel drum, by its hash (see `assets/samples/index.txt`).
+    const DRUM: &str = "1ac5a3c33f1e037e427b982e9ae0104241c09cb59a612889978dc45036f00498";
+    let mut rig = setup("sample-wire");
+    let euclid = rig.euclid(21);
+    let chosen = rig.node(
+        22,
+        Node::new(noodle_nodes::SAMPLE_INPUT_ID).with_config(noodle_core::Config::new().with(
+            noodle_nodes::SAMPLE_KEY,
+            noodle_core::Value::Text(DRUM.into()),
+        )),
+    );
+    let sampler = rig.node(23, Node::new(noodle_nodes::SAMPLER_ID));
+    let other = rig.node(24, Node::new("noodle.osc.sine"));
+    rig.wire((euclid, "out"), (sampler, "in"));
+    rig.wire((chosen, "sample"), (sampler, "sample"));
+    rig.sum_to_output(30, (sampler, "out"), (other, "out"));
+    rig.group(&[chosen]);
+    rig.group(&[euclid, sampler]);
+    rig.cached_plays_like_live("a sample choice across cached groups");
+}
