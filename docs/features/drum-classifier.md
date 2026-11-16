@@ -56,7 +56,7 @@ audio (CC0, CC BY, CC BY-SA only; the manifest records source, licence and credi
 are refused). `drum_real_split` keeps the drums of a mix, `drum_real_detect` runs the app's
 `analyse_hits`, and `label.py label` plays each hit for single-keystroke class and purity labels
 (`clean double truncated malformed mixed spurious`). `label.py export` writes rows in the dataset
-generator's `hits.csv` columns. The data stays outside the repo. Nothing consumes the export yet.
+generator's `hits.csv` columns (a non-hit is label `spurious`, purity `spurious`, as the generator writes it; the `mixed` and `truncated` columns keep the detector's flags, never the human label). The data stays outside the repo. Nothing consumes the export yet.
 
 ## Owed
 

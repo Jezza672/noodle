@@ -436,11 +436,18 @@ def export_rows(work):
         hit = next((h for h in data["hits"] if h["id"] == hit_id), None)
         if hit is None:
             continue
+        f = hit["feat"]
         v = hit["features"]
-        if len(v) != FEATURE_COUNT:
-            raise SystemExit(f"{song_id} hit {hit_id}: {len(v)} features, expected {FEATURE_COUNT}")
-        bands, rest = v[:24], v[24:]
-        centroid, flatness, low, mid, high, decay, pitched, pitch_key, has_pitch, peaks = rest[:10]
+        # The vector the classifier takes must agree with the named fields (drum_real_detect
+        # tests feature_vector's order in Rust).
+        want = f["bands"] + [f["centroid"], f["flatness"], f["low"], f["mid"], f["high"], f["decay"],
+                             f["pitched"], f["pitch_key"] or 0.0, float(f["pitch_key"] is not None),
+                             float(f["attack_peaks"]), float(hit["mixed"]), float(hit["truncated"])]
+        if len(v) != FEATURE_COUNT or any(abs(x - y) > 1e-4 for x, y in zip(v, want)):
+            raise SystemExit(f"{song_id} hit {hit_id}: features do not match their names; re-run detect")
+        bands = f["bands"]
+        centroid, flatness, low, mid, high = f["centroid"], f["flatness"], f["low"], f["mid"], f["high"]
+        decay, pitched, pitch_key, peaks = f["decay"], f["pitched"], f["pitch_key"], f["attack_peaks"]
         row = {
             "split": split_of(song_id),
             "source": f"real:{song_id}",
@@ -449,13 +456,14 @@ def export_rows(work):
             "onset_s": f"{hit['onset_s']:.4f}",
             "level_db": f"{hit['level_db']:.2f}",
             "gain_db": "0.0",
-            "mixed": int(ev["purity"] == "mixed"),
-            "truncated": int(ev["purity"] == "truncated"),
+            # The detector's own flags, as in the feature vector: never the human purity label.
+            "mixed": int(hit["mixed"]),
+            "truncated": int(hit["truncated"]),
             "centroid": f"{centroid:.2f}",
             "flatness": f"{flatness:.5f}",
             "low": f"{low:.5f}", "mid": f"{mid:.5f}", "high": f"{high:.5f}",
             "decay": f"{decay:.4f}", "pitched": f"{pitched:.4f}",
-            "pitch_key": f"{pitch_key:.3f}" if has_pitch else "",
+            "pitch_key": f"{pitch_key:.3f}" if pitch_key is not None else "",
             "attack_peaks": int(peaks),
             "purity": ev["purity"],
             "damage": "real",

@@ -18,8 +18,10 @@ def make_work(licence="cc-by-4.0", n=4):
         w.writerow(label.MANIFEST_COLUMNS)
         w.writerow(["s1", "s1.wav", "Song", "Artist", "1975", "funk", "multitrack", licence, "http://x", "Artist, CC BY"])
     hits = [{"id": i, "wav": f"{i:04}.wav", "onset_s": i * 0.5, "start_s": i * 0.5, "end_s": i * 0.5 + 0.2,
-             "truncated": False, "mixed": False, "level_db": -10.0, "guess": "Kick", "guess_confidence": 0.5,
-             "features": [float(-j) for j in range(24)] + [1000.0, 0.2, 0.5, 0.3, 0.2, 0.1, 1.0, 36.0, 1.0, 1.0, 0.0, 0.0],
+             "truncated": False, "mixed": i == 1, "level_db": -10.0, "guess": "Kick", "guess_confidence": 0.5,
+             "feat": {"bands": [float(-j) for j in range(24)], "centroid": 1000.0, "flatness": 0.2, "low": 0.5,
+                      "mid": 0.3, "high": 0.2, "decay": 0.1, "pitched": 1.0, "pitch_key": 36.0, "attack_peaks": 1},
+             "features": [float(-j) for j in range(24)] + [1000.0, 0.2, 0.5, 0.3, 0.2, 0.1, 1.0, 36.0, 1.0, 1.0, 1.0 if i == 1 else 0.0, 0.0],
              "pitch_key": 36.0} for i in range(n)]
     with open(os.path.join(work, "detect", "s1", "hits.json"), "w") as f:
         json.dump({"audio": "x", "sample_rate": 44100, "duration_s": 10, "hits": hits}, f)
@@ -73,8 +75,9 @@ class Tests(unittest.TestCase):
         for r in rows:
             self.assertEqual(set(r), set(label.CSV_COLUMNS))
         by = {r["label"]: r for r in rows}
+        # human label "mixed" on hit 0, whose detector flags are both off: the columns keep the flags
         self.assertEqual(by["kick"]["purity"], "mixed")
-        self.assertEqual(by["kick"]["mixed"], 1)
+        self.assertEqual((by["kick"]["mixed"], by["kick"]["truncated"]), (0, 0))
         self.assertEqual(by["kick"]["pitch_key"], "36.000")
         self.assertEqual(by["spurious"]["purity"], "spurious")
         self.assertEqual(by["kick"]["source"], "real:s1")

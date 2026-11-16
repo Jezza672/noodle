@@ -50,6 +50,18 @@ fn run(audio: &Path, out: &Path) -> Result<usize, String> {
             "guess": kind.name(),
             "guess_confidence": conf,
             "features": feature_vector(h).to_vec(),
+            "feat": {
+                "bands": h.features.bands.to_vec(),
+                "centroid": h.features.centroid,
+                "flatness": h.features.flatness,
+                "low": h.features.split[0],
+                "mid": h.features.split[1],
+                "high": h.features.split[2],
+                "decay": h.features.decay,
+                "pitched": h.features.pitched,
+                "pitch_key": h.features.pitch_key,
+                "attack_peaks": h.features.attack_peaks,
+            },
             "pitch_key": h.features.pitch_key,
         }));
     }
@@ -79,5 +91,47 @@ fn main() -> ExitCode {
             eprintln!("drum-real-detect: {e}");
             ExitCode::FAILURE
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use noodle_io::{Hit, HitFeatures};
+
+    /// `label.py` reads the named `feat` object and checks it against `features`
+    /// (what the classifier takes) in this order; if `feature_vector` changes, this fails.
+    #[test]
+    fn feature_vector_order_is_what_label_py_expects() {
+        let mut bands = [0.0; 24];
+        for (i, b) in bands.iter_mut().enumerate() {
+            *b = -(i as f32);
+        }
+        let hit = Hit {
+            onset: 0,
+            start: 0,
+            end: 1,
+            truncated: true,
+            mixed: true,
+            level_db: -3.0,
+            features: HitFeatures {
+                bands,
+                centroid: 1000.0,
+                flatness: 0.25,
+                split: [0.5, 0.3, 0.2],
+                decay: 0.125,
+                pitched: 0.75,
+                pitch_key: Some(36.5),
+                attack_peaks: 3,
+            },
+        };
+        let v = feature_vector(&hit);
+        assert_eq!(&v[..24], &bands[..]);
+        assert_eq!(
+            &v[24..],
+            &[
+                1000.0, 0.25, 0.5, 0.3, 0.2, 0.125, 0.75, 36.5, 1.0, 3.0, 1.0, 1.0
+            ]
+        );
     }
 }
