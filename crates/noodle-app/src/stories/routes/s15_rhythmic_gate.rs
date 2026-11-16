@@ -6,6 +6,12 @@
 //! follows the project tempo. The triplet change is the grid's "To triplets"
 //! button, which moves the notes and the player's step together. Changing the
 //! project tempo is not routed.
+//!
+//! The Euclidean route (`Tag::Expert`) makes the rhythm with a node instead:
+//! an Euclidean node's notes drive a Mono Note, whose `gate` opens the VCA, so
+//! the pattern is `steps` and `pulses` rather than drawn cells, and "change to
+//! triplets" is the node's `rate`. It is silent while the transport is
+//! stopped, so its done check reads the patch, not the sound.
 
 use std::path::Path;
 
@@ -176,4 +182,66 @@ fn first_gate(p: &Project) -> String {
         .collect();
     lines.sort();
     lines.join("\n")
+}
+
+const EUCLID: Ref = Ref("event.euclidean", 0);
+const MONO: Ref = Ref("event.mono", 0);
+
+const EUCLID_BUILD: &[Op] = &[
+    Op::Step("add an Euclidean node, a Mono Note and the gate"),
+    Op::Add(EUCLID, 300.0, 604.0),
+    Op::Add(MONO, 560.0, 604.0),
+    Op::Add(GATE, 800.0, 340.0),
+    Op::Step("play the pad through the gate the rhythm opens"),
+    Op::Wire(EUCLID, "out", MONO, "in"),
+    Op::Wire(MONO, "gate", GATE, "level"),
+    Op::Wire(PAD, "out", GATE, "in"),
+    Op::Wire(GATE, "out", OUT, "in"),
+    Op::Step("set eight steps with three pulses"),
+    Op::Set(EUCLID, "steps", 8.0),
+    Op::Set(EUCLID, "pulses", 3.0),
+];
+
+fn euclid_rate(p: &Project) -> Result<(), String> {
+    let node = find(p, EUCLID).ok_or("no Euclidean node")?;
+    let rate = p
+        .graph()
+        .node(node)
+        .and_then(|n| n.params.get("rate"))
+        .copied()
+        .unwrap_or(4.0);
+    if (rate - 9.0).abs() > 0.01 {
+        return Err(format!("the rate is {rate}, not the sixteenth triplet (9)"));
+    }
+    Ok(())
+}
+
+pub fn euclid_route() -> Route {
+    Route {
+        story: "S15",
+        tag: Tag::Expert,
+        name: "gate a pad with an Euclidean rhythm",
+        fixture,
+        size: None,
+        steps: |h, _| run(h, EUCLID_BUILD),
+        done: |p, _| check(p, EUCLID_BUILD),
+        late: &[LateChange {
+            name: "change the pattern to triplets",
+            steps: |h, _| {
+                // The nodes show live values while the project plays.
+                let _busy = crate::testkit::playing_mode();
+                h.step("open the rate's choices");
+                let node = find(h.probe().project(), EUCLID).expect("the Euclidean node");
+                let field = h.port_row(node, false, "rate");
+                h.click(field, Modifiers::NONE);
+                h.probe().settle();
+                h.step("choose sixteenth triplets");
+                let choice = h.find("1/16T");
+                h.click(choice, Modifiers::NONE);
+                h.probe().settle();
+            },
+            done: |p, _| euclid_rate(p.project()),
+            keep: &[],
+        }],
+    }
 }

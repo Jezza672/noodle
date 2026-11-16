@@ -1,0 +1,68 @@
+// A rhythm that writes its own chords and follows the song's key. Euclidean
+// plays five hits in eight sixteenth steps on C#4, Chance lets 80% of them
+// through, and Transpose, Scale Quantise and Chord turn each into a minor
+// seventh in the song's key. A Song Key node feeds the three: its `shift`
+// moves the part from C major to the key, and its `root` and `scale` set the
+// scale the notes snap to. The project is in D minor and a marker moves it to
+// G minor halfway through, so the chords change key by themselves. Voices
+// (four) gives each chord note a saw, filter and ADSR through a VCA; Voice Mix
+// sums them. The tempo is fast so a short render holds the whole pattern.
+(
+    format: 5,
+    graph: (
+        nodes: {
+            1: (type: "noodle.mod.key", params: {"from": 0.0}, position: (x: 0.0, y: 200.0)),
+            2: (type: "noodle.event.euclidean", params: {"steps": 8.0, "pulses": 5.0, "rate": 4.0, "key": 61.0, "velocity": 0.7, "accent": 0.3}, position: (x: 0.0, y: 0.0)),
+            3: (type: "noodle.event.chance", params: {"probability": 0.8, "seed": 2.0}, position: (x: 200.0, y: 0.0)),
+            4: (type: "noodle.event.transpose", position: (x: 400.0, y: 0.0)),
+            5: (type: "noodle.event.scale_quantise", position: (x: 600.0, y: 0.0)),
+            6: (type: "noodle.event.chord", params: {"type": 9.0}, position: (x: 800.0, y: 0.0)),
+            7: (type: "noodle.poly.voices", config: {"voices": 4}, position: (x: 1000.0, y: 0.0)),
+            8: (type: "noodle.osc.saw", position: (x: 1200.0, y: -80.0)),
+            9: (type: "noodle.filter.svf", params: {"cutoff": 1400.0, "resonance": 0.2}, position: (x: 1400.0, y: -80.0)),
+            10: (type: "noodle.mod.adsr", params: {"attack": 0.004, "decay": 0.05, "sustain": 0.5, "release": 0.04}, position: (x: 1200.0, y: 100.0)),
+            11: (type: "noodle.util.vca", position: (x: 1600.0, y: 0.0)),
+            12: (type: "noodle.poly.voice_mix", position: (x: 1800.0, y: 0.0)),
+            13: (type: "noodle.util.gain", params: {"gain": -16.0}, position: (x: 2000.0, y: 0.0)),
+            14: (type: "noodle.io.output", position: (x: 2200.0, y: 0.0)),
+        },
+        connections: [
+            (from: (node: 2, port: "out"), to: (node: 3, port: "in")),
+            (from: (node: 3, port: "out"), to: (node: 4, port: "in")),
+            (from: (node: 1, port: "shift"), to: (node: 4, port: "semitones")),
+            (from: (node: 4, port: "out"), to: (node: 5, port: "in")),
+            (from: (node: 1, port: "root"), to: (node: 5, port: "root")),
+            (from: (node: 1, port: "scale"), to: (node: 5, port: "scale")),
+            (from: (node: 5, port: "out"), to: (node: 6, port: "in")),
+            (from: (node: 6, port: "out"), to: (node: 7, port: "in")),
+            (from: (node: 7, port: "pitch"), to: (node: 8, port: "frequency")),
+            (from: (node: 8, port: "out"), to: (node: 9, port: "in")),
+            (from: (node: 7, port: "gate"), to: (node: 10, port: "gate")),
+            (from: (node: 9, port: "low"), to: (node: 11, port: "in")),
+            (from: (node: 10, port: "out"), to: (node: 11, port: "level")),
+            (from: (node: 10, port: "active"), to: (node: 7, port: "busy")),
+            (from: (node: 11, port: "out"), to: (node: 12, port: "in")),
+            (from: (node: 12, port: "out"), to: (node: 13, port: "in")),
+            (from: (node: 13, port: "out"), to: (node: 14, port: "in")),
+        ],
+    ),
+    tempo_map: (
+        tempos: [
+            (tick: 0, bpm: 480.0),
+        ],
+        signatures: [
+            (bar: 0, signature: (numerator: 4, denominator: 4)),
+        ],
+    ),
+    markers: [
+        (
+            name: "G minor",
+            at: 960,
+            key: Some((tonic: 7, mode: Minor)),
+        ),
+    ],
+    key: (
+        tonic: 2,
+        mode: Minor,
+    ),
+)

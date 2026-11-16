@@ -10,6 +10,7 @@ mod beat_length;
 mod bitcrush;
 mod button;
 mod cached;
+mod chance;
 mod choke_gate;
 mod chord;
 mod chorus;
@@ -24,6 +25,7 @@ mod distortion;
 mod dynamics;
 mod envelope;
 mod eq;
+mod euclidean;
 mod event_delay;
 mod export;
 mod feedback;
@@ -114,6 +116,7 @@ pub use beat_length::{BEAT_LENGTH_ID, BeatLength};
 pub use bitcrush::{BITCRUSHER_ID, Bitcrusher, quantise};
 pub use button::{BUTTON_ID, BUTTON_STATE, Button};
 pub use cached::{CACHED_ID, CachedPlayer};
+pub use chance::{CHANCE_ID, Chance};
 pub use choke_gate::{CHOKE_GATE_ID, ChokeGate};
 pub use chord::{CHORD_ID, CHORDS, Chord, MAX_STRUM_MS as CHORD_MAX_STRUM_MS};
 pub use chorus::{CHORUS_ID, Chorus};
@@ -145,6 +148,7 @@ pub use eq::{
     EQ_ID, EQ_TYPES, EqBand, EqType, MAX_BANDS as EQ_MAX_BANDS, ParametricEq,
     default_freq as eq_default_freq, eq_response_db, param_index as eq_param,
 };
+pub use euclidean::{EUCLIDEAN_ID, Euclidean};
 pub use export::{
     ExportJobError, ExportReport, ExportRequest, TrackExport, export, spawn_export,
     spawn_export_all,
@@ -387,6 +391,8 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(ScaleQuantise);
     registry.register(Chord);
     registry.register(Transpose);
+    registry.register(Euclidean);
+    registry.register(Chance);
     registry.register(SongKey);
     registry.register(Voices);
     registry.register(VoiceMix::new(&telemetry));

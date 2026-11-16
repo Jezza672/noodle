@@ -1,0 +1,249 @@
+[
+    Template((
+        name: "Euclid Hat",
+        slug: "euclid-hat",
+        nodes: {
+            1: (
+                type: "noodle.group",
+                config: {"name": "Euclid Hat"},
+                position: (x: 0.0, y: 0.0),
+            ),
+            2: (
+                type: "noodle.group.input",
+                config: {"ports": "1:steps\n2:pulses\n3:rotation\n4:probability"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(1),
+            ),
+            3: (
+                type: "noodle.event.euclidean",
+                params: {"key": 60.0, "pulses": 5.0, "rate": 4.0, "steps": 16.0},
+                position: (x: 220.0, y: 0.0),
+                parent: Some(1),
+            ),
+            4: (
+                type: "noodle.event.chance",
+                params: {"probability": 1.0},
+                position: (x: 440.0, y: 0.0),
+                parent: Some(1),
+            ),
+            5: (
+                type: "noodle.event.mono",
+                position: (x: 660.0, y: 0.0),
+                parent: Some(1),
+            ),
+            6: (
+                type: "noodle.group",
+                config: {"name": "Hat"},
+                position: (x: 880.0, y: 0.0),
+                parent: Some(1),
+            ),
+            7: (
+                type: "noodle.group.input",
+                config: {"ports": "1:pitch\n2:gate\n3:velocity\n4:cutoff\n5:decay"},
+                position: (x: 0.0, y: 0.0),
+                parent: Some(6),
+            ),
+            8: (
+                type: "noodle.noise.white",
+                position: (x: 440.0, y: 0.0),
+                parent: Some(6),
+            ),
+            9: (
+                type: "noodle.filter.svf",
+                params: {"cutoff": 7500.0, "resonance": 0.15},
+                position: (x: 660.0, y: 0.0),
+                parent: Some(6),
+            ),
+            10: (
+                type: "noodle.mod.adsr",
+                params: {"attack": 0.001, "decay": 0.045, "release": 0.01, "sustain": 0.0},
+                position: (x: 660.0, y: 260.0),
+                parent: Some(6),
+            ),
+            11: (
+                type: "noodle.util.vca",
+                position: (x: 880.0, y: 0.0),
+                parent: Some(6),
+            ),
+            12: (
+                type: "noodle.util.vca",
+                position: (x: 1100.0, y: 0.0),
+                parent: Some(6),
+            ),
+            13: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 1350.0, y: 0.0),
+                parent: Some(6),
+            ),
+            14: (
+                type: "noodle.group.output",
+                config: {"ports": "1:out"},
+                position: (x: 1130.0, y: 0.0),
+                parent: Some(1),
+            ),
+        },
+        connections: [
+            (
+                from: (node: 2, port: "p2"),
+                to: (node: 3, port: "pulses"),
+            ),
+            (
+                from: (node: 2, port: "p3"),
+                to: (node: 3, port: "rotation"),
+            ),
+            (
+                from: (node: 2, port: "p1"),
+                to: (node: 3, port: "steps"),
+            ),
+            (
+                from: (node: 3, port: "out"),
+                to: (node: 4, port: "in"),
+            ),
+            (
+                from: (node: 2, port: "p4"),
+                to: (node: 4, port: "probability"),
+            ),
+            (
+                from: (node: 4, port: "out"),
+                to: (node: 5, port: "in"),
+            ),
+            (
+                from: (node: 5, port: "gate"),
+                to: (node: 6, port: "gate"),
+            ),
+            (
+                from: (node: 5, port: "pitch"),
+                to: (node: 6, port: "pitch"),
+            ),
+            (
+                from: (node: 5, port: "velocity"),
+                to: (node: 6, port: "velocity"),
+            ),
+            (
+                from: (node: 7, port: "p4"),
+                to: (node: 9, port: "cutoff"),
+            ),
+            (
+                from: (node: 8, port: "out"),
+                to: (node: 9, port: "in"),
+            ),
+            (
+                from: (node: 7, port: "p5"),
+                to: (node: 10, port: "decay"),
+            ),
+            (
+                from: (node: 7, port: "p2"),
+                to: (node: 10, port: "gate"),
+            ),
+            (
+                from: (node: 9, port: "high"),
+                to: (node: 11, port: "in"),
+            ),
+            (
+                from: (node: 10, port: "out"),
+                to: (node: 11, port: "level"),
+            ),
+            (
+                from: (node: 11, port: "out"),
+                to: (node: 12, port: "in"),
+            ),
+            (
+                from: (node: 7, port: "p3"),
+                to: (node: 12, port: "level"),
+            ),
+            (
+                from: (node: 12, port: "out"),
+                to: (node: 13, port: "p1"),
+            ),
+            (
+                from: (node: 6, port: "out"),
+                to: (node: 14, port: "p1"),
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Offbeat Five",
+        slug: "euclid-hat-offbeat-five",
+        topology: "199ac5b52b1dcdc5",
+        nodes: [
+            (),
+            (
+                params: {"key": 60.0, "pulses": 5.0, "rate": 4.0, "steps": 16.0},
+            ),
+            (
+                params: {"cutoff": 7500.0, "resonance": 0.15},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"probability": 1.0},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"attack": 0.001, "decay": 0.045, "release": 0.01, "sustain": 0.0},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Tresillo Eighths",
+        slug: "euclid-hat-tresillo-eighths",
+        topology: "199ac5b52b1dcdc5",
+        nodes: [
+            (),
+            (
+                params: {"key": 60.0, "pulses": 3.0, "rate": 3.0, "steps": 8.0},
+            ),
+            (
+                params: {"cutoff": 7500.0, "resonance": 0.15},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"probability": 1.0},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"attack": 0.001, "decay": 0.045, "release": 0.01, "sustain": 0.0},
+            ),
+        ],
+    )),
+    GroupPreset((
+        name: "Ghost Hat",
+        slug: "euclid-hat-ghost-hat",
+        topology: "199ac5b52b1dcdc5",
+        nodes: [
+            (),
+            (
+                params: {"key": 60.0, "pulses": 11.0, "rate": 4.0, "steps": 16.0},
+            ),
+            (
+                params: {"cutoff": 7500.0, "resonance": 0.15},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"probability": 0.7},
+            ),
+            (),
+            (),
+            (),
+            (),
+            (
+                params: {"attack": 0.001, "decay": 0.045, "release": 0.01, "sustain": 0.0},
+            ),
+        ],
+    )),
+]

@@ -9,7 +9,7 @@
 //! as the values of every node inside.
 
 use super::kit::{self, Drum, Env, Filter, Instrument, Osc, Rack, Slot, Tone, Wave, env};
-use super::patch::{Patch, spec, static_key};
+use super::patch::{Patch, Port, spec, static_key};
 use noodle_core::library::{GroupPreset, GroupTemplate, Item};
 use noodle_core::{Command, History, NodeId, Project, Value};
 use noodle_engine::Registry;
@@ -362,6 +362,38 @@ fn families() -> Vec<Family> {
             .collect(),
         ),
         effect_family(
+            "harmoniser",
+            "Harmoniser",
+            [
+                ("Major Triads", 0.0, 0.0, 0.0),
+                ("Minor Sevenths", 1.0, 9.0, 0.0),
+                ("Follow the Key", 0.0, 0.0, 1.0),
+            ]
+            .into_iter()
+            .map(|(name, scale, chord, follow)| {
+                let build: Build =
+                    Box::new(move |p: &mut Patch| harmoniser(p, scale, chord, follow));
+                (name, build)
+            })
+            .collect(),
+        ),
+        effect_family(
+            "euclid-hat",
+            "Euclid Hat",
+            [
+                ("Offbeat Five", 16.0, 5.0, 1.0, 4.0),
+                ("Tresillo Eighths", 8.0, 3.0, 1.0, 3.0),
+                ("Ghost Hat", 16.0, 11.0, 0.7, 4.0),
+            ]
+            .into_iter()
+            .map(|(name, steps, pulses, probability, rate)| {
+                let build: Build =
+                    Box::new(move |p: &mut Patch| euclid_hat(p, steps, pulses, probability, rate));
+                (name, build)
+            })
+            .collect(),
+        ),
+        effect_family(
             "pattern-pads",
             "Pattern Pads",
             [
@@ -467,6 +499,115 @@ fn step_sequencer(p: &mut Patch, division: f32, length: f32, transpose: f32) -> 
     p.connect((player, "notes"), notes);
     let gate = p.output("gate");
     p.connect((player, "gate"), gate);
+    p.leave(group);
+    group
+}
+
+/// Notes into a scale and a chord, optionally following the song's key: a
+/// Transpose, a Scale Quantise and a Chord in a row, with a Song Key wired
+/// through three Math nodes that blend it with the group's own settings by
+/// `follow`. At 0 the settings rule; at 1 the key does: its shift moves the
+/// part, and its root and scale replace `root` and `scale`. Its inputs are
+/// `in` (events), `root` (0 is C), `scale` (Scale Quantise's choice), `type`
+/// (Chord's choice), `follow` (0 or 1) and `written in` (the Song Key's
+/// choice, the key the part was written in); its output is `out` (events).
+fn harmoniser(p: &mut Patch, scale: f32, chord: f32, follow: f32) -> NodeId {
+    let group = p.enter("Harmoniser", 0.0, 0.0);
+    let notes = p.input("in");
+    let root = p.input("root");
+    let mode = p.input("scale");
+    let kind = p.input("type");
+    let following = p.input("follow");
+    let written = p.input("written in");
+    let key = p.add(spec("noodle.mod.key"), 1.0, 2.0);
+    p.connect(written, (key, "from"));
+    // The group's value, or the key's where `follow` is 1.
+    let blend = |p: &mut Patch, own: Port, song: &'static str, row: f32, base: f32| {
+        let node = p.add(
+            spec("noodle.util.math")
+                .config("expr", Value::Text("a + c * (b - a)".into()))
+                .param("a", base)
+                .param("c", follow),
+            2.0,
+            row,
+        );
+        p.connect(own, (node, "a"));
+        p.connect((key, song), (node, "b"));
+        p.connect(following, (node, "c"));
+        node
+    };
+    let root_blend = blend(p, root, "root", 1.0, 0.0);
+    let scale_blend = blend(p, mode, "scale", 2.0, scale);
+    // The shift only applies when following.
+    let shift = p.add(
+        spec("noodle.util.math")
+            .config("expr", Value::Text("a * c".into()))
+            .param("c", follow),
+        2.0,
+        3.0,
+    );
+    p.connect((key, "shift"), (shift, "a"));
+    p.connect(following, (shift, "c"));
+    let transpose = p.add(spec("noodle.event.transpose"), 3.0, 0.0);
+    p.connect(notes, (transpose, "in"));
+    p.connect((shift, "out"), (transpose, "semitones"));
+    let quantise = p.add(spec("noodle.event.scale_quantise"), 4.0, 0.0);
+    p.connect((transpose, "out"), (quantise, "in"));
+    p.connect((root_blend, "out"), (quantise, "root"));
+    p.connect((scale_blend, "out"), (quantise, "scale"));
+    let voicing = p.add(spec("noodle.event.chord").param("type", chord), 5.0, 0.0);
+    p.connect((quantise, "out"), (voicing, "in"));
+    p.connect(kind, (voicing, "type"));
+    let out = p.output("out");
+    p.connect((voicing, "out"), out);
+    p.leave(group);
+    group
+}
+
+/// A hi-hat that plays itself: an Euclidean rhythm through Chance into a
+/// Mono Note and the song kit's closed hat. Its inputs are `steps`,
+/// `pulses`, `rotation` and `probability`; its output is `out` (audio).
+fn euclid_hat(p: &mut Patch, steps: f32, pulses: f32, probability: f32, rate: f32) -> NodeId {
+    let group = p.enter("Euclid Hat", 0.0, 0.0);
+    let length = p.input("steps");
+    let hits = p.input("pulses");
+    let turn = p.input("rotation");
+    let chance = p.input("probability");
+    let rhythm = p.add(
+        spec("noodle.event.euclidean")
+            .param("steps", steps)
+            .param("pulses", pulses)
+            .param("rate", rate)
+            .param("key", 60.0),
+        1.0,
+        0.0,
+    );
+    p.connect(length, (rhythm, "steps"));
+    p.connect(hits, (rhythm, "pulses"));
+    p.connect(turn, (rhythm, "rotation"));
+    let gate = p.add(
+        spec("noodle.event.chance").param("probability", probability),
+        2.0,
+        0.0,
+    );
+    p.connect((rhythm, "out"), (gate, "in"));
+    p.connect(chance, (gate, "probability"));
+    let mono = p.add(spec("noodle.event.mono"), 3.0, 0.0);
+    p.connect((gate, "out"), (mono, "in"));
+    let hat = kit::build(
+        p,
+        &Instrument::Drum(Drum::Hat {
+            cutoff: 7500.0,
+            decay: 0.045,
+        }),
+        4.0,
+        0.0,
+    );
+    for key in ["pitch", "gate", "velocity"] {
+        p.connect((mono, key), (hat, key));
+    }
+    let out = p.output("out");
+    p.connect((hat, "out"), out);
     p.leave(group);
     group
 }

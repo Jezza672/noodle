@@ -796,6 +796,8 @@ fn events_envelopes_and_modulated_parameters_never_allocate() {
     s.wire(adsr, "out", vca, "level");
     s.wire(vca, "out", output, "in");
     s.update();
+    // Euclidean only plays while the transport runs.
+    s.controller.transport().play();
 
     let mut out = vec![0.0; 1000 * SETTINGS.channels];
     let mut heard = false;
@@ -1633,8 +1635,17 @@ fn a_sampler_chain_with_dynamics_and_reverb_never_allocates_through_notes_edits_
             .with_param("choke1", 1.0)
             .with_param("choke2", 1.0),
     );
-    let (low, high) = (sampler(&mut s), sampler(&mut s));
-    let mix = s.add(Node::new("noodle.util.mix"));
+    let (low, high, third) = (sampler(&mut s), sampler(&mut s), sampler(&mut s));
+    // A rhythm of its own: Euclidean through Chance into a third sampler.
+    let euclid = s.add(
+        Node::new("noodle.event.euclidean")
+            .with_param("steps", 7.0)
+            .with_param("pulses", 3.0)
+            .with_param("rate", 5.0),
+    );
+    let chance = s.add(Node::new("noodle.event.chance").with_param("probability", 0.6));
+    let mix = s
+        .add(Node::new("noodle.util.mix").with_config(Config::new().with("inputs", Value::Int(3))));
     let dynamics = s.add(
         Node::new("noodle.effect.dynamics")
             .with_config(Config::new().with("lookahead", Value::Int(2)))
@@ -1662,6 +1673,9 @@ fn a_sampler_chain_with_dynamics_and_reverb_never_allocates_through_notes_edits_
     s.wire(split, "out2", high, "in");
     s.wire(low, "out", mix, "in1");
     s.wire(high, "out", mix, "in2");
+    s.wire(euclid, "out", chance, "in");
+    s.wire(chance, "out", third, "in");
+    s.wire(third, "out", mix, "in3");
     s.wire(mix, "out", dynamics, "in");
     s.wire(low, "out", dynamics, "sidechain");
     s.wire(dynamics, "out", eq, "in");
@@ -1692,6 +1706,8 @@ fn a_sampler_chain_with_dynamics_and_reverb_never_allocates_through_notes_edits_
             (reverb, "decay", 0.5 + round as f32 * 0.2),
             (low, "tune", 10.0 * round as f32),
             (chord, "type", (round % 13) as f32),
+            (euclid, "pulses", (round % 8) as f32),
+            (chance, "probability", (round % 5) as f32 / 4.0),
             (chord, "strum", 5.0 * round as f32),
         ] {
             s.controller.set_param(node, key, value);
