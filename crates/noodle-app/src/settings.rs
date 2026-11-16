@@ -41,6 +41,66 @@ impl Tab {
     }
 }
 
+/// The window never changes size or place: a tab is a page inside it.
+const MAX_SIZE: egui::Vec2 = egui::vec2(760.0, 560.0);
+/// Room left between the window and the screen's edge.
+const MARGIN: f32 = 60.0;
+/// The tab list's width. Fixed, so nothing moves when one is hovered.
+const TAB_W: f32 = 120.0;
+const TAB_H: f32 = 28.0;
+/// The heading above and the Close row below the pages.
+const HEADER_H: f32 = 40.0;
+const FOOTER_H: f32 = 46.0;
+
+/// The size of the Settings window on a screen of `screen`.
+fn window_size(screen: egui::Vec2) -> egui::Vec2 {
+    egui::vec2(
+        MAX_SIZE.x.min((screen.x - MARGIN).max(320.0)),
+        MAX_SIZE.y.min((screen.y - MARGIN).max(260.0)),
+    )
+}
+
+/// One row of the tab list, always [`TAB_W`] by [`TAB_H`]: hover and
+/// selection only change its colour.
+fn tab_button(ui: &mut egui::Ui, current: &mut Tab, tab: Tab) {
+    let selected = *current == tab;
+    let (rect, response) = ui.allocate_exact_size(egui::vec2(TAB_W, TAB_H), egui::Sense::click());
+    response.widget_info(|| {
+        egui::WidgetInfo::selected(
+            egui::WidgetType::SelectableLabel,
+            true,
+            selected,
+            tab.label(),
+        )
+    });
+    let visuals = ui.visuals();
+    let (fill, text) = if selected {
+        (visuals.selection.bg_fill, visuals.selection.stroke.color)
+    } else if response.hovered() {
+        (
+            visuals.widgets.hovered.weak_bg_fill,
+            visuals.strong_text_color(),
+        )
+    } else {
+        (egui::Color32::TRANSPARENT, visuals.text_color())
+    };
+    ui.painter().rect_filled(rect, 4.0, fill);
+    ui.painter().text(
+        rect.left_center() + egui::vec2(10.0, 0.0),
+        egui::Align2::LEFT_CENTER,
+        tab.label(),
+        egui::TextStyle::Button.resolve(ui.style()),
+        text,
+    );
+    if response.clicked() {
+        *current = tab;
+    }
+}
+
+fn down() -> egui::Layout {
+    egui::Layout::top_down(egui::Align::Min)
+}
+
 /// What the user did in the window this frame.
 #[derive(Default)]
 pub struct Outcome {
@@ -87,31 +147,50 @@ impl Settings {
         if !self.open {
             return out;
         }
-        let modal = crate::dialog::modal(ctx, "settings", |ui| {
+        let screen = ctx.content_rect().size();
+        let size = window_size(screen);
+        let modal = egui::Modal::new(egui::Id::new("settings")).show(ctx, |ui| {
+            ui.set_min_size(size);
+            ui.set_max_size(size);
             ui.heading("Settings");
-            ui.horizontal(|ui| {
-                for tab in Tab::ALL {
-                    ui.selectable_value(&mut self.tab, tab, tab.label());
-                }
-            });
-            ui.separator();
-            match self.tab {
-                Tab::General => general(ui, session, &mut out),
-                Tab::Audio => {
-                    crate::latency::monitoring_row(ui, session);
-                    ui.add_space(6.0);
-                    out.audio = devices.body(ui, latency);
-                }
-                Tab::Display => out.display_changed = crate::display::body(ui, display),
-                Tab::Models => models.body(ui),
-                Tab::Sources => {
+            ui.add_space(4.0);
+            let body_h = size.y - HEADER_H - FOOTER_H;
+            ui.horizontal_top(|ui| {
+                ui.spacing_mut().item_spacing.x = 0.0;
+                ui.allocate_ui_with_layout(egui::vec2(TAB_W, body_h), down(), |ui| {
+                    ui.set_min_size(egui::vec2(TAB_W, body_h));
+                    ui.spacing_mut().item_spacing.y = 2.0;
+                    for tab in Tab::ALL {
+                        tab_button(ui, &mut self.tab, tab);
+                    }
+                });
+                ui.separator();
+                ui.add_space(8.0);
+                let page_w = size.x - TAB_W - 17.0;
+                ui.allocate_ui_with_layout(egui::vec2(page_w, body_h), down(), |ui| {
                     egui::ScrollArea::vertical()
-                        .max_height(480.0)
-                        .show(ui, |ui| sounds.body(ui))
-                        .inner
-                }
-            }
-            ui.add_space(8.0);
+                        .id_salt("settings page")
+                        .max_width(page_w)
+                        .max_height(body_h)
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| {
+                            ui.set_width(page_w - 14.0);
+                            match self.tab {
+                                Tab::General => general(ui, session, &mut out),
+                                Tab::Audio => {
+                                    crate::latency::monitoring_row(ui, session);
+                                    ui.add_space(6.0);
+                                    out.audio = devices.body(ui, latency);
+                                }
+                                Tab::Display => {
+                                    out.display_changed = crate::display::body(ui, display)
+                                }
+                                Tab::Models => models.body(ui),
+                                Tab::Sources => sounds.body(ui),
+                            }
+                        });
+                });
+            });
             ui.separator();
             if ui.button("Close").clicked() {
                 self.open = false;
