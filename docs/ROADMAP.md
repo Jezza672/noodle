@@ -17,7 +17,7 @@ deliberately deferred items.
 1. **Design** (this ADR, the roadmap and the glossary).
 2. **`noodle-network`:** the shared downloader and S3 client (renamed from `noodle-download`; consent, streaming, SHA-256, content-keyed cache), with the stem separator moved onto it.
 3. **`noodle-packs`:** pack definitions, manifests, licence and credit fields, validation.
-4. **`noodle-publish`:** built (docs/architecture/packs.md). Owed: add the repo secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` for the first real publish, and decide how contributors other than Jeremy get an upload credential.
+4. **`noodle-publish`:** built (docs/architecture/packs.md). Owed: add the repo secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` for the first real publish, Decided (November 2026): contributors get no upload credential; they PR pack definitions into git and only CI on main, which holds the R2 secrets, publishes after merge.
 
 ## Playback cache
 
@@ -60,7 +60,7 @@ deliberately deferred items.
 
 **Built since (#317, #318, #320, #321):** entry-point surfaces, the vocabulary match, time to hear, live editing, state visibility, dropouts, and save and reopen.
 
-**Still owed from groups E to G:** the Fitts, precision and typed-value parts of group A (#310); the naive-agent runs for stories other than S12, and a run with user docs available (#319; the driver and first S12 results are in `docs/usability/new-user-runs.md`).
+**Still owed from groups E to G:** the Fitts, precision and typed-value parts of group A (#310); the naive-agent runs for stories other than S12, and a run with user docs available (#319; decided November 2026: these runs stay local, with no API key in CI, and results are committed; the driver and first S12 results are in `docs/usability/new-user-runs.md`).
 
 **Built since (#322, #324):** the scorecard diff on PRs; the Cognitive Dimensions rubric and the human-session protocol (`docs/usability/rubric.md`); and a status for every story in the registry, assessed from the docs and code.
 
@@ -75,7 +75,11 @@ Seven features picked from a shortlist in November 2026 (the looper and the pres
 
 1. Euclidean, Chance, the Harmoniser and Euclid Hat templates, an example with a golden render. Size M. (Scale Quantise, Chord, Transpose, Song Key and `Transport::key` are built: [features/harmony-nodes.md](features/harmony-nodes.md).)
 
+**Decided November 2026 (#538):** Chance draws per note only (no per-bar scope); markers and the Key node's `scale` stay major and minor only.
+
 **Wavetable follow-ups.** `cycle` guessed from the file (a `clm ` chunk, or a length that is a multiple of 2048) with the config overriding it; a `wavetable` tag on the shipped tables and the Sounds panel listing system samples so it can filter for them; a grain delay (Grains from live input) as a second node. Size S each.
+
+**Preset morph follow-up (#570).** Decided November 2026: Morph adds a Morph node at each nested group level so nested parameters morph too, and the notice names the controls it took over.
 
 ## Planned: Noodle as a plugin (#544)
 
@@ -91,6 +95,8 @@ Chunks 1 to 3 are built: see [features/noodle-as-a-plugin.md](features/noodle-as
 
 The least delay the hardware allows while a track is armed or monitored, chosen automatically, and a larger device buffer when nobody is recording. One setting, Monitoring latency (Auto, Always low, Off). The engine block stays 128 so cache entries stay valid; the device buffer is what moves. (So the deferred idea below, of the engine block following the device period, is not part of this.)
 
+Decided November 2026 (#548): Relaxed (1024 frames) applies only while the transport is stopped and nothing is armed; ahead rendering (chunk 3) is on for everyone in Auto.
+
 Chunks 1 and 2 are built (`features/low-latency-monitoring.md`). Owed on the Mac: the gap when arming reopens the stream, and a power measurement of the relaxed buffer.
 
 3. Only the live cone runs in the device callback. Today a cluster with no entry plays live until the background `Freezing` render finishes and swaps in; this adds a streaming render that keeps just ahead of the playhead and is played while it fills, with an ADR for the change to that rule. Size L, and it may want two PRs (the streaming entry, then the hand-over on edits and shortfalls).
@@ -104,8 +110,8 @@ Chunks 1 and 2 are built (`features/low-latency-monitoring.md`). Owed on the Mac
   keys (type a value into a field), resizes, survives close and reopen and a
   project reload, plays as an effect and as an instrument, follows the host's
   transport and tempo, and Expose to host shows up as an automatable parameter.
-  Several instances at once. Retina and 4K scaling. Not built: files dragged
-  from the host onto the editor.
+  Several instances at once. Retina and 4K scaling. Not built, on purpose: files dragged
+  from the host onto the editor. Decided November 2026: the supported route is an Import button in the editor (a host-neutral file picker), not per-host drops (#569).
 
 - **AU on the Mac** after the shared plugin bridge (#242, #241): an Audio Unit
   instrument and an effect play, go quiet when idle (the unit sets
