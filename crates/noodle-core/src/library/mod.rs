@@ -53,6 +53,9 @@ pub(crate) fn has_input(layout: &str, key: &str) -> bool {
 /// under. Kept with the entry so the credit and the licence travel with it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 pub struct Origin {
+    /// The SHA-256 of the entry's file in the pack, which is what a source
+    /// names it by: two installs of the same entry are the same hash.
+    pub hash: String,
     pub pack: String,
     pub author: String,
     /// The licence's label, e.g. `CC-BY-4.0` or `Default`.

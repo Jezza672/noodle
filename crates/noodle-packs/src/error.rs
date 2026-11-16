@@ -68,23 +68,37 @@ pub enum ProblemKind {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ItemFault {
     BadHash,
-    DuplicateHash { first: usize },
+    DuplicateHash {
+        first: usize,
+    },
     EmptyName,
-    DuplicateName { first: usize },
+    DuplicateName {
+        first: usize,
+    },
     EmptyTag,
     MissingAuthor,
     MissingCredit,
     EmptyCustomLicence,
     UnknownLicence,
-    UnknownSpdx { id: String },
+    UnknownSpdx {
+        id: String,
+    },
     /// No `file`, so there is nothing to publish.
     NoFile,
-    UnsafePath { file: String },
-    MissingFile { file: String },
+    UnsafePath {
+        file: String,
+    },
+    MissingFile {
+        file: String,
+    },
     /// A sample the entry needs that is not a hash.
-    BadNeed { hash: String },
+    BadNeed {
+        hash: String,
+    },
     /// A sample the entry needs that the pack does not hold.
-    NeedNotInPack { hash: String },
+    NeedNotInPack {
+        hash: String,
+    },
 }
 
 impl fmt::Display for ItemFault {

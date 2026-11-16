@@ -49,10 +49,7 @@ pub fn parse_item(bytes: &[u8], kind: ItemKind) -> Result<Item, String> {
     let text = std::str::from_utf8(bytes).map_err(|_| "not UTF-8 text".to_string())?;
     let item = Item::from_ron(text).map_err(|e| format!("not a library entry: {e}"))?;
     if kind_of(&item) != kind {
-        return Err(format!(
-            "it is a {:?}, not a {kind:?}",
-            kind_of(&item)
-        ));
+        return Err(format!("it is a {:?}, not a {kind:?}", kind_of(&item)));
     }
     if let Item::Template(t) = &item {
         t.validate().map_err(|e| e.to_string())?;
@@ -106,7 +103,10 @@ pub(crate) fn load_item(pack: &FoundPack, index: usize) -> Result<Vec<u8>, Publi
         return Err(PublishError::BadItem {
             path: file,
             name: def.name.clone(),
-            message: format!("uses samples it does not list in `needs`: {}", undeclared.join(", ")),
+            message: format!(
+                "uses samples it does not list in `needs`: {}",
+                undeclared.join(", ")
+            ),
         });
     }
     Ok(bytes)

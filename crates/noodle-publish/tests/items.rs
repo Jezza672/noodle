@@ -32,7 +32,9 @@ fn fixture(needs: &[&str]) -> (tempfile::TempDir, String, String) {
     let root = tempfile::tempdir().unwrap();
     let dir = root.path().join("p");
     fs::create_dir_all(&dir).unwrap();
-    let samples: Vec<f32> = (0..3000).map(|i| ((i as f32 * 0.05).sin() * 0.5 * 8_388_608.0).round() / 8_388_608.0).collect();
+    let samples: Vec<f32> = (0..3000)
+        .map(|i| ((i as f32 * 0.05).sin() * 0.5 * 8_388_608.0).round() / 8_388_608.0)
+        .collect();
     write_wav(&dir.join("kick.wav"), &samples, 1, 48_000).unwrap();
     let audio = noodle_io::decode_file(&dir.join("kick.wav")).unwrap();
     let kick = Sample::from_audio(&audio).hash();
@@ -65,7 +67,12 @@ fn walk(dir: &Path) -> Vec<String> {
             if p.is_dir() {
                 stack.push(p);
             } else {
-                out.push(p.strip_prefix(dir).unwrap().to_string_lossy().replace('\\', "/"));
+                out.push(
+                    p.strip_prefix(dir)
+                        .unwrap()
+                        .to_string_lossy()
+                        .replace('\\', "/"),
+                );
             }
         }
     }

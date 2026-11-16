@@ -116,8 +116,7 @@ fn validate_items(pack: &PackDef, samples: &HashMap<&str, usize>, out: &mut Vec<
                 _ => {}
             }
         }
-        if licence.requires_credit() && item.credit.as_deref().is_none_or(|c| c.trim().is_empty())
-        {
+        if licence.requires_credit() && item.credit.as_deref().is_none_or(|c| c.trim().is_empty()) {
             push(ItemFault::MissingCredit);
         }
         if let Some(file) = &item.file

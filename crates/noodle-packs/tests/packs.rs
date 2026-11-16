@@ -371,9 +371,18 @@ fn library_entries_follow_the_sample_rules_and_must_have_their_samples_in_the_pa
     i.file = Some("../a.ron".into());
     p.items = vec![i];
     let f = item_faults(&p);
-    assert!(f.contains(&ItemFault::BadNeed { hash: "nope".into() }));
-    assert!(f.contains(&ItemFault::NeedNotInPack { hash: "f".repeat(64) }));
-    assert!(!f.iter().any(|f| matches!(f, ItemFault::NeedNotInPack { hash } if hash == H2)));
+    assert!(f.contains(&ItemFault::BadNeed {
+        hash: "nope".into()
+    }));
+    assert!(f.contains(&ItemFault::NeedNotInPack {
+        hash: "f".repeat(64)
+    }));
+    assert!(
+        !f.iter()
+            .any(|f| matches!(f, ItemFault::NeedNotInPack { hash } if hash == H2))
+    );
     assert!(f.contains(&ItemFault::MissingCredit));
-    assert!(f.contains(&ItemFault::UnsafePath { file: "../a.ron".into() }));
+    assert!(f.contains(&ItemFault::UnsafePath {
+        file: "../a.ron".into()
+    }));
 }
