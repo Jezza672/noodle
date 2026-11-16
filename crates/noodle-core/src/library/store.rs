@@ -32,6 +32,7 @@ const EMBEDDED: &[&str] = &[
     include_str!("../../library/system/euclid-hat.ron"),
     include_str!("../../library/system/pattern-pads.ron"),
     include_str!("../../library/system/loop-pads.ron"),
+    include_str!("../../library/system/looper.ron"),
     include_str!("../../library/system/pitch-shifter.ron"),
     include_str!("../../library/system/time-stretch.ron"),
     include_str!("../../library/system/spectral-compressor.ron"),

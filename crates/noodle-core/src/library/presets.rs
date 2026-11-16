@@ -278,33 +278,35 @@ impl GroupPreset {
     }
 
     /// For every node inside `group` that presets store values for, its ID
-    /// with this preset's values and `other`'s, in the group's canonical
-    /// order. Empty unless both fit the group's topology (the caller checks
-    /// they apply first).
+    /// with this preset's values followed by each of `others`', in the
+    /// group's canonical order. Empty unless all fit the group's topology
+    /// (the caller checks they apply first).
     pub fn paired<'a>(
         &'a self,
-        other: &'a GroupPreset,
+        others: &[&'a GroupPreset],
         graph: &Graph,
         group: NodeId,
-    ) -> Vec<(NodeId, &'a PresetValues, &'a PresetValues)> {
+    ) -> Vec<(NodeId, Vec<&'a PresetValues>)> {
         let order = topology(graph, group);
-        if order.key != self.topology
-            || order.key != other.topology
-            || order.order.len() != self.nodes.len()
-            || order.order.len() != other.nodes.len()
+        let all: Vec<&GroupPreset> = std::iter::once(self)
+            .chain(others.iter().copied())
+            .collect();
+        if all
+            .iter()
+            .any(|p| order.key != p.topology || order.order.len() != p.nodes.len())
         {
             return Vec::new();
         }
         order
             .order
             .iter()
-            .zip(self.nodes.iter().zip(&other.nodes))
-            .filter(|(id, _)| {
+            .enumerate()
+            .filter(|(_, id)| {
                 graph
                     .node(**id)
                     .is_some_and(|node| stored(group, node).is_some())
             })
-            .map(|(&id, (a, b))| (id, a, b))
+            .map(|(i, &id)| (id, all.iter().map(|p| &p.nodes[i]).collect()))
             .collect()
     }
 

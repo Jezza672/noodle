@@ -16,6 +16,7 @@ mod crossfade;
 pub(crate) mod grid;
 pub(crate) mod header;
 pub mod import;
+pub mod midi_file;
 mod midi_preview;
 mod pins;
 mod sections;
@@ -96,7 +97,7 @@ const MAX_PPS: f32 = 1200.0;
 
 pub struct TimelineState {
     /// The track list for the project revision it was worked out at.
-    tracks_cache: Option<(u64, std::rc::Rc<[NodeId]>)>,
+    tracks_cache: Option<(u64, std::sync::Arc<[NodeId]>)>,
     /// Zoom: screen points per second.
     pps: f32,
     /// How far the view is scrolled, in screen points.
@@ -234,11 +235,11 @@ impl Default for TimelineState {
 
 impl TimelineState {
     /// [`tracks`], worked out again only when the project changed.
-    fn tracks(&mut self, project: &Project) -> std::rc::Rc<[NodeId]> {
+    fn tracks(&mut self, project: &Project) -> std::sync::Arc<[NodeId]> {
         match &self.tracks_cache {
             Some((revision, tracks)) if *revision == project.revision() => tracks.clone(),
             _ => {
-                let tracks: std::rc::Rc<[NodeId]> = visible_tracks(project).into();
+                let tracks: std::sync::Arc<[NodeId]> = visible_tracks(project).into();
                 self.tracks_cache = Some((project.revision(), tracks.clone()));
                 tracks
             }
@@ -324,6 +325,11 @@ impl TimelineState {
             track,
             at: playhead.max(Tick::ZERO),
         })
+    }
+
+    /// The track that is selected, if one is.
+    pub fn selected_track(&self) -> Option<NodeId> {
+        self.selected_track
     }
 
     /// The clip that is selected, if exactly one is.
@@ -2208,21 +2214,36 @@ pub fn show(
         } else {
             axis.snap(tick)
         };
-        if tracks.is_empty() || y >= rows.total() {
-            // Dropped on the empty space under the tracks: a new track for it.
-            let (new_track, track) =
-                add_track::with_input(project.graph(), || session.new_node_id());
-            let added = import::import(session, &dropped, track, at);
-            edits.extend(
-                added
-                    .command
-                    .map(|clips| Edit::Apply(Command::Batch(vec![new_track, clips]))),
-            );
-            notice = added.notice;
-        } else {
-            let added = import::import(session, &dropped, tracks[rows.track_at(y)], at);
+        let (midi, audio): (Vec<_>, Vec<_>) =
+            dropped.iter().cloned().partition(|f| midi_file::is_midi(f));
+        let empty_space = tracks.is_empty() || y >= rows.total();
+        let target = (!empty_space).then(|| tracks[rows.track_at(y)]);
+        let mut notices = Vec::new();
+        if !midi.is_empty() {
+            let added = midi_file::import(session, &midi, target, at);
             edits.extend(added.command.map(Edit::Apply));
-            notice = added.notice;
+            notices.extend(added.notice);
+        }
+        if !audio.is_empty() {
+            if let Some(track) = target {
+                let added = import::import(session, &audio, track, at);
+                edits.extend(added.command.map(Edit::Apply));
+                notices.extend(added.notice);
+            } else {
+                // Dropped on the empty space under the tracks: a new track for it.
+                let (new_track, track) =
+                    add_track::with_input(project.graph(), || session.new_node_id());
+                let added = import::import(session, &audio, track, at);
+                edits.extend(
+                    added
+                        .command
+                        .map(|clips| Edit::Apply(Command::Batch(vec![new_track, clips]))),
+                );
+                notices.extend(added.notice);
+            }
+        }
+        if !notices.is_empty() {
+            notice = Some(notices.join("; "));
         }
     }
 

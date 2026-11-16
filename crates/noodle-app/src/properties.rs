@@ -70,6 +70,12 @@ pub fn show<'a>(
             if node.type_id == noodle_nodes::PATTERN_ID {
                 crate::pattern_panel::show(ui, session, id, node, &mut edits);
             }
+            if node.type_id == noodle_nodes::MORPH_ID {
+                crate::morph_panel::show(ui, session, id, node, live, &mut edits);
+            }
+            if node.type_id == noodle_nodes::LOOPER_ID {
+                crate::looper_panel::show(ui, session, id, node, &mut edits);
+            }
             config(ui, session, node_type.as_ref(), id, node, &mut edits);
             params(ui, session, node_type.as_ref(), id, node, live, &mut edits);
         }
@@ -182,9 +188,9 @@ fn presets(ui: &mut Ui, session: &Session, id: NodeId, node: &Node, edits: &mut 
     ui.separator();
 }
 
-/// "Morph between presets...": two presets of the group to pick, and a button
-/// that adds a Morph node wired into everything that differs between them
-/// (see `session::morph`).
+/// "Morph between presets...": two presets of the group to pick, or four for
+/// an XY pad, and a button that adds a Morph node wired into everything that
+/// differs between them (see `session::morph`).
 fn morph_picker(ui: &mut Ui, id: NodeId, available: &[(&str, &str)], edits: &mut Vec<Edit>) {
     egui::CollapsingHeader::new("Morph between presets...")
         .id_salt(("morph presets", id))
@@ -192,10 +198,18 @@ fn morph_picker(ui: &mut Ui, id: NodeId, available: &[(&str, &str)], edits: &mut
         .show(ui, |ui| {
             ui.weak("Adds one Morph node, wired into every parameter that differs, and a `morph` group input.");
             let key = ui.id().with(("morph pick", id));
-            let (mut a, mut b): (usize, usize) = ui.data(|d| d.get_temp(key)).unwrap_or((0, 1));
-            a = a.min(available.len() - 1);
-            b = b.min(available.len() - 1);
-            for (label, index) in [("A", &mut a), ("B", &mut b)] {
+            let mut picked: ([usize; 4], bool) =
+                ui.data(|d| d.get_temp(key)).unwrap_or(([0, 1, 0, 1], false));
+            let can_xy = available.len() >= 4;
+            if can_xy {
+                ui.checkbox(&mut picked.1, "Four presets (XY pad)");
+            } else {
+                picked.1 = false;
+            }
+            let count = if picked.1 { 4 } else { 2 };
+            for (n, label) in ["A", "B", "C", "D"].into_iter().take(count).enumerate() {
+                let index = &mut picked.0[n];
+                *index = (*index).min(available.len() - 1);
                 egui::ComboBox::from_label(label)
                     .selected_text(available[*index].1)
                     .show_ui(ui, |ui| {
@@ -204,16 +218,21 @@ fn morph_picker(ui: &mut Ui, id: NodeId, available: &[(&str, &str)], edits: &mut
                         }
                     });
             }
-            ui.data_mut(|d| d.insert_temp(key, (a, b)));
+            ui.data_mut(|d| d.insert_temp(key, picked));
+            let chosen = &picked.0[..count];
+            let distinct = chosen
+                .iter()
+                .enumerate()
+                .all(|(i, p)| !chosen[..i].contains(p));
             if ui
-                .add_enabled(a != b, egui::Button::new("Morph"))
+                .add_enabled(distinct, egui::Button::new("Morph"))
                 .on_hover_text("One undo step. Applies A, then wires the differences to a Morph node")
+                .on_disabled_hover_text("Pick different presets")
                 .clicked()
             {
                 edits.push(Edit::MorphPresets {
                     group: id,
-                    a: available[a].0.to_owned(),
-                    b: available[b].0.to_owned(),
+                    presets: chosen.iter().map(|&i| available[i].0.to_owned()).collect(),
                 });
             }
         });
@@ -1021,6 +1040,10 @@ fn config(
             script_editor(ui, id, info, node, edits);
             continue;
         }
+        if node_type.info().id == noodle_nodes::TUNING_ID {
+            tuning_file(ui, id, info, node, edits);
+            continue;
+        }
         // Set by the first wire, not typed in.
         if matches!(
             node_type.info().id,
@@ -1383,6 +1406,71 @@ fn layout_picker(
     }
 }
 
+/// A Tuning node's `.scl` or `.kbm` text: what is loaded (the scale's name and
+/// degree count, or the mapping's size), a button that reads a file into the
+/// config as one undoable change, and Clear.
+fn tuning_file(
+    ui: &mut Ui,
+    id: NodeId,
+    info: &noodle_engine::ConfigInfo,
+    node: &Node,
+    edits: &mut Vec<Edit>,
+) {
+    let scale = info.key == noodle_nodes::SCL_KEY;
+    let text = info.get_text(&node.config);
+    let shown = if text.trim().is_empty() {
+        "none (12-tone equal temperament)".to_owned()
+    } else if scale {
+        match noodle_nodes::parse_scl(&text) {
+            Ok(s) => format!("{}, {} notes", s.description, s.degrees.len()),
+            Err(e) => format!("not valid: {e}"),
+        }
+    } else {
+        match noodle_nodes::parse_kbm(&text) {
+            Ok(m) if m.map.is_empty() => "linear mapping".to_owned(),
+            Ok(m) => format!("{} keys", m.map.len()),
+            Err(e) => format!("not valid: {e}"),
+        }
+    };
+    ui.label(format!("{}: {shown}", info.name));
+    ui.horizontal(|ui| {
+        let (label, ext) = if scale {
+            ("Load .scl…", "scl")
+        } else {
+            ("Load .kbm…", "kbm")
+        };
+        if ui.button(label).clicked()
+            && let Some(path) = crate::picker::pick_file(("Tuning", &[ext]))
+        {
+            match std::fs::read_to_string(&path) {
+                Ok(text) => {
+                    edits.push(Edit::Apply(Command::SetConfig {
+                        node: id,
+                        key: info.key.to_owned(),
+                        value: Some(noodle_core::Value::Text(text)),
+                    }));
+                }
+                Err(error) => ui.data_mut(|d| {
+                    d.insert_temp(egui::Id::new((id, "tuning_error")), error.to_string());
+                }),
+            }
+        }
+        if ui
+            .add_enabled(!text.trim().is_empty(), egui::Button::new("Clear"))
+            .clicked()
+        {
+            edits.push(Edit::Apply(Command::SetConfig {
+                node: id,
+                key: info.key.to_owned(),
+                value: None,
+            }));
+        }
+    });
+    if let Some(error) = ui.data(|d| d.get_temp::<String>(egui::Id::new((id, "tuning_error")))) {
+        ui.label(RichText::new(format!("Couldn't read the file: {error}")).weak());
+    }
+}
+
 /// Script text typed into a node that is no longer the active one (the user
 /// clicked another node while the box had focus, so the box never saw the focus
 /// leave): committed now, so it isn't lost.
@@ -1739,6 +1827,13 @@ fn params(
                         },
                     )
                     .learn_midi(session.learn_midi_menu(&target))
+                    .expose_to_host(if !session.is_plugin() {
+                        Automate::Hidden
+                    } else if session.project().graph().source(&target).is_some() {
+                        Automate::Refused("That parameter already has a wire")
+                    } else {
+                        Automate::Offered
+                    })
                     .show(ui);
                 if let Some(source) = &source {
                     out.response

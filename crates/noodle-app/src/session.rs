@@ -154,14 +154,17 @@ pub enum Edit {
     /// holding the parameter's value in every version, as one undo step (see
     /// [`versions`]). It starts the version list if the project has none.
     VaryPerVersion(noodle_core::Endpoint),
+    /// Expose to host on a parameter (a plugin's window): a Host Parameter
+    /// node on the first free slot, wired into it, as one undo step (see
+    /// [`Session::expose_to_host`]).
+    ExposeToHost(noodle_core::Endpoint),
     /// Morph between presets on a group: a Morph node inside it, wired into
-    /// every parameter that differs between library group presets `a` and
-    /// `b`, with `position` exposed as the group input `morph`, as one undo
-    /// step (see [`morph`]).
+    /// every parameter that differs between two library group presets (or
+    /// four, for an XY pad), with `position` exposed as the group input
+    /// `morph` (and `y` as `morph y`), as one undo step (see [`morph`]).
     MorphPresets {
         group: NodeId,
-        a: String,
-        b: String,
+        presets: Vec<String>,
     },
     /// Arms or disarms an Automation node for recording (see
     /// [`record_automation`]). Session state: not an undo step, not saved.
@@ -370,7 +373,7 @@ const HOST_WATCH_INTERVAL: Duration = Duration::from_millis(500);
 /// A frame at about 60 Hz.
 const FRAME: Duration = Duration::from_millis(16);
 
-type ListMidi = Box<dyn FnMut() -> Result<Vec<String>, noodle_io::MidiError>>;
+type ListMidi = Box<dyn FnMut() -> Result<Vec<String>, noodle_io::MidiError> + Send>;
 type OpenMidi =
     fn(&str, &noodle_io::MidiBus) -> Result<noodle_io::MidiConnection, noodle_io::MidiError>;
 
@@ -480,6 +483,8 @@ pub struct Session {
     /// Whether a host calls the engine (a plugin instance): there is no
     /// device to open, reopen or fall back from.
     host_driven: bool,
+    /// This session is a plugin's (see `new_host_project`).
+    plugin: bool,
     /// Where the transport's tempo comes from, and the tempo while it is not
     /// the map (see `tempo_source.rs`).
     tempo_source: crate::tempo_source::TempoSource,
@@ -728,7 +733,7 @@ fn loop_takes(
 }
 
 /// Something that can record the input to a file.
-trait TakeSink {
+trait TakeSink: Send {
     fn start(&mut self, path: &Path) -> Result<(), RecordError>;
     fn stop(&mut self) -> Result<Take, RecordError>;
     /// The take so far as peaks, if the sink can say. See
@@ -891,6 +896,7 @@ impl Session {
             midi_out,
             host_link: host,
             host_driven: false,
+            plugin: false,
             tempo_source: Default::default(),
             live_bpm: None,
             taps: Default::default(),
@@ -2050,6 +2056,22 @@ impl Session {
                         }
                     }
                 }
+                Edit::ExposeToHost(target) => {
+                    self.history.end_group();
+                    let name = target.port.replace('_', " ");
+                    let mut chars = name.chars();
+                    let name = chars
+                        .next()
+                        .map(|c| c.to_uppercase().chain(chars).collect::<String>())
+                        .unwrap_or_default();
+                    self.message = Some(
+                        match self.expose_to_host(target.node, target.port.as_ref(), &name) {
+                            Ok(slot) => format!("Exposed to the host as parameter {slot}"),
+                            Err(why) => format!("Couldn't expose to the host: {why}"),
+                        },
+                    );
+                    continue;
+                }
                 Edit::VaryPerVersion(target) => {
                     self.history.end_group();
                     let node = self.new_node_id();
@@ -2061,9 +2083,9 @@ impl Session {
                         }
                     }
                 }
-                Edit::MorphPresets { group, a, b } => {
+                Edit::MorphPresets { group, presets } => {
                     self.history.end_group();
-                    match self.morph_presets(group, &a, &b) {
+                    match self.morph_presets(group, &presets) {
                         Ok(command) => command,
                         Err(error) => {
                             self.message = Some(format!("Couldn't morph: {error}"));

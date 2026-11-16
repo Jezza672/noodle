@@ -89,6 +89,7 @@ pub mod system_samples;
 mod tempo;
 mod time_stretch;
 mod transpose;
+mod tuning;
 mod vca;
 mod version_value;
 mod voice_mix;
@@ -181,9 +182,9 @@ pub use midi_in::{MIDI_IN_ID, MIDI_PORT, MIDI_PORT_KEY, MidiIn};
 pub use midi_out::{MIDI_OUT_ID, MIDI_OUT_PORT, MIDI_OUT_PORT_KEY, MidiOut};
 pub use mix::Mix;
 pub use morph::{
-    MAX_ROWS as MORPH_MAX_ROWS, MORPH_ID, MORPH_POSITION, MORPH_TARGETS, Morph, MorphRow,
-    morph_config, morph_output_key, rows_from_text as morph_rows_from_text,
-    rows_to_text as morph_rows_to_text,
+    MAX_ROWS as MORPH_MAX_ROWS, MORPH_ID, MORPH_POSITION, MORPH_TARGETS, MORPH_Y, Morph, MorphRow,
+    morph_config, morph_output_key, randomise_corner, rows_from_text as morph_rows_from_text,
+    rows_of as morph_rows_of, rows_to_text as morph_rows_to_text, set_corner_from_current,
 };
 pub use noise::WhiteNoise;
 pub use normalize::{NORMALIZE_ID, Normalize};
@@ -257,6 +258,9 @@ pub use swing::{GRID_NAMES as SWING_GRID_NAMES, GRID_TICKS as SWING_GRID_TICKS, 
 pub use tempo::{TEMPO_ID, Tempo};
 pub use time_stretch::{TIME_STRETCH_ID, TimeStretch};
 pub use transpose::{TRANSPOSE_ID, Transpose};
+pub use tuning::{
+    HELD as TUNING_HELD, KBM_KEY, Mapping, SCL_KEY, Scale, TUNING_ID, Tuning, parse_kbm, parse_scl,
+};
 pub use vca::{VCA_ID, Vca};
 pub use version_value::{MAX_VERSION_SLOTS, VERSION_MAX, VERSION_MIN, VERSION_TAPER, VersionValue};
 pub use voice_mix::{VOICE_MIX_ID, VoiceMix};
@@ -332,7 +336,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(Script);
     registry.register(Delay);
     registry.register(Feedback);
-    registry.register(Looper);
+    registry.register(Looper::new(&telemetry));
     registry.register(Morph);
     registry.register(Dynamics::new(&telemetry));
     registry.register(ParametricEq);
@@ -383,6 +387,7 @@ fn register_with(registry: &mut Registry, clips: ClipFeeds) -> Library {
     registry.register(ToNotes);
     registry.register(Swing);
     registry.register(Humanise);
+    registry.register(Tuning);
     registry.register(ScaleQuantise);
     registry.register(Chord);
     registry.register(Transpose);

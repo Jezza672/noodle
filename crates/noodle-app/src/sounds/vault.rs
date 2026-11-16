@@ -24,7 +24,7 @@ impl Kept {
     }
 }
 
-pub trait Vault {
+pub trait Vault: Send {
     /// Keeps `secret` for the source `id`, and says where.
     fn keep(&self, id: &str, secret: &str) -> Kept;
     fn recall(&self, id: &str) -> Option<String>;

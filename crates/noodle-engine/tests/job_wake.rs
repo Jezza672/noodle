@@ -1,4 +1,4 @@
-//! A finished job wakes the UI. Its own test binary, because the waker is
+//! A finished job wakes the UI. Its own test binary, because wakers are
 //! process-wide.
 
 use std::sync::Arc;
@@ -22,9 +22,9 @@ fn wait_for(count: &AtomicUsize, at_least: usize) -> bool {
 fn a_finished_job_wakes_the_ui() {
     let wakes = Arc::new(AtomicUsize::new(0));
     let counter = Arc::clone(&wakes);
-    wake::set_waker(Some(Arc::new(move || {
+    let _registered = wake::register(Arc::new(move || {
         counter.fetch_add(1, Ordering::SeqCst);
-    })));
+    }));
 
     let mut job = Job::spawn(|_| 7);
     assert!(wait_for(&wakes, 1), "no wake after the job finished");

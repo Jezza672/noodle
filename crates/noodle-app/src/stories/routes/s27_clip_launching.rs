@@ -11,6 +11,9 @@
 //! fixture starts with it loaded. Ableton Link is not built, and tap
 //! tempo and MIDI clock in are not routed, since the tempo source is session
 //! state that a route cannot read.
+//!
+//! A second route records a bar on the Looper template (a Button wired into
+//! its `record` input) and listens to the loop.
 
 use std::path::Path;
 use std::time::Duration;
@@ -18,7 +21,7 @@ use std::time::Duration;
 use egui::{Key, Modifiers, Pos2};
 use noodle_core::{Command, Endpoint, Node, NodeId, Position, Project, spare};
 use noodle_io::write_wav;
-use noodle_nodes::{LAUNCH_QUANTISE_ID, SAMPLER_ID};
+use noodle_nodes::{LAUNCH_QUANTISE_ID, LOOPER_ID, SAMPLER_ID};
 
 use super::super::handle::peak;
 use super::super::{Route, Tag};
@@ -164,6 +167,104 @@ pub fn route() -> Route {
             }
             if level < 0.01 {
                 return Err(format!("the pad's loop never started (peak {level})"));
+            }
+            Ok(())
+        },
+        late: &[],
+    }
+}
+
+/// A sine into the Looper template, to the output, with a Button wired into
+/// the group's `record` input (the pedal). The Looper is set to one bar, so
+/// one press records a bar and plays it back.
+fn looper_fixture(dir: &Path) -> App {
+    let mut session = virtual_session(dir);
+    let sine = session.new_node_id();
+    session.edit([Edit::Apply(Command::AddNode {
+        id: sine,
+        node: Node::new("noodle.osc.sine")
+            .at(0.0, 80.0)
+            .with_param("frequency", 220.0),
+    })]);
+    let button = session.new_node_id();
+    session.edit([Edit::Apply(Command::AddNode {
+        id: button,
+        node: Node::new(BUTTON_ID).at(0.0, 300.0),
+    })]);
+    let template = session
+        .library()
+        .templates()
+        .find(|(_, t)| t.name == "Looper")
+        .map(|(id, t)| (id.to_string(), t.clone()))
+        .expect("the library has the Looper");
+    let mut next = session.new_node_id().0;
+    let mut ids = || {
+        let id = NodeId(next);
+        next += 1;
+        id
+    };
+    let (looper, add) =
+        template
+            .1
+            .instantiate(&template.0, None, Position { x: 550.0, y: 300.0 }, &mut ids);
+    session.edit([Edit::Apply(add)]);
+    let out = session.new_node_id();
+    session.edit([Edit::Apply(Command::AddNode {
+        id: out,
+        node: Node::new(noodle_engine::OUTPUT_ID).at(950.0, 300.0),
+    })]);
+    for (from, to) in [
+        (Endpoint::new(sine, "out"), Endpoint::new(looper, "in")),
+        (
+            Endpoint::new(button, "out"),
+            Endpoint::new(looper, "record"),
+        ),
+        (Endpoint::new(looper, "out"), Endpoint::new(out, "in")),
+    ] {
+        session.edit([Edit::Apply(spare::wire(from, to))]);
+    }
+    let inner = session
+        .project()
+        .graph()
+        .nodes()
+        .find(|(_, n)| n.type_id == LOOPER_ID && n.parent == Some(looper))
+        .map(|(id, _)| id)
+        .expect("the group's Looper");
+    session.edit([Edit::Apply(Command::SetParam {
+        node: inner,
+        key: "length".into(),
+        value: Some(1.0),
+    })]);
+    finished(session, dir)
+}
+
+pub fn looper_route() -> Route {
+    Route {
+        story: "S27",
+        tag: Tag::Default,
+        name: "record a one-bar loop on the Looper pedal",
+        fixture: looper_fixture,
+        size: None,
+        steps: |h, _| {
+            let _busy = crate::testkit::playing_mode();
+            h.step("start the transport");
+            h.press_playing(Pos2::new(640.0, 760.0), Modifiers::NONE, Key::Space);
+            h.step("press the record pedal");
+            let button = button_of(h.probe().project());
+            set(h, button, "state", 1.0);
+        },
+        done: |p, _| {
+            // The press waits for the bar line, then a bar is recorded and
+            // played back, so the loop sounds within about two bars.
+            let mut level = 0.0;
+            for _ in 0..4 {
+                level = peak(&p.hear(Duration::from_millis(2_400)));
+                if level >= 0.01 {
+                    break;
+                }
+            }
+            if level < 0.01 {
+                return Err(format!("the recorded loop never played (peak {level})"));
             }
             Ok(())
         },

@@ -533,6 +533,10 @@ graph as `@level` and `@reduction`). Parametric EQ shows the combined response
 notch has no gain, so its point moves in frequency only. A node's config can
 reach a graph too (`bands`, through `special_value`).
 
+## Morph and Looper panels
+
+A Morph node's panel (`morph_panel.rs`) has the XY pad when the rows use four corners (A top left, B top right, C bottom left, D bottom right; the dot follows `position` and `y`, a drag writes both as one undo step, and the pad only shows them when a wire from outside drives them), a slider per row per corner, Set from current and Randomise per corner, and a button that removes unconnected rows. A Looper's panel (`looper_panel.rs`) shows its state and playhead from `Telemetry::read_loop`. See [../features/preset-morph.md](../features/preset-morph.md) and [../features/looper.md](../features/looper.md).
+
 ## Editor header bars
 
 The piano roll, clip editor and sample editor share one header bar (`toolbar.rs`). It follows the transport pill's rules: each control sits in a slot of fixed width, related controls share a rounded pill, icons are drawn, and numbers live in popovers (Loop range, Humanise amounts, lanes, articulations, the hint under `?`). Clip-level controls (lane tool, Loop, Lanes) come first, then a divider and the selection group (`N notes selected`, Humanise, Articulation). Snap is a read-only chip; the snap step is set in the menu bar. When the panel is too narrow, `toolbar::fit` folds the slots with the highest `keep` into a `...` menu (hint first, then Snap, the selection group, Lanes, tools, Loop), so nothing is cut off. Close never moves.

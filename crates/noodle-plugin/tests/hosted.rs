@@ -1,9 +1,11 @@
 //! Noodle hosting Noodle: the plugin is loaded by `noodle-plugins`' own CLAP
 //! host, as a node in an engine, and driven through the engine's test
 //! harness. This proves the engine side (ports, audio, notes, state,
-//! parameters, tempo) in a real host before any window exists.
+//! parameters, tempo) in a real host. The window has its own test (`window.rs`).
 
-use std::path::PathBuf;
+mod common;
+
+use common::plugin_path;
 
 use base64::Engine as _;
 use noodle_core::{Command, Config, Connection, Endpoint, Node, NodeId, Project, Value};
@@ -19,30 +21,6 @@ use noodle_plugins::{
 };
 
 const RATE: f32 = 48_000.0;
-
-/// `cargo test` links the plugin's rlib but doesn't make the library a host
-/// loads, so the first test builds it, in the same profile and folder.
-fn plugin_path() -> PathBuf {
-    static BUILT: std::sync::Once = std::sync::Once::new();
-    let exe = std::env::current_exe().unwrap();
-    let target = exe.parent().unwrap().parent().unwrap();
-    BUILT.call_once(|| {
-        let mut build = std::process::Command::new(env!("CARGO"));
-        build.args(["build", "-p", "noodle-plugin", "--lib"]);
-        if target.file_name().is_some_and(|name| name == "release") {
-            build.arg("--release");
-        }
-        let status = build.status().expect("run cargo");
-        assert!(status.success(), "building the plugin failed");
-    });
-    let path = target.join(format!(
-        "{}noodle_plugin{}",
-        std::env::consts::DLL_PREFIX,
-        std::env::consts::DLL_SUFFIX
-    ));
-    assert!(path.exists(), "the plugin isn't built: {}", path.display());
-    path
-}
 
 fn catalog() -> Catalog {
     let path = plugin_path();
@@ -69,10 +47,14 @@ fn text(key: &str, value: &str) -> Config {
     config
 }
 
+/// The 64 host parameters' values, all 0, as the state holds them.
+const ZERO_PARAMS: &str = "00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000 00000000\n";
+
 /// A saved project as the plugin's state holds it, as the config the node
 /// takes it in.
 fn state(project: &Project, id: &str) -> Config {
-    let mut bytes = b"noodle-plugin 1\n".to_vec();
+    let mut bytes = b"noodle-plugin 2\n".to_vec();
+    bytes.extend(ZERO_PARAMS.as_bytes());
     bytes.extend(project.to_ron().as_bytes());
     let sealed = capture_state(&plugin_path(), id, Some(&bytes)).expect("load the state");
     Config::new().with(
@@ -222,17 +204,18 @@ fn saved_state_restores_the_project() {
             .iter()
             .all(|&s| (s - 0.5).abs() < 1e-4)
     );
-    // And what the plugin saves is ours: the magic, then the project.
+    // And what the plugin saves is ours: the magic, the parameters, then the project.
     let saved = capture_state(&plugin_path(), EFFECT_ID, None).unwrap();
     let text = String::from_utf8_lossy(&saved);
-    assert!(text.contains("noodle-plugin 1"), "{text:.200}");
+    assert!(text.contains("noodle-plugin 2"), "{text:.200}");
     assert!(text.contains("noodle.io.input"), "{text:.400}");
 }
 
 #[test]
 fn damaged_state_is_refused() {
     assert!(capture_state(&plugin_path(), EFFECT_ID, Some(b"not noodle")).is_err());
-    let mut bytes = b"noodle-plugin 1\n".to_vec();
+    let mut bytes = b"noodle-plugin 2\n".to_vec();
+    bytes.extend(ZERO_PARAMS.as_bytes());
     bytes.extend(b"this is not a project");
     assert!(capture_state(&plugin_path(), EFFECT_ID, Some(&bytes)).is_err());
 }

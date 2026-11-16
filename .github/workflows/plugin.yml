@@ -1,0 +1,64 @@
+name: Plugin formats
+
+# VST3 and Audio Unit builds of the plugin, made from the CLAP with
+# clap-wrapper (see packaging/). Not part of CI: it builds the plugin in
+# release mode as a static library on all three systems, which is slow, so it
+# runs on main, on changes to the plugin or its packaging, and by hand.
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths:
+      - 'packaging/**'
+      - 'crates/noodle-plugin/**'
+      - '.github/workflows/plugin.yml'
+  workflow_dispatch:
+
+concurrency:
+  group: plugin-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_INCREMENTAL: 0
+
+jobs:
+  package:
+    name: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v5
+      - uses: Swatinem/rust-cache@v2
+        with:
+          cache-on-failure: true
+      - name: Install ALSA
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libasound2-dev
+      - name: Build the VST3 (and the Audio Unit on macOS)
+        shell: bash
+        run: packaging/build.sh release
+      - name: Look at what was built
+        shell: bash
+        run: find build/packaging/out -maxdepth 4 | head -40
+      # Audio Units are checked with Apple's own validator, which needs the
+      # component installed where the system looks for them.
+      - name: Validate the Audio Units
+        if: runner.os == 'macOS'
+        run: |
+          mkdir -p ~/Library/Audio/Plug-Ins/Components
+          cp -R build/packaging/out/Noodle.component ~/Library/Audio/Plug-Ins/Components/
+          killall -9 AudioComponentRegistrar || true
+          auval -a | grep -i nood || true
+          auval -v aufx Nefx Nood
+          auval -v aumu Nins Nood
+      - uses: actions/upload-artifact@v4
+        with:
+          name: noodle-plugin-${{ runner.os }}
+          path: build/packaging/out/
+          if-no-files-found: error

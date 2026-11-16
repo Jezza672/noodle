@@ -10,13 +10,15 @@
 
 use noodle_core::group::{GROUP, GROUP_INPUT};
 use noodle_core::library::GroupPreset;
-use noodle_core::spare::{self, Side};
+use noodle_core::spare;
 use noodle_core::{Command, Endpoint, Frame, FrameId, Node, NodeId, Position, Project};
 use noodle_engine::{InputKind, ParamKind, Registry};
-use noodle_nodes::{MORPH_ID, MORPH_POSITION, MorphRow, morph_config, morph_output_key};
+use noodle_nodes::{MORPH_ID, MORPH_POSITION, MORPH_Y, MorphRow, morph_config, morph_output_key};
 
 /// The name of the group input the node's `position` is exposed as.
 pub const MORPH_INPUT: &str = "morph";
+/// The name of the second input, `y`, of a four-preset morph.
+pub const MORPH_INPUT_Y: &str = "morph y";
 
 /// The IDs the command's new things take.
 pub struct Ids {
@@ -24,6 +26,36 @@ pub struct Ids {
     pub frame: FrameId,
     /// The group's input boundary node, if it needs one made.
     pub boundary: NodeId,
+}
+
+/// Whether the only thing feeding `target` is one of `group`'s own inputs that
+/// nothing outside feeds: a control set in the group's panel, not a
+/// modulation. The Morph takes such a parameter over (its wire is replaced, so
+/// the control no longer does anything).
+fn only_from_the_boundary(graph: &noodle_core::Graph, group: NodeId, target: &Endpoint) -> bool {
+    let Some(source) = graph.source(target) else {
+        return false;
+    };
+    let Some(boundary) = graph.node(source.node) else {
+        return false;
+    };
+    if boundary.type_id != GROUP_INPUT || boundary.parent != Some(group) {
+        return false;
+    }
+    graph
+        .group_ports(group)
+        .inputs
+        .into_iter()
+        .find(|p| p.node == source.node && p.key() == source.port)
+        .is_some_and(|p| graph.source(&Endpoint::new(group, p.name)).is_none())
+}
+
+/// A group input named `base`, or the first free `base 2`, `base 3`, ...
+fn free_name(taken: &noodle_core::group::GroupPorts, base: &str) -> String {
+    std::iter::once(base.to_owned())
+        .chain((2..).map(|i| format!("{base} {i}")))
+        .find(|n| taken.input(n).is_none())
+        .expect("an unbounded range has a free name")
 }
 
 /// What the command did, and what it left out and why.
@@ -45,16 +77,23 @@ impl Morphed {
     }
 }
 
-/// The command that morphs `group` between presets `a` and `b`. `entry_a` is
-/// the library ID of `a`, recorded as the group's preset.
+/// The command that morphs `group` between presets. `a` is the first, with
+/// its library ID, recorded as the group's preset. `others` is the second
+/// preset alone for a morph along `position`, or the second, third and fourth
+/// for the four corners of an XY pad: B at `position` 1, C at `y` 1, D at
+/// both.
 pub fn command(
     project: &Project,
     registry: &Registry,
     group: NodeId,
     a: (&str, &GroupPreset),
-    b: &GroupPreset,
+    others: &[&GroupPreset],
     ids: &Ids,
 ) -> Result<Morphed, String> {
+    if !matches!(others.len(), 1 | 3) {
+        return Err("a morph is between two presets, or four for an XY pad".to_owned());
+    }
+    let xy = others.len() == 3;
     let graph = project.graph();
     let group_node = graph.node(group).ok_or("the group is gone")?;
     if group_node.type_id != GROUP {
@@ -64,23 +103,37 @@ pub fn command(
     let apply_a =
         a.1.apply(graph, group, a.0, &layout_of)
             .map_err(|e| e.to_string())?;
-    if !b.applies_to(graph, group, &layout_of) {
-        return Err("the second preset is for a differently built group".to_owned());
+    if others
+        .iter()
+        .any(|p| !p.applies_to(graph, group, &layout_of))
+    {
+        return Err("a preset is for a differently built group".to_owned());
     }
 
     let mut rows: Vec<(Endpoint, MorphRow)> = Vec::new();
     let mut left_out = Vec::new();
-    for (id, va, vb) in a.1.paired(b, graph, group) {
+    let mut nested = false;
+    for (id, values) in a.1.paired(others, graph, group) {
         let node = graph.node(id).ok_or("a node is gone")?;
-        let node_type = registry
-            .get(&node.type_id)
-            .ok_or("a node's type is unknown")?;
+        // A wire stays in one group, so a node inside a nested group can't be
+        // reached from the Morph.
+        if node.parent != Some(group) {
+            if values.iter().any(|v| v.params != values[0].params) && !nested {
+                nested = true;
+                left_out.push("nodes inside nested groups stay as in the first preset".to_owned());
+            }
+            continue;
+        }
+        // A group's own boundary nodes hold levels, not parameters to morph.
+        let Some(node_type) = registry.get(&node.type_id) else {
+            continue;
+        };
         let layout = node_type.layout(&node.config).map_err(|e| e.to_string())?;
         let label = node_type.info().name;
-        if va.config != vb.config {
+        if values.iter().any(|v| v.config != values[0].config) {
             left_out.push(format!("{label}'s config stays as in the first preset"));
         }
-        let mut keys: Vec<&String> = va.params.keys().chain(vb.params.keys()).collect();
+        let mut keys: Vec<&String> = values.iter().flat_map(|v| v.params.keys()).collect();
         keys.sort();
         keys.dedup();
         for key in keys {
@@ -90,14 +143,21 @@ pub fn command(
             let InputKind::Param(info) = &input.kind else {
                 continue;
             };
-            let from = va.params.get(key).copied().unwrap_or(info.default);
-            let to = vb.params.get(key).copied().unwrap_or(info.default);
-            if from.to_bits() == to.to_bits() {
+            let at = |v: &noodle_core::library::PresetValues| {
+                v.params.get(key).copied().unwrap_or(info.default)
+            };
+            let mut vals: Vec<f32> = values.iter().map(|v| at(v)).collect();
+            if !xy {
+                // Two presets: the lower corners repeat the upper.
+                vals.extend([vals[0], vals[1]]);
+            }
+            let from = vals[0];
+            if vals.iter().all(|v| v.to_bits() == from.to_bits()) {
                 continue;
             }
             let target = Endpoint::new(id, key.clone());
             let name = format!("{label} {}", input.name);
-            if graph.source(&target).is_some() {
+            if graph.source(&target).is_some() && !only_from_the_boundary(graph, group, &target) {
                 left_out.push(format!("{name} has a wire"));
                 continue;
             }
@@ -108,14 +168,17 @@ pub fn command(
             let row = if info.is_offset() {
                 // A wire moves the value along its travel from the base,
                 // which preset A has just set: 0.5 is no move.
-                let travel = (info.position(to) - info.position(from)).clamp(-1.0, 1.0);
+                let travel =
+                    |v: f32| 0.5 + 0.5 * (info.position(v) - info.position(from)).clamp(-1.0, 1.0);
                 MorphRow {
                     name,
                     min: -1.0,
                     max: 1.0,
                     log: false,
                     a: 0.5,
-                    b: 0.5 + 0.5 * travel,
+                    b: travel(vals[1]),
+                    c: travel(vals[2]),
+                    d: travel(vals[3]),
                     stepped: false,
                 }
             } else {
@@ -125,8 +188,10 @@ pub fn command(
                     min,
                     max,
                     log,
-                    a: info.position(from),
-                    b: info.position(to),
+                    a: info.position(vals[0]),
+                    b: info.position(vals[1]),
+                    c: info.position(vals[2]),
+                    d: info.position(vals[3]),
                     stepped: matches!(info.kind, ParamKind::Stepped { .. }),
                 }
             };
@@ -172,23 +237,61 @@ pub fn command(
         },
     });
 
-    // The group input: `morph`, or the first free `morph 2`, ...
+    // The group inputs: `morph` (and `morph y` for four presets), or the
+    // first free `morph 2`, ... All go on the group's one input boundary.
     let taken = graph.group_ports(group);
-    let name = std::iter::once(MORPH_INPUT.to_owned())
-        .chain((2..).map(|i| format!("{MORPH_INPUT} {i}")))
-        .find(|n| taken.input(n).is_none())
-        .expect("an unbounded range has a free name");
-    let (add_port, port_key) =
-        spare::add_group_port(graph, group, Side::Input, &name, ids.boundary);
-    commands.push(add_port);
-    let boundary = graph
+    let name = free_name(&taken, MORPH_INPUT);
+    let suffix = name[MORPH_INPUT.len()..].to_owned();
+    let mut names = vec![name];
+    if xy {
+        names.push(format!("{MORPH_INPUT_Y}{suffix}"));
+    }
+    let existing = graph
         .children(Some(group))
-        .find(|(_, n)| n.type_id == GROUP_INPUT)
-        .map_or(ids.boundary, |(id, _)| id);
+        .find(|(_, n)| n.type_id == GROUP_INPUT);
+    let mut ports = existing.map_or_else(Vec::new, |(_, n)| n.boundary_ports());
+    let mut keys = Vec::new();
+    for name in names {
+        let id = ports.iter().map(|&(id, _)| id).max().map_or(1, |id| id + 1);
+        ports.push((id, name));
+        keys.push(noodle_core::group::port_key(id));
+    }
+    let boundary = match existing {
+        Some((id, _)) => {
+            commands.push(Command::SetConfig {
+                node: id,
+                key: noodle_core::group::PORTS.into(),
+                value: Some(noodle_core::group::ports_value(&ports)),
+            });
+            id
+        }
+        None => {
+            let x = graph
+                .children(Some(group))
+                .map(|(_, n)| n.position.x)
+                .reduce(f32::min)
+                .map_or(0.0, |x| x - 250.0);
+            let mut node =
+                Node::new(GROUP_INPUT).with_config(noodle_core::group::ports_config(&ports));
+            node.position = Position { x, y: 0.0 };
+            node.parent = Some(group);
+            commands.push(Command::AddNode {
+                id: ids.boundary,
+                node,
+            });
+            ids.boundary
+        }
+    };
     commands.push(spare::wire(
-        Endpoint::new(boundary, port_key),
+        Endpoint::new(boundary, keys[0].clone()),
         Endpoint::new(ids.morph, MORPH_POSITION),
     ));
+    if xy {
+        commands.push(spare::wire(
+            Endpoint::new(boundary, keys[1].clone()),
+            Endpoint::new(ids.morph, MORPH_Y),
+        ));
+    }
     for (i, (target, _)) in rows.iter().enumerate() {
         commands.push(spare::wire(
             Endpoint::new(ids.morph, morph_output_key(i)),
@@ -309,7 +412,7 @@ mod tests {
             session.registry(),
             lead.group,
             ("A", a),
-            b,
+            &[b],
             &ids,
         )
         .unwrap();
@@ -434,9 +537,91 @@ mod tests {
             session.registry(),
             lead.group,
             ("A", &a),
-            &a,
+            &[&a],
             &ids,
         );
         assert!(result.is_err());
+    }
+
+    #[test]
+    fn four_presets_make_a_pad_with_two_group_inputs() {
+        let mut session = Session::new(Nodes::all());
+        let lead = lead(&mut session);
+        let (a, b) = presets(&mut session, &lead);
+        set(&mut session, lead.filter, "cutoff", 8000.0);
+        set(&mut session, lead.gain, "gain", -20.0);
+        let c = GroupPreset::capture(session.project().graph(), lead.group, "C");
+        set(&mut session, lead.filter, "cutoff", 100.0);
+        set(&mut session, lead.gain, "gain", 0.0);
+        let d = GroupPreset::capture(session.project().graph(), lead.group, "D");
+        let ids = Ids {
+            morph: session.new_node_id(),
+            frame: session.new_frame_id(),
+            boundary: session.new_node_id(),
+        };
+        let morphed = command(
+            session.project(),
+            session.registry(),
+            lead.group,
+            ("A", &a),
+            &[&b, &c, &d],
+            &ids,
+        )
+        .unwrap();
+        session.edit([Edit::Apply(morphed.command)]);
+        let graph = session.project().graph();
+        let ports = graph.group_ports(lead.group);
+        assert!(ports.input("morph").is_some() && ports.input("morph y").is_some());
+        let morph = morph_node(&session);
+        let y_source = graph.source(&Endpoint::new(morph, "y")).unwrap();
+        assert_eq!(graph.node(y_source.node).unwrap().type_id, GROUP_INPUT);
+        let node = graph.node(morph).unwrap();
+        let rows = noodle_nodes::morph_rows_of(&node.config);
+        assert_eq!(rows.len(), 2);
+        // The gain row is an offset from A's value, in fractions of the
+        // 84 dB travel: -12, -3, -20 and 0 dB at the four corners.
+        let gain = rows.iter().find(|r| r.name.contains("Gain")).unwrap();
+        let corners = [gain.a, gain.b, gain.c, gain.d].map(|t| gain.at_position(t) * 84.0);
+        for (got, want) in corners.iter().zip([0.0, 9.0, -8.0, 12.0]) {
+            assert!((got - want).abs() < 0.05, "{corners:?}");
+        }
+    }
+
+    #[test]
+    fn it_morphs_the_first_two_presets_of_a_library_synth() {
+        let mut session = Session::new(Nodes::all());
+        let template = session
+            .library()
+            .templates()
+            .find(|(_, t)| t.name == "Tempo Echo")
+            .map(|(id, t)| (id.to_string(), t.clone()))
+            .unwrap();
+        let mut next = session.new_node_id().0;
+        let mut ids = || {
+            let id = NodeId(next);
+            next += 1;
+            id
+        };
+        let (group, add) =
+            template
+                .1
+                .instantiate(&template.0, None, Position { x: 0.0, y: 0.0 }, &mut ids);
+        session.edit([Edit::Apply(add)]);
+        let presets: Vec<String> = session
+            .presets_for(group)
+            .into_iter()
+            .take(2)
+            .map(|(id, _)| id.to_owned())
+            .collect();
+        session.edit([Edit::MorphPresets { group, presets }]);
+        assert!(
+            session
+                .project()
+                .graph()
+                .nodes()
+                .any(|(_, n)| n.type_id == MORPH_ID),
+            "{:?}",
+            session.message()
+        );
     }
 }

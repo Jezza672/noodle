@@ -362,4 +362,4 @@ _Avoid_: Sample library
 
 **Looper**: the node that records its input and plays it back as a loop on the bar, with overdub, one-level undo and clear, all driven by parameters.
 
-**Morph**: a node that blends a group between two presets with one `position`, with one visible wire into each parameter that differs.
+**Morph**: a node that blends a group between two presets with one `position` (or four, with `position` and `y` on an XY pad), with one visible wire into each parameter that differs.

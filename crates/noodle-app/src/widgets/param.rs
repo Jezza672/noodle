@@ -136,6 +136,8 @@ pub struct ParamOutput {
     pub learn: bool,
     /// Vary per version was chosen from the menu.
     pub vary: bool,
+    /// Expose to host was chosen from the menu.
+    pub expose: bool,
 }
 
 impl ParamOutput {
@@ -156,6 +158,9 @@ impl ParamOutput {
         }
         if self.vary {
             edits.push(Edit::VaryPerVersion(noodle_core::Endpoint::new(node, key)));
+        }
+        if self.expose {
+            edits.push(Edit::ExposeToHost(noodle_core::Endpoint::new(node, key)));
         }
         if let Some(edit) = self.edit {
             let command = Command::SetParam {
@@ -207,6 +212,9 @@ pub struct ParamField<'a> {
     /// The Vary per version entry, offered like Automate.
     vary: Automate,
     learn: LearnMidi,
+    /// The Expose to host entry (in a plugin's window only), offered like
+    /// Automate.
+    expose: Automate,
     /// Whether the wire replaces the value (the fill follows the live value)
     /// rather than offsetting it (the fill stays at the base).
     replaced: bool,
@@ -229,6 +237,7 @@ impl<'a> ParamField<'a> {
             automate: Automate::Hidden,
             vary: Automate::Hidden,
             learn: LearnMidi::Hidden,
+            expose: Automate::Hidden,
             replaced: false,
         }
     }
@@ -236,6 +245,12 @@ impl<'a> ParamField<'a> {
     /// Adds the Learn MIDI entry to the right-click menu.
     pub fn learn_midi(mut self, learn: LearnMidi) -> Self {
         self.learn = learn;
+        self
+    }
+
+    /// Adds the Expose to host entry to the right-click menu.
+    pub fn expose_to_host(mut self, expose: Automate) -> Self {
+        self.expose = expose;
         self
     }
 
@@ -424,6 +439,7 @@ impl<'a> ParamField<'a> {
         let mut automate = false;
         let mut learn = false;
         let mut vary = false;
+        let mut expose = false;
         response.context_menu(|ui| {
             if ui.button("Reset to default").clicked() {
                 edit = Some(ParamEdit::Reset);
@@ -432,6 +448,7 @@ impl<'a> ParamField<'a> {
             automate |= self.automate.entry(ui);
             vary |= self.vary.entry_named(ui, "Vary per version");
             learn |= self.learn.entry(ui);
+            expose |= self.expose.entry_named(ui, "Expose to host");
         });
 
         let enabled = ui.is_enabled();
@@ -458,6 +475,7 @@ impl<'a> ParamField<'a> {
             automate,
             learn,
             vary,
+            expose,
         }
     }
 
@@ -514,6 +532,7 @@ impl<'a> ParamField<'a> {
             automate: false,
             learn: false,
             vary: false,
+            expose: false,
         }
     }
 
@@ -688,6 +707,7 @@ impl<'a> ParamField<'a> {
         let mut automate = false;
         let mut learn = false;
         let mut vary = false;
+        let mut expose = false;
         for button in &responses {
             button.context_menu(|ui| {
                 if ui.button("Reset to default").clicked() {
@@ -697,6 +717,7 @@ impl<'a> ParamField<'a> {
                 automate |= self.automate.entry(ui);
                 vary |= self.vary.entry_named(ui, "Vary per version");
                 learn |= self.learn.entry(ui);
+                expose |= self.expose.entry_named(ui, "Expose to host");
             });
         }
         if resets {
@@ -713,6 +734,7 @@ impl<'a> ParamField<'a> {
             automate,
             learn,
             vary,
+            expose,
         }
     }
 

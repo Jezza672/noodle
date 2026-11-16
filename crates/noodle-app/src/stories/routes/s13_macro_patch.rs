@@ -6,8 +6,20 @@
 //! that maps one knob to several targets with a range and curve each,
 //! so the user builds one by hand. Saving the patch as a preset and seeing
 //! the update in another project are not routed.
+//!
+//! A second route gets the same gesture the short way: "Morph between
+//! presets..." on a Tempo Echo group adds a Morph node wired into everything
+//! the first two presets differ in, with its `position` as the group's `morph`
+//! control, so one knob moves the whole sound.
 
 use std::path::Path;
+
+use egui::Modifiers;
+use noodle_core::{Command, Endpoint, NodeId, Position, spare};
+use noodle_nodes::MORPH_ID;
+
+use super::virtual_session;
+use crate::session::Edit;
 
 use super::super::handle::Probe;
 use super::super::{Keep, LateChange, Route, Tag};
@@ -174,4 +186,87 @@ fn mapping(p: &Project) -> String {
         .collect();
     lines.sort();
     lines.join("\n")
+}
+
+/// A Tempo Echo group wired to the output, with presets to morph between.
+fn morph_fixture(dir: &Path) -> App {
+    let mut session = virtual_session(dir);
+    let template = session
+        .library()
+        .templates()
+        .find(|(_, t)| t.name == "Tempo Echo")
+        .map(|(id, t)| (id.to_string(), t.clone()))
+        .expect("the library has the Tempo Echo");
+    let mut next = session.new_node_id().0;
+    let mut ids = || {
+        let id = NodeId(next);
+        next += 1;
+        id
+    };
+    let (lead, add) =
+        template
+            .1
+            .instantiate(&template.0, None, Position { x: 300.0, y: 300.0 }, &mut ids);
+    session.edit([Edit::Apply(add)]);
+    let out = session.new_node_id();
+    session.edit([Edit::Apply(Command::AddNode {
+        id: out,
+        node: noodle_core::Node::new(noodle_engine::OUTPUT_ID).at(900.0, 300.0),
+    })]);
+    session.edit([Edit::Apply(spare::wire(
+        Endpoint::new(lead, "out"),
+        Endpoint::new(out, "in"),
+    ))]);
+    super::finished(session, dir)
+}
+
+fn lead_of(p: &Project) -> Option<NodeId> {
+    p.graph()
+        .nodes()
+        .find(|(_, n)| n.parent.is_none() && n.type_id == noodle_core::group::GROUP)
+        .map(|(id, _)| id)
+}
+
+pub fn morph_route() -> Route {
+    Route {
+        story: "S13",
+        tag: Tag::Default,
+        name: "morph a synth between two of its presets with one control",
+        fixture: morph_fixture,
+        size: None,
+        steps: |h, _| {
+            h.step("select the echo");
+            let lead = lead_of(h.probe().project()).expect("the Tempo Echo group");
+            let title = h.port_row(lead, false, "in");
+            h.click(title, Modifiers::NONE);
+            h.probe().settle();
+            h.step("open Morph between presets");
+            let header = h.find("Morph between presets...");
+            h.click(header, Modifiers::NONE);
+            h.probe().settle();
+            h.step("morph the first two presets");
+            let button = h.find("Morph");
+            h.click(button, Modifiers::NONE);
+            h.probe().settle();
+        },
+        done: |p, _| {
+            let project = p.project();
+            let lead = lead_of(project).ok_or("the group is gone")?;
+            let graph = project.graph();
+            let morph = graph
+                .nodes()
+                .find(|(_, n)| n.type_id == MORPH_ID && n.parent == Some(lead))
+                .map(|(id, _)| id)
+                .ok_or("no Morph node in the group")?;
+            let wired = graph.connections().filter(|c| c.from.node == morph).count();
+            if wired < 2 {
+                return Err(format!("the Morph drives {wired} parameters, wanted 2"));
+            }
+            if graph.group_ports(lead).input("morph").is_none() {
+                return Err("the group has no `morph` control".into());
+            }
+            Ok(())
+        },
+        late: &[],
+    }
 }

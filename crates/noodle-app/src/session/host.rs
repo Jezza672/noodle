@@ -84,6 +84,12 @@ impl Session {
         self.close_stream();
     }
 
+    /// Whether this is a plugin's session, whose parameters can be given to
+    /// the host (see [`Session::expose_to_host`]).
+    pub fn is_plugin(&self) -> bool {
+        self.plugin
+    }
+
     /// Whether a host drives the engine.
     pub fn is_host_driven(&self) -> bool {
         self.host_driven
@@ -107,6 +113,7 @@ impl Session {
     /// it can be edited.
     pub fn new_host_project(&mut self, flavour: Flavour) {
         self.new_project();
+        self.plugin = true;
         let input = self.new_node_id();
         let output = self.new_node_id();
         let mut commands = Vec::new();
@@ -176,15 +183,40 @@ impl Session {
         self.saved_position = self.history.position();
     }
 
-    /// The project, as the host's state chunk holds it.
+    /// The host's state chunk: the values of the 64 host parameters (a line
+    /// of their bit patterns in hex, so they come back exactly), then the
+    /// project. The values are the host's to restore, and a host that
+    /// restores a state expects them back as they were.
     pub fn host_state(&self) -> String {
-        self.project.to_ron()
+        let values: Vec<String> = (0..HOST_PARAMS)
+            .map(|slot| format!("{:08x}", self.host_link.value(slot).to_bits()))
+            .collect();
+        format!("{}\n{}", values.join(" "), self.project.to_ron())
     }
 
-    /// Replaces the project with the host's saved one. Returns the reason if
-    /// it can't be read, and keeps what it had.
+    /// Replaces the project and the host parameters' values with the host's
+    /// saved ones. Returns the reason if it can't be read, and keeps what it
+    /// had.
     pub fn load_host_state(&mut self, text: &str) -> Result<(), String> {
-        let project = noodle_core::Project::from_ron(text).map_err(|error| error.to_string())?;
+        let (line, project) = text.split_once('\n').ok_or("the state has no project")?;
+        let values: Vec<f32> = line
+            .split_whitespace()
+            .map(|word| {
+                u32::from_str_radix(word, 16)
+                    .map(f32::from_bits)
+                    .map_err(|_| format!("`{word}` isn't a parameter value"))
+            })
+            .collect::<Result<_, _>>()?;
+        if values.len() != HOST_PARAMS {
+            return Err(format!(
+                "the state has {} parameter values, not {HOST_PARAMS}",
+                values.len()
+            ));
+        }
+        let project = noodle_core::Project::from_ron(project).map_err(|error| error.to_string())?;
+        for (slot, value) in values.into_iter().enumerate() {
+            self.host_link.set_value(slot, value);
+        }
         self.replace(project, None);
         Ok(())
     }
@@ -360,5 +392,54 @@ mod tests {
         session.undo();
         assert_eq!(session.project().graph().nodes().count(), before);
         assert_eq!(session.host_param_names()[0], None);
+    }
+
+    #[test]
+    fn the_edit_exposes_a_parameter_and_only_a_plugin_session_offers_it() {
+        let mut session = Session::new(Nodes::all());
+        assert!(!session.is_plugin());
+        session.new_host_project(Flavour::Effect);
+        assert!(session.is_plugin());
+        let gain = session.new_node_id();
+        session.edit([Edit::Apply(Command::AddNode {
+            id: gain,
+            node: Node::new("noodle.util.gain"),
+        })]);
+        session.edit([Edit::ExposeToHost(Endpoint::new(gain, "gain"))]);
+        assert_eq!(session.host_param_names()[0].as_deref(), Some("Gain"));
+        // The second time the parameter has a wire, and it says so.
+        session.edit([Edit::ExposeToHost(Endpoint::new(gain, "gain"))]);
+        assert_eq!(session.host_param_names()[1], None);
+        assert!(
+            session
+                .message()
+                .is_some_and(|m| m.contains("already has a wire"))
+        );
+    }
+
+    #[test]
+    fn the_state_keeps_the_host_parameters_and_refuses_what_it_cant_read() {
+        let mut session = Session::new(Nodes::all());
+        session.new_host_project(Flavour::Effect);
+        session.host_link().set_value(0, 0.25);
+        session.host_link().set_value(63, 1.0);
+        let state = session.host_state();
+
+        let mut fresh = Session::new(Nodes::all());
+        fresh.new_host_project(Flavour::Instrument);
+        fresh.load_host_state(&state).unwrap();
+        assert_eq!(fresh.host_link().value(0), 0.25);
+        assert_eq!(fresh.host_link().value(1), 0.0);
+        assert_eq!(fresh.host_link().value(63), 1.0);
+        assert_eq!(fresh.host_state(), state);
+
+        // What can't be read is refused, and nothing changes.
+        for bad in ["", "no newline", "zz\n()", "00000000\n()"] {
+            assert!(fresh.load_host_state(bad).is_err(), "{bad:?}");
+        }
+        assert_eq!(fresh.host_link().value(0), 0.25);
+        let truncated = state.replacen('\n', "\n(", 1);
+        assert!(fresh.load_host_state(&truncated).is_err());
+        assert_eq!(fresh.host_link().value(63), 1.0);
     }
 }

@@ -17,7 +17,7 @@ deliberately deferred items.
 1. **Design** (this ADR, the roadmap and the glossary).
 2. **`noodle-network`:** the shared downloader and S3 client (renamed from `noodle-download`; consent, streaming, SHA-256, content-keyed cache), with the stem separator moved onto it.
 3. **`noodle-packs`:** pack definitions, manifests, licence and credit fields, validation.
-4. **`noodle-publish`:** built (docs/architecture/packs.md). Owed: add the repo secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` for the first real publish, and decide how contributors other than Jeremy get an upload credential.
+4. **`noodle-publish`:** built (docs/architecture/packs.md). Owed: add the repo secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET` for the first real publish. Decided (November 2026): contributors get no upload credential; they PR pack definitions into git and only CI on main, which holds the R2 secrets, publishes after merge.
 
 ## Playback cache
 
@@ -60,7 +60,7 @@ deliberately deferred items.
 
 **Built since (#317, #318, #320, #321):** entry-point surfaces, the vocabulary match, time to hear, live editing, state visibility, dropouts, and save and reopen.
 
-**Still owed from groups E to G:** the Fitts, precision and typed-value parts of group A (#310); the naive-agent runs for stories other than S12, and a run with user docs available (#319; the driver and first S12 results are in `docs/usability/new-user-runs.md`).
+**Still owed from groups E to G:** the Fitts, precision and typed-value parts of group A (#310); the naive-agent runs for stories other than S12, and a run with user docs available (#319; decided November 2026: these runs stay local, with no API key in CI, and results are committed; the driver and first S12 results are in `docs/usability/new-user-runs.md`).
 
 **Built since (#322, #324):** the scorecard diff on PRs; the Cognitive Dimensions rubric and the human-session protocol (`docs/usability/rubric.md`); and a status for every story in the registry, assessed from the docs and code.
 
@@ -69,27 +69,11 @@ deliberately deferred items.
 
 ## Planned: new nodes and MIDI files
 
-Seven features picked from a shortlist in November 2026. Each issue holds the design, the tests and the open questions; the chunks below are one PR each. Every instrument here ships as a group template built from the new primitive, never as a synth node. They are independent of each other, so the order is only a suggestion: quick wins first, then the two sound primitives, the looper and the morph.
-
-**MIDI file import and export (#540).** Drop a .mid on the timeline or use File > Import MIDI; export a clip, a track or the arrangement.
-
-1. Reader and writer in `noodle-io` (`smf.rs`, on `midly`), the mapping to `MidiClip` and `TempoMap`, timeline drop and menu import as one undo step, export, and `noodle midi-export`. Size L.
-
-**Microtuning (#539).** A Tuning node on the events wire retunes notes from a Scala file by adding a per-note pitch expression, so Voices, Mono Note, the Sampler and plugins that honour tuning follow it.
-
-1. The node, the `.scl` and `.kbm` parser, the loader in the properties panel, an example with a golden render. Size M.
+Seven features picked from a shortlist in November 2026 (the looper and the preset morph are built; see [features/looper.md](features/looper.md) and [features/preset-morph.md](features/preset-morph.md)). Each issue holds the design, the tests and the open questions; the chunks below are one PR each. Every instrument here ships as a group template built from the new primitive, never as a synth node. They are independent of each other, so the order is only a suggestion: quick wins first, then the two sound primitives.
 
 **Wavetable follow-ups.** `cycle` guessed from the file (a `clm ` chunk, or a length that is a multiple of 2048) with the config overriding it; a `wavetable` tag on the shipped tables and the Sounds panel listing system samples so it can filter for them; a grain delay (Grains from live input) as a second node. Size S each.
 
-**Looper (#541).** `noodle.util.looper`: record, loop on the bar, overdub, undo the last layer and clear, driven by gate parameters. The recording is session state and survives a seek, so the node is exempt from the reset-equals-fresh tests.
-
-1. ~~The node.~~ Done: see [features/looper.md](features/looper.md).
-2. The Looper template (Buttons, Launch Quantise, Mono Note for the gate), the state display, the S27 route. Size M.
-
-**Preset morph (#543).** "Morph between presets…" on a group adds one Morph node (`noodle.mod.morph`) with an output wired into every parameter that differs between two group presets, and exposes its `position` as a group input. Nothing is modulated without a wire; a parameter that already has a wire or a lane, and all config, stay out.
-
-1. ~~The node, `Edit::MorphPresets`, the picker.~~ Done: see [features/preset-morph.md](features/preset-morph.md). Still open from this chunk: the node's panel listing the rows with A and B sliders, and the S13 route using the morph.
-2. The XY form for four presets with a pad widget, Set from current, Randomise. Size M.
+**Preset morph follow-up (#570).** Decided November 2026: Morph adds a Morph node at each nested group level so nested parameters morph too, and the notice names the controls it took over.
 
 ## Planned: Noodle as a plugin (#544)
 
@@ -105,11 +89,23 @@ Chunks 1 to 3 are built: see [features/noodle-as-a-plugin.md](features/noodle-as
 
 The least delay the hardware allows while a track is armed or monitored, chosen automatically, and a larger device buffer when nobody is recording. One setting, Monitoring latency (Auto, Always low, Off). The engine block stays 128 so cache entries stay valid; the device buffer is what moves. (So the deferred idea below, of the engine block following the device period, is not part of this.)
 
+Decided November 2026 (#548): Relaxed (1024 frames) applies only while the transport is stopped and nothing is armed; ahead rendering (chunk 3) is on for everyone in Auto.
+
 Chunks 1 and 2 are built (`features/low-latency-monitoring.md`). Owed on the Mac: the gap when arming reopens the stream, and a power measurement of the relaxed buffer.
 
 3. Only the live cone runs in the device callback. Today a cluster with no entry plays live until the background `Freezing` render finishes and swaps in; this adds a streaming render that keeps just ahead of the playhead and is played while it fills, with an ADR for the change to that rule. Size L, and it may want two PRs (the streaming entry, then the hand-over on edits and shortfalls).
 
 ## Owed: needs a person on real hardware
+
+- **Noodle as a plugin in real hosts** (#544, built: [features/noodle-as-a-plugin.md](features/noodle-as-a-plugin.md)).
+  Build the VST3 and AU with `packaging/build.sh` (or take them from the
+  Plugin formats workflow), install them, and in Reaper, Live and Logic (Mac),
+  Reaper and Bitwig (Windows and Linux): the editor opens, takes mouse and
+  keys (type a value into a field), resizes, survives close and reopen and a
+  project reload, plays as an effect and as an instrument, follows the host's
+  transport and tempo, and Expose to host shows up as an automatable parameter.
+  Several instances at once. Retina and 4K scaling. Not built, on purpose: files dragged
+  from the host onto the editor. Decided November 2026: the supported route is an Import button in the editor (a host-neutral file picker), not per-host drops (#569).
 
 - **AU on the Mac** after the shared plugin bridge (#242, #241): an Audio Unit
   instrument and an effect play, go quiet when idle (the unit sets

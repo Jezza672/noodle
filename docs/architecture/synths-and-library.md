@@ -314,6 +314,18 @@ These are primitives; instruments and racks built from them are groups.
   scales them by the clip's `humanise_timing` (ticks) and `humanise_velocity`
   when the clip is scheduled (`schedule_notes`), so the drawn notes never move
   and the piano roll shows a ghost where each will sound.
+- **Tuning** (`noodle.event.tuning`) retunes notes from a Scala `.scl` file and
+  an optional `.kbm` mapping, kept as text in the node's `scl` and `kbm` config
+  (a few hundred bytes, so projects and presets stay portable). Each note-on
+  passes unchanged and is followed, in the same frame, by a `Pitch` expression
+  of the semitones between its tuned pitch and 12-tone equal temperament;
+  Voices, Mono Note, the Sampler and plugins that honour note tuning follow
+  it. A pitch expression arriving for a note has the tuning added, so clip
+  bends and MPE still work. `reference_hz` (default 440) is the frequency of
+  the mapping's reference note, read at each note-on, so a held note keeps its
+  tuning. Keys a `.kbm` leaves unmapped do not sound; at most 128 notes are tuned at once.
+  Not retuned: MIDI Out, plugins that ignore tuning expressions, Pitch Track.
+  The properties panel loads and clears the files (one undo step).
 - **Choke.** Note Split output *n* has a `choke{n}` group (0 for none, 1 to 8).
   A note sent to an output in a group ends the notes still sounding on the
   other outputs of that group with a note-off whose velocity is negative
@@ -409,4 +421,4 @@ The formats are the contract with hosted sources, so any change bumps it.
   decode audio, so checking a hash against a file is the publisher's job.
 
 - **Looper** (`noodle.util.looper`): a nondeterministic Effects node that records, loops on the bar, overdubs and undoes one layer; the recording is session state and survives a seek. See [../features/looper.md](../features/looper.md).
-- **Morph between presets** (`noodle.mod.morph`, `Edit::MorphPresets`): one Morph node inside a group, one wire per parameter that differs between two group presets, `position` exposed as the group input `morph`. Wired parameters and config stay out. See [../features/preset-morph.md](../features/preset-morph.md).
+- **Morph between presets** (`noodle.mod.morph`, `Edit::MorphPresets`): one Morph node inside a group, one wire per parameter that differs between two group presets (or four, for an XY pad with `y` as `morph y`), `position` exposed as the group input `morph`. Wired parameters, config and nodes in nested groups stay out. See [../features/preset-morph.md](../features/preset-morph.md).
