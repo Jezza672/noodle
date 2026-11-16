@@ -246,6 +246,8 @@ pub(crate) enum Action {
     MakePack,
     ToggleCache,
     ToggleCpu,
+    TogglePerformance,
+    ToggleCpuHeat,
     ImportAudio,
     ImportMidi,
     /// Opens the Import dialog (audio and MIDI by picker or pasted path).
@@ -918,9 +920,10 @@ impl App {
             self.session.set_audio_config(config);
             crate::prefs::remember_audio(self.session.audio_config());
         }
+        // Over Settings, so the popup stacks on top of it.
+        self.sounds.show_add_dialog(ui.ctx());
         if settings.display_changed {
-            crate::prefs::remember_display(self.display);
-            self.editor.set_display(self.display);
+            self.display_changed();
         }
         if settings.import {
             actions.push(Action::ImportSettings);
@@ -1303,7 +1306,27 @@ impl App {
             {
                 actions.push(Action::ToggleCpu);
             }
+            if ui
+                .selectable_label(self.display.cpu_heat, "CPU heat tint")
+                .on_hover_text("Outline nodes hotter the more of the block time they take")
+                .clicked()
+            {
+                actions.push(Action::ToggleCpuHeat);
+            }
+            if ui
+                .selectable_label(self.display.performance, "Performance mode")
+                .on_hover_text("Turn every meter and light off, and keep your choices for later")
+                .clicked()
+            {
+                actions.push(Action::TogglePerformance);
+            }
         });
+    }
+
+    /// Saves the display switches and tells the editor.
+    fn display_changed(&mut self) {
+        crate::prefs::remember_display(self.display);
+        self.editor.set_display(self.display);
     }
 
     /// The whole top row. Menus and the tempo group sit on the left, the
@@ -2703,6 +2726,14 @@ impl App {
             }
             Action::ToggleTempoLane => self.timeline.set_tempo_lane(!self.timeline.tempo_lane()),
             Action::ToggleCpu => self.editor.set_show_cpu(!self.editor.show_cpu()),
+            Action::TogglePerformance => {
+                self.display.performance = !self.display.performance;
+                self.display_changed();
+            }
+            Action::ToggleCpuHeat => {
+                self.display.cpu_heat = !self.display.cpu_heat;
+                self.display_changed();
+            }
             Action::ToggleOutputs => {
                 self.outputs_open = !self.outputs_open;
                 if self.outputs_open {
@@ -4136,7 +4167,7 @@ mod tests {
         assert!(crate::prefs::load(&prefs).unwrap().display.cpu_heat);
         assert!(harness.state().editor.bodies_display().cpu_heat);
         // Performance mode shows none of it, and keeps the choices.
-        harness.get_by_label("Performance mode").click();
+        harness.get_by_label("Performance").click();
         harness.run();
         let saved = crate::prefs::load(&prefs).unwrap().display;
         assert!(saved.performance && saved.event_wires && saved.cpu_heat);
@@ -4144,7 +4175,7 @@ mod tests {
         assert!(!shown.event_wires && !shown.cpu_heat);
         // And the engine is told to stop measuring.
         assert!(!harness.state().session().telemetry().gather().events());
-        harness.get_by_label("Performance mode").click();
+        harness.get_by_label("Performance").click();
         harness.run();
         assert!(harness.state().editor.bodies_display().event_wires);
         assert!(harness.state().session().telemetry().gather().events());
@@ -4541,6 +4572,8 @@ mod tests {
         harness
             .state_mut()
             .open_settings(crate::settings::Tab::Audio);
+        harness.run();
+        harness.get_by_label("Advanced").click();
         harness.run();
         harness.get_by_label("Buffer size").click();
         harness.run();
@@ -6069,9 +6102,11 @@ mod tests {
             .query_by_label_contains("Tone 100")
             .map(|n| n.rect().min.y);
         assert!(later.is_none_or(|y| first.is_some_and(|f| y < f - 20.0)));
-        h.get_by_label("Sources…").click();
+        h.get_by_label("+ Add source").click();
+        h.run_steps(3);
+        h.get_by_label("Manage sources in Settings…").click();
         h.run_steps(5);
-        h.get_by_label("Settings");
+        h.get_by_label("Close");
     }
 
     /// Every Settings tab draws its own page, in one window that keeps its
@@ -6090,15 +6125,15 @@ mod tests {
         h.state_mut().open_settings(Tab::General);
         h.run_steps(5);
         let close = h.get_by_label("Close").rect();
-        let tabs: Vec<egui::Rect> = ["General", "Audio", "Display", "Models", "Sources"]
+        let tabs: Vec<egui::Rect> = ["General", "Audio", "Display", "Models", "Sound sources"]
             .iter()
             .map(|t| tab_node(&h, t).rect())
             .collect();
         for (_, name, label) in [
-            (Tab::Sources, "Sources", "Refresh all"),
-            (Tab::Models, "Models", "Split to stems"),
-            (Tab::Audio, "Audio", "Monitoring"),
-            (Tab::Display, "Display", "Performance mode"),
+            (Tab::Sources, "Sound sources", "+ Add source"),
+            (Tab::Models, "Models", "LarsNet"),
+            (Tab::Audio, "Audio", "Advanced"),
+            (Tab::Display, "Display", "Preset"),
             (Tab::General, "General", "Export User Settings…"),
         ] {
             tab_node(&h, name).click();
@@ -6111,10 +6146,10 @@ mod tests {
             );
         }
         // Hovering a tab changes its colour, not the layout.
-        for hovered in ["Audio", "Sources", "General"] {
+        for hovered in ["Audio", "Sound sources", "General"] {
             tab_node(&h, hovered).hover();
             h.run_steps(3);
-            for (name, rect) in ["General", "Audio", "Display", "Models", "Sources"]
+            for (name, rect) in ["General", "Audio", "Display", "Models", "Sound sources"]
                 .iter()
                 .zip(&tabs)
             {

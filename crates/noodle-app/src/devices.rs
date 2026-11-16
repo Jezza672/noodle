@@ -77,23 +77,31 @@ impl DevicePicker {
     }
 
     /// Draws the Audio tab of the Settings window. Returns the new settings
-    /// when the user applies them.
+    /// when the user applies them. `extra` draws more under Advanced (the
+    /// monitoring policy, which belongs with the buffer size).
     pub fn body(
         &mut self,
         ui: &mut egui::Ui,
         latency: Option<LatencyReport>,
+        extra: impl FnOnce(&mut egui::Ui),
     ) -> Option<AudioConfig> {
         let mut applied = None;
         egui::Grid::new("audio settings grid")
             .num_columns(2)
             .spacing([12.0, 6.0])
-            .show(ui, |ui| self.fields(ui));
+            .show(ui, |ui| self.fields_main(ui));
+        ui.horizontal(|ui| {
+            if ui
+                .small_button("Refresh devices")
+                .on_hover_text("List the devices again, e.g. after plugging one in")
+                .clicked()
+            {
+                self.refresh();
+            }
+        });
         if let Some(report) = latency {
             ui.add_space(4.0);
-            ui.label(latency_line(&report));
-            if let Some(detail) = latency_detail(&report) {
-                ui.weak(detail);
-            }
+            ui.label(latency_verdict(&report));
             // The figures move with the backlog.
             ui.ctx()
                 .request_repaint_after(std::time::Duration::from_millis(250));
@@ -106,46 +114,45 @@ impl DevicePicker {
             ui.add_space(4.0);
             ui.colored_label(ui.visuals().warn_fg_color, error);
         }
-        ui.add_space(8.0);
-        ui.horizontal(|ui| {
-            if ui
-                .button("Refresh")
-                .on_hover_text("List the devices again, e.g. after plugging one in")
-                .clicked()
+        ui.add_space(6.0);
+        self.midi_section(ui);
+        ui.add_space(6.0);
+        egui::CollapsingHeader::new("Advanced").show(ui, |ui| {
+            egui::Grid::new("audio advanced grid")
+                .num_columns(2)
+                .spacing([12.0, 6.0])
+                .show(ui, |ui| self.fields_advanced(ui));
+            if let Some(report) = latency
+                && let Some(detail) = latency_detail(&report)
             {
-                self.refresh();
+                ui.weak(detail);
             }
-            let changed = self.draft != self.original;
-            if ui
-                .add_enabled(changed, egui::Button::new("Apply"))
-                .clicked()
-            {
-                applied = Some(self.draft.clone());
-                self.original = self.draft.clone();
-            }
-            if ui
-                .add_enabled(changed, egui::Button::new("Revert"))
-                .clicked()
-            {
-                self.draft = self.original.clone();
-            }
+            ui.add_space(4.0);
+            extra(ui);
         });
+        // Devices are the one thing applied by a button: the bar shows only
+        // while something differs.
+        if self.draft != self.original {
+            ui.add_space(8.0);
+            ui.separator();
+            ui.horizontal(|ui| {
+                ui.label("Changes to the audio devices are not applied yet.");
+                if ui.button("Apply").clicked() {
+                    applied = Some(self.draft.clone());
+                    self.original = self.draft.clone();
+                }
+                if ui.button("Revert").clicked() {
+                    self.draft = self.original.clone();
+                }
+            });
+        }
         applied
     }
 
-    fn fields(&mut self, ui: &mut egui::Ui) {
+    fn fields_main(&mut self, ui: &mut egui::Ui) {
         let list = self.devices.as_ref().ok();
         let outputs = list.map_or(&[][..], |l| &l.outputs[..]);
         let inputs = list.map_or(&[][..], |l| &l.inputs[..]);
-
-        let mut host = self.draft.host.clone();
-        combo(ui, "Host", host_label(&self.hosts, host.as_deref()), |ui| {
-            ui.selectable_value(&mut host, None, host_label(&self.hosts, None));
-            for info in &self.hosts {
-                ui.selectable_value(&mut host, Some(info.id.clone()), info.name);
-            }
-        });
-        ui.end_row();
 
         let mut output = self.draft.output.clone();
         combo(
@@ -170,7 +177,7 @@ impl DevicePicker {
         });
         combo(
             ui,
-            "Input",
+            "Audio input",
             input_label(inputs, listed_host, &input),
             |ui| {
                 ui.selectable_value(&mut input, InputChoice::Off, "Off");
@@ -191,9 +198,17 @@ impl DevicePicker {
         .on_hover_text("Records into Input nodes, at the output's sample rate");
         ui.end_row();
 
+        if output != self.draft.output || input != self.draft.input {
+            self.draft.output = output;
+            self.draft.input = input;
+            self.drop_unsupported();
+        }
+    }
+
+    fn midi_section(&mut self, ui: &mut egui::Ui) {
+        ui.label(egui::RichText::new("MIDI keyboards").strong());
+        ui.weak("They play into MIDI In nodes, which also list them.");
         let ports = self.midi_ports.as_ref().map_or(&[][..], |p| &p[..]);
-        ui.label("MIDI inputs")
-            .on_hover_text("Play into MIDI In nodes, and are heard by MIDI Control and Learn MIDI. Take effect without restarting the audio");
         ui.vertical(|ui| {
             if let Err(error) = &self.midi_ports {
                 ui.label(format!("Unavailable: {error}"));
@@ -233,6 +248,16 @@ impl DevicePicker {
                 toggle(ui, &mut chosen, name, format!("{name} (not found)"));
             }
             self.draft.midi_inputs = chosen;
+        });
+    }
+
+    fn fields_advanced(&mut self, ui: &mut egui::Ui) {
+        let mut host = self.draft.host.clone();
+        combo(ui, "Host", host_label(&self.hosts, host.as_deref()), |ui| {
+            ui.selectable_value(&mut host, None, host_label(&self.hosts, None));
+            for info in &self.hosts {
+                ui.selectable_value(&mut host, Some(info.id.clone()), info.name);
+            }
         });
         ui.end_row();
 
@@ -297,11 +322,6 @@ impl DevicePicker {
         self.draft.buffer_size = buffer;
         self.draft.channels = channels;
         self.draft.threads = threads;
-        if output != self.draft.output || input != self.draft.input {
-            self.draft.output = output;
-            self.draft.input = input;
-            self.drop_unsupported();
-        }
         if host != self.draft.host {
             self.change_host(host);
         }
@@ -495,6 +515,20 @@ pub(crate) fn latency_line(report: &LatencyReport) -> String {
     }
 }
 
+/// The latency in plain words: what it is good for, and the figure.
+pub(crate) fn latency_verdict(report: &LatencyReport) -> String {
+    let time = report.round_trip().unwrap_or_else(|| report.output());
+    let ms = time.as_secs_f64() * 1000.0;
+    let what = if ms <= 20.0 {
+        "Good for playing live"
+    } else if ms <= 50.0 {
+        "Fine for sequencing, a little late for playing live"
+    } else {
+        "Too slow for playing live"
+    };
+    format!("{what}, {ms:.0} ms")
+}
+
 /// Where the round trip goes, once there is one.
 fn latency_detail(report: &LatencyReport) -> Option<String> {
     let ms = |d: std::time::Duration| format!("{:.1} ms", d.as_secs_f64() * 1000.0);
@@ -644,11 +678,16 @@ mod tests {
             picker,
             applied: None,
         };
-        crate::testkit::harness(state, egui::vec2(800.0, 600.0), |ui, state: &mut State| {
-            if let Some(config) = state.picker.body(ui, None) {
-                state.applied = Some(config);
-            }
-        })
+        let mut h =
+            crate::testkit::harness(state, egui::vec2(800.0, 600.0), |ui, state: &mut State| {
+                if let Some(config) = state.picker.body(ui, None, |_| {}) {
+                    state.applied = Some(config);
+                }
+            });
+        // Host, sample rate and buffer size sit under Advanced.
+        h.get_by_label("Advanced").click();
+        h.run();
+        h
     }
 
     /// Opens the combo box on the row called `row` and picks an item.
@@ -669,7 +708,7 @@ mod tests {
         let harness = harness(AudioConfig::default());
         assert_eq!(shown(&harness, "Host"), "Default (ALSA)");
         assert_eq!(shown(&harness, "Output"), "Default (Speakers)");
-        assert_eq!(shown(&harness, "Input"), "Off");
+        assert_eq!(shown(&harness, "Audio input"), "Off");
         assert_eq!(shown(&harness, "Sample rate"), "Device default (44100 Hz)");
         assert_eq!(
             shown(&harness, "Buffer size"),
@@ -681,7 +720,7 @@ mod tests {
     fn choosing_devices_and_applying_hands_back_the_settings() {
         let mut harness = harness(AudioConfig::default());
         choose(&mut harness, "Output", "USB Interface");
-        choose(&mut harness, "Input", "Microphone");
+        choose(&mut harness, "Audio input", "Microphone");
         harness.get_by_label("Apply").click();
         harness.run();
         let state = harness.state();
@@ -748,7 +787,7 @@ mod tests {
         assert_eq!(draft.output, None);
         assert_eq!(draft.input, InputChoice::Device("alsa:mic".into()));
         assert_eq!(shown(&harness, "Output"), "Default (system)");
-        assert_eq!(shown(&harness, "Input"), "alsa:mic (on another host)");
+        assert_eq!(shown(&harness, "Audio input"), "alsa:mic (on another host)");
     }
 
     #[test]
@@ -798,7 +837,7 @@ mod tests {
             buffer_size: Some(4096),
             ..AudioConfig::default()
         });
-        choose(&mut harness, "Input", "Microphone");
+        choose(&mut harness, "Audio input", "Microphone");
         let draft = &harness.state().picker.draft;
         assert_eq!(
             (draft.sample_rate, draft.buffer_size),

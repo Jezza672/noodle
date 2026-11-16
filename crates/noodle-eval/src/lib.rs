@@ -15,7 +15,6 @@
 
 pub mod borrowed;
 pub mod clip;
-pub mod drum_data;
 pub mod fit;
 pub mod harness;
 pub mod level;

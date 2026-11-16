@@ -1,6 +1,8 @@
-//! The Settings window: one place, with a tab each for the General
+//! The Settings window: the manager view, with a tab each for the General
 //! preferences, the Audio devices, the Display switches, the separation
-//! Models and the Sources of sounds. Everything in it
+//! Models and the Sound sources. The first action for most of these happens
+//! where it is needed (the Sounds panel, Create drum rack, Split to stems, the
+//! View menu); this is where they are kept up afterwards. Everything in it
 //! is saved in the user's settings file (see [`crate::prefs`]); the audio
 //! devices and the plugin sandbox belong to this machine and are left out of
 //! exported and project-embedded settings.
@@ -36,8 +38,48 @@ impl Tab {
             Tab::Audio => "Audio",
             Tab::Display => "Display",
             Tab::Models => "Models",
-            Tab::Sources => "Sources",
+            Tab::Sources => "Sound sources",
         }
+    }
+}
+
+impl Tab {
+    /// One line under the tab list's choice, saying what the page is for.
+    fn blurb(self) -> &'static str {
+        match self {
+            Tab::General => "Plugin safety, and taking your settings to another machine.",
+            Tab::Audio => "Where the sound goes out, and what plays into Noodle.",
+            Tab::Display => "What the graph shows of the sound as it plays, and what that costs.",
+            Tab::Models => "The AI models for Create drum rack and Split to stems.",
+            Tab::Sources => {
+                "Where the Sounds panel gets its sounds. What a source has already offered \
+                 stays listed when this computer is offline."
+            }
+        }
+    }
+
+    /// Words the search field matches, besides the label.
+    fn keywords(self) -> &'static str {
+        match self {
+            Tab::General => "plugin sandbox process crash import export settings file",
+            Tab::Audio => {
+                "output input device latency buffer sample rate host midi keyboard \
+                 monitoring channels worker threads bluetooth"
+            }
+            Tab::Display => {
+                "wires meters levels nodes preset performance cpu heat clip flash beat pulse \
+                 voice silent fade"
+            }
+            Tab::Models => "drum stems separation download licence ai model demucs",
+            Tab::Sources => "sounds packs folder web source login token download cache clean",
+        }
+    }
+
+    fn matches(self, query: &str) -> bool {
+        let q = query.trim().to_lowercase();
+        q.is_empty()
+            || self.label().to_lowercase().contains(&q)
+            || self.keywords().split(' ').any(|w| w.contains(&q))
     }
 }
 
@@ -46,7 +88,7 @@ const MAX_SIZE: egui::Vec2 = egui::vec2(760.0, 560.0);
 /// Room left between the window and the screen's edge.
 const MARGIN: f32 = 60.0;
 /// The tab list's width. Fixed, so nothing moves when one is hovered.
-const TAB_W: f32 = 120.0;
+const TAB_W: f32 = 132.0;
 const TAB_H: f32 = 28.0;
 /// The heading above and the Close row below the pages.
 const HEADER_H: f32 = 40.0;
@@ -62,7 +104,7 @@ fn window_size(screen: egui::Vec2) -> egui::Vec2 {
 
 /// One row of the tab list, always [`TAB_W`] by [`TAB_H`]: hover and
 /// selection only change its colour.
-fn tab_button(ui: &mut egui::Ui, current: &mut Tab, tab: Tab) {
+fn tab_button(ui: &mut egui::Ui, current: &mut Tab, tab: Tab, status: bool) {
     let selected = *current == tab;
     let (rect, response) = ui.allocate_exact_size(egui::vec2(TAB_W, TAB_H), egui::Sense::click());
     response.widget_info(|| {
@@ -92,6 +134,14 @@ fn tab_button(ui: &mut egui::Ui, current: &mut Tab, tab: Tab) {
         egui::TextStyle::Button.resolve(ui.style()),
         text,
     );
+    if status {
+        // A download is running, or a source can't be reached.
+        ui.painter().circle_filled(
+            rect.right_center() - egui::vec2(10.0, 0.0),
+            3.5,
+            ui.visuals().warn_fg_color,
+        );
+    }
     if response.clicked() {
         *current = tab;
     }
@@ -118,6 +168,7 @@ pub struct Outcome {
 pub struct Settings {
     open: bool,
     tab: Tab,
+    search: String,
 }
 
 impl Settings {
@@ -125,6 +176,7 @@ impl Settings {
     pub fn open(&mut self, tab: Tab) {
         self.open = true;
         self.tab = tab;
+        self.search.clear();
     }
 
     pub fn is_open(&self) -> bool {
@@ -160,8 +212,29 @@ impl Settings {
                 ui.allocate_ui_with_layout(egui::vec2(TAB_W, body_h), down(), |ui| {
                     ui.set_min_size(egui::vec2(TAB_W, body_h));
                     ui.spacing_mut().item_spacing.y = 2.0;
-                    for tab in Tab::ALL {
-                        tab_button(ui, &mut self.tab, tab);
+                    ui.add(
+                        egui::TextEdit::singleline(&mut self.search)
+                            .hint_text("Search settings")
+                            .desired_width(TAB_W - 8.0),
+                    );
+                    ui.add_space(4.0);
+                    let shown: Vec<Tab> = Tab::ALL
+                        .into_iter()
+                        .filter(|t| t.matches(&self.search))
+                        .collect();
+                    // The search takes you to the first page that has a match.
+                    if let Some(first) = shown.first()
+                        && !shown.contains(&self.tab)
+                    {
+                        self.tab = *first;
+                    }
+                    for tab in shown {
+                        let status = match tab {
+                            Tab::Models => models.any_downloading(),
+                            Tab::Sources => sounds.has_unreachable(),
+                            _ => false,
+                        };
+                        tab_button(ui, &mut self.tab, tab, status);
                     }
                 });
                 ui.separator();
@@ -175,12 +248,14 @@ impl Settings {
                         .auto_shrink([false, false])
                         .show(ui, |ui| {
                             ui.set_width(page_w - 14.0);
+                            ui.weak(self.tab.blurb());
+                            ui.add_space(6.0);
                             match self.tab {
                                 Tab::General => general(ui, session, &mut out),
                                 Tab::Audio => {
-                                    crate::latency::monitoring_row(ui, session);
-                                    ui.add_space(6.0);
-                                    out.audio = devices.body(ui, latency);
+                                    out.audio = devices.body(ui, latency, |ui| {
+                                        crate::latency::monitoring_row(ui, session)
+                                    });
                                 }
                                 Tab::Display => {
                                     out.display_changed = crate::display::body(ui, display)
@@ -217,10 +292,11 @@ fn general(ui: &mut egui::Ui, session: &mut Session, out: &mut Outcome) {
         session.set_sandbox_plugins(sandboxed);
         crate::prefs::remember_sandbox(sandboxed);
     }
-    ui.add_space(8.0);
+    ui.add_space(12.0);
+    ui.label(egui::RichText::new("Your settings").strong());
     ui.weak(
-        "Your settings are saved on this machine. Export them to take to another machine \
-         or to share; the audio devices and the plugin sandbox stay local.",
+        "Saved on this machine. Export them to take to another machine or to share; the \
+         audio devices and the plugin sandbox stay local.",
     );
     ui.horizontal(|ui| {
         out.import |= ui.button("Import User Settings…").clicked();

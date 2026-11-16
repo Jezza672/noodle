@@ -21,7 +21,7 @@ fn main() -> ExitCode {
         Err(e) => {
             eprintln!("noodle-eval: {e}");
             eprintln!(
-                "usage: noodle-eval compare REF TEST [SPEED] | validate MANIFEST.csv | fit MANIFEST.csv [--cache F] [--out MODEL.json] [--drop a,b] | probes [OPTIONS] | songs [OPTIONS] | borrowed [OPTIONS] | drum-dataset build|baseline [OPTIONS]"
+                "usage: noodle-eval compare REF TEST [SPEED] | validate MANIFEST.csv | fit MANIFEST.csv [--cache F] [--out MODEL.json] [--drop a,b] | probes [OPTIONS] | songs [OPTIONS] | borrowed [OPTIONS]"
             );
             ExitCode::FAILURE
         }
@@ -77,7 +77,6 @@ fn run(args: &[String]) -> Result<(), String> {
         ["probes", rest @ ..] => probes(rest),
         ["songs", rest @ ..] => songs(rest),
         ["borrowed", rest @ ..] => borrowed(rest),
-        ["drum-dataset", rest @ ..] => drum_dataset(rest),
         _ => Err("bad arguments".into()),
     }
 }
@@ -521,111 +520,4 @@ fn report(rows: &[noodle_eval::harness::Row], baseline: &Path, update: bool) -> 
         println!("wrote {}", baseline.display());
     }
     Ok(())
-}
-
-/// `drum-dataset build --pack DIR[:LIB,LIB] ... --out DIR [--seed N] [--loops N]
-/// [--val-kits A,B] [--test-kits C,D] [--augment N]`
-/// writes the drum classifier's data; `drum-dataset baseline --data DIR
-/// [--split test] [--out FILE]` scores the rule labeller on it.
-fn drum_dataset(args: &[&str]) -> Result<(), String> {
-    use noodle_eval::drum_data::{self, BuildOptions, Split};
-    let flag = |name: &str| {
-        args.iter()
-            .position(|a| *a == name)
-            .and_then(|i| args.get(i + 1))
-            .copied()
-    };
-    match args.first().copied() {
-        Some("build") => {
-            // `--pack DIR` may repeat; `DIR:lib,lib` keeps only those kits.
-            let packs: Vec<(PathBuf, Option<Vec<String>>)> = args
-                .windows(2)
-                .filter(|w| w[0] == "--pack")
-                .map(|w| {
-                    match w[1]
-                        .rsplit_once(':')
-                        // `C:\packs\x` is a path, not a kit list.
-                        .filter(|(_, libs)| !libs.contains(['\\', '/']))
-                    {
-                        Some((dir, libs)) => (
-                            PathBuf::from(dir),
-                            Some(libs.split(',').map(str::to_string).collect()),
-                        ),
-                        None => (PathBuf::from(w[1]), None),
-                    }
-                })
-                .collect();
-            if packs.is_empty() {
-                return Err("--pack DIR is required".into());
-            }
-            let kits = |name: &str| -> Vec<String> {
-                flag(name)
-                    .map(|v| v.split(',').map(str::to_string).collect())
-                    .unwrap_or_default()
-            };
-            let opts = BuildOptions {
-                packs,
-                plan: drum_data::SplitPlan {
-                    val: kits("--val-kits"),
-                    test: kits("--test-kits"),
-                },
-                augment: flag("--augment")
-                    .map_or(Ok(0), str::parse)
-                    .map_err(|e| format!("--augment: {e}"))?,
-                out: PathBuf::from(flag("--out").ok_or("--out DIR is required")?),
-                seed: flag("--seed")
-                    .map_or(Ok(1), str::parse)
-                    .map_err(|e| format!("--seed: {e}"))?,
-                loops: flag("--loops")
-                    .map_or(Ok(600), str::parse)
-                    .map_err(|e| format!("--loops: {e}"))?,
-            };
-            print!("{}", drum_data::build(&opts)?);
-            Ok(())
-        }
-        Some("baseline") => {
-            let data = PathBuf::from(flag("--data").ok_or("--data DIR is required")?);
-            let split = match flag("--split").unwrap_or("test") {
-                "train" => Split::Train,
-                "val" => Split::Val,
-                "test" => Split::Test,
-                other => return Err(format!("--split: {other}")),
-            };
-            let mut rows = drum_data::read_rows(&data.join("hits.csv"))?;
-            // Hand-labelled real hits (`tools/drum-real/label.py export`) in the
-            // same columns, scored beside the synthetic rows.
-            if let Some(extra) = flag("--extra") {
-                rows.extend(drum_data::read_rows(Path::new(extra))?);
-            }
-            let (labeller, name): (Box<dyn noodle_io::HitLabeller>, &str) = match flag("--model") {
-                Some(model) => (
-                    Box::new(
-                        noodle_stems::drum::OnnxLabeller::open(Path::new(model), None)
-                            .map_err(|e| e.to_string())?,
-                    ),
-                    "Learned classifier",
-                ),
-                None => (Box::new(noodle_io::Rules), "Rule labeller baseline"),
-            };
-            let mut report = drum_data::baseline(&rows, split, labeller.as_ref(), name);
-            if let Some(g) = flag("--gate") {
-                let gate: f32 = g.parse().map_err(|e| format!("--gate: {e}"))?;
-                report.push('\n');
-                report.push_str(&drum_data::purity_report(
-                    &rows,
-                    split,
-                    labeller.as_ref(),
-                    gate,
-                ));
-            }
-            match flag("--out") {
-                Some(path) => std::fs::write(path, report).map_err(|e| e.to_string()),
-                None => {
-                    print!("{report}");
-                    Ok(())
-                }
-            }
-        }
-        _ => Err("drum-dataset build|baseline".into()),
-    }
 }

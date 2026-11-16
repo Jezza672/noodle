@@ -430,13 +430,6 @@ pub struct DrumRackDialog {
 
 impl DrumRackDialog {
     pub fn show(&mut self, ctx: &egui::Context, session: &mut Session, models: &mut Models) {
-        let active = session.drum_progress().is_some() || session.drum_analysis().is_some();
-        // The first time the dialog is wanted, offer the model downloads. The
-        // dialog follows once that is answered.
-        if active && models.first_use_due() {
-            models.show_first_use(ctx);
-            return;
-        }
         if let Some(fraction) = session.drum_progress() {
             self.state = None;
             let mut cancel = false;
@@ -503,14 +496,15 @@ impl DrumRackDialog {
     }
 }
 
-/// The drop-down of separation models: only the enabled, downloaded ones. With
-/// none, it says where to switch one on.
+/// The drop-down of separation models: the downloaded ones. Models not on
+/// this computer are offered under it, with their licence and size, and
+/// download from there.
 fn model_choice(
     ui: &mut Ui,
     session: &Session,
     analysis: &DrumAnalysis,
     state: &mut State,
-    models: &Models,
+    models: &mut Models,
     actions: &mut Vec<Action>,
 ) {
     let ready = models.ready();
@@ -520,7 +514,7 @@ fn model_choice(
             ready
                 .iter()
                 .find(|m| Some(m.id) == id)
-                .map_or("None enabled", |m| m.name)
+                .map_or("None downloaded", |m| m.name)
         };
         egui::ComboBox::from_id_salt("drum model")
             .selected_text(name(state.model))
@@ -533,16 +527,6 @@ fn model_choice(
             .widget_info(|| {
                 egui::WidgetInfo::labeled(egui::WidgetType::ComboBox, true, "Separation model")
             });
-        if ready.is_empty() {
-            let downloading = noodle_stems::drum::ALL_MODELS
-                .iter()
-                .any(|m| models.is_downloading(m));
-            ui.weak(if downloading {
-                "Downloading… (Settings, Models)"
-            } else {
-                "Enable and download one in Settings, on the Models tab"
-            });
-        }
         if let Some(fraction) = session.drum_separation_progress() {
             ui.add(
                 egui::ProgressBar::new(fraction)
@@ -584,7 +568,7 @@ fn body(
     session: &mut Session,
     analysis: &DrumAnalysis,
     state: &mut State,
-    models: &Models,
+    models: &mut Models,
 ) -> Option<bool> {
     let mut answer = None;
     let mut actions: Vec<Action> = Vec::new();
@@ -599,6 +583,22 @@ fn body(
     );
     ui.add_space(4.0);
     model_choice(ui, session, analysis, state, models, &mut actions);
+    if models.has_offer() {
+        let none_ready = models.ready().is_empty();
+        egui::CollapsingHeader::new(if none_ready {
+            "Download a separation model"
+        } else {
+            "More separation models"
+        })
+        .default_open(none_ready)
+        .show(ui, |ui| {
+            ui.weak(
+                "Separating pulls apart drums that sound together. A model is downloaded \
+                 once from its author's page; your audio is never uploaded.",
+            );
+            models.offer(ui);
+        });
+    }
     ui.horizontal(|ui| {
         ui.label("Merge more");
         let slider = ui.add(egui::Slider::new(&mut state.merge, 0.0..=1.0).show_value(false));
@@ -1059,6 +1059,7 @@ mod tests {
                 pitched: 0.0,
                 pitch_key: None,
                 attack_peaks: 1,
+                shape: Default::default(),
             },
         }
     }

@@ -1,11 +1,12 @@
 //! S32: add a self-hosted source of sounds and use a sound from it.
 //!
-//! The Sounds tab of the browser starts with no sources, so it is empty. Its Sources
-//! button opens Settings on the Sources page, where the address of a site and
-//! a token are typed and the source is added. The fake site refuses requests
-//! without that token, so the sound only arrives if the login was really
-//! entered and sent. Back in the panel the sound is dragged onto a Sampler.
-//! Adding a folder is not routed: it asks a native dialog.
+//! The Sounds tab of the browser starts with no sources, so it is empty. Its
+//! Add source menu opens the Web source popup right there, where the address of
+//! a site and a token are typed and "Check and add" adds the source once it
+//! answers. The fake site refuses requests without that token, so the sound
+//! only arrives if the login was really entered and sent. The sound is then
+//! dragged onto a Sampler. Adding a folder is not routed: it asks a native
+//! dialog.
 
 use std::cell::RefCell;
 use std::path::Path;
@@ -57,28 +58,26 @@ fn steps(h: &mut Handle, _size: usize) {
     let item = h.find("Browser");
     h.click(item, Modifiers::NONE);
     h.probe().settle_sounds();
-    h.step("open the Sources page from the panel");
-    let sources = h.find("Sources…");
-    h.click(sources, Modifiers::NONE);
+    h.step("choose Web source from the panel's Add source menu");
+    let menu = h.find("+ Add source");
+    h.click(menu, Modifiers::NONE);
+    let web = h.find("Web source…");
+    h.click(web, Modifiers::NONE);
     h.probe().settle_sounds();
     h.step("type the address of the site");
     let address = h.text_field_after("Address");
     h.click(address, Modifiers::NONE);
     h.type_text(address, fake::BASE);
-    h.step("say it wants a token, and type it");
-    let login = h.probe().find_value("None");
+    h.step("say it needs a login, and type the token");
+    let login = h.find("This source needs a login");
     h.click(login, Modifiers::NONE);
-    let token = h.find("Token");
-    h.click(token, Modifiers::NONE);
     let field = h.text_field_after("Token");
     h.click(field, Modifiers::NONE);
     h.type_text(field, TOKEN);
-    h.step("add the source and close Settings");
-    let add = h.find("Add source");
+    h.step("check and add the source");
+    let add = h.find("Check and add");
     h.click(add, Modifiers::NONE);
     h.probe().settle_sounds();
-    let close = h.find("Close");
-    h.click(close, Modifiers::NONE);
     h.step("drag its sound onto the Sampler");
     let row = h.find_like("Tones ·");
     let node = h
