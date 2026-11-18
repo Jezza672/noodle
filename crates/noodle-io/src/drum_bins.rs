@@ -501,6 +501,80 @@ pub fn candidate_hit(
     describe_hit(mono, rate, &mut Spectrum::new(rate), onset, next, end)
 }
 
+/// The mel bands of a [`hit_patch`].
+pub const PATCH_BANDS: usize = 64;
+/// The frames of a [`hit_patch`], 10 ms apart from the onset (250 ms).
+pub const PATCH_FRAMES: usize = 25;
+const PATCH_WINDOW: f64 = 0.032;
+const PATCH_HOP: f64 = 0.010;
+/// The quietest a patch value goes, in decibels (power).
+pub const PATCH_FLOOR_DB: f32 = -100.0;
+
+/// The log-mel patch of a hit, for training and running an encoder on it: the
+/// cut from the onset to `hit.end` (what lies past the cut is silence, so a
+/// neighbouring hit does not leak in), as [`PATCH_FRAMES`] frames of
+/// [`PATCH_BANDS`] mel bands, row-major by frame. Values are power in decibels
+/// of full scale (floored at [`PATCH_FLOOR_DB`]), not relative to the loudest
+/// band, so level stays and a model can treat power as additive. The 32 ms
+/// frames run 10 ms apart, the first starting at the onset. `None` when the cut
+/// is empty. It is not part of [`feature_vector`], so `DETECTOR_VERSION` is unchanged.
+pub fn hit_patch(mono: &[f32], rate: u32, hit: &Hit) -> Option<Vec<f32>> {
+    let on = hit.onset as usize;
+    let end = (hit.end as usize).min(mono.len());
+    if end <= on {
+        return None;
+    }
+    let cut = &mono[on..end];
+    let rate_f = f64::from(rate);
+    let size = ((PATCH_WINDOW * rate_f) as usize).next_power_of_two();
+    let win = (PATCH_WINDOW * rate_f) as usize;
+    let hop = ((PATCH_HOP * rate_f) as usize).max(1);
+    let window: Vec<f32> = (0..win)
+        .map(|i| 0.5 - 0.5 * (std::f32::consts::TAU * i as f32 / win as f32).cos())
+        .collect();
+    let hz_per_bin = rate as f32 / size as f32;
+    let mel = |hz: f32| 2595.0 * (1.0 + hz / 700.0).log10();
+    let unmel = |m: f32| 700.0 * (10f32.powf(m / 2595.0) - 1.0);
+    let (lo, hi) = (30.0f32, (0.48 * rate as f32).min(20_000.0));
+    let edges: Vec<f32> = (0..PATCH_BANDS + 2)
+        .map(|i| unmel(mel(lo) + (mel(hi) - mel(lo)) * i as f32 / (PATCH_BANDS + 1) as f32))
+        .collect();
+    let mut planner = RealFftPlanner::<f32>::new();
+    let fft = planner.plan_fft_forward(size);
+    let mut input = vec![0.0f32; size];
+    let mut out = fft.make_output_vec();
+    let mut patch = Vec::with_capacity(PATCH_FRAMES * PATCH_BANDS);
+    // Normalised so a full-scale sine reads 0 dB at its peak bin (Hann window).
+    let norm = 16.0 / (win as f32 * win as f32);
+    for f in 0..PATCH_FRAMES {
+        let at = f * hop;
+        input.fill(0.0);
+        for (i, v) in input.iter_mut().take(win).enumerate() {
+            *v = cut.get(at + i).copied().unwrap_or(0.0) * window[i];
+        }
+        fft.process(&mut input, &mut out).ok();
+        for b in 0..PATCH_BANDS {
+            let (a, c, d) = (edges[b], edges[b + 1], edges[b + 2]);
+            let first = (a / hz_per_bin).floor() as usize;
+            let last = ((d / hz_per_bin).ceil() as usize).min(size / 2);
+            let mut sum = 0.0f32;
+            for (k, bin) in out.iter().enumerate().take(last + 1).skip(first) {
+                let hz = k as f32 * hz_per_bin;
+                let w = if hz <= a || hz >= d {
+                    0.0
+                } else if hz < c {
+                    (hz - a) / (c - a)
+                } else {
+                    (d - hz) / (d - c)
+                };
+                sum += w * bin.norm_sqr() * norm;
+            }
+            patch.push((10.0 * (sum + 1e-12).log10()).max(PATCH_FLOOR_DB));
+        }
+    }
+    Some(patch)
+}
+
 /// Finds the hits in `mono` (at `rate`), cuts each and describes it.
 ///
 /// `progress` is called with how far along it is (0 to 1) every so often and
@@ -2002,5 +2076,41 @@ mod tests {
         assert!(mixed.end <= next);
         // Nothing to cut past the end of the audio.
         assert!(candidate_hit(&x, RATE, x.len() as u64, None, None).is_none());
+    }
+
+    #[test]
+    fn a_patch_follows_the_cut_and_leaves_the_features_alone() {
+        let mut x = vec![0.0f32; seconds(1.0)];
+        for (i, v) in kick().iter().enumerate() {
+            x[seconds(0.2) + i] += v;
+        }
+        let onset = seconds(0.2) as u64;
+        let hit = candidate_hit(&x, RATE, onset, None, None).unwrap();
+        let patch = hit_patch(&x, RATE, &hit).unwrap();
+        assert_eq!(patch.len(), PATCH_FRAMES * PATCH_BANDS);
+        assert!(patch.iter().all(|v| v.is_finite() && *v >= PATCH_FLOOR_DB));
+        // The kick is low: the first frame is loudest in the low bands.
+        let first = &patch[..PATCH_BANDS];
+        let low: f32 = first[..PATCH_BANDS / 4].iter().sum();
+        let high: f32 = first[PATCH_BANDS * 3 / 4..].iter().sum();
+        assert!(low > high);
+        // Level stays: a hit 12 dB quieter is 12 dB lower in the loudest band.
+        let quiet: Vec<f32> = x.iter().map(|v| v * 0.251_188_64).collect();
+        let q = hit_patch(&quiet, RATE, &hit).unwrap();
+        let loud = (0..PATCH_BANDS)
+            .max_by(|&a, &b| first[a].total_cmp(&first[b]))
+            .unwrap();
+        assert!((first[loud] - q[loud] - 12.0).abs() < 0.5);
+        // Audio past the cut does not leak in: cut early, later frames are silent.
+        let early =
+            candidate_hit(&x, RATE, onset, None, Some(onset + seconds(0.02) as u64)).unwrap();
+        let p = hit_patch(&x, RATE, &early).unwrap();
+        let last = &p[(PATCH_FRAMES - 1) * PATCH_BANDS..];
+        assert!(last.iter().all(|v| *v <= PATCH_FLOOR_DB + 1e-3));
+        let empty = Hit {
+            end: onset,
+            ..hit.clone()
+        };
+        assert!(hit_patch(&x, RATE, &empty).is_none());
     }
 }

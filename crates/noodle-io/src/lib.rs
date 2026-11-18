@@ -44,9 +44,10 @@ pub use devices::{
 pub use drum_bins::{
     Binning, CLASSES as DRUM_CLASSES, CLEAN_GATE, Cancelled as DrumCancelled, DEFAULT_MERGE,
     DETECTOR_VERSION, DrumBin, DrumKind, FEATURE_COUNT as DRUM_FEATURES, Hit, HitCache,
-    HitFeatures, HitKey, HitLabeller, MAX_LAYERS, PURITY, Rules, Shape as HitShape, analyse_hits,
-    bin_hits, candidate_hit, clean_accepted, feature_vector, guess, kind_from_probabilities,
-    layer_split, make_bin, pure_enough, split_bin,
+    HitFeatures, HitKey, HitLabeller, MAX_LAYERS, PATCH_BANDS, PATCH_FLOOR_DB, PATCH_FRAMES,
+    PURITY, Rules, Shape as HitShape, analyse_hits, bin_hits, candidate_hit, clean_accepted,
+    feature_vector, guess, hit_patch, kind_from_probabilities, layer_split, make_bin, pure_enough,
+    split_bin,
 };
 pub use export::{
     ExportError, ExportFormat, ExportMetadata, ExportWriter, FLAC_MAX_CHANNELS, cue_sheet,
