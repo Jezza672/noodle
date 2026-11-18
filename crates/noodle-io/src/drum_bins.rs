@@ -544,8 +544,8 @@ pub fn hit_patch(mono: &[f32], rate: u32, hit: &Hit) -> Option<Vec<f32>> {
     let mut input = vec![0.0f32; size];
     let mut out = fft.make_output_vec();
     let mut patch = Vec::with_capacity(PATCH_FRAMES * PATCH_BANDS);
-    // Normalised so a full-scale sine is about 0 dB.
-    let norm = 4.0 / (win as f32 * win as f32);
+    // Normalised so a full-scale sine reads 0 dB at its peak bin (Hann window).
+    let norm = 16.0 / (win as f32 * win as f32);
     for f in 0..PATCH_FRAMES {
         let at = f * hop;
         input.fill(0.0);
