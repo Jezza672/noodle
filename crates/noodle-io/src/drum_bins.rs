@@ -400,6 +400,107 @@ fn shape_of(x: &[f32], env: &[f32], peak_at: usize, peak: f32, ring: f32, rate: 
     }
 }
 
+/// Cuts and describes the hit starting at `onset` in `mono`. `next` is the onset
+/// of the hit after it, which ends the cut. `end` overrides where the cut ends
+/// (the detector leaves it to the sound dying away); it still stops at the next
+/// hit and at the longest cut. `None` when there is nothing to cut.
+fn describe_hit(
+    mono: &[f32],
+    rate: u32,
+    spectrum: &mut Spectrum,
+    onset: u64,
+    next: Option<u64>,
+    end: Option<u64>,
+) -> Option<Hit> {
+    let rate_f = f64::from(rate);
+    let block = ((BLOCK * rate_f) as usize).max(1);
+    let on = onset as usize;
+    let pre = (PRE_ROLL * rate_f) as usize;
+    let start = on.saturating_sub(pre);
+    let cap = on + (MAX_CUT * rate_f) as usize;
+    let next_start = next.map(|n| (n as usize).saturating_sub(pre));
+    let limit = cap.min(mono.len()).min(next_start.unwrap_or(usize::MAX));
+    if limit <= on {
+        return None;
+    }
+    let env = envelope(&mono[on..limit], block);
+    let peak_blocks = env.len().min((0.05 / BLOCK) as usize);
+    let peak_at = (0..peak_blocks)
+        .max_by(|&a, &b| env[a].total_cmp(&env[b]))
+        .unwrap_or(0);
+    let peak = env[peak_at];
+    let fell = (peak_at + 1..env.len()).find(|&b| env[b] < peak - FALL_DB);
+    let (end, by_next) = match (end, fell) {
+        (Some(forced), _) => {
+            let forced = (forced as usize).clamp(on + 1, limit);
+            (
+                forced,
+                forced == limit && next_start == Some(limit) && limit < cap,
+            )
+        }
+        (None, Some(b)) => (on + (b + 1) * block, false),
+        (None, None) => (limit, next_start == Some(limit) && limit < cap),
+    };
+    let end = end.min(limit);
+    let level_at_end = env[((end - on).saturating_sub(1) / block).min(env.len() - 1)];
+    let truncated = by_next && level_at_end > peak - TRUNCATED_DB;
+    let before = &mono[on.saturating_sub(3 * block)..on.saturating_sub(block)];
+    let ring = if before.is_empty() {
+        f32::MIN
+    } else {
+        db(before.iter().map(|s| s * s).sum::<f32>() / before.len() as f32)
+    };
+    let mixed =
+        ring > peak - RING_DB || next.is_some_and(|n| (n - onset) as f64 <= NEXT_MIXES * rate_f);
+    let (bands, centroid, flatness, split) = spectrum.of(&mono[on..end]);
+    let decay_blocks = (peak_at + 1..env.len())
+        .find(|&b| env[b] < peak - 30.0)
+        .unwrap_or(env.len());
+    let (pitched, pitch_key) = pitch_of(&mono[on..end], rate);
+    let attack = &env[..env.len().min((0.04 / BLOCK) as usize)];
+    Some(Hit {
+        onset,
+        start: start as u64,
+        end: end as u64,
+        truncated,
+        mixed,
+        level_db: peak,
+        features: HitFeatures {
+            bands,
+            centroid,
+            flatness,
+            split,
+            decay: (decay_blocks - peak_at) as f32 * BLOCK as f32,
+            pitched,
+            pitch_key,
+            attack_peaks: count_peaks(attack),
+            shape: shape_of(
+                &mono[on..end],
+                &env[..env.len().min((end - on).div_ceil(block))],
+                peak_at,
+                peak,
+                ring,
+                rate,
+            ),
+        },
+    })
+}
+
+/// Describes one candidate cut as the detector would describe a hit, for making
+/// training data: the hit starts at `onset` in `mono`, `next` is the onset of
+/// whatever follows (so it can be mixed or truncated), and `end` forces where
+/// the cut ends (`None` lets the sound die away, as the detector does). The
+/// features are exactly those [`analyse_hits`] gives a detected hit.
+pub fn candidate_hit(
+    mono: &[f32],
+    rate: u32,
+    onset: u64,
+    next: Option<u64>,
+    end: Option<u64>,
+) -> Option<Hit> {
+    describe_hit(mono, rate, &mut Spectrum::new(rate), onset, next, end)
+}
+
 /// Finds the hits in `mono` (at `rate`), cuts each and describes it.
 ///
 /// `progress` is called with how far along it is (0 to 1) every so often and
@@ -416,8 +517,6 @@ pub fn analyse_hits(
     if !progress(0.2) {
         return Err(Cancelled);
     }
-    let rate_f = f64::from(rate);
-    let block = ((BLOCK * rate_f) as usize).max(1);
     let mut spectrum = Spectrum::new(rate);
     let mut hits = Vec::with_capacity(onsets.len());
     for (i, &onset) in onsets.iter().enumerate() {
@@ -425,69 +524,7 @@ pub fn analyse_hits(
             return Err(Cancelled);
         }
         let next = onsets.get(i + 1).copied();
-        let on = onset as usize;
-        let pre = (PRE_ROLL * rate_f) as usize;
-        let start = on.saturating_sub(pre);
-        let cap = on + (MAX_CUT * rate_f) as usize;
-        let next_start = next.map(|n| (n as usize).saturating_sub(pre));
-        let limit = cap.min(mono.len()).min(next_start.unwrap_or(usize::MAX));
-        if limit <= on {
-            continue;
-        }
-        let env = envelope(&mono[on..limit], block);
-        let peak_blocks = env.len().min((0.05 / BLOCK) as usize);
-        let peak_at = (0..peak_blocks)
-            .max_by(|&a, &b| env[a].total_cmp(&env[b]))
-            .unwrap_or(0);
-        let peak = env[peak_at];
-        let fell = (peak_at + 1..env.len()).find(|&b| env[b] < peak - FALL_DB);
-        let (end, by_next) = match fell {
-            Some(b) => (on + (b + 1) * block, false),
-            None => (limit, next_start == Some(limit) && limit < cap),
-        };
-        let end = end.min(limit);
-        let level_at_end = env[((end - on).saturating_sub(1) / block).min(env.len() - 1)];
-        let truncated = by_next && level_at_end > peak - TRUNCATED_DB;
-        let before = &mono[on.saturating_sub(3 * block)..on.saturating_sub(block)];
-        let ring = if before.is_empty() {
-            f32::MIN
-        } else {
-            db(before.iter().map(|s| s * s).sum::<f32>() / before.len() as f32)
-        };
-        let mixed = ring > peak - RING_DB
-            || next.is_some_and(|n| (n - onset) as f64 <= NEXT_MIXES * rate_f);
-        let (bands, centroid, flatness, split) = spectrum.of(&mono[on..end]);
-        let decay_blocks = (peak_at + 1..env.len())
-            .find(|&b| env[b] < peak - 30.0)
-            .unwrap_or(env.len());
-        let (pitched, pitch_key) = pitch_of(&mono[on..end], rate);
-        let attack = &env[..env.len().min((0.04 / BLOCK) as usize)];
-        hits.push(Hit {
-            onset,
-            start: start as u64,
-            end: end as u64,
-            truncated,
-            mixed,
-            level_db: peak,
-            features: HitFeatures {
-                bands,
-                centroid,
-                flatness,
-                split,
-                decay: (decay_blocks - peak_at) as f32 * BLOCK as f32,
-                pitched,
-                pitch_key,
-                attack_peaks: count_peaks(attack),
-                shape: shape_of(
-                    &mono[on..end],
-                    &env[..env.len().min((end - on).div_ceil(block))],
-                    peak_at,
-                    peak,
-                    ring,
-                    rate,
-                ),
-            },
-        });
+        hits.extend(describe_hit(mono, rate, &mut spectrum, onset, next, None));
     }
     progress(1.0);
     Ok(hits)
@@ -1929,5 +1966,41 @@ mod tests {
                 f32::from(u8::from(hit.truncated))
             ]
         );
+    }
+
+    #[test]
+    fn a_candidate_cut_without_an_end_is_the_hit_the_detector_finds() {
+        let mut x = vec![0.0f32; seconds(1.0)];
+        for (i, v) in kick().iter().enumerate() {
+            x[seconds(0.2) + i] += v;
+        }
+        let found = analyse_hits(&x, RATE, &mut |_| true).unwrap();
+        assert_eq!(found.len(), 1);
+        let made = candidate_hit(&x, RATE, found[0].onset, None, None).expect("a hit");
+        assert_eq!(feature_vector(&made), feature_vector(&found[0]));
+        assert_eq!((made.start, made.end), (found[0].start, found[0].end));
+    }
+
+    #[test]
+    fn a_forced_end_moves_the_cut_and_the_features_that_describe_the_end() {
+        let mut x = vec![0.0f32; seconds(1.0)];
+        for (i, v) in kick().iter().enumerate() {
+            x[seconds(0.2) + i] += v;
+        }
+        let onset = seconds(0.2) as u64;
+        let whole = candidate_hit(&x, RATE, onset, None, None).unwrap();
+        let early =
+            candidate_hit(&x, RATE, onset, None, Some(onset + seconds(0.05) as u64)).unwrap();
+        assert!(early.end < whole.end);
+        assert_eq!(early.end, onset + seconds(0.05) as u64);
+        // Cut dead while still sounding: the end is louder than the whole hit's.
+        assert!(early.features.shape.end_db > whole.features.shape.end_db);
+        // A next hit right after it makes it mixed and cuts it there.
+        let next = onset + seconds(0.02) as u64;
+        let mixed = candidate_hit(&x, RATE, onset, Some(next), None).unwrap();
+        assert!(mixed.mixed);
+        assert!(mixed.end <= next);
+        // Nothing to cut past the end of the audio.
+        assert!(candidate_hit(&x, RATE, x.len() as u64, None, None).is_none());
     }
 }
