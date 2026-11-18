@@ -18,6 +18,9 @@ exactly the ones the app computes.
   24 log-mel bands, centroid, flatness, three-way energy split, decay, pitch, attack bursts, and a
   `Shape` of the envelope and the edges (six envelope slices, attack time, level and drop at the
   end of the cut, lead-in level, crest, clipped share, bursts over the whole cut, cut length).
+  `noodle_io::candidate_hit` runs the same per-hit code on a cut chosen by the caller (onset,
+  next onset, forced end), so the training data generator can describe candidates it builds by
+  construction with exactly the app's features; `analyse_hits` calls the same function.
   `noodle_io::feature_vector` turns a hit into the model's input, in a fixed order
   (`DRUM_FEATURES` = 50 values). Changing the features or their order bumps `DETECTOR_VERSION`
   and is a new model input contract.
