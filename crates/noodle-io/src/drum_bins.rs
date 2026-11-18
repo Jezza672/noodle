@@ -558,7 +558,7 @@ pub fn hit_patch(mono: &[f32], rate: u32, hit: &Hit) -> Option<Vec<f32>> {
             let first = (a / hz_per_bin).floor() as usize;
             let last = ((d / hz_per_bin).ceil() as usize).min(size / 2);
             let mut sum = 0.0f32;
-            for k in first..=last {
+            for (k, bin) in out.iter().enumerate().take(last + 1).skip(first) {
                 let hz = k as f32 * hz_per_bin;
                 let w = if hz <= a || hz >= d {
                     0.0
@@ -567,7 +567,7 @@ pub fn hit_patch(mono: &[f32], rate: u32, hit: &Hit) -> Option<Vec<f32>> {
                 } else {
                     (d - hz) / (d - c)
                 };
-                sum += w * out[k].norm_sqr() * norm;
+                sum += w * bin.norm_sqr() * norm;
             }
             patch.push((10.0 * (sum + 1e-12).log10()).max(PATCH_FLOOR_DB));
         }
