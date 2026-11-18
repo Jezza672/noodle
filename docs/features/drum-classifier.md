@@ -21,6 +21,10 @@ exactly the ones the app computes.
   `noodle_io::candidate_hit` runs the same per-hit code on a cut chosen by the caller (onset,
   next onset, forced end), so the training data generator can describe candidates it builds by
   construction with exactly the app's features; `analyse_hits` calls the same function.
+  `noodle_io::hit_patch` gives the same cut as a log-mel patch (`PATCH_FRAMES` 25 frames of
+  `PATCH_BANDS` 64 bands, 32 ms frames 10 ms apart from the onset, power in dB of full scale so
+  level stays, silence past the cut's end) for training and running an encoder; it is not part of
+  `feature_vector`, so it does not change the model contract.
   `noodle_io::feature_vector` turns a hit into the model's input, in a fixed order
   (`DRUM_FEATURES` = 50 values). Changing the features or their order bumps `DETECTOR_VERSION`
   and is a new model input contract.
