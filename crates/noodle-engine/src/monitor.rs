@@ -51,7 +51,7 @@ pub(crate) fn is_monitor_config(config: &Config) -> bool {
 pub(crate) fn apply(
     original: &Graph,
     flat: &Graph,
-    keep: &BTreeSet<NodeId>,
+    keep: &crate::flatten::Keep,
     registry: &Registry,
     monitor: &Monitor,
     main: Option<&str>,
@@ -109,7 +109,7 @@ pub(crate) fn apply(
 fn source(
     original: &Graph,
     flat: &Graph,
-    keep: &BTreeSet<NodeId>,
+    keep: &crate::flatten::Keep,
     registry: &Registry,
     id: NodeId,
 ) -> Option<Endpoint> {

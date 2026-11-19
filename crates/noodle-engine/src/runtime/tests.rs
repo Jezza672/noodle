@@ -2041,7 +2041,6 @@ mod monitor_in_groups {
     use crate::monitor::{Monitor, apply, is_monitor_config};
     use noodle_core::group::{MUTE, control_key, group_nodes};
     use noodle_core::{Connection, Endpoint, History, Node, NodeId};
-    use std::collections::BTreeSet;
 
     /// A sine folded into a group, and the output node holding the group's
     /// port.
@@ -2081,10 +2080,17 @@ mod monitor_in_groups {
             ..Monitor::default()
         };
         let registry = registry(&Arc::new(AtomicUsize::new(0)));
-        apply(graph, &flat, &BTreeSet::new(), &registry, &monitor, None)
-            .nodes()
-            .filter(|(_, n)| is_monitor_config(&n.config))
-            .count()
+        apply(
+            graph,
+            &flat,
+            &crate::flatten::Keep::default(),
+            &registry,
+            &monitor,
+            None,
+        )
+        .nodes()
+        .filter(|(_, n)| is_monitor_config(&n.config))
+        .count()
     }
 
     #[test]

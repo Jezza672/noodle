@@ -25,8 +25,7 @@ use noodle_engine::{Job, JobPanicked};
 use noodle_io::{DrumCancelled as Cancelled, Hit, HitCache, HitKey, analyse_hits};
 use noodle_nodes::{NOTE_SPLIT_ID, SAMPLE_KEY, SAMPLE_SET_ID, SampleRef, SetEntry};
 use noodle_stems::drum::{
-    DrumModelManifest, DrumPart, HitWindow, PartSeparator, Separation, manifest_by_id,
-    separate_hits,
+    DrumModelManifest, DrumPart, PartSeparator, Separation, manifest_by_id, separate_and_find_hits,
 };
 use noodle_stems::{ModelId, SeparateError, Stereo};
 
@@ -199,6 +198,9 @@ pub struct DrumAnalysis {
     /// What the separation analyser found in each hit, once it has run (see
     /// [`Session::separate_drum_hits`]).
     pub separation: Option<Arc<Separation>>,
+    /// Counts the times `hits` was replaced by the hits a separation found, so
+    /// the dialog knows to bin them again.
+    pub generation: u32,
     /// Hits whose audio the user replaced with a separated part, by hit index.
     taken: std::collections::BTreeMap<usize, SampleRef>,
     /// Frames of the file before the first analysed frame (the clip's window
@@ -231,6 +233,7 @@ impl DrumAnalysis {
             hits: hits.into(),
             labeller: Arc::new(noodle_io::Rules),
             separation: None,
+            generation: 0,
             taken: Default::default(),
             origin: 0,
             file_frames: 1_000_000,
@@ -265,6 +268,9 @@ struct Run {
 /// What the separation of one clip window by one model is of.
 type SeparationKey = (HitKey, ModelId);
 
+/// The hits found in the parts of a clip, and what each part holds of them.
+type Found = (Arc<[Hit]>, Arc<Separation>);
+
 /// Opens a separator for a model, given ONNX Runtime's library if there is one.
 pub(crate) type PartOpener = Arc<
     dyn Fn(
@@ -277,7 +283,7 @@ pub(crate) type PartOpener = Arc<
 
 /// A separation under way.
 struct SeparationRun {
-    job: Job<Result<Arc<Separation>, SeparateError>>,
+    job: Job<Result<Found, SeparateError>>,
     /// The analysis it is for.
     clip: ClipId,
     model: &'static str,
@@ -286,7 +292,7 @@ struct SeparationRun {
 #[derive(Default)]
 pub(super) struct DrumRack {
     separating: Option<SeparationRun>,
-    separations: Arc<std::sync::Mutex<std::collections::HashMap<SeparationKey, Arc<Separation>>>>,
+    separations: Arc<std::sync::Mutex<std::collections::HashMap<SeparationKey, Found>>>,
     /// Instead of the real model, in tests.
     opener: Option<PartOpener>,
     run: Option<Run>,
@@ -397,15 +403,6 @@ impl Session {
             return;
         };
         let (clip, hash, origin) = (analysis.clip, analysis.hash.clone(), analysis.origin);
-        let windows: Vec<HitWindow> = analysis
-            .hits
-            .iter()
-            .map(|h| HitWindow {
-                onset: h.onset,
-                start: h.start,
-                end: h.end,
-            })
-            .collect();
         let Some(sample) = self.samples().get(&hash) else {
             self.message = Some("The clip's file can't be read".into());
             return;
@@ -469,15 +466,13 @@ impl Session {
                 left: sample.left[a..b].to_vec(),
                 right: sample.right[a..b].to_vec(),
             };
-            let separation = Arc::new(separate_hits(
-                &mut *separator,
-                &audio,
-                sample.sample_rate,
-                &windows,
-                &mut |f| progress.report(share + (1.0 - share) * f).is_ok(),
-            )?);
-            cache.lock().unwrap().insert(key, separation.clone());
-            Ok(separation)
+            let (hits, separation) =
+                separate_and_find_hits(&mut *separator, &audio, sample.sample_rate, &mut |f| {
+                    progress.report(share + (1.0 - share) * f).is_ok()
+                })?;
+            let found: Found = (hits.into(), Arc::new(separation));
+            cache.lock().unwrap().insert(key, found.clone());
+            Ok(found)
         });
         self.drum_rack.separating = Some(SeparationRun {
             job,
@@ -545,16 +540,13 @@ impl Session {
         };
         let run = self.drum_rack.separating.take().expect("just polled");
         match done {
-            Ok(Ok(separation)) => {
-                if let Some(analysis) = self
-                    .drum_rack
-                    .result
-                    .as_mut()
-                    .filter(|a| a.clip == run.clip)
-                {
-                    analysis.separation = Some(separation);
-                }
+            Ok(Ok((hits, _))) if hits.is_empty() => {
+                self.message = Some(format!(
+                    "{} found no drum hits in that clip; the hits are as they were",
+                    run.model
+                ));
             }
+            Ok(Ok((hits, separation))) => self.take_in_separation(run.clip, hits, separation),
             Ok(Err(SeparateError::Cancelled)) => {
                 self.message = Some("Separation cancelled".into());
             }
@@ -567,6 +559,37 @@ impl Session {
             Err(JobPanicked) => {
                 self.message = Some(format!("Couldn't separate the drums: {JobPanicked}"));
             }
+        }
+    }
+
+    /// Replaces the held analysis's hits with the ones found in the parts, each
+    /// playing the part it was found in (as if taken, so the rack plays one drum,
+    /// not the mix). `Use the original hit` in the dialog undoes that for one.
+    fn take_in_separation(&mut self, clip: ClipId, hits: Arc<[Hit]>, separation: Arc<Separation>) {
+        let Some(analysis) = self.drum_rack.result.as_ref().filter(|a| a.clip == clip) else {
+            return;
+        };
+        let rate = match self.samples().get(&analysis.hash) {
+            Some(sample) => sample.sample_rate,
+            None => return,
+        };
+        let mut taken = std::collections::BTreeMap::new();
+        for (index, found) in separation.hits.iter().enumerate() {
+            let audio = found.home.and_then(|part| found.part_audio(part));
+            if let Some(audio) = audio {
+                let hash = self.samples().insert(&noodle_io::Audio {
+                    samples: audio.to_interleaved(),
+                    channels: 2,
+                    sample_rate: rate,
+                });
+                taken.insert(index, SampleRef::whole(&hash));
+            }
+        }
+        if let Some(analysis) = self.drum_rack.result.as_mut() {
+            analysis.hits = hits;
+            analysis.separation = Some(separation);
+            analysis.taken = taken;
+            analysis.generation += 1;
         }
     }
 
@@ -686,6 +709,7 @@ impl Session {
                     hits,
                     labeller: self.drum_labeller(),
                     separation: None,
+                    generation: 0,
                     taken: Default::default(),
                     origin: run.origin,
                     file_frames: run.file_frames,
@@ -1183,7 +1207,7 @@ mod tests {
                     audio[at as usize + i] += v;
                 }
                 for (i, v) in hat().iter().enumerate() {
-                    audio[at as usize + i] += 1.5 * v;
+                    audio[at as usize + i] += 4.0 * v;
                 }
                 continue;
             }
@@ -1700,37 +1724,42 @@ mod tests {
     }
 
     #[test]
-    fn the_separation_marks_the_hit_with_two_parts_sounding_as_mixed() {
+    fn the_separation_finds_the_hits_in_the_parts_and_a_hat_over_a_kick_is_two_hits() {
         let dir = tempfile::tempdir().unwrap();
         let (mut session, clip) = rig_with(dir.path(), true);
         with_bands(&mut session, false);
         analysed(&mut session, clip);
-        assert!(session.drum_analysis().unwrap().separation.is_none());
+        assert_eq!(session.drum_analysis().unwrap().hits.len(), 8);
+        assert_eq!(session.drum_analysis().unwrap().generation, 0);
         separated(&mut session);
         let analysis = session.drum_analysis().unwrap();
         let separation = analysis.separation.as_ref().expect("a separation");
         assert_eq!(separation.hits.len(), analysis.hits.len());
+        assert_eq!(analysis.generation, 1, "the hits were replaced");
+        let homes: Vec<_> = separation.hits.iter().map(|h| h.home).collect();
+        // Eight beats, kick on even and hat on odd, and beat 4 has both.
+        assert_eq!(homes.len(), 9, "{homes:?}");
+        assert_eq!(
+            homes.iter().filter(|h| **h == Some(DrumPart::Kick)).count(),
+            4
+        );
+        assert_eq!(
+            homes
+                .iter()
+                .filter(|h| **h == Some(DrumPart::HiHat))
+                .count(),
+            5
+        );
         let mixed: Vec<usize> = (0..analysis.hits.len())
             .filter(|&h| analysis.separated_mixed(h))
             .collect();
-        // The kick over hat is the fifth hit, and the only mixed one.
-        assert_eq!(
-            mixed,
-            vec![4],
-            "{:?}",
-            separation
-                .hits
-                .iter()
-                .map(|h| &h.levels)
-                .collect::<Vec<_>>()
-        );
-        assert_eq!(
-            separation.hits[4].active.len(),
-            2,
-            "a kick and a hat sound there"
-        );
-        assert_eq!(separation.hits[0].active, vec![DrumPart::Kick]);
-        assert_eq!(separation.hits[1].active, vec![DrumPart::HiHat]);
+        assert_eq!(mixed.len(), 2, "the kick and the hat struck together");
+        let apart = analysis.hits[mixed[0]]
+            .onset
+            .abs_diff(analysis.hits[mixed[1]].onset);
+        assert!(apart < u64::from(RATE) / 40, "within 25 ms");
+        // Every hit plays its own part, not the mix.
+        assert!((0..analysis.hits.len()).all(|h| analysis.is_taken(h)));
     }
 
     #[test]
@@ -1784,27 +1813,38 @@ mod tests {
     }
 
     #[test]
-    fn taking_a_part_swaps_the_hits_audio_and_leaving_it_swaps_back() {
+    fn a_hit_plays_its_own_part_and_can_take_another_or_go_back_to_the_mix() {
         let dir = tempfile::tempdir().unwrap();
         let (mut session, clip) = rig_with(dir.path(), true);
         with_bands(&mut session, false);
         analysed(&mut session, clip);
         separated(&mut session);
-        let own = session.drum_analysis().unwrap().window(4).unwrap();
-        session.edit([Edit::TakeSeparatedPart(4, Some(DrumPart::Kick))]);
+        // The hat of the kick-and-hat hit: it plays its own part to begin with.
+        let (index, home) = {
+            let analysis = session.drum_analysis().unwrap();
+            let found = analysis.separation.as_ref().unwrap();
+            let index = (0..analysis.hits.len())
+                .find(|&h| {
+                    analysis.separated_mixed(h) && found.hits[h].home == Some(DrumPart::HiHat)
+                })
+                .expect("a mixed hat");
+            assert!(analysis.is_taken(index));
+            (index, analysis.window(index).unwrap())
+        };
+        session.edit([Edit::TakeSeparatedPart(index, Some(DrumPart::Kick))]);
         let analysis = session.drum_analysis().unwrap();
-        assert!(analysis.is_taken(4));
-        let taken = analysis.window(4).unwrap();
-        assert_ne!(taken.hash, own.hash, "the part is its own sample");
+        assert!(analysis.is_taken(index));
+        let taken = analysis.window(index).unwrap();
+        assert_ne!(taken.hash, home.hash, "the kick part is its own sample");
         assert_eq!((taken.start, taken.end), (0.0, 1.0));
-        let hit = &analysis.hits[4];
+        let hit = &analysis.hits[index];
         let sample = session.samples().get(&taken.hash).unwrap();
         assert_eq!(sample.frames() as u64, hit.end - hit.start);
         // The rack plays the part.
         let plan = DrumRackPlan {
             bins: vec![PlannedBin {
                 name: "Kick".into(),
-                hits: vec![4],
+                hits: vec![index],
                 layers: Vec::new(),
             }],
             pads: vec![PadAssignment {
@@ -1823,9 +1863,14 @@ mod tests {
             noodle_nodes::parse_set(entries)[0].reference.hash,
             taken.hash
         );
-        session.edit([Edit::TakeSeparatedPart(4, None)]);
+        session.edit([Edit::TakeSeparatedPart(index, None)]);
         let analysis = session.drum_analysis().unwrap();
-        assert!(!analysis.is_taken(4));
-        assert_eq!(analysis.window(4).unwrap(), own);
+        assert!(!analysis.is_taken(index));
+        let own = analysis.window(index).unwrap();
+        assert_eq!(
+            own.hash, analysis.hash,
+            "the original hit is cut from the clip's file"
+        );
+        assert!(own.end - own.start < 0.5, "a section of it, not the whole");
     }
 }

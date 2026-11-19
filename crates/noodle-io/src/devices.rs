@@ -63,8 +63,33 @@ pub struct AudioConfig {
     /// rest; changing them doesn't restart the audio.
     pub midi_inputs: Vec<String>,
     /// Extra threads that help the audio thread render graphs whose branches
-    /// can run side by side. 0 renders on the audio thread alone.
-    pub threads: usize,
+    /// can run side by side. `Some(0)` renders on the audio thread alone;
+    /// `None` is Automatic, which asks [`auto_threads`].
+    pub threads: Option<usize>,
+}
+
+impl AudioConfig {
+    /// The worker threads to start: the chosen count, or the automatic one.
+    #[must_use]
+    pub fn worker_threads(&self) -> usize {
+        self.threads.unwrap_or_else(auto_threads)
+    }
+}
+
+/// What Automatic worker threads resolves to on this machine: every core but
+/// two (one for the audio thread, one for the interface), at most seven. A
+/// plan only uses the workers when its shape is wide enough (the engine
+/// checks per plan), and idle workers sleep, so the count depends on the
+/// machine and not on the graph.
+#[must_use]
+pub fn auto_threads() -> usize {
+    auto_threads_for(std::thread::available_parallelism().map_or(1, std::num::NonZero::get))
+}
+
+/// [`auto_threads`] for a machine with `cores` cores.
+#[must_use]
+pub fn auto_threads_for(cores: usize) -> usize {
+    cores.saturating_sub(2).min(7)
 }
 
 /// Which device, if any, records into Input nodes. Off by default, since
@@ -576,6 +601,22 @@ impl std::error::Error for AudioError {}
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn automatic_threads_leave_two_cores_and_stop_at_seven() {
+        use super::{AudioConfig, auto_threads_for};
+        assert_eq!(auto_threads_for(1), 0);
+        assert_eq!(auto_threads_for(2), 0);
+        assert_eq!(auto_threads_for(4), 2);
+        assert_eq!(auto_threads_for(32), 7);
+        // Automatic is the default; a chosen count, even 0, overrides it.
+        assert_eq!(AudioConfig::default().threads, None);
+        let chosen = AudioConfig {
+            threads: Some(0),
+            ..AudioConfig::default()
+        };
+        assert_eq!(chosen.worker_threads(), 0);
+    }
+
     use super::*;
 
     fn range(

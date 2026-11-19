@@ -44,6 +44,17 @@ impl Tab {
 }
 
 impl Tab {
+    /// A small glyph that leads the tab's row, so the list scans by shape.
+    fn icon(self) -> &'static str {
+        match self {
+            Tab::General => "⚙",
+            Tab::Audio => "🔊",
+            Tab::Display => "👁",
+            Tab::Models => "📦",
+            Tab::Sources => "🌐",
+        }
+    }
+
     /// One line under the tab list's choice, saying what the page is for.
     fn blurb(self) -> &'static str {
         match self {
@@ -127,11 +138,19 @@ fn tab_button(ui: &mut egui::Ui, current: &mut Tab, tab: Tab, status: bool) {
         (egui::Color32::TRANSPARENT, visuals.text_color())
     };
     ui.painter().rect_filled(rect, 4.0, fill);
+    let font = egui::TextStyle::Button.resolve(ui.style());
     ui.painter().text(
         rect.left_center() + egui::vec2(10.0, 0.0),
         egui::Align2::LEFT_CENTER,
+        tab.icon(),
+        font.clone(),
+        text,
+    );
+    ui.painter().text(
+        rect.left_center() + egui::vec2(32.0, 0.0),
+        egui::Align2::LEFT_CENTER,
         tab.label(),
-        egui::TextStyle::Button.resolve(ui.style()),
+        font,
         text,
     );
     if status {
@@ -294,6 +313,9 @@ fn general(ui: &mut egui::Ui, session: &mut Session, out: &mut Outcome) {
     }
     ui.add_space(12.0);
     ui.label(egui::RichText::new("Your settings").strong());
+    if let Some(file) = crate::prefs::default_path() {
+        show_file_button(ui, "Show file", &file);
+    }
     ui.weak(
         "Saved on this machine. Export them to take to another machine or to share; the \
          audio devices and the plugin sandbox stay local.",
@@ -302,4 +324,61 @@ fn general(ui: &mut egui::Ui, session: &mut Session, out: &mut Outcome) {
         out.import |= ui.button("Import User Settings…").clicked();
         out.export |= ui.button("Export User Settings…").clicked();
     });
+}
+
+/// A "Show file" button: opens the folder that holds `path` in the system's
+/// file manager. Disabled, with a hint, while the folder doesn't exist yet
+/// (the settings file is written on the first change).
+pub fn show_file_button(ui: &mut egui::Ui, label: &str, path: &std::path::Path) {
+    let folder = if path.is_dir() {
+        Some(path)
+    } else {
+        path.parent().filter(|p| p.is_dir())
+    };
+    let response = ui
+        .add_enabled(folder.is_some(), egui::Button::new(label))
+        .on_hover_text(path.display().to_string());
+    if response.clicked()
+        && let Some(folder) = folder
+    {
+        ui.ctx().open_url(egui::OpenUrl::new_tab(file_url(folder)));
+    }
+}
+
+/// A `file://` address for a local path, with the characters a URL can't
+/// carry as they are written out as `%XX`.
+fn file_url(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy().replace('\\', "/");
+    let mut url = String::from("file://");
+    if !text.starts_with('/') {
+        url.push('/');
+    }
+    for byte in text.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'/' | b'-' | b'_' | b'.' | b'~' | b':' => {
+                url.push(byte as char);
+            }
+            other => url.push_str(&format!("%{other:02X}")),
+        }
+    }
+    url
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_path_becomes_a_file_address() {
+        assert_eq!(
+            file_url(std::path::Path::new(
+                "/Users/a b/Library/Application Support/Noodle"
+            )),
+            "file:///Users/a%20b/Library/Application%20Support/Noodle"
+        );
+        assert_eq!(
+            file_url(std::path::Path::new("C:\\Users\\me\\Noodle")),
+            "file:///C:/Users/me/Noodle"
+        );
+    }
 }

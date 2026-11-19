@@ -24,6 +24,8 @@ struct Log {
     /// The user's doing.
     closed: bool,
     dragged_to: Option<(u32, u32)>,
+    /// How often the plugin's thread has read the window's size.
+    size_reads: usize,
 }
 
 struct Fake {
@@ -46,7 +48,9 @@ impl EditorWindow for Fake {
         self.log().sizes.push((width, height, resizable));
     }
     fn size(&self) -> (u32, u32) {
-        self.log().dragged_to.unwrap_or(self.size)
+        let mut log = self.log();
+        log.size_reads += 1;
+        log.dragged_to.unwrap_or(self.size)
     }
     fn show(&mut self) {
         self.log().shown = true;
@@ -125,6 +129,14 @@ fn an_editor_embeds_in_the_hosts_window_and_follows_its_size_and_closing() {
 
     // The user dragging the window's edge asks the plugin, which snaps the
     // size to multiples of 10, and the window follows.
+    // Wait until the plugin's thread has finished carrying out its own resize
+    // and gone round again: a drag that lands between the window being set
+    // and the thread reading its size back would look like the size it
+    // already knew, and never be noticed.
+    let reads = lock().size_reads;
+    until("the plugin has settled on its size", || {
+        lock().size_reads >= reads + 3
+    });
     lock().dragged_to = Some((425, 263));
     until("the window snaps to the plugin's size", || {
         lock().sizes.contains(&(420, 260, true))

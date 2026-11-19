@@ -570,7 +570,7 @@ mod tests {
                 live_buffer: None,
                 channels: Some(6),
                 midi_inputs: vec!["Keystation 49".into(), "Pad Controller".into()],
-                threads: 2,
+                threads: Some(2),
             },
             count_in_bars: 0,
             pre_roll_bars: 0,
@@ -677,13 +677,13 @@ mod tests {
         let text = ron::ser::to_string(&chosen()).unwrap();
         assert_eq!(
             text,
-            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_inputs:["Keystation 49","Pad Controller"],threads:2),sandbox_plugins:false,monitor_device:"",engine_on:true,auto_cache:false,count_in_bars:0,pre_roll_bars:0,midi_record:Takes,automation_mode:Latch,display:(performance:false,event_wires:true,audio_wires:true,input_meters:true,output_meters:true,clip_flash:true,silent_dim:true,param_motion:true,voice_leds:true,beat_pulse:true,cpu_heat:false),snap:960,record_quantise:Off,monitoring_latency:Auto,browser_open:true)"#
+            r#"(audio:(host:Some("alsa"),output:Some("alsa:hw:CARD=USB"),input:Device("alsa:hw:CARD=Mic"),sample_rate:Some(48000),buffer_size:Some(256),channels:Some(6),midi_inputs:["Keystation 49","Pad Controller"],threads:Some(2)),sandbox_plugins:false,monitor_device:"",engine_on:true,auto_cache:false,count_in_bars:0,pre_roll_bars:0,midi_record:Takes,automation_mode:Latch,display:(performance:false,event_wires:true,audio_wires:true,input_meters:true,output_meters:true,clip_flash:true,silent_dim:true,param_motion:true,voice_leds:true,beat_pulse:true,cpu_heat:false),snap:960,record_quantise:Off,monitoring_latency:Auto,browser_open:true)"#
         );
         // Files from before the MIDI input was added still load.
         let old = r#"(audio:(host:Some("alsa"),output:None,input:Off,sample_rate:None,buffer_size:Some(256)))"#;
         let prefs: Prefs = ron::from_str(old).unwrap();
         assert!(prefs.audio.midi_inputs.is_empty());
-        assert_eq!(prefs.audio.threads, 0);
+        assert_eq!(prefs.audio.threads, None);
         assert_eq!(prefs.audio.buffer_size, Some(256));
         assert!(!prefs.sandbox_plugins);
     }

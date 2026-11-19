@@ -67,14 +67,6 @@ deliberately deferred items.
 **Then:** routes for the 24 stories that have a status but no route (U10, #316, #368), more naive-agent runs (#319), grades and thresholds once there is data for every story (#323), and the cross-DAW baseline (#325, optional).
 
 
-## Settings redesign: left over
-
-The redesign is built (`features/user-settings.md`). Not built:
-
-- Automatic worker threads (#578): needs an engine heuristic.
-- Small icons on the tab list, and a "Show file" button on General and Models.
-- The MIDI In node listing the MIDI keyboards and flagging a missing one.
-
 ## Planned: new nodes and MIDI files
 
 Seven features picked from a shortlist in November 2026 (the looper and the preset morph are built; see [features/looper.md](features/looper.md) and [features/preset-morph.md](features/preset-morph.md)). Each issue holds the design, the tests and the open questions; the chunks below are one PR each. Every instrument here ships as a group template built from the new primitive, never as a synth node. They are independent of each other, so the order is only a suggestion: quick wins first, then the two sound primitives.
@@ -157,9 +149,11 @@ All three chunks are built (`features/low-latency-monitoring.md`). Owed on the M
   (about 600 MB for 5 minutes at 4096/1024).
 - **Drum separation analyser, listening on real kits** (#501, built;
   `docs/features/drum-separation-analyser.md`): run Find overlapping drums on the same
-  kits. Check that hits with two drums are marked and clean ones are not, and that
-  Use part… sounds like the one drum. The 20 dB `ACTIVE_WITHIN_DB` margin was set on
-  synthetic parts and may need tuning. Ask before making sound.
+  kits. Hits are now found per part (a hat over a kick is two hits, each playing its
+  own part): check that each pad sounds like the one drum, that leakage does not make
+  duplicate hits, and that hits with two drums are marked and clean ones are not. The
+  10 dB `ACTIVE_WITHIN_DB` and 20 dB `KEEP_WITHIN_DB` margins came from drumsep on real
+  songs, not from listening. Ask before making sound.
 - **Recording with a real microphone**, to check the latency compensation, and
   that the Audio Settings round-trip estimate matches what you hear.
 - **Stem separation on the real HT-Demucs weights** (M10), and listening to the
