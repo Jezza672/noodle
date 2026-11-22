@@ -141,9 +141,10 @@ impl State {
     fn apply_separation(&mut self, analysis: &DrumAnalysis) {
         self.separation_applied = true;
         let mut changed = false;
-        for hit in 0..analysis.hits.len() {
-            if analysis.separated_mixed(hit) && !self.binning.mixed[hit] {
-                self.binning.mixed[hit] = true;
+        let hits = analysis.hits.len();
+        for (hit, mixed) in self.binning.mixed.iter_mut().enumerate().take(hits) {
+            if analysis.separated_mixed(hit) && !*mixed {
+                *mixed = true;
                 changed = true;
             }
         }
