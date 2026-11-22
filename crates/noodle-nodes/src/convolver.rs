@@ -350,9 +350,8 @@ impl Node for ConvolverNode {
                 self.collecting[c][self.fill] = input.lane(0, c)[t];
             }
             let g = db_to_gain(gains.get(t).copied().unwrap_or(last_gain));
-            for ch in 0..2 {
-                io.outputs[ConvolverPorts::OUT].lane_mut(0, ch)[t] =
-                    self.playing[ch][self.fill] * g;
+            for (ch, play) in self.playing.iter().enumerate() {
+                io.outputs[ConvolverPorts::OUT].lane_mut(0, ch)[t] = play[self.fill] * g;
             }
             self.fill += 1;
             if self.fill == BLOCK {
