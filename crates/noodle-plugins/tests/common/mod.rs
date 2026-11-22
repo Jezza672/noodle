@@ -8,11 +8,25 @@ use noodle_engine::testing::Harness;
 use noodle_engine::{Event, EventKind, NoteId};
 use noodle_plugins::{Catalog, PluginNodeType, ScanCommand, scan_file};
 
+/// The folder holding the built artifacts (`debug` or `release`). The test
+/// binary sits in `deps` under it, or deeper when cargo keeps its
+/// intermediates in a separate build folder, so walk up to the profile folder.
+pub fn profile_dir() -> PathBuf {
+    let exe = std::env::current_exe().unwrap();
+    exe.ancestors()
+        .skip(1)
+        .find(|dir| {
+            dir.file_name()
+                .is_some_and(|name| name == "debug" || name == "release")
+        })
+        .unwrap_or_else(|| panic!("no profile folder above {}", exe.display()))
+        .to_path_buf()
+}
+
 /// The test plugin built from `examples/test_plugin.rs`. `cargo test` builds
 /// examples first, so it's next to the test binary's `deps` folder.
 pub fn plugin_path() -> PathBuf {
-    let exe = std::env::current_exe().unwrap();
-    let target = exe.parent().unwrap().parent().unwrap();
+    let target = &profile_dir();
     let path = target.join("examples").join(format!(
         "{}test_plugin{}",
         std::env::consts::DLL_PREFIX,
@@ -47,8 +61,7 @@ pub fn node_type(catalog: &Catalog) -> &PluginNodeType {
 pub fn vst3_path() -> PathBuf {
     use std::sync::Once;
     static MADE: Once = Once::new();
-    let exe = std::env::current_exe().unwrap();
-    let target = exe.parent().unwrap().parent().unwrap();
+    let target = &profile_dir();
     let library = target.join("examples").join(format!(
         "{}test_vst3{}",
         std::env::consts::DLL_PREFIX,
